@@ -6,14 +6,13 @@ var repository = new Option<string>("--repo") { Required = true, Description = "
 var appId = new Option<string>("--app-id") { Required = true, Description = "GitHub App ID or client ID" };
 var privateKey = new Option<FileInfo>("--private-key") { Required = true, Description = "GitHub App PEM private-key file" };
 var installationId = new Option<long?>("--installation-id") { Description = "Expected installation ID (otherwise discover it for --repo)" };
-var mentionName = new Option<string>("--mention-name") { Description = "Optional short @mention trigger, without @ (does not rename the App or add GitHub autocomplete)" };
 var workspace = new Option<DirectoryInfo>("--workspace") { DefaultValueFactory = _ => new(Environment.CurrentDirectory) };
 var state = new Option<FileInfo>("--state") { DefaultValueFactory = _ => new(".bridge-state.json") };
 var enroll = new Option<string[]>("--enroll") { Description = "Discussion URL to enroll (repeatable)", AllowMultipleArgumentsPerToken = true };
 var interval = new Option<int>("--interval") { DefaultValueFactory = _ => 10, Description = "Seconds between polls" };
 var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (native work may still be running)" };
 var checkAuth = new Option<bool>("--check-auth") { Description = "Verify App installation identity and prepare authenticated gh, then exit without starting Codex" };
-var root = new RootCommand("GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, installationId, mentionName, workspace, state, enroll, interval, once, checkAuth };
+var root = new RootCommand("GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, installationId, workspace, state, enroll, interval, once, checkAuth };
 var tokenFile = new Option<FileInfo>("--token-file") { Required = true };
 var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
 var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
@@ -55,8 +54,6 @@ root.SetAction(async (result, cancellationToken) =>
         await github.VerifyIdentity(cancellationToken);
         store.VerifyIdentity(credentials.AgentLogin);
         var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentials.TokenFile);
-        var mention = new MentionTrigger(credentials.AgentLogin, result.GetValue(mentionName));
-        Log.Write("mention", "@" + mention.Name);
         if (result.GetValue(checkAuth)) return 0;
         using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var refresh = credentials.RefreshUntilCancelled(refreshCancellation.Token);
@@ -64,7 +61,7 @@ root.SetAction(async (result, cancellationToken) =>
         {
             await using var codex = new Codex(cwd, wrapper, Path.Combine(credentialDirectory, "gh-config"));
             await codex.Initialize(cancellationToken);
-            var bridge = new Bridge(github, codex, store, numbers, mention);
+            var bridge = new Bridge(github, codex, store, numbers);
             do
             {
                 var succeeded = await bridge.Poll(cancellationToken);

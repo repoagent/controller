@@ -27,9 +27,7 @@ The wrapper is the supported GitHub command path. Directly invoking another `gh`
 
 ## Bot identity and existing state
 
-The optional `--mention-name YOUR-ALIAS` adds an operator-selected short text trigger. Names contain 1–39 letters, digits or hyphens, with a letter or digit at each end; omit the leading `@` in configuration. Matching ignores case and rejects longer usernames and email addresses. The App's full bot login remains an enrollment trigger too. Changing this trigger does not change the authenticated actor, visible author or existing session mapping.
-
-This option is a polling alias, not a registered GitHub account. It does not add mention highlighting or autocomplete to Discussions. For example, `@bridge` belongs to an unrelated real GitHub user and must not be used as this App's identity. Use the actual App bot mention when account identity must be unambiguous.
+The bot name is derived from the registered App. Choosing an App with a shorter name shortens its actual bot handle; a local text alias would not register that identity with GitHub. For example, `@bridge` belongs to an unrelated real GitHub user and must not be used as this App's identity. No arbitrary mention alias is configured by this bridge.
 
 Mention the actual bot login in polled text, for example `@discussion-agent-bridge[bot]`, or enroll the Discussion URL explicitly. Literal mention matching includes the suffix; autocomplete/notification behavior is not needed for enrollment. GitHub's GraphQL viewer exposes the suffixed login, while Discussion authors can expose a `Bot` with the bare App slug. Loop suppression recognizes both forms; the bare slug is accepted only for a `Bot`, so a human with that name remains participant activity. A human reaction/reply to a bot-authored post is still user activity.
 
@@ -38,6 +36,8 @@ A checkpoint is bound to its repository and authenticated actor. Start with a fr
 ## Native GitHub agent UI
 
 GitHub's [agent apps](https://docs.github.com/en/copilot/concepts/agent-capabilities/about-agents/agent-apps) can appear in issue Assignees, pull request mention autocomplete and the Agents UI. This requires an App configured with agent features, not just a normal App installation or a local text alias. GitHub also advertises [early access for developers creating agent apps](https://github.com/features/preview/agent-apps-for-github); availability for this operator-owned App must be checked in its settings.
+
+On 19 October 2026 the operator found no agent configuration in this App's settings. GitHub's assignable-actor API returned Copilot, Claude and Codex for both `egil/framework` and this repository, but did not return this App. Early-access onboarding is the next platform prerequisite; adding repository permissions or changing the local CLI cannot be claimed to enable native agent registration.
 
 The documented agent-app runtime uses Copilot cloud agent, with partner functionality through MCP. The documented entry points are issue assignment, pull request comments and the Agents UI. These docs do not establish either a Discussion mention picker or a way to substitute this bridge's existing self-hosted Codex sessions as the runtime. Native agent registration is therefore a separate compatibility investigation; this authentication conversion does not claim to provide it or silently change the runtime.
 
