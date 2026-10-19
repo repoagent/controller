@@ -15,7 +15,7 @@ public sealed class MentionTrigger
             throw new ArgumentException("--mention-name must be 1–39 letters, digits or hyphens, starting and ending with a letter or digit; omit the @");
         Name = mentionName ?? agentLogin;
         var names = new[] { agentLogin, Name }.Distinct(StringComparer.OrdinalIgnoreCase).Select(Regex.Escape);
-        pattern = new Regex(@"(?<![\w@-])@(?:" + string.Join('|', names) + @")(?![\w\[\]-])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        pattern = new Regex(@"(?<![\w!#$%&'*+/=?^`{|}~.@-])@(?:" + string.Join('|', names) + @")(?![\w\[-])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
     public bool Matches(string text) => pattern.IsMatch(text);

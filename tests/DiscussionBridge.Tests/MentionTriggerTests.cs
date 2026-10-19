@@ -9,6 +9,8 @@ public sealed class MentionTriggerTests
     [InlineData("(@bridge), thanks")]
     [InlineData("@discussion-agent-bridge[bot] please check this")]
     [InlineData("Thanks, @DISCUSSION-AGENT-BRIDGE[BOT]!")]
+    [InlineData("[@bridge](https://example.com)")]
+    [InlineData("[@discussion-agent-bridge[bot]](https://example.com)")]
     public void A_configured_short_name_and_the_authenticated_App_login_both_trigger_the_agent(string text)
     {
         var trigger = new MentionTrigger("discussion-agent-bridge[bot]", "bridge");
@@ -19,6 +21,8 @@ public sealed class MentionTriggerTests
 
     [Theory]
     [InlineData("Contact someone@bridge for help")]
+    [InlineData("Contact support+@bridge.example for help")]
+    [InlineData("Contact o'@bridge.example for help")]
     [InlineData("Ask @bridgekeeper instead")]
     [InlineData("Ask @bridge-other instead")]
     [InlineData("Ask @bridge_other instead")]
