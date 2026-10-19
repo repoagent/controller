@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 
 CONFIG = Path('/data/config/settings.json')
-CODEX = Path('/data/config/codex')
+CODEX = Path('/data/credentials/codex')
 SKILLS = Path('/data/config/skills')
 STATE = '/data/state/bridge.json'
 BRIDGE = ['/opt/bridge/bridge']
@@ -89,6 +89,8 @@ def install_skills(selection_path, token_path=None):
         staging = Path(directory) / 'skills'
         staging.mkdir()
         for index, item in enumerate(selection):
+            if not isinstance(item, dict) or not all(isinstance(item.get(key), str) for key in ('repository', 'revision', 'path')):
+                raise ValueError('Each selected skill needs string repository, revision and path fields.')
             repo, revision, location = item['repository'], item['revision'], item['path']
             if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo) or not re.fullmatch(r'[0-9a-f]{40}', revision):
                 raise ValueError('Each skill needs OWNER/REPO and a full immutable 40-character commit SHA.')
@@ -114,8 +116,9 @@ def install_skills(selection_path, token_path=None):
             if not source.is_relative_to(extracted.resolve()) or not (source / 'SKILL.md').is_file():
                 raise ValueError(f'Missing skill at {repo}:{location}.')
             text = (source / 'SKILL.md').read_text()
-            match = re.search(r'^name:\s*[\'"]?([a-z0-9][a-z0-9-]*)[\'"]?\s*$', text, re.MULTILINE)
-            if not text.startswith('---\n') or not match or not re.search(r'^description:\s*\S', text, re.MULTILINE):
+            header = text[4:].split('\n---', 1)[0] if text.startswith('---\n') and '\n---' in text[4:] else ''
+            match = re.search(r'^name:\s*[\'"]?([a-z0-9][a-z0-9-]*)[\'"]?\s*$', header, re.MULTILINE)
+            if not match or not re.search(r'^description:\s*\S', header, re.MULTILINE):
                 raise ValueError(f'Invalid skill metadata at {repo}:{location}.')
             name = match.group(1)
             if name == 'github-discussion' or (staging / name).exists():

@@ -1,4 +1,11 @@
 .git
+.codex
+.aws
+.ssh
+.env*
+**/auth.json
+**/hosts.yml
+**/*.github-app
 **/bin
 **/obj
 artifacts

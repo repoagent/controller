@@ -16,7 +16,7 @@ public sealed class DiscussionJourney
     readonly string evidence = "/evidence";
     readonly List<object> outcomes = [];
 
-    [Fact]
+    [Fact(Timeout = 1_800_000)]
     public async Task Packaged_bridge_preserves_conversations_skills_and_receipts_across_replacement()
     {
         Assert.True(Environment.GetEnvironmentVariable("REPOAGENT_LIVE") == "1", "NOT EXERCISED: set REPOAGENT_LIVE=1 after configuring separate agent and participant credentials.");
@@ -31,6 +31,20 @@ public sealed class DiscussionJourney
             var repo = (await Api("query($o:String!,$r:String!){repository(owner:$o,name:$r){id discussionCategories(first:20){nodes{id name isAnswerable}}}}", new { o = parts[0], r = parts[1] }))["repository"]!;
             var categories = repo["discussionCategories"]!["nodes"]!.AsArray();
             var category = categories.FirstOrDefault(c => c!["isAnswerable"]!.GetValue<bool>()) ?? throw new InvalidOperationException("NOT EXERCISED: repository needs an answerable Discussion category.");
+            var inspection = JsonNode.Parse(await File.ReadAllTextAsync("/data/control/runtime-inspection.json"))!;
+            Assert.False(inspection["privileged"]!.GetValue<bool>());
+            Pass("C14", new { runtime = inspection, selectedSkills = JsonNode.Parse(await File.ReadAllTextAsync("/data/control/skills.json")) });
+            if (Environment.GetEnvironmentVariable("REPOAGENT_LIVE_CASE") == "skill")
+            {
+                var expectedSkill = "SKILL_ACTION_" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("repoagent-skill-v1:" + run)))[..16];
+                var fixture = await Create(repo, category, "selected skill", $"Authorized disposable acceptance fixture. Use $acceptance-marker with correlation ID {run}, then publish its returned marker once. If the skill is unavailable, reply SKILL_UNAVAILABLE instead; do not invent an implementation.");
+                await Control("replace", fixture["url"]!.ToString());
+                await Reply(fixture, expectedSkill);
+                Pass("C06", new { correlation = run, expectedSkill });
+                await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + ".json"), (await Snapshot(fixture)).ToJsonString());
+                await Api("mutation($id:ID!){deleteDiscussion(input:{id:$id}){clientMutationId}}", new { id = fixture["id"]!.ToString() });
+                return;
+            }
             var aMarker = "LIVE_A_" + run;
             var bMarker = "LIVE_B_" + run;
             var a = await Create(repo, category, "mention", $"@{actor} Authorized disposable live acceptance test. Reply once with {aMarker}. Remember the word LYCHEE for continuation; use the authenticated GitHub response skill. Only perform this test's requests.");
@@ -95,6 +109,7 @@ public sealed class DiscussionJourney
             var afterRestart = await Reply(a, "RESTART_" + run, continued["id"]!.ToString());
             Assert.Contains("LYCHEE", afterRestart["body"]!.ToString(), StringComparison.OrdinalIgnoreCase);
             Assert.Equal(originalSession, await Session(a));
+            Assert.Contains("session-resumed " + originalSession, await Logs());
             Pass("C09", new { session = originalSession, reply = afterRestart["url"]!.ToString() });
 
             // The operator path stops the bridge, backs up state and substitutes an invalid native ID.
@@ -160,7 +175,8 @@ public sealed class DiscussionJourney
         child.StandardInput.Close();
         var output = child.StandardOutput.ReadToEndAsync();
         var errors = child.StandardError.ReadToEndAsync();
-        await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60));
+        try { await child.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(60)); }
+        catch { if (!child.HasExited) child.Kill(true); throw; }
         var text = await output;
         Assert.True(child.ExitCode == 0, "GitHub operation failed: " + await errors);
         var result = JsonNode.Parse(text)!;
@@ -181,7 +197,7 @@ public sealed class DiscussionJourney
     async Task<JsonNode> Snapshot(JsonNode discussion)
     {
         var parts = repository.Split('/');
-        return (await Api("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){discussion(number:$n){id url answer{id} reactionGroups{content users(first:30){nodes{login}}} comments(first:100){nodes{id url body author{login} reactionGroups{content users(first:30){nodes{login}}} replies(first:100){nodes{id url body author{login} replyTo{id} reactionGroups{content users(first:30){nodes{login}}}}}}}}}", new { o = parts[0], r = parts[1], n = discussion["number"]!.GetValue<int>() }))["repository"]!["discussion"]!;
+        return (await Api("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){discussion(number:$n){id url answer{id} reactionGroups{content users(first:30){nodes{login}}} comments(first:100){nodes{id url body author{login} reactionGroups{content users(first:30){nodes{login}}} replies(first:100){nodes{id url body author{login} replyTo{id} reactionGroups{content users(first:30){nodes{login}}}}}}}}}}", new { o = parts[0], r = parts[1], n = discussion["number"]!.GetValue<int>() }))["repository"]!["discussion"]!;
     }
 
     async Task<JsonNode> Reply(JsonNode discussion, string marker, string? root = null)
@@ -191,6 +207,8 @@ public sealed class DiscussionJourney
         {
             var data = await Snapshot(discussion);
             var candidates = root is null ? data["comments"]!["nodes"]!.AsArray() : data["comments"]!["nodes"]!.AsArray().SingleOrDefault(x => x!["id"]!.ToString() == root)?["replies"]?["nodes"]?.AsArray();
+            if (marker.StartsWith("SKILL_ACTION_", StringComparison.Ordinal) && candidates?.Any(x => IsActor(x!["author"]?["login"]?.ToString()) && x["body"]!.ToString().Contains("SKILL_UNAVAILABLE", StringComparison.Ordinal)) == true)
+                Assert.Fail("Selected skill action was absent: native agent reported SKILL_UNAVAILABLE.");
             match = candidates?.FirstOrDefault(x => IsActor(x!["author"]?["login"]?.ToString()) && x["body"]!.ToString().Contains(marker, StringComparison.Ordinal));
             return match is not null;
         }, "App reply " + marker);
@@ -221,8 +239,8 @@ public sealed class DiscussionJourney
         string? session = null;
         await Until(async () =>
         {
-            var line = (await Logs()).Split('\n').FirstOrDefault(x => x.Contains("session-created " + url + " session="));
-            if (line is not null) session = line[(line.LastIndexOf("session=", StringComparison.Ordinal) + 8)..].Trim();
+            var line = (await Logs()).Split('\n').LastOrDefault(x => x.Contains("forwarded " + url + " session="));
+            if (line is not null) session = line[(line.LastIndexOf("session=", StringComparison.Ordinal) + 8)..].Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
             return session is not null;
         }, "native session ID");
         return session!;

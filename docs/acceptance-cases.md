@@ -19,6 +19,10 @@ For C06/C07 install the skill at `tests/fixtures/acceptance-marker` from this re
 
 The xUnit suite runs in its own container, with the human `gh` sign-in mounted only there. It operates through real GraphQL mutations and observations. Its mailbox asks the host wrapper for replacement, logs or the documented rejected-session fixture; neither the runner nor agent receives a Docker socket. The agent uses its App installation and container-owned Codex account. No provider mocks are used.
 
+An already authorized test participant token can be imported explicitly with `./repoagent import-participant-token /absolute/path/token`. Only that file is mounted for the import; the resulting participant configuration is isolated from the agent and other instances.
+
+For focused skill validation, use `REPOAGENT_LIVE=1 REPOAGENT_LIVE_CASE=skill ./repoagent live-test`. It exercises the same packaged path with one disposable skill request. Without the configured skill, an actual `SKILL_UNAVAILABLE` reply is a behavioral failure; install the pinned selection and rerun for the green result.
+
 Canonical App mentions are used in this suite. Empty `--mention-user ''` avoids triggering unrelated historical `@repoagent` conversations. Existing canonical App mentions can still enroll: choose the target repository deliberately. Use the same instance across a diagnostic rerun so previously accepted fixture inputs stay checkpointed.
 
 ## Cases

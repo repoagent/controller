@@ -12,7 +12,7 @@ The PoC uses one native Codex session per Discussion, a small JSON mapping/check
 
 Each bridge process monitors one configured repository. Specifications and tickets live in this repository's GitHub Issues.
 
-## Run the prototype
+## Run RepoAgent
 
 For the packaged Docker setup, use `./repoagent build`, `./repoagent setup`, then `./repoagent start`. See [container setup, skills and storage](docs/container-setup.md) and the [executable acceptance catalog](docs/acceptance-cases.md).
 

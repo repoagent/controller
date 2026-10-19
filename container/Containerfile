@@ -17,14 +17,14 @@ COPY container/install-tools.sh /tmp/install-tools.sh
 RUN bash /tmp/install-tools.sh "$TARGETARCH" && rm /tmp/install-tools.sh
 RUN existing=$(getent passwd 1000 | cut -d: -f1); if [ -n "$existing" ]; then userdel "$existing"; fi; \
     useradd --uid 1000 --create-home --shell /bin/bash agent \
-    && mkdir -p /data/config/codex /data/config/skills /data/history /data/state /data/participant /data/control /workspace /home/agent/.agents \
+    && mkdir -p /data/credentials/codex /data/config/skills /data/history /data/state /data/participant /data/control /workspace /home/agent/.agents \
     && ln -s /data/config/skills /home/agent/.agents/skills \
-    && ln -s /data/history /data/config/codex/sessions \
+    && ln -s /data/history /data/credentials/codex/sessions \
     && chown -R agent:agent /data /workspace /home/agent
 COPY --from=build /published/ /opt/bridge/
 COPY container/runtime.py /opt/repoagent/runtime.py
 COPY container/control.py /opt/repoagent/control.py
-ENV HOME=/home/agent CODEX_HOME=/data/config/codex BROWSER=echo
+ENV HOME=/home/agent CODEX_HOME=/data/credentials/codex BROWSER=echo
 WORKDIR /workspace
 USER agent
 ENTRYPOINT ["python3", "/opt/repoagent/runtime.py"]

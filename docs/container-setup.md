@@ -76,7 +76,8 @@ The supplied credential must be authorized to read that exact source repository/
 
 | Volume | Contents |
 | --- | --- |
-| `repoagent-default-config` | Public configuration, selected skills, Codex auth/configuration |
+| `repoagent-default-config` | Operator configuration and selected skills; mounted read-only during agent work |
+| `repoagent-default-credentials` | Codex sign-in/configuration |
 | `repoagent-default-workspace` | Agent working files |
 | `repoagent-default-history` | Native Codex session histories |
 | `repoagent-default-state` | JSON checkpoint, lease and renewable GitHub App credential/wrapper |

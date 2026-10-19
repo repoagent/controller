@@ -7,10 +7,14 @@ instance=${REPOAGENT_INSTANCE:-default}
 image=${REPOAGENT_IMAGE:-repoagent:local}
 name=repoagent-$instance
 volumes=()
-for storage in config workspace history state; do
+runtime_volumes=()
+for storage in config credentials workspace history state; do
   destination=/data/$storage
   [[ "$storage" != workspace ]] || destination=/workspace
   volumes+=(--mount "type=volume,src=$name-$storage,dst=$destination")
+  access=''
+  [[ "$storage" != config ]] || access=',readonly'
+  runtime_volumes+=(--mount "type=volume,src=$name-$storage,dst=$destination$access")
 done
 interactive=(-i)
 [[ ! -t 0 || ! -t 1 ]] || interactive+=(-t)
@@ -34,7 +38,7 @@ start() {
   }
   docker rm "$name" >/dev/null 2>&1 || true
   "${base[@]}" "${key_args[@]}" "$image" check
-  docker run -d --init --name "$name" "${volumes[@]}" "${key_args[@]}" "$image" start
+  docker run -d --init --name "$name" "${runtime_volumes[@]}" "${key_args[@]}" "$image" start
 }
 case "${1:-help}" in
   build)
@@ -48,7 +52,7 @@ case "${1:-help}" in
     stopped
     [[ ${2:-} = /* && -f "$2" ]] || { echo 'Supply an explicit absolute auth.json file path.' >&2; exit 1; }
     "${base[@]}" --mount "type=bind,src=$2,dst=/run/secrets/codex-auth.json,readonly" --entrypoint python3 "$image" -c \
-      'import json,pathlib; p=pathlib.Path("/run/secrets/codex-auth.json"); json.loads(p.read_text()); d=pathlib.Path("/data/config/codex/auth.json"); d.write_bytes(p.read_bytes()); d.chmod(0o600)' ;;
+      'import json,pathlib; p=pathlib.Path("/run/secrets/codex-auth.json"); json.loads(p.read_text()); d=pathlib.Path("/data/credentials/codex/auth.json"); d.write_bytes(p.read_bytes()); d.chmod(0o600)' ;;
   skills)
     if [[ ${2:-} == install ]]; then
       stopped
@@ -74,6 +78,11 @@ case "${1:-help}" in
     docker run --rm --init "${interactive[@]}" --mount "type=volume,src=$name-participant,dst=/data/participant" "$image" participant-login ;;
   participant-identity)
     docker run --rm --mount "type=volume,src=$name-participant,dst=/data/participant" "$image" participant-identity ;;
+  import-participant-token)
+    [[ ${2:-} = /* && -f "$2" ]] || { echo 'Supply an explicit absolute participant token file.' >&2; exit 1; }
+    docker run --rm --mount "type=volume,src=$name-participant,dst=/data/participant" \
+      --mount "type=bind,src=$2,dst=/run/secrets/participant-token,readonly" -e GH_CONFIG_DIR=/data/participant \
+      --entrypoint sh "$image" -c 'gh auth login --hostname github.com --git-protocol https --with-token < /run/secrets/participant-token' ;;
   live-test) shift; exec bash "$root/scripts/live-test.sh" "$@" ;;
   reset)
     [[ ${2:-} == --delete-stored-data ]] || {
@@ -81,7 +90,7 @@ case "${1:-help}" in
       echo 'Use ./repoagent reset --delete-stored-data only after backing up anything needed.' >&2; exit 1;
     }
     docker rm -f "$name" >/dev/null 2>&1 || true
-    docker volume rm "$name-config" "$name-workspace" "$name-history" "$name-state" "$name-participant" ;;
+    docker volume rm "$name-config" "$name-credentials" "$name-workspace" "$name-history" "$name-state" "$name-participant" ;;
   *)
     cat <<'USAGE'
 Usage: ./repoagent COMMAND
@@ -93,11 +102,12 @@ Usage: ./repoagent COMMAND
   import-codex-auth /path/auth.json Explicitly copy an existing Codex auth cache
   skills install /path/skills.json [/path/private-source-token]
   skills | versions | check       Inspect selection/tools or check real authentication
-  start | stop | restart          Operate the agent; replacement retains all four volumes
+  start | stop | restart          Operate the agent; replacement retains its volumes
   logs [--follow] | state         Inspect operational output or conversation checkpoint
   enroll DISCUSSION_URL ...       Persist explicit enrollments while stopped
   participant-login              Separate human gh browser sign-in for live tests
   participant-identity           Show the separate participant login
+  import-participant-token /path  Explicit token-file alternative for the test participant
   live-test                       Opt-in real-provider xUnit acceptance journey
   reset --delete-stored-data      Explicitly delete this instance's stored data
 Set REPOAGENT_INSTANCE to isolate another repository/test instance (default: default).

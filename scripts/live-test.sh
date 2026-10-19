@@ -25,12 +25,16 @@ docker build --target live-tests -f "$root/container/Containerfile" -t "$image-l
 docker rm "$runner" >/dev/null 2>&1 || true
 helper=(docker run --rm -i --mount "type=volume,src=$control,dst=/data/control" --entrypoint python3 "$image" /opt/repoagent/control.py)
 "$root/repoagent" start
+docker inspect "$name" | "${helper[@]}" inspection
+"$root/repoagent" versions | "${helper[@]}" artifact versions.txt
+"$root/repoagent" skills | "${helper[@]}" artifact skills.json
 docker run -d --name "$runner" \
   --mount "type=volume,src=$name-participant,dst=/data/participant,readonly" \
   --mount "type=volume,src=$name-workspace,dst=/workspace" \
   --mount "type=volume,src=$control,dst=/data/control" \
   --mount "type=volume,src=$evidence,dst=/evidence" \
-  -e REPOAGENT_LIVE=1 -e "REPOAGENT_REPOSITORY=$repository" -e "REPOAGENT_ACTOR=$actor" "$image-live-tests"
+  -e REPOAGENT_LIVE=1 -e "REPOAGENT_REPOSITORY=$repository" -e "REPOAGENT_ACTOR=$actor" \
+  -e "REPOAGENT_LIVE_CASE=${REPOAGENT_LIVE_CASE:-journey}" "$image-live-tests"
 on_exit() {
   status=$?
   trap - EXIT
