@@ -15,7 +15,7 @@ The bridge authenticates the App, discovers the installation for the selected re
 
 ## Renewal and native commands
 
-GitHub [installation tokens expire after one hour](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation). The bridge checks the credential before every GitHub operation, including unchanged polling, and renews it when fewer than five minutes remain. The returned expiry is authoritative. A signed short-lived JWT authenticates App and token-issuance requests; the signing key is not passed as a native process environment variable.
+GitHub [installation tokens expire after one hour](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation). The bridge checks the credential every minute independently of polling, as well as before every GitHub operation, and renews it when five minutes or less remain. This continues during long polls and while native work is active. The returned expiry is authoritative. A signed short-lived JWT authenticates App and token-issuance requests; the signing key is not passed as a native process environment variable.
 
 The current token and expiry are written atomically to an owner-only file in `<state-file>.github-app`. Its directories are owner-only too. This directory also contains isolated `gh` configuration and a small native command wrapper. It must remain readable at the same paths while native sessions run. It is a credential directory, separate from the JSON conversation checkpoint; persist/mount its containing directory rather than binding an individual token file that gets replaced.
 

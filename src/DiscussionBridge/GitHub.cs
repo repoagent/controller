@@ -35,7 +35,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     {
         var viewer = (await Query("query { viewer { login } }", new { }, ct))["viewer"]!.Text("login");
         if (!string.Equals(viewer, AgentLogin, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException($"Authenticated GitHub viewer {viewer} differs from --agent-login {AgentLogin}");
+            throw new InvalidOperationException($"Authenticated GitHub viewer {viewer} differs from the configured App identity {AgentLogin}");
         Log.Write("identity", viewer);
     }
 

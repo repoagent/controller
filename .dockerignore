@@ -4,5 +4,7 @@
 artifacts
 **/*.pem
 **/*.key
+**/*.pem:Zone.Identifier
+**/*.key:Zone.Identifier
 .bridge-state*
 **/installation-token.json*

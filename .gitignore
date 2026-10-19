@@ -3,3 +3,5 @@
 .bridge-state*
 *.pem
 *.key
+*.pem:Zone.Identifier
+*.key:Zone.Identifier

@@ -102,6 +102,20 @@ public sealed class GitHubAppCredentials : IDisposable
         finally { refreshLock.Release(); }
     }
 
+    public async Task RefreshUntilCancelled(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromMinutes(1), clock, ct);
+                await GetToken(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch (Exception error) { Log.Write("app-refresh-error", error.Message); }
+        }
+    }
+
     async Task<JsonNode> Send(HttpMethod method, string path, string bearer, object? body, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(method, new Uri(new Uri("https://api.github.com/"), path));

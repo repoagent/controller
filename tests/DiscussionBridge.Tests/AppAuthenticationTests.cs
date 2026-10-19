@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DiscussionBridge;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
 public sealed class AppAuthenticationTests
@@ -38,14 +39,65 @@ public sealed class AppAuthenticationTests
         Assert.Contains("installation-token-1", first.Output);
         Assert.Contains("a file with spaces.json", first.Output);
 
-        fixture.Clock.Advance(TimeSpan.FromMinutes(61));
-        await credentials.GetToken(TestContext.Current.CancellationToken);
-        var second = await Run(wrapper, ["api", "graphql"]);
-        Assert.Equal(0, second.Exit);
-        Assert.Contains("installation-token-2", second.Output);
-        Assert.DoesNotContain("installation-token-1", second.Output);
-        Assert.Contains("github.com", second.Output);
-        Assert.DoesNotContain(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "/.config/gh\n", second.Output);
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var refresh = credentials.RefreshUntilCancelled(lifetime.Token);
+        try
+        {
+            await fixture.Clock.WaitForDelay();
+            fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+            await fixture.Clock.WaitForDelay();
+            fixture.Clock.Advance(TimeSpan.FromMinutes(5));
+            await fixture.Clock.WaitForDelay();
+            var second = await Run(wrapper, ["api", "graphql"]);
+            Assert.Equal(0, second.Exit);
+            Assert.Contains("installation-token-2", second.Output);
+            Assert.DoesNotContain("installation-token-1", second.Output);
+            Assert.Contains("github.com", second.Output);
+            Assert.DoesNotContain("otherhost/owner/repo", second.Output);
+            Assert.Contains("GH_REPO=\n", second.Output);
+            Assert.DoesNotContain(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "/.config/gh\n", second.Output);
+        }
+        finally
+        {
+            await lifetime.CancelAsync();
+            await refresh.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task Scheduled_refresh_failure_blocks_native_commands_until_the_next_scheduled_recovery()
+    {
+        using var fixture = new AppFixture();
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, credentials.TokenFile);
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var refresh = credentials.RefreshUntilCancelled(lifetime.Token);
+        try
+        {
+            await fixture.Clock.WaitForDelay();
+            fixture.Provider.RejectRefresh = true;
+            fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+            await fixture.Clock.WaitForDelay();
+
+            var blocked = await Run(wrapper, ["api", "user"], "ambient-human-token");
+            Assert.NotEqual(0, blocked.Exit);
+            Assert.DoesNotContain("gh-invoked", blocked.Output);
+            Assert.False(File.Exists(credentials.TokenFile));
+
+            fixture.Provider.RejectRefresh = false;
+            fixture.Clock.Advance(TimeSpan.FromMinutes(1));
+            await fixture.Clock.WaitForDelay();
+            var recovered = await Run(wrapper, ["api", "user"]);
+            Assert.Equal(0, recovered.Exit);
+            Assert.Contains("installation-token-3", recovered.Output);
+            Assert.DoesNotContain("installation-token-1", recovered.Output);
+        }
+        finally
+        {
+            await lifetime.CancelAsync();
+            await refresh.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+        }
     }
 
     [Fact]
@@ -130,6 +182,7 @@ public sealed class AppAuthenticationTests
         var start = new ProcessStartInfo(command) { RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         if (ambientToken is not null) start.Environment["GH_TOKEN"] = ambientToken;
+        start.Environment["GH_REPO"] = "otherhost/owner/repo";
         using var process = Process.Start(start)!;
         var output = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
         var error = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
@@ -155,7 +208,7 @@ public sealed class AppAuthenticationTests
             Provider = new Provider(key, Clock);
             http = new HttpClient(Provider);
             Gh = Path.Combine(Directory, "gh-capture");
-            File.WriteAllText(Gh, "#!/bin/sh\nprintf '%s\\n' gh-invoked \"$GH_TOKEN\" \"$GH_CONFIG_DIR\" \"$GH_HOST\" \"$@\"\n");
+            File.WriteAllText(Gh, "#!/bin/sh\nprintf '%s\\n' gh-invoked \"$GH_TOKEN\" \"$GH_CONFIG_DIR\" \"$GH_HOST\" \"GH_REPO=$GH_REPO\" \"$@\"\n");
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(Gh, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
 
@@ -165,9 +218,23 @@ public sealed class AppAuthenticationTests
 
     sealed class Clock : TimeProvider
     {
-        DateTimeOffset now = DateTimeOffset.UtcNow;
-        public override DateTimeOffset GetUtcNow() => now;
-        public void Advance(TimeSpan duration) => now += duration;
+        readonly FakeTimeProvider time = new(DateTimeOffset.UtcNow);
+        readonly SemaphoreSlim delays = new(0);
+        public override DateTimeOffset GetUtcNow() => time.GetUtcNow();
+        public override long GetTimestamp() => time.GetTimestamp();
+        public override long TimestampFrequency => time.TimestampFrequency;
+        public void Advance(TimeSpan duration) => time.Advance(duration);
+
+        // Observe registration, not wall time: the next delay means due work has finished.
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = time.CreateTimer(callback, state, dueTime, period);
+            delays.Release();
+            return timer;
+        }
+
+        public Task WaitForDelay() => delays.WaitAsync(TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
     }
 
     // An external transport stub for deterministic credential/error tests, not GitHub compatibility evidence.

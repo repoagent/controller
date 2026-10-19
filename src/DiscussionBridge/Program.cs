@@ -55,16 +55,26 @@ root.SetAction(async (result, cancellationToken) =>
         store.VerifyIdentity(credentials.AgentLogin);
         var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentials.TokenFile);
         if (result.GetValue(checkAuth)) return 0;
-        await using var codex = new Codex(cwd, wrapper, Path.Combine(credentialDirectory, "gh-config"));
-        await codex.Initialize(cancellationToken);
-        var bridge = new Bridge(github, codex, store, numbers);
-        do
+        using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var refresh = credentials.RefreshUntilCancelled(refreshCancellation.Token);
+        try
         {
-            var succeeded = await bridge.Poll(cancellationToken);
-            if (result.GetValue(once)) return succeeded ? 0 : 1;
-            await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), cancellationToken);
-        } while (!cancellationToken.IsCancellationRequested);
-        return 0;
+            await using var codex = new Codex(cwd, wrapper, Path.Combine(credentialDirectory, "gh-config"));
+            await codex.Initialize(cancellationToken);
+            var bridge = new Bridge(github, codex, store, numbers);
+            do
+            {
+                var succeeded = await bridge.Poll(cancellationToken);
+                if (result.GetValue(once)) return succeeded ? 0 : 1;
+                await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), cancellationToken);
+            } while (!cancellationToken.IsCancellationRequested);
+            return 0;
+        }
+        finally
+        {
+            await refreshCancellation.CancelAsync();
+            await refresh;
+        }
     }
     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return 0; }
     catch (Exception error) { Log.Write("fatal", error.Message); return 1; }
