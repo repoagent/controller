@@ -1,8 +1,8 @@
 # Prototype manual acceptance
 
-Use real GitHub and Codex with an authorized dedicated agent account and disposable Discussions. Automated test projects, fake providers and CI harnesses are intentionally outside issue #2. Record actual results below or in the issue; an unchecked row remains outstanding.
+Use real GitHub and Codex with an authorized GitHub App installation, a distinct human participant and disposable Discussions. Issue #2's original manual evidence used a GitHub user before the App conversion; preserve it as historical evidence. The focused App-authentication tests are documented in the [App guide](github-app-auth.md), and broader container/live automation is tracked separately in #5. Record actual results below or in the issue; an unchecked row remains outstanding.
 
-Build with `dotnet build src/DiscussionBridge`, inspect `--help`, and start the long-running command from the README with stdout captured to an operator-chosen file. Record the SDK/Codex versions, repository, authenticated agent login, state path and workspace. Keep participant credentials separate from the agent's environment.
+Build/run inside a Linux container, inspect `--help`, and start the long-running command from the README with stdout captured to an operator-chosen file. Record the SDK/Codex versions, repository, authenticated App bot/installation, state path and workspace. Keep participant credentials separate from the agent's environment.
 
 | Check | Evidence to record |
 | --- | --- |

@@ -3,17 +3,20 @@ using System.Text.Json.Nodes;
 
 namespace DiscussionBridge;
 
-sealed class GitHub(string repository, string agentLogin)
+sealed class GitHub(string repository, GitHubAppCredentials credentials, string executable)
 {
     public string Repository { get; } = repository;
-    public string AgentLogin { get; } = agentLogin;
+    public string AgentLogin => credentials.AgentLogin;
     const string MessageFields = "id url body createdAt updatedAt author { login } reactionGroups { content viewerHasReacted }";
     const string PageInfo = "pageInfo { hasNextPage endCursor }";
 
     public async Task<JsonNode> Query(string query, object variables, CancellationToken ct)
     {
-        var start = new ProcessStartInfo("gh") { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var arg in new[] { "api", "graphql", "--method", "POST", "--input", "-" }) start.ArgumentList.Add(arg);
+        await credentials.GetToken(ct);
+        var start = AppGitHubCommand.Create(executable, credentials.TokenFile, ["api", "graphql", "--method", "POST", "--input", "-"]);
+        start.RedirectStandardInput = true;
+        start.RedirectStandardOutput = true;
+        start.RedirectStandardError = true;
         using var process = Process.Start(start) ?? throw new IOException("Could not start gh");
         var output = process.StandardOutput.ReadToEndAsync(ct);
         var error = process.StandardError.ReadToEndAsync(ct);

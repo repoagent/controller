@@ -1,0 +1,8 @@
+.git
+**/bin
+**/obj
+artifacts
+**/*.pem
+**/*.key
+.bridge-state*
+**/installation-token.json*

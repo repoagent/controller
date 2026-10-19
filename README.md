@@ -1,6 +1,6 @@
 # GhDiscussionAgentBridge
 
-Use GitHub Discussions as the conversation interface for a native coding-agent session. A small bridge forwards observed activity; the agent replies through normal tools under a dedicated GitHub identity.
+Use GitHub Discussions as the conversation interface for a native coding-agent session. A small bridge forwards observed activity; the agent replies through normal tools under a GitHub App installation identity.
 
 ## Start here
 
@@ -14,27 +14,39 @@ Each bridge process monitors one configured repository. Specifications and ticke
 
 ## Run the prototype
 
-Install the SDK pinned in `global.json` (.NET 11 RC2), `gh`, and `codex`. The only NuGet dependency is [System.CommandLine](https://www.nuget.org/packages/System.CommandLine/2.0.9). Sign into GitHub with the dedicated agent account and into Codex normally. Enable Discussions on the repository and grant that account permission to read Discussions and write comments/reactions. The bridge verifies `viewer.login` against `--agent-login` before starting Codex.
+Run the bridge in a Linux container containing the .NET 11 RC2 runtime, `gh` and `codex`. Native Codex uses its normal sign-in. GitHub access uses an installed GitHub App with **Discussions: read/write** and a read-only mounted PEM signing key. An agent GitHub-user login is unnecessary. Full interactive container bootstrap and configurable skills are tracked in [#5](https://github.com/egil/gh-discussion-agent-bridge/issues/5).
 
-```sh
-dotnet build src/DiscussionBridge
-dotnet run --project src/DiscussionBridge --no-build -- \
-  --repo OWNER/REPO --agent-login AGENT_LOGIN --workspace /path/to/workspace \
-  --state /path/to/bridge-state.json
+Pass these arguments to the bridge **inside the configured container**:
+
+```text
+--repo OWNER/REPO --app-id APP_ID_OR_CLIENT_ID \
+--private-key /run/secrets/github-app.pem --workspace /workspace \
+--state /data/bridge-state.json
 ```
 
-Mention `@AGENT_LOGIN` in a Discussion body/comment/reply, or add `--enroll https://github.com/OWNER/REPO/discussions/123` (repeatable). Explicit enrollment persists in the state file and need not be repeated. Each Discussion gets one native Codex session across all comment threads. The default polling interval is ten seconds after each completed poll; every connection is paginated, so large repositories may take longer. Only observed versions are forwarded; changes reverted between polls can be missed.
+The bridge discovers the App's installation for the configured repository; `--installation-id` optionally checks a specific expected installation. It verifies the token's actual `viewer.login` matches the App bot before starting Codex. Use `--check-auth` to check App credentials and prepare its `gh` wrapper without starting a native session. See [App setup, token renewal and verification](docs/github-app-auth.md).
 
-The response skill is copied beside the executable and injected through Codex's native skill input. Additional skills and workspace guidance load normally. Choose an existing Codex configuration whose normal tool permissions allow the agent's intended work, including `gh` publication. The bridge preserves those permissions and has no approval UI: interactive approval/input requests are logged and rejected for operator attention. Participant clarification questions should be published to GitHub by the response skill. Run this in a workspace and under an identity intended for remote participant requests.
+Mention the bot's actual login, such as `@discussion-agent-bridge[bot]`, in a Discussion body/comment/reply, or add `--enroll https://github.com/OWNER/REPO/discussions/123` (repeatable). Enrollment uses literal polled text and does not require GitHub mention notifications or autocomplete. Explicit enrollment persists in the state file and need not be repeated. Each Discussion gets one native Codex session across all comment threads. The default polling interval is ten seconds after each completed poll; every connection is paginated, so large repositories may take longer. Only observed versions are forwarded; changes reverted between polls can be missed.
+
+The response skill is copied beside the executable and injected through Codex's native skill input. Additional skills and workspace guidance load normally. Native sessions receive the absolute path to an authenticated `gh` wrapper, which reads renewed credentials for every command. The native process inherits neither a static installation token nor the operator's GitHub-user token/configuration. Choose a Codex configuration whose normal tool permissions allow the agent's intended work and network access for `gh` publication. The bridge preserves those permissions and has no approval UI: interactive approval/input requests are logged and rejected for operator attention. Participant clarification questions should be published to GitHub by the response skill.
 
 Logs go to timestamped stdout. Keep the process running for agent work and future activity. Ctrl+C stops the process. `--once` is an observation/acceptance check, **not a complete conversation run**: it exits after one poll and can interrupt unfinished native work. Native acceptance means the input reached Codex, not that the answer finished. On normal restart, reuse the same state file and Codex sign-in/storage; the next change resumes the recorded session and its native history.
 
 ## Checkpoints and manual recovery
 
-One JSON file holds the repository/account binding, session IDs and last accepted content/reaction versions. An adjacent `.lock` file prevents concurrent writers for that state file; keep one bridge per repository/account. The state stores participant content, so place it in an appropriate local directory. Codex retains conversation history itself.
+One JSON file holds the repository/bot binding, session IDs and last accepted content/reaction versions. An adjacent `.lock` file prevents concurrent writers for that state file; keep one bridge per repository/App. A private adjacent `.github-app` directory holds the short-lived credential, isolated `gh` configuration and native command wrapper. Persist this directory with the state volume and keep it out of source control. Signing keys and tokens are never stored in the conversation checkpoint. Use a fresh state file when switching from a user identity to an App; the bridge rejects a mismatched identity instead of silently replaying or migrating old conversations. Codex retains conversation history itself.
 
 Before creating or sending input the bridge persists `pending`. Only native acknowledgement clears that marker and advances the source checkpoint. Errors, timeout, or interruption leave that Discussion stopped for manual recovery; other Discussions continue. Failed or uncertain input receives no new EYES. After acceptance the bridge checkpoints **before** adding or reusing EYES on every source item. Receipt errors are logged without resending input, and receipts are excluded from wake triggers. There is no automatic receipt repair.
 
 For a `manual-recovery` log, stop the bridge and inspect the JSON record plus the native session (`codex resume SESSION_ID`, using the same Codex profile). Inspect GitHub for any published response. Back up the state before editing it. If no input was accepted, clear `pending` to retry with the existing `sessionId`; if creation never succeeded, remove that Discussion record to enroll it again. If input was accepted, reconcile `sources` against the accepted observation before clearing `pending`, or leave it paused until you can establish that checkpoint. A lost creation acknowledgement may require recovering the session ID from Codex history first. Do not delete a record merely to clear an uncertain send. Crash-proof exactly-once input or publication is outside this prototype.
 
 See [manual verification](docs/manual-verification.md) for the acceptance gate.
+
+## Containerized authentication checks
+
+```sh
+docker build -f tests/Containerfile -t discussion-bridge-tests .
+docker run --rm discussion-bridge-tests
+```
+
+These focused xUnit tests exercise real RSA signing, private credential files and child-command dispatch with controlled HTTP responses/time. They verify renewal, expiry and failure isolation; they do not prove real App permissions or native Codex compatibility. The separate live checks in the [App guide](docs/github-app-auth.md) provide that evidence.

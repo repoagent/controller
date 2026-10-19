@@ -1,0 +1,8 @@
+FROM mcr.microsoft.com/dotnet/sdk:11.0.100-rc.2
+WORKDIR /workspace
+COPY global.json ./
+COPY src/ ./src/
+COPY .agents/skills/github-discussion/ ./.agents/skills/github-discussion/
+COPY tests/DiscussionBridge.Tests/ ./tests/DiscussionBridge.Tests/
+RUN dotnet build tests/DiscussionBridge.Tests --nologo
+ENTRYPOINT ["dotnet", "run", "--no-build", "--project", "tests/DiscussionBridge.Tests"]

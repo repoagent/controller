@@ -1,0 +1,205 @@
+using System.Diagnostics;
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using DiscussionBridge;
+using Xunit;
+
+public sealed class AppAuthenticationTests
+{
+    [Fact]
+    public async Task App_authentication_signs_requests_and_limits_the_token_to_the_selected_repository()
+    {
+        using var fixture = new AppFixture();
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+
+        Assert.Equal("discussion-agent-bridge[bot]", credentials.AgentLogin);
+        var request = Assert.Single(fixture.Provider.TokenRequests);
+        Assert.Equal("gh-discussion-agent-bridge", Assert.Single(request["repositories"]!.AsArray())!.GetValue<string>());
+        Assert.Equal("write", request["permissions"]!["discussions"]!.GetValue<string>());
+        Assert.Single(request["permissions"]!.AsObject());
+        Assert.Equal("installation-token-1", await credentials.GetToken(TestContext.Current.CancellationToken));
+        if (!OperatingSystem.IsWindows()) Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(credentials.TokenFile));
+    }
+
+    [Fact]
+    public async Task The_same_native_command_wrapper_uses_a_refreshed_token_after_the_old_one_expires()
+    {
+        using var fixture = new AppFixture();
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin with 'quotes' and spaces"), fixture.Gh, credentials.TokenFile);
+
+        var first = await Run(wrapper, ["api", "graphql", "--input", "a file with spaces.json"]);
+        Assert.Equal(0, first.Exit);
+        Assert.Contains("installation-token-1", first.Output);
+        Assert.Contains("a file with spaces.json", first.Output);
+
+        fixture.Clock.Advance(TimeSpan.FromMinutes(61));
+        await credentials.GetToken(TestContext.Current.CancellationToken);
+        var second = await Run(wrapper, ["api", "graphql"]);
+        Assert.Equal(0, second.Exit);
+        Assert.Contains("installation-token-2", second.Output);
+        Assert.DoesNotContain("installation-token-1", second.Output);
+        Assert.Contains("github.com", second.Output);
+        Assert.DoesNotContain(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "/.config/gh\n", second.Output);
+    }
+
+    [Fact]
+    public async Task Renewal_happens_before_expiry_and_a_failed_refresh_disables_native_publication()
+    {
+        using var fixture = new AppFixture();
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, credentials.TokenFile);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        fixture.Provider.RejectRefresh = true;
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
+        Assert.Contains("HTTP 401", error.Message);
+        Assert.False(File.Exists(credentials.TokenFile));
+        var result = await Run(wrapper, ["api", "user"]);
+        Assert.NotEqual(0, result.Exit);
+        Assert.DoesNotContain("installation-token-1", result.Output);
+        Assert.DoesNotContain("gh-invoked", result.Output);
+    }
+
+    [Fact]
+    public async Task An_expired_cache_cannot_launch_gh_with_ambient_user_credentials()
+    {
+        using var fixture = new AppFixture();
+        var tokenFile = Path.Combine(fixture.Directory, "expired.json");
+        await File.WriteAllTextAsync(tokenFile, JsonSerializer.Serialize(new { token = "expired-app-token", expiresAt = DateTimeOffset.UtcNow.AddMinutes(-1) }), TestContext.Current.CancellationToken);
+        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, tokenFile);
+        var result = await Run(wrapper, ["api", "user"], "ambient-human-token");
+        Assert.NotEqual(0, result.Exit);
+        Assert.DoesNotContain("gh-invoked", result.Output);
+        Assert.DoesNotContain("ambient-human-token", result.Output);
+        Assert.DoesNotContain("expired-app-token", result.Output);
+    }
+
+    [Fact]
+    public async Task An_unexpected_installation_is_rejected_before_minting_a_token()
+    {
+        using var fixture = new AppFixture();
+        using var credentials = fixture.Credentials();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.Initialize(123, TestContext.Current.CancellationToken));
+        Assert.Empty(fixture.Provider.TokenRequests);
+        Assert.False(File.Exists(credentials.TokenFile));
+    }
+
+    [Fact]
+    public async Task An_installation_without_Discussions_write_permission_cannot_start()
+    {
+        using var fixture = new AppFixture();
+        fixture.Provider.DiscussionPermission = "read";
+        using var credentials = fixture.Credentials();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.Initialize(null, TestContext.Current.CancellationToken));
+        Assert.Empty(fixture.Provider.TokenRequests);
+    }
+
+    [Fact]
+    public async Task A_failed_provider_response_does_not_leak_its_body_or_fall_back_to_an_old_cache()
+    {
+        using var fixture = new AppFixture();
+        using var credentials = fixture.Credentials();
+        fixture.Provider.RejectRefresh = true;
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.Initialize(null, TestContext.Current.CancellationToken));
+        Assert.DoesNotContain("DO-NOT-LOG", error.ToString());
+        Assert.False(File.Exists(credentials.TokenFile));
+    }
+
+    [Fact]
+    public void Missing_signing_key_invalidates_a_previous_process_credential()
+    {
+        using var fixture = new AppFixture();
+        var directory = Path.Combine(fixture.Directory, "credentials");
+        Directory.CreateDirectory(directory);
+        var tokenFile = Path.Combine(directory, "installation-token.json");
+        File.WriteAllText(tokenFile, JsonSerializer.Serialize(new { token = "old-process-token", expiresAt = DateTimeOffset.UtcNow.AddHours(1) }));
+        using var http = new HttpClient();
+        Assert.Throws<FileNotFoundException>(() => new GitHubAppCredentials(http, "some-app", Path.Combine(directory, "missing.pem"), "egil/gh-discussion-agent-bridge", directory));
+        Assert.False(File.Exists(tokenFile));
+    }
+
+    static async Task<(int Exit, string Output)> Run(string command, string[] arguments, string? ambientToken = null)
+    {
+        var start = new ProcessStartInfo(command) { RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        if (ambientToken is not null) start.Environment["GH_TOKEN"] = ambientToken;
+        using var process = Process.Start(start)!;
+        var output = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        var error = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+        return (process.ExitCode, await output + await error);
+    }
+
+    sealed class AppFixture : IDisposable
+    {
+        readonly RSA key = RSA.Create(2048);
+        readonly HttpClient http;
+        readonly string privateKey;
+        public string Directory { get; } = Path.Combine(Path.GetTempPath(), "bridge-app-" + Guid.NewGuid().ToString("N"));
+        public Clock Clock { get; } = new();
+        public Provider Provider { get; }
+        public string Gh { get; }
+
+        public AppFixture()
+        {
+            System.IO.Directory.CreateDirectory(Directory);
+            privateKey = Path.Combine(Directory, "test-key.pem");
+            File.WriteAllText(privateKey, key.ExportRSAPrivateKeyPem());
+            Provider = new Provider(key, Clock);
+            http = new HttpClient(Provider);
+            Gh = Path.Combine(Directory, "gh-capture");
+            File.WriteAllText(Gh, "#!/bin/sh\nprintf '%s\\n' gh-invoked \"$GH_TOKEN\" \"$GH_CONFIG_DIR\" \"$GH_HOST\" \"$@\"\n");
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(Gh, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        public GitHubAppCredentials Credentials() => new(http, "Iv-test-client", privateKey, "egil/gh-discussion-agent-bridge", Path.Combine(Directory, "credentials"), Clock);
+        public void Dispose() { http.Dispose(); key.Dispose(); System.IO.Directory.Delete(Directory, true); }
+    }
+
+    sealed class Clock : TimeProvider
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => now;
+        public void Advance(TimeSpan duration) => now += duration;
+    }
+
+    // An external transport stub for deterministic credential/error tests, not GitHub compatibility evidence.
+    sealed class Provider(RSA key, Clock clock) : HttpMessageHandler
+    {
+        public List<JsonNode> TokenRequests { get; } = [];
+        public bool RejectRefresh { get; set; }
+        public string DiscussionPermission { get; set; } = "write";
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Assert.Equal("api.github.com", request.RequestUri!.Host);
+            var parts = request.Headers.Authorization!.Parameter!.Split('.');
+            static byte[] Decode(string value) => Convert.FromBase64String(value.Replace('-', '+').Replace('_', '/') + new string('=', (4 - value.Length % 4) % 4));
+            Assert.True(key.VerifyData(Encoding.ASCII.GetBytes(parts[0] + "." + parts[1]), Decode(parts[2]), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
+            var claims = JsonNode.Parse(Decode(parts[1]))!;
+            Assert.Equal("Iv-test-client", claims["iss"]!.GetValue<string>());
+            Assert.True(claims["iat"]!.GetValue<long>() < clock.GetUtcNow().ToUnixTimeSeconds());
+            Assert.InRange(claims["exp"]!.GetValue<long>(), clock.GetUtcNow().ToUnixTimeSeconds() + 1, clock.GetUtcNow().ToUnixTimeSeconds() + 600);
+            object result;
+            switch (request.RequestUri.AbsolutePath)
+            {
+                case "/app": result = new { id = 5387625, slug = "discussion-agent-bridge" }; break;
+                case "/repos/egil/gh-discussion-agent-bridge/installation":
+                    result = new { id = 42, app_id = 5387625, permissions = new { discussions = DiscussionPermission } }; break;
+                case "/app/installations/42/access_tokens":
+                    TokenRequests.Add(JsonNode.Parse(await request.Content!.ReadAsStringAsync(ct))!);
+                    if (RejectRefresh) return new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("DO-NOT-LOG bearer-body") };
+                    result = new { token = "installation-token-" + TokenRequests.Count, expires_at = clock.GetUtcNow().AddHours(1) }; break;
+                default: throw new InvalidOperationException("Unexpected authentication request");
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(result), Encoding.UTF8, "application/json") };
+        }
+    }
+}
