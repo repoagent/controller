@@ -1,0 +1,7 @@
+[
+  {
+    "repository": "openai/skills",
+    "revision": "REPLACE_WITH_A_FULL_40_CHARACTER_COMMIT_SHA",
+    "path": "skills/.curated/REPLACE_WITH_SKILL_DIRECTORY"
+  }
+]

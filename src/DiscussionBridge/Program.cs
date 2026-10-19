@@ -100,6 +100,8 @@ namespace DiscussionBridge
         public static string Text(this JsonNode node, string name) => node[name]?.GetValue<string>() ?? "";
         public static JsonNode Copy(this JsonNode node) => node.DeepClone();
         public static JsonArray Array(IEnumerable<JsonNode> nodes) => new(nodes.Select(n => n.Copy()).ToArray());
-        public static string Encode(object value) => System.Text.Json.JsonSerializer.Serialize(value);
+        public static JsonObject Object(params (string Name, JsonNode? Value)[] values) =>
+            new(values.Select(value => new KeyValuePair<string, JsonNode?>(value.Name, value.Value)));
+        public static string Encode(JsonNode value) => value.ToJsonString();
     }
 }

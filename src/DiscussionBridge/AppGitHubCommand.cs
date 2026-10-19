@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Reflection;
 using System.Text.Json.Nodes;
 
 namespace DiscussionBridge;
@@ -37,8 +36,11 @@ public static class AppGitHubCommand
         GitHubAppCredentials.SecureDirectory(directory);
         var path = Path.Combine(directory, "gh");
         static string Quote(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
-        var command = string.Join(' ', new[] { FindExecutable("dotnet"), Assembly.GetExecutingAssembly().Location,
-            "github-command", "--gh-path", executable, "--token-file", tokenFile }.Select(Quote));
+        var apphost = Path.Combine(AppContext.BaseDirectory, "bridge");
+        var launcher = File.Exists(apphost) ? new[] { apphost } :
+            new[] { FindExecutable("dotnet"), Path.Combine(AppContext.BaseDirectory, "bridge.dll") };
+        var command = string.Join(' ', launcher.Concat(new[] {
+            "github-command", "--gh-path", executable, "--token-file", tokenFile }).Select(Quote));
         File.WriteAllText(path, "#!/bin/sh\nexec " + command + " -- \"$@\"\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;

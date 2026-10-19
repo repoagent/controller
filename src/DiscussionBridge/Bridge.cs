@@ -61,7 +61,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
                         };
                         if (old is not null && reaction is null) change["previous"] = old["content"]!.Copy();
                         if (reaction is not null) change["reaction"] = reaction.Copy();
-                        changes.Add(change);
+                        changes.Add((JsonNode)change);
                         receipts.Add(sourceId);
                     }
                     if (!Own(source["author"]) && !JsonNode.DeepEquals(old?["content"], version["content"]))
@@ -77,7 +77,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
                 }
                 if (bootstrap && changes.Count == 0)
                 {
-                    changes.Add(new JsonObject { ["kind"] = "discussion.enrolled", ["subject"] = Public(discussion), ["replyTarget"] = new JsonObject { ["discussionId"] = id, ["replyToId"] = null } });
+                    changes.Add((JsonNode)new JsonObject { ["kind"] = "discussion.enrolled", ["subject"] = Public(discussion), ["replyTarget"] = new JsonObject { ["discussionId"] = id, ["replyToId"] = null } });
                     receipts.Add(id);
                 }
                 if (changes.Count == 0)

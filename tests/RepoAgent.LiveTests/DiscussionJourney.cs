@@ -1,0 +1,257 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Nodes;
+using Xunit;
+
+namespace RepoAgent.LiveTests;
+
+/// <summary>Opt-in compatibility evidence through the packaged operator path and real providers.</summary>
+public sealed class DiscussionJourney
+{
+    readonly string run = Guid.NewGuid().ToString("N")[..12];
+    readonly List<JsonNode> fixtures = [];
+    readonly string repository = Environment.GetEnvironmentVariable("REPOAGENT_REPOSITORY") ?? "";
+    readonly string actor = Environment.GetEnvironmentVariable("REPOAGENT_ACTOR") ?? "";
+    readonly string evidence = "/evidence";
+    readonly List<object> outcomes = [];
+
+    [Fact]
+    public async Task Packaged_bridge_preserves_conversations_skills_and_receipts_across_replacement()
+    {
+        Assert.True(Environment.GetEnvironmentVariable("REPOAGENT_LIVE") == "1", "NOT EXERCISED: set REPOAGENT_LIVE=1 after configuring separate agent and participant credentials.");
+        Assert.NotEmpty(repository);
+        Assert.NotEmpty(actor);
+        Directory.CreateDirectory(evidence);
+        try
+        {
+            var participant = (await Api("query { viewer { login } }"))["viewer"]!["login"]!.GetValue<string>();
+            Assert.NotEqual(actor, participant);
+            var parts = repository.Split('/');
+            var repo = (await Api("query($o:String!,$r:String!){repository(owner:$o,name:$r){id discussionCategories(first:20){nodes{id name isAnswerable}}}}", new { o = parts[0], r = parts[1] }))["repository"]!;
+            var categories = repo["discussionCategories"]!["nodes"]!.AsArray();
+            var category = categories.FirstOrDefault(c => c!["isAnswerable"]!.GetValue<bool>()) ?? throw new InvalidOperationException("NOT EXERCISED: repository needs an answerable Discussion category.");
+            var aMarker = "LIVE_A_" + run;
+            var bMarker = "LIVE_B_" + run;
+            var a = await Create(repo, category, "mention", $"@{actor} Authorized disposable live acceptance test. Reply once with {aMarker}. Remember the word LYCHEE for continuation; use the authenticated GitHub response skill. Only perform this test's requests.");
+            var initial = await Reply(a, aMarker);
+            await Receipt(a, a["id"]!.GetValue<string>());
+            var originalSession = await Session(a);
+            Pass("C01", new { discussion = a["url"]!.ToString(), session = originalSession, reply = initial["url"]!.ToString() });
+
+            var b = await Create(repo, category, "explicit URL", $"Authorized disposable explicit-enrollment test. Reply once with {bMarker}; remember MANGOSTEEN.");
+            await Control("replace", b["url"]!.GetValue<string>());
+            await Reply(b, bMarker);
+            await Receipt(b, b["id"]!.GetValue<string>());
+            Assert.NotEqual(originalSession, await Session(b));
+            Pass("C02", new { discussion = b["url"]!.ToString(), session = await Session(b) });
+
+            var root1 = await Comment(a, "Reply once with ROOT_ONE_" + run);
+            var root2 = await Comment(a, "Reply once with ROOT_TWO_" + run);
+            await Reply(a, "ROOT_ONE_" + run, root1["id"]!.ToString());
+            await Reply(a, "ROOT_TWO_" + run, root2["id"]!.ToString());
+            var nested = await Comment(a, "Reply once with NESTED_" + run, root1["id"]!.ToString());
+            await Reply(a, "NESTED_" + run, root1["id"]!.ToString());
+            await Receipt(a, nested["id"]!.ToString());
+            Pass("C03", new { firstRoot = root1["url"]!.ToString(), secondRoot = root2["url"]!.ToString(), nested = nested["url"]!.ToString() });
+
+            await Receipt(a, root1["id"]!.ToString());
+            await Api("mutation($id:ID!,$b:String!){updateDiscussionComment(input:{commentId:$id,body:$b}){comment{id}}}", new { id = root1["id"]!.ToString(), b = "Edited request: reply once with EDITED_" + run });
+            await Reply(a, "EDITED_" + run, root1["id"]!.ToString());
+            await Receipt(a, root1["id"]!.ToString());
+            Pass("C04", new { editedSource = root1["url"]!.ToString() });
+
+            var baseline = CountAcceptedSources(await Logs(), initial["id"]!.ToString());
+            await Api("mutation($id:ID!){addReaction(input:{subjectId:$id,content:HOORAY}){reaction{id}}}", new { id = initial["id"]!.ToString() });
+            await Until(async () => CountAcceptedSources(await Logs(), initial["id"]!.ToString()) > baseline, "human reaction to App output accepted");
+            await Receipt(a, initial["id"]!.ToString());
+            baseline = CountAcceptedSources(await Logs(), initial["id"]!.ToString());
+            await Api("mutation($id:ID!){removeReaction(input:{subjectId:$id,content:HOORAY}){clientMutationId}}", new { id = initial["id"]!.ToString() });
+            await Until(async () => CountAcceptedSources(await Logs(), initial["id"]!.ToString()) > baseline, "human reaction removal accepted");
+            Pass("C05", new { reactionSubject = initial["url"]!.ToString() });
+
+            var expected = "SKILL_ACTION_" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("repoagent-skill-v1:" + run)))[..16];
+            var skillRequest = await Comment(a, $"Use $acceptance-marker with correlation ID {run}, then publish its returned marker once in this thread. If that skill is unavailable, reply SKILL_UNAVAILABLE instead; do not invent an implementation.");
+            await Reply(a, expected, skillRequest["id"]!.ToString());
+            Pass("C06", new { skill = "acceptance-marker", correlation = run, expected });
+
+            var hold = await Comment(a, $"Use $acceptance-marker's marker.py with arguments {run} --hold. It creates a ready file and waits up to 90 seconds for the test runner's release file. Run it now and publish its result once after release. If the skill is unavailable, report SKILL_UNAVAILABLE.");
+            await Until(() => Task.FromResult(File.Exists("/workspace/hold-ready-" + run)), "native skill action is active");
+            var during = await Comment(a, "While the previous tool is waiting, accept this additional input. After release reply once with ACTIVE_SECOND_" + run);
+            await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted during native work");
+            Assert.False(File.Exists("/workspace/hold-release-" + run));
+            File.WriteAllText("/workspace/hold-release-" + run, "release");
+            await Reply(a, "ACTIVE_SECOND_" + run, during["id"]!.ToString());
+            await Reply(a, expected, hold["id"]!.ToString());
+            Pass("C07", new { activeSource = hold["url"]!.ToString(), additionalSource = during["url"]!.ToString() });
+
+            await Until(async () => NativeTurnsFinished(await Logs()), "native turns completed before quiet observation");
+            var quietBaseline = Forwarded(await Logs());
+            await Stable(async () => Forwarded(await Logs()) == quietBaseline, TimeSpan.FromSeconds(35), "unchanged polls and App-only output stay quiet");
+            Pass("C08", new { acceptedInputs = quietBaseline, stabilitySeconds = 35 });
+
+            await Control("replace");
+            var continued = await Comment(a, "After container replacement, reply once with RESTART_" + run + " and the fruit you remember from my first request.");
+            var afterRestart = await Reply(a, "RESTART_" + run, continued["id"]!.ToString());
+            Assert.Contains("LYCHEE", afterRestart["body"]!.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(originalSession, await Session(a));
+            Pass("C09", new { session = originalSession, reply = afterRestart["url"]!.ToString() });
+
+            // The operator path stops the bridge, backs up state and substitutes an invalid native ID.
+            await Control("invalidate-session", a["id"]!.ToString());
+            var rejected = await Comment(a, "Rejected-input fixture: reply only if this input is accepted. Marker REJECTED_" + run);
+            await Until(async () => (await Logs()).Contains("manual-recovery") && (await Logs()).Contains("invalid-native-session"), "native rejection recorded for the deliberately invalid session");
+            var rejectedSnapshot = await Snapshot(a);
+            Assert.Equal(0, Eyes(Find(rejectedSnapshot, rejected["id"]!.ToString())));
+            var rejectedCount = Forwarded(await Logs());
+            await Stable(async () => Forwarded(await Logs()) == rejectedCount, TimeSpan.FromSeconds(25), "rejected input remains stopped without replay");
+            await Control("restore-session", a["id"]!.ToString());
+            await Reply(a, "REJECTED_" + run, rejected["id"]!.ToString());
+            Pass("C10", new { rejectedSource = rejected["url"]!.ToString(), recoveredSession = originalSession });
+
+            // Answer selection is observable state; continuation keeps the same session.
+            await Api("mutation($id:ID!){markDiscussionCommentAsAnswer(input:{id:$id}){discussion{id}}}", new { id = initial["id"]!.ToString() });
+            var answerContinuation = await Comment(a, "This Discussion has an accepted answer. Continue normally and reply once with ANSWER_CONT_" + run);
+            await Reply(a, "ANSWER_CONT_" + run, answerContinuation["id"]!.ToString());
+            Assert.Equal(originalSession, await Session(a));
+            Pass("C11", new { session = originalSession });
+
+            await Until(async () => NativeTurnsFinished(await Logs()), "turn completion before the receipt fault fixture");
+            await Control("read-only-credential");
+            var receiptFailure = await Comment(a, "Receipt-failure fixture: this input should be accepted once. Attempt one reply with RECEIPT_FAULT_" + run + "; if publication is denied, report the operational failure and finish without retrying.");
+            try
+            {
+                await Until(async () => (await Logs()).Split('\n').Any(line => line.Contains(" receipt-error ") && line.Contains(receiptFailure["url"]!.ToString())), "real GitHub receipt permission failure after acceptance");
+                Assert.Equal(1, CountAcceptedSources(await Logs(), receiptFailure["id"]!.ToString()));
+                Assert.Equal(0, Eyes(Find(await Snapshot(a), receiptFailure["id"]!.ToString())));
+            }
+            finally { await Control("restore-credential"); }
+            await Stable(async () => CountAcceptedSources(await Logs(), receiptFailure["id"]!.ToString()) == 1, TimeSpan.FromSeconds(35), "accepted input is not replayed after receipt failure");
+            Pass("C12", new { source = receiptFailure["url"]!.ToString(), mechanism = "real GitHub read-only App token rejects writes; original credential restored", acceptedOnce = true });
+
+            foreach (var fixture in fixtures)
+            {
+                await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + ".json"), (await Snapshot(fixture)).ToJsonString());
+                await Api("mutation($id:ID!){deleteDiscussion(input:{id:$id}){clientMutationId}}", new { id = fixture["id"]!.ToString() });
+            }
+            Pass("CLEANUP", new { deletedDiscussions = fixtures.Count });
+        }
+        finally
+        {
+            foreach (var fixture in fixtures)
+            {
+                if (File.Exists(Path.Combine(evidence, fixture["number"] + ".json"))) continue;
+                try { await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + ".json"), (await Snapshot(fixture)).ToJsonString()); }
+                catch (Exception error) { await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + "-observation.txt"), error.Message); }
+            }
+            await File.WriteAllTextAsync(Path.Combine(evidence, "outcomes.json"), System.Text.Json.JsonSerializer.Serialize(outcomes));
+            await File.WriteAllTextAsync(Path.Combine(evidence, "fixtures.json"), new JsonArray(fixtures.Select(x => x.DeepClone()).ToArray()).ToJsonString());
+        }
+    }
+
+    async Task<JsonNode> Api(string query, object? variables = null)
+    {
+        var start = new ProcessStartInfo("gh") { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        start.Environment["GH_CONFIG_DIR"] = "/data/participant";
+        foreach (var name in new[] { "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_REPO", "GH_DEBUG", "DEBUG" }) start.Environment.Remove(name);
+        foreach (var arg in new[] { "api", "graphql", "--hostname", "github.com", "--method", "POST", "--input", "-" }) start.ArgumentList.Add(arg);
+        using var child = Process.Start(start)!;
+        await child.StandardInput.WriteAsync(System.Text.Json.JsonSerializer.Serialize(new { query, variables = variables ?? new { } }));
+        child.StandardInput.Close();
+        var output = child.StandardOutput.ReadToEndAsync();
+        var errors = child.StandardError.ReadToEndAsync();
+        await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(60));
+        var text = await output;
+        Assert.True(child.ExitCode == 0, "GitHub operation failed: " + await errors);
+        var result = JsonNode.Parse(text)!;
+        Assert.Null(result["errors"]);
+        return result["data"]!;
+    }
+
+    async Task<JsonNode> Create(JsonNode repo, JsonNode category, string title, string body)
+    {
+        var discussion = (await Api("mutation($i:CreateDiscussionInput!){createDiscussion(input:$i){discussion{id number url}}}", new { i = new { repositoryId = repo["id"]!.ToString(), categoryId = category["id"]!.ToString(), title = $"[RepoAgent live {run}] {title}", body } }))["createDiscussion"]!["discussion"]!;
+        fixtures.Add(discussion.DeepClone());
+        return discussion;
+    }
+
+    async Task<JsonNode> Comment(JsonNode discussion, string body, string? replyTo = null) =>
+        (await Api("mutation($d:ID!,$b:String!,$r:ID){addDiscussionComment(input:{discussionId:$d,body:$b,replyToId:$r}){comment{id url}}}", new { d = discussion["id"]!.ToString(), b = body, r = replyTo }))["addDiscussionComment"]!["comment"]!;
+
+    async Task<JsonNode> Snapshot(JsonNode discussion)
+    {
+        var parts = repository.Split('/');
+        return (await Api("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){discussion(number:$n){id url answer{id} reactionGroups{content users(first:30){nodes{login}}} comments(first:100){nodes{id url body author{login} reactionGroups{content users(first:30){nodes{login}}} replies(first:100){nodes{id url body author{login} replyTo{id} reactionGroups{content users(first:30){nodes{login}}}}}}}}}", new { o = parts[0], r = parts[1], n = discussion["number"]!.GetValue<int>() }))["repository"]!["discussion"]!;
+    }
+
+    async Task<JsonNode> Reply(JsonNode discussion, string marker, string? root = null)
+    {
+        JsonNode? match = null;
+        await Until(async () =>
+        {
+            var data = await Snapshot(discussion);
+            var candidates = root is null ? data["comments"]!["nodes"]!.AsArray() : data["comments"]!["nodes"]!.AsArray().SingleOrDefault(x => x!["id"]!.ToString() == root)?["replies"]?["nodes"]?.AsArray();
+            match = candidates?.FirstOrDefault(x => IsActor(x!["author"]?["login"]?.ToString()) && x["body"]!.ToString().Contains(marker, StringComparison.Ordinal));
+            return match is not null;
+        }, "App reply " + marker);
+        return match!;
+    }
+
+    bool IsActor(string? login) => login == actor || login == actor.Replace("[bot]", "");
+    int Eyes(JsonNode source) => source["reactionGroups"]!.AsArray().Where(g => g!["content"]!.ToString() == "EYES").SelectMany(g => g!["users"]!["nodes"]!.AsArray()).Count(u => u!["login"]!.ToString() == actor);
+    static JsonNode Find(JsonNode snapshot, string id) => snapshot["id"]!.ToString() == id ? snapshot : snapshot["comments"]!["nodes"]!.AsArray().SelectMany(c => new[] { c! }.Concat(c!["replies"]!["nodes"]!.AsArray().Select(x => x!))).Single(x => x["id"]!.ToString() == id);
+    Task Receipt(JsonNode discussion, string id) => Until(async () => Eyes(Find(await Snapshot(discussion), id)) == 1, "one source-specific EYES");
+
+    async Task Control(string operation, string? argument = null)
+    {
+        var id = Guid.NewGuid().ToString("N");
+        var request = new JsonObject { ["id"] = id, ["operation"] = operation, ["argument"] = argument };
+        var path = "/data/control/request.json";
+        await File.WriteAllTextAsync(path + ".tmp", request.ToJsonString());
+        File.Move(path + ".tmp", path, true);
+        await Until(() => Task.FromResult(File.Exists("/data/control/response-" + id + ".json")), "host lifecycle operation " + operation);
+        var response = JsonNode.Parse(await File.ReadAllTextAsync("/data/control/response-" + id + ".json"))!;
+        Assert.True(response["ok"]!.GetValue<bool>(), response["error"]?.ToString());
+    }
+
+    async Task<string> Logs() { await Control("capture"); return await File.ReadAllTextAsync("/data/control/bridge.log"); }
+    async Task<string> Session(JsonNode discussion)
+    {
+        var url = discussion["url"]!.ToString();
+        string? session = null;
+        await Until(async () =>
+        {
+            var line = (await Logs()).Split('\n').FirstOrDefault(x => x.Contains("session-created " + url + " session="));
+            if (line is not null) session = line[(line.LastIndexOf("session=", StringComparison.Ordinal) + 8)..].Trim();
+            return session is not null;
+        }, "native session ID");
+        return session!;
+    }
+    static int CountAcceptedSources(string log, string id) => log.Split('\n').Count(x => x.Contains(" forwarded ") && x.Contains(id));
+    static int Forwarded(string log) => log.Split('\n').Count(x => x.Contains(" forwarded "));
+    static bool NativeTurnsFinished(string log) => log.Split('\n').Count(x => x.Contains(" native-accepted ")) <= log.Split('\n').Count(x => x.Contains("\"method\":\"turn/completed\""));
+    static async Task Until(Func<Task<bool>> condition, string expectation)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(4);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (await condition()) return;
+            await Task.Delay(TimeSpan.FromSeconds(2));
+        }
+        Assert.Fail("Timed out waiting for " + expectation);
+    }
+    static async Task Stable(Func<Task<bool>> condition, TimeSpan window, string expectation)
+    {
+        var deadline = DateTimeOffset.UtcNow + window;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            Assert.True(await condition(), expectation);
+            await Task.Delay(TimeSpan.FromSeconds(2));
+        }
+    }
+    void Pass(string id, object detail)
+    {
+        outcomes.Add(new { id, status = "passed", at = DateTimeOffset.UtcNow, detail });
+        Console.WriteLine($"[PASS] {id}: {System.Text.Json.JsonSerializer.Serialize(detail)}");
+    }
+}

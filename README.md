@@ -14,7 +14,9 @@ Each bridge process monitors one configured repository. Specifications and ticke
 
 ## Run the prototype
 
-Run the bridge in a Linux container containing the .NET 11 RC2 runtime, `gh` and `codex`. Native Codex uses its normal sign-in. GitHub access uses an installed GitHub App with **Discussions: read/write** and a read-only mounted PEM signing key. An agent GitHub-user login is unnecessary. Full interactive container bootstrap and configurable skills are tracked in [#5](https://github.com/egil/repoagent/issues/5).
+For the packaged Docker setup, use `./repoagent build`, `./repoagent setup`, then `./repoagent start`. See [container setup, skills and storage](docs/container-setup.md) and the [executable acceptance catalog](docs/acceptance-cases.md).
+
+Run the bridge in a Linux container containing `gh` and `codex`. The packaged bridge is Native AOT compiled and needs no installed .NET runtime. Native Codex uses its normal sign-in. GitHub access uses an installed GitHub App with **Discussions: read/write** and a read-only mounted PEM signing key. An agent GitHub-user login is unnecessary. Container bootstrap and live verification are tracked in [#5](https://github.com/egil/repoagent/issues/5).
 
 Pass these arguments to the bridge **inside the configured container**:
 

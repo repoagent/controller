@@ -13,7 +13,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     const string MessageFields = "id url body bodyHTML createdAt updatedAt author { __typename login } reactionGroups { content viewerHasReacted }";
     const string PageInfo = "pageInfo { hasNextPage endCursor }";
 
-    public async Task<JsonNode> Query(string query, object variables, CancellationToken ct)
+    public async Task<JsonNode> Query(string query, JsonObject variables, CancellationToken ct)
     {
         await credentials.GetToken(ct);
         var start = AppGitHubCommand.Create(executable, credentials.TokenFile, ["api", "graphql", "--method", "POST", "--input", "-"]);
@@ -23,7 +23,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         using var process = Process.Start(start) ?? throw new IOException("Could not start gh");
         var output = process.StandardOutput.ReadToEndAsync(ct);
         var error = process.StandardError.ReadToEndAsync(ct);
-        await process.StandardInput.WriteAsync(Json.Encode(new { query, variables }));
+        await process.StandardInput.WriteAsync(Json.Encode(Json.Object(("query", query), ("variables", variables))));
         process.StandardInput.Close();
         try { await process.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromSeconds(60), ct); }
         catch { process.Kill(true); throw; }
@@ -36,7 +36,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
 
     public async Task VerifyIdentity(CancellationToken ct)
     {
-        var viewer = (await Query("query { viewer { login } }", new { }, ct))["viewer"]!.Text("login");
+        var viewer = (await Query("query { viewer { login } }", new JsonObject(), ct))["viewer"]!.Text("login");
         if (!string.Equals(viewer, AgentLogin, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"Authenticated GitHub viewer {viewer} differs from the configured App identity {AgentLogin}");
         Log.Write("identity", viewer);
@@ -47,7 +47,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         if (login is null) return;
         if (!Regex.IsMatch(login, @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\z"))
             throw new ArgumentException("--mention-user must be a GitHub username without @");
-        var user = (await Query("query($login:String!) { user(login:$login) { login } }", new { login }, ct))["user"];
+        var user = (await Query("query($login:String!) { user(login:$login) { login } }", Json.Object(("login", login)), ct))["user"];
         if (user is null) throw new ArgumentException("--mention-user must identify an existing GitHub user, not an organization");
         MentionUser = new MentionUser(user.Text("login"));
         Log.Write("mention-user", $"@{MentionUser.Login} publishes-as={AgentLogin}");
@@ -64,7 +64,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         string? cursor = null;
         do
         {
-            var data = await Query("query($owner:String!,$name:String!,$cursor:String) { repository(owner:$owner,name:$name) { discussions(first:100,after:$cursor) { nodes { " + MessageFields + " number title closed locked answer { id } category { id name } } " + PageInfo + " } } }", new { owner = parts[0], name = parts[1], cursor }, ct);
+            var data = await Query("query($owner:String!,$name:String!,$cursor:String) { repository(owner:$owner,name:$name) { discussions(first:100,after:$cursor) { nodes { " + MessageFields + " number title closed locked answer { id } category { id name } } " + PageInfo + " } } }", Json.Object(("owner", parts[0]), ("name", parts[1]), ("cursor", cursor)), ct);
             var connection = data["repository"]?["discussions"] ?? throw new IOException("Repository not found or Discussions inaccessible");
             discussions.AddRange(connection["nodes"]!.AsArray().Select(n => n!.Copy()));
             cursor = Next(connection);
@@ -93,7 +93,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         do
         {
             var query = "query($id:ID!,$cursor:String) { node(id:$id) { ... on " + type + " { " + field + "(first:100,after:$cursor) { nodes { " + fields + " } " + PageInfo + " } } } }";
-            var connection = (await Query(query, new { id, cursor }, ct))["node"]?[field] ?? throw new IOException($"Missing {type} {id}");
+            var connection = (await Query(query, Json.Object(("id", id), ("cursor", cursor)), ct))["node"]?[field] ?? throw new IOException($"Missing {type} {id}");
             nodes.AddRange(connection["nodes"]!.AsArray().Select(n => n!.Copy()));
             cursor = Next(connection);
         } while (cursor is not null);
@@ -109,7 +109,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
             Log.Write("receipt-reused", source.Text("url"));
             return;
         }
-        var data = await Query("mutation($id:ID!) { addReaction(input:{subjectId:$id,content:EYES}) { reaction { id } } }", new { id = source.Text("id") }, ct);
+        var data = await Query("mutation($id:ID!) { addReaction(input:{subjectId:$id,content:EYES}) { reaction { id } } }", Json.Object(("id", source.Text("id"))), ct);
         if (data["addReaction"]?["reaction"]?["id"] is null) throw new IOException("Receipt mutation returned no reaction");
         Log.Write("receipt", source.Text("url"));
     }

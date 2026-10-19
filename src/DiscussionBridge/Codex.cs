@@ -31,13 +31,13 @@ sealed class Codex : IAsyncDisposable
 
     public async Task Initialize(CancellationToken ct)
     {
-        await Request("initialize", new { clientInfo = new { name = "github_discussion_bridge", version = "0.1.0" }, capabilities = new { experimentalApi = false } }, ct);
-        await Write(new { method = "initialized" }, ct);
+        await Request("initialize", Json.Object(("clientInfo", Json.Object(("name", "github_discussion_bridge"), ("version", "0.1.0"))), ("capabilities", Json.Object(("experimentalApi", false)))), ct);
+        await Write(Json.Object(("method", "initialized")), ct);
     }
 
     public async Task<string> Start(CancellationToken ct)
     {
-        var result = await Request("thread/start", new { cwd = workspace, developerInstructions = instructions }, ct);
+        var result = await Request("thread/start", Json.Object(("cwd", workspace), ("developerInstructions", instructions)), ct);
         var id = result["thread"]!.Text("id");
         if (id.Length == 0) throw new IOException("Native thread/start returned no session ID");
         resumed.Add(id);
@@ -48,38 +48,33 @@ sealed class Codex : IAsyncDisposable
     {
         if (!resumed.Contains(id))
         {
-            await Request("thread/resume", new { threadId = id, cwd = workspace, developerInstructions = instructions, excludeTurns = true }, ct);
+            await Request("thread/resume", Json.Object(("threadId", id), ("cwd", workspace), ("developerInstructions", instructions), ("excludeTurns", true)), ct);
             resumed.Add(id);
             Log.Write("session-resumed", id);
         }
         var skillPath = Path.Combine(AppContext.BaseDirectory, "github-discussion", "SKILL.md");
         // turn/start also adds input to an active turn in the installed native protocol.
-        var response = await Request("turn/start", new
-        {
-            threadId = id,
-            input = new object[] {
-                new { type = "text", text = "$github-discussion\n" + envelope.ToJsonString(), text_elements = Array.Empty<object>() },
-                new { type = "skill", name = "github-discussion", path = skillPath }
-            }
-        }, ct);
+        var response = await Request("turn/start", Json.Object(("threadId", id), ("input", new JsonArray(
+            Json.Object(("type", "text"), ("text", "$github-discussion\n" + envelope.ToJsonString()), ("text_elements", new JsonArray())),
+            Json.Object(("type", "skill"), ("name", "github-discussion"), ("path", skillPath))))), ct);
         if (response["turn"]?["id"] is null) throw new IOException("Native turn/start returned no accepted turn ID");
         Log.Write("native-accepted", $"session={id} turn={response["turn"]!.Text("id")}");
     }
 
-    async Task<JsonNode> Request(string method, object parameters, CancellationToken ct)
+    async Task<JsonNode> Request(string method, JsonNode parameters, CancellationToken ct)
     {
         var id = Interlocked.Increment(ref nextId);
         var completion = new TaskCompletionSource<JsonNode>(TaskCreationOptions.RunContinuationsAsynchronously);
         pending[id] = completion;
         try
         {
-            await Write(new { id, method, @params = parameters }, ct);
+            await Write(Json.Object(("id", id), ("method", method), ("params", parameters)), ct);
             return await completion.Task.WaitAsync(TimeSpan.FromSeconds(60), ct);
         }
         finally { pending.TryRemove(id, out _); }
     }
 
-    async Task Write(object value, CancellationToken ct)
+    async Task Write(JsonNode value, CancellationToken ct)
     {
         await writeLock.WaitAsync(ct);
         try { await process.StandardInput.WriteLineAsync(Json.Encode(value).AsMemory(), ct); await process.StandardInput.FlushAsync(ct); }
@@ -98,7 +93,7 @@ sealed class Codex : IAsyncDisposable
                     if (message["id"] is not null)
                     {
                         Log.Write("native-request-blocked", $"{message.Text("method")}: interactive requests require operator attention; use existing Codex permissions appropriate to this workspace");
-                        await Write(new { id = message["id"]!.Copy(), error = new { code = -32601, message = "Bridge has no interactive approval/input UI" } }, CancellationToken.None);
+                        await Write(Json.Object(("id", message["id"]!.Copy()), ("error", Json.Object(("code", -32601), ("message", "Bridge has no interactive approval/input UI")))), CancellationToken.None);
                     }
                     else if (message.Text("method") is "turn/completed" or "error") Log.Write("native-event", line);
                     continue;

@@ -1,8 +1,6 @@
 using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace DiscussionBridge;
@@ -77,7 +75,8 @@ public sealed class GitHubAppCredentials : IDisposable
             try
             {
                 var result = await Send(HttpMethod.Post, $"app/installations/{installationId}/access_tokens", CreateJwt(),
-                    new { repositories = new[] { repository.Split('/')[1] }, permissions = new { discussions = "write" } }, ct);
+                    Json.Object(("repositories", new JsonArray(repository.Split('/')[1])),
+                        ("permissions", Json.Object(("discussions", "write")))), ct);
                 var freshToken = result.Text("token");
                 if (string.IsNullOrWhiteSpace(freshToken) ||
                     !DateTimeOffset.TryParse(result.Text("expires_at"), out var expiry) || expiry <= clock.GetUtcNow().AddMinutes(5))
@@ -91,7 +90,8 @@ public sealed class GitHubAppCredentials : IDisposable
                 if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
                 using (var file = new FileStream(temporary, options))
                 {
-                    JsonSerializer.Serialize(file, new { token = freshToken, expiresAt = expiry });
+                    var cache = Json.Object(("token", freshToken), ("expiresAt", expiry.ToString("O")));
+                    file.Write(Encoding.UTF8.GetBytes(cache.ToJsonString()));
                     file.Flush(true);
                 }
                 if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
@@ -126,18 +126,19 @@ public sealed class GitHubAppCredentials : IDisposable
         }
     }
 
-    async Task<JsonNode> Send(HttpMethod method, string path, string bearer, object? body, CancellationToken ct)
+    async Task<JsonNode> Send(HttpMethod method, string path, string bearer, JsonNode? body, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(method, new Uri(new Uri("https://api.github.com/"), path));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         request.Headers.UserAgent.ParseAdd("repoagent-bridge/0.1");
         request.Headers.Add("X-GitHub-Api-Version", "2026-03-10");
-        if (body is not null) request.Content = JsonContent.Create(body);
+        if (body is not null) request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
         using var response = await http.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"GitHub App authentication failed (HTTP {(int)response.StatusCode}) for {method} {path}; check App key, installation and permissions");
-        return await response.Content.ReadFromJsonAsync<JsonNode>(ct) ?? throw new IOException("Empty GitHub App response");
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        return await JsonNode.ParseAsync(stream, cancellationToken: ct) ?? throw new IOException("Empty GitHub App response");
     }
 
     string CreateJwt()
@@ -145,7 +146,8 @@ public sealed class GitHubAppCredentials : IDisposable
         var now = clock.GetUtcNow();
         static string Encode(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         var header = Encode(Encoding.UTF8.GetBytes("{\"alg\":\"RS256\",\"typ\":\"JWT\"}"));
-        var payload = Encode(JsonSerializer.SerializeToUtf8Bytes(new { iat = now.AddSeconds(-60).ToUnixTimeSeconds(), exp = now.AddMinutes(9).ToUnixTimeSeconds(), iss = appId }));
+        var payload = Encode(Encoding.UTF8.GetBytes(Json.Object(("iat", now.AddSeconds(-60).ToUnixTimeSeconds()),
+            ("exp", now.AddMinutes(9).ToUnixTimeSeconds()), ("iss", appId)).ToJsonString()));
         var signed = header + "." + payload;
         var jwt = signed + "." + Encode(key.SignData(Encoding.ASCII.GetBytes(signed), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
         Log.Protect(jwt);
