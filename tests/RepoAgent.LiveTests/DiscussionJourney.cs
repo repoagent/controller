@@ -16,7 +16,7 @@ public sealed class DiscussionJourney
     readonly string evidence = "/evidence";
     readonly List<object> outcomes = [];
 
-    [Fact(Timeout = 1_800_000)]
+    [Fact(Timeout = 3_600_000)]
     public async Task Packaged_bridge_preserves_conversations_skills_and_receipts_across_replacement()
     {
         Assert.True(Environment.GetEnvironmentVariable("REPOAGENT_LIVE") == "1", "NOT EXERCISED: set REPOAGENT_LIVE=1 after configuring separate agent and participant credentials.");
@@ -47,16 +47,20 @@ public sealed class DiscussionJourney
             }
             var aMarker = "LIVE_A_" + run;
             var bMarker = "LIVE_B_" + run;
-            var a = await Create(repo, category, "mention", $"@{actor} Authorized disposable live acceptance test. Reply once with {aMarker}. Remember the word LYCHEE for continuation; use the authenticated GitHub response skill. Only perform this test's requests.");
+            var explicitJourney = Environment.GetEnvironmentVariable("REPOAGENT_LIVE_CASE") == "explicit-journey";
+            var mention = explicitJourney ? "" : "@" + actor + " ";
+            var a = await Create(repo, category, "mention", $"{mention}Authorized disposable live acceptance test. Reply once with {aMarker}. Remember the word LYCHEE for continuation; use the authenticated GitHub response skill. Only perform this test's requests.");
+            if (explicitJourney) await Control("replace", a["url"]!.ToString());
             var initial = await Reply(a, aMarker);
-            await Receipt(a, a["id"]!.GetValue<string>());
+            await Receipt(a["id"]!.GetValue<string>());
             var originalSession = await Session(a);
-            Pass("C01", new { discussion = a["url"]!.ToString(), session = originalSession, reply = initial["url"]!.ToString() });
+            Pass(explicitJourney ? "SETUP_EXPLICIT" : "C01", new { discussion = a["url"]!.ToString(), session = originalSession, reply = initial["url"]!.ToString() });
+            await Until(async () => NativeTurnsFinished(await Logs()), "initial turn completed before container replacement");
 
             var b = await Create(repo, category, "explicit URL", $"Authorized disposable explicit-enrollment test. Reply once with {bMarker}; remember MANGOSTEEN.");
             await Control("replace", b["url"]!.GetValue<string>());
             await Reply(b, bMarker);
-            await Receipt(b, b["id"]!.GetValue<string>());
+            await Receipt(b["id"]!.GetValue<string>());
             Assert.NotEqual(originalSession, await Session(b));
             Pass("C02", new { discussion = b["url"]!.ToString(), session = await Session(b) });
 
@@ -66,19 +70,20 @@ public sealed class DiscussionJourney
             await Reply(a, "ROOT_TWO_" + run, root2["id"]!.ToString());
             var nested = await Comment(a, "Reply once with NESTED_" + run, root1["id"]!.ToString());
             await Reply(a, "NESTED_" + run, root1["id"]!.ToString());
-            await Receipt(a, nested["id"]!.ToString());
+            await Receipt(nested["id"]!.ToString());
             Pass("C03", new { firstRoot = root1["url"]!.ToString(), secondRoot = root2["url"]!.ToString(), nested = nested["url"]!.ToString() });
 
-            await Receipt(a, root1["id"]!.ToString());
+            await Receipt(root1["id"]!.ToString());
             await Api("mutation($id:ID!,$b:String!){updateDiscussionComment(input:{commentId:$id,body:$b}){comment{id}}}", new { id = root1["id"]!.ToString(), b = "Edited request: reply once with EDITED_" + run });
             await Reply(a, "EDITED_" + run, root1["id"]!.ToString());
-            await Receipt(a, root1["id"]!.ToString());
+            await Receipt(root1["id"]!.ToString());
+            Assert.Contains("receipt-reused " + root1["url"]!.ToString(), await Logs());
             Pass("C04", new { editedSource = root1["url"]!.ToString() });
 
             var baseline = CountAcceptedSources(await Logs(), initial["id"]!.ToString());
             await Api("mutation($id:ID!){addReaction(input:{subjectId:$id,content:HOORAY}){reaction{id}}}", new { id = initial["id"]!.ToString() });
             await Until(async () => CountAcceptedSources(await Logs(), initial["id"]!.ToString()) > baseline, "human reaction to App output accepted");
-            await Receipt(a, initial["id"]!.ToString());
+            await Receipt(initial["id"]!.ToString());
             baseline = CountAcceptedSources(await Logs(), initial["id"]!.ToString());
             await Api("mutation($id:ID!){removeReaction(input:{subjectId:$id,content:HOORAY}){clientMutationId}}", new { id = initial["id"]!.ToString() });
             await Until(async () => CountAcceptedSources(await Logs(), initial["id"]!.ToString()) > baseline, "human reaction removal accepted");
@@ -101,8 +106,8 @@ public sealed class DiscussionJourney
 
             await Until(async () => NativeTurnsFinished(await Logs()), "native turns completed before quiet observation");
             var quietBaseline = Forwarded(await Logs());
-            await Stable(async () => Forwarded(await Logs()) == quietBaseline, TimeSpan.FromSeconds(35), "unchanged polls and App-only output stay quiet");
-            Pass("C08", new { acceptedInputs = quietBaseline, stabilitySeconds = 35 });
+            await StableAcrossPolls(log => Forwarded(log) == quietBaseline, "unchanged polls and App-only output stay quiet");
+            Pass("C08", new { acceptedInputs = quietBaseline, completeUnchangedPolls = 2 });
 
             await Control("replace");
             var continued = await Comment(a, "After container replacement, reply once with RESTART_" + run + " and the fruit you remember from my first request.");
@@ -111,15 +116,15 @@ public sealed class DiscussionJourney
             Assert.Equal(originalSession, await Session(a));
             Assert.Contains("session-resumed " + originalSession, await Logs());
             Pass("C09", new { session = originalSession, reply = afterRestart["url"]!.ToString() });
+            await Until(async () => NativeTurnsFinished(await Logs()), "continued turn completed before the rejection fixture");
 
             // The operator path stops the bridge, backs up state and substitutes an invalid native ID.
             await Control("invalidate-session", a["id"]!.ToString());
             var rejected = await Comment(a, "Rejected-input fixture: reply only if this input is accepted. Marker REJECTED_" + run);
             await Until(async () => (await Logs()).Contains("manual-recovery") && (await Logs()).Contains("invalid-native-session"), "native rejection recorded for the deliberately invalid session");
-            var rejectedSnapshot = await Snapshot(a);
-            Assert.Equal(0, Eyes(Find(rejectedSnapshot, rejected["id"]!.ToString())));
+            Assert.Equal(0, Eyes(await Source(rejected["id"]!.ToString())));
             var rejectedCount = Forwarded(await Logs());
-            await Stable(async () => Forwarded(await Logs()) == rejectedCount, TimeSpan.FromSeconds(25), "rejected input remains stopped without replay");
+            await StableAcrossPolls(log => Forwarded(log) == rejectedCount, "rejected input remains stopped without replay", requireSuccessfulPolls: false);
             await Control("restore-session", a["id"]!.ToString());
             await Reply(a, "REJECTED_" + run, rejected["id"]!.ToString());
             Pass("C10", new { rejectedSource = rejected["url"]!.ToString(), recoveredSession = originalSession });
@@ -138,10 +143,10 @@ public sealed class DiscussionJourney
             {
                 await Until(async () => (await Logs()).Split('\n').Any(line => line.Contains(" receipt-error ") && line.Contains(receiptFailure["url"]!.ToString())), "real GitHub receipt permission failure after acceptance");
                 Assert.Equal(1, CountAcceptedSources(await Logs(), receiptFailure["id"]!.ToString()));
-                Assert.Equal(0, Eyes(Find(await Snapshot(a), receiptFailure["id"]!.ToString())));
+                Assert.Equal(0, Eyes(await Source(receiptFailure["id"]!.ToString())));
             }
             finally { await Control("restore-credential"); }
-            await Stable(async () => CountAcceptedSources(await Logs(), receiptFailure["id"]!.ToString()) == 1, TimeSpan.FromSeconds(35), "accepted input is not replayed after receipt failure");
+            await StableAcrossPolls(log => CountAcceptedSources(log, receiptFailure["id"]!.ToString()) == 1, "accepted input is not replayed after receipt failure");
             Pass("C12", new { source = receiptFailure["url"]!.ToString(), mechanism = "real GitHub read-only App token rejects writes; original credential restored", acceptedOnce = true });
 
             foreach (var fixture in fixtures)
@@ -197,7 +202,20 @@ public sealed class DiscussionJourney
     async Task<JsonNode> Snapshot(JsonNode discussion)
     {
         var parts = repository.Split('/');
-        return (await Api("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){discussion(number:$n){id url answer{id} reactionGroups{content users(first:30){nodes{login}}} comments(first:100){nodes{id url body author{login} reactionGroups{content users(first:30){nodes{login}}} replies(first:100){nodes{id url body author{login} replyTo{id} reactionGroups{content users(first:30){nodes{login}}}}}}}}}}", new { o = parts[0], r = parts[1], n = discussion["number"]!.GetValue<int>() }))["repository"]!["discussion"]!;
+        const string query = """
+            query($o:String!,$r:String!,$n:Int!) {
+              repository(owner:$o,name:$r) {
+                discussion(number:$n) {
+                  id url answer { id }
+                  comments(first:50) { nodes {
+                    id url body author { login }
+                    replies(first:20) { nodes { id url body author { login } replyTo { id } } }
+                  } }
+                }
+              }
+            }
+            """;
+        return (await Api(query, new { o = parts[0], r = parts[1], n = discussion["number"]!.GetValue<int>() }))["repository"]!["discussion"]!;
     }
 
     async Task<JsonNode> Reply(JsonNode discussion, string marker, string? root = null)
@@ -217,8 +235,13 @@ public sealed class DiscussionJourney
 
     bool IsActor(string? login) => login == actor || login == actor.Replace("[bot]", "");
     int Eyes(JsonNode source) => source["reactionGroups"]!.AsArray().Where(g => g!["content"]!.ToString() == "EYES").SelectMany(g => g!["users"]!["nodes"]!.AsArray()).Count(u => u!["login"]!.ToString() == actor);
-    static JsonNode Find(JsonNode snapshot, string id) => snapshot["id"]!.ToString() == id ? snapshot : snapshot["comments"]!["nodes"]!.AsArray().SelectMany(c => new[] { c! }.Concat(c!["replies"]!["nodes"]!.AsArray().Select(x => x!))).Single(x => x["id"]!.ToString() == id);
-    Task Receipt(JsonNode discussion, string id) => Until(async () => Eyes(Find(await Snapshot(discussion), id)) == 1, "one source-specific EYES");
+    async Task<JsonNode> Source(string id) => (await Api("""
+        query($id:ID!) { node(id:$id) {
+          ... on Discussion { id reactionGroups { content users(first:5) { nodes { login } } } }
+          ... on DiscussionComment { id reactionGroups { content users(first:5) { nodes { login } } } }
+        } }
+        """, new { id }))["node"]!;
+    Task Receipt(string id) => Until(async () => Eyes(await Source(id)) == 1, "one source-specific EYES");
 
     async Task Control(string operation, string? argument = null)
     {
@@ -245,9 +268,32 @@ public sealed class DiscussionJourney
         }, "native session ID");
         return session!;
     }
-    static int CountAcceptedSources(string log, string id) => log.Split('\n').Count(x => x.Contains(" forwarded ") && x.Contains(id));
-    static int Forwarded(string log) => log.Split('\n').Count(x => x.Contains(" forwarded "));
-    static bool NativeTurnsFinished(string log) => log.Split('\n').Count(x => x.Contains(" native-accepted ")) <= log.Split('\n').Count(x => x.Contains("\"method\":\"turn/completed\""));
+    static bool IsEvent(string line, string kind)
+    {
+        var timestampEnd = line.IndexOf(' ');
+        return timestampEnd > 0 && line.AsSpan(timestampEnd + 1).StartsWith(kind + " ", StringComparison.Ordinal);
+    }
+    static int CountAcceptedSources(string log, string id) => log.Split('\n').Count(x => IsEvent(x, "forwarded") && x.Contains(id));
+    static int Forwarded(string log) => log.Split('\n').Count(x => IsEvent(x, "forwarded"));
+    static bool NativeTurnsFinished(string log)
+    {
+        var lines = log.Split('\n');
+        var ready = Array.FindLastIndex(lines, line => IsEvent(line, "ready"));
+        var current = lines.Skip(Math.Max(ready, 0));
+        var accepted = new HashSet<string>();
+        var completed = new HashSet<string>();
+        foreach (var line in current)
+        {
+            if (IsEvent(line, "native-accepted")) accepted.Add(line[(line.LastIndexOf("turn=", StringComparison.Ordinal) + 5)..].Trim());
+            if (!IsEvent(line, "native-event")) continue;
+            var start = line.IndexOf('{');
+            if (start < 0) continue;
+            var message = JsonNode.Parse(line[start..])!;
+            if (message["method"]?.ToString() == "turn/completed" && message["params"]?["turn"]?["id"] is { } id)
+                completed.Add(id.ToString());
+        }
+        return accepted.IsSubsetOf(completed);
+    }
     static async Task Until(Func<Task<bool>> condition, string expectation)
     {
         var deadline = DateTimeOffset.UtcNow.AddMinutes(4);
@@ -258,14 +304,20 @@ public sealed class DiscussionJourney
         }
         Assert.Fail("Timed out waiting for " + expectation);
     }
-    static async Task Stable(Func<Task<bool>> condition, TimeSpan window, string expectation)
+    async Task StableAcrossPolls(Func<string, bool> condition, string expectation, bool requireSuccessfulPolls = true)
     {
-        var deadline = DateTimeOffset.UtcNow + window;
+        static int Completed(string log, bool successful) => log.Split('\n').Count(line => IsEvent(line, "poll-completed") && (!successful || line.Contains("success=True")));
+        var baseline = Completed(await Logs(), requireSuccessfulPolls);
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(12);
         while (DateTimeOffset.UtcNow < deadline)
         {
-            Assert.True(await condition(), expectation);
+            var log = await Logs();
+            Assert.True(condition(log), expectation);
+            // The first completion may be an in-flight cycle; two more prove full unchanged observations.
+            if (Completed(log, requireSuccessfulPolls) >= baseline + 3) return;
             await Task.Delay(TimeSpan.FromSeconds(2));
         }
+        Assert.Fail("Timed out observing completed polling cycles: " + expectation);
     }
     void Pass(string id, object detail)
     {

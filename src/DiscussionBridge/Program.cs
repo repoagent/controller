@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using DiscussionBridge;
 
@@ -63,10 +64,13 @@ root.SetAction(async (result, cancellationToken) =>
         {
             await using var codex = new Codex(cwd, wrapper, Path.Combine(credentialDirectory, "gh-config"));
             await codex.Initialize(cancellationToken);
+            Log.Write("ready", $"repository={repo} actor={credentials.AgentLogin}");
             var bridge = new Bridge(github, codex, store, numbers);
             do
             {
+                var pollStarted = Stopwatch.GetTimestamp();
                 var succeeded = await bridge.Poll(cancellationToken);
+                Log.Write("poll-completed", $"success={succeeded} elapsed-ms={Stopwatch.GetElapsedTime(pollStarted).TotalMilliseconds:F0}");
                 if (result.GetValue(once)) return succeeded ? 0 : 1;
                 await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), cancellationToken);
             } while (!cancellationToken.IsCancellationRequested);

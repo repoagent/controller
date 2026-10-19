@@ -11,6 +11,8 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
+import update_tools
+import yaml
 
 CONFIG = Path('/data/config/settings.json')
 CODEX = Path('/data/credentials/codex')
@@ -49,6 +51,13 @@ def bridge_args(config):
     return args
 
 
+def select_tools(config):
+    paths = [p for p in os.environ['PATH'].split(os.pathsep) if p != '/data/tools/bin']
+    if config.get('toolUpdates', 'latest') == 'latest':
+        paths.insert(0, '/data/tools/bin')
+    os.environ['PATH'] = os.pathsep.join(paths)
+
+
 def configure(args):
     config = settings() if CONFIG.exists() else {}
     if not re.fullmatch(r'[\w.-]+/[\w.-]+', args.repository):
@@ -64,7 +73,8 @@ def configure(args):
     if args.installation_id is not None and args.installation_id <= 0:
         raise ValueError('Expected installation ID must be positive.')
     config.update(repository=args.repository, appId=args.app_id, keyPath=args.key_path,
-                  installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search)
+                  installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
+                  toolUpdates=args.tool_updates)
     save(config)
     CODEX.mkdir(parents=True, exist_ok=True)
     # The container is the operator-selected execution boundary. The bridge has no approval UI.
@@ -116,11 +126,16 @@ def install_skills(selection_path, token_path=None):
             if not source.is_relative_to(extracted.resolve()) or not (source / 'SKILL.md').is_file():
                 raise ValueError(f'Missing skill at {repo}:{location}.')
             text = (source / 'SKILL.md').read_text()
-            header = text[4:].split('\n---', 1)[0] if text.startswith('---\n') and '\n---' in text[4:] else ''
-            match = re.search(r'^name:\s*[\'"]?([a-z0-9][a-z0-9-]*)[\'"]?\s*$', header, re.MULTILINE)
-            if not match or not re.search(r'^description:\s*\S', header, re.MULTILINE):
+            header = re.match(r'\A---\n(.*?)\n---(?:\n|\Z)', text, re.DOTALL)
+            try:
+                metadata = yaml.safe_load(header.group(1)) if header else None
+            except yaml.YAMLError:
+                metadata = None
+            if not isinstance(metadata, dict) or not isinstance(metadata.get('name'), str) or not isinstance(metadata.get('description'), str) or not metadata['description'].strip():
                 raise ValueError(f'Invalid skill metadata at {repo}:{location}.')
-            name = match.group(1)
+            name = metadata['name']
+            if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', name):
+                raise ValueError(f'Invalid skill name at {repo}:{location}.')
             if name == 'github-discussion' or (staging / name).exists():
                 raise ValueError(f'Duplicate or reserved skill name: {name}.')
             if any(p.is_symlink() for p in source.rglob('*')):
@@ -149,12 +164,14 @@ def main():
     configure_parser.add_argument('--mention-user', default='repoagent')
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
     configure_parser.add_argument('--web-search', choices=['live', 'cached', 'disabled'], default='live')
+    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='latest')
     get = sub.add_parser('get'); get.add_argument('key')
     for name in ['versions', 'check', 'start', 'login', 'participant-login', 'participant-identity', 'state', 'skills']:
         sub.add_parser(name)
     skills = sub.add_parser('install-skills'); skills.add_argument('selection'); skills.add_argument('--token-file')
     enroll = sub.add_parser('enroll'); enroll.add_argument('urls', nargs='+')
     args = parser.parse_args()
+    select_tools(settings() if CONFIG.exists() else {})
     if args.command == 'configure': configure(args)
     elif args.command == 'get': print(settings().get(args.key) or '')
     elif args.command == 'versions':
@@ -182,6 +199,8 @@ def main():
     elif args.command == 'state': print(Path(STATE).read_text())
     elif args.command in ('check', 'start'):
         config = settings()
+        if args.command == 'start' and config.get('toolUpdates', 'latest') == 'latest':
+            update_tools.update()
         run(['codex', 'login', 'status'])
         if args.command == 'check': run(BRIDGE + bridge_args(config) + ['--check-auth'])
         else: os.execv(BRIDGE[0], BRIDGE + bridge_args(config))
@@ -189,6 +208,6 @@ def main():
 
 if __name__ == '__main__':
     try: main()
-    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
         print('RepoAgent setup/runtime failed: ' + str(error), file=sys.stderr)
         sys.exit(1)

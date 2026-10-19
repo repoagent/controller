@@ -8,7 +8,7 @@ image=${REPOAGENT_IMAGE:-repoagent:local}
 name=repoagent-$instance
 volumes=()
 runtime_volumes=()
-for storage in config credentials workspace history state; do
+for storage in config credentials workspace history state tools; do
   destination=/data/$storage
   [[ "$storage" != workspace ]] || destination=/workspace
   volumes+=(--mount "type=volume,src=$name-$storage,dst=$destination")
@@ -39,6 +39,25 @@ start() {
   docker rm "$name" >/dev/null 2>&1 || true
   "${base[@]}" "${key_args[@]}" "$image" check
   docker run -d --init --name "$name" "${runtime_volumes[@]}" "${key_args[@]}" "$image" start
+  local deadline=$((SECONDS + 600))
+  while (( SECONDS < deadline )); do
+    if [[ $(docker inspect --format '{{.State.Running}}' "$name") != true ]]; then
+      docker logs "$name" >&2
+      echo 'Agent startup failed; inspect the output above.' >&2
+      return 1
+    fi
+    local output
+    output=$(docker logs "$name" 2>&1)
+    if [[ "$output" == *' ready '* ]]; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+    docker exec "$name" sh -c 'sleep 1' >/dev/null 2>&1 || true
+  done
+  docker logs "$name" >&2
+  docker stop --timeout 20 "$name" >/dev/null
+  echo 'Startup did not become ready within ten minutes; container stopped.' >&2
+  return 1
 }
 case "${1:-help}" in
   build)
@@ -68,7 +87,7 @@ case "${1:-help}" in
     else config skills; fi ;;
   check) stopped; key_mount; "${base[@]}" "${key_args[@]}" "$image" check ;;
   start) start ;;
-  stop) docker stop --time 20 "$name" ;;
+  stop) docker stop --timeout 20 "$name" ;;
   restart) "$root/repoagent" stop; start ;;
   logs) shift; docker logs "$name" "$@" ;;
   versions) config versions ;;
@@ -90,14 +109,14 @@ case "${1:-help}" in
       echo 'Use ./repoagent reset --delete-stored-data only after backing up anything needed.' >&2; exit 1;
     }
     docker rm -f "$name" >/dev/null 2>&1 || true
-    docker volume rm "$name-config" "$name-credentials" "$name-workspace" "$name-history" "$name-state" "$name-participant" ;;
+    docker volume rm "$name-config" "$name-credentials" "$name-workspace" "$name-history" "$name-state" "$name-tools" "$name-participant" ;;
   *)
     cat <<'USAGE'
 Usage: ./repoagent COMMAND
   build                           Build pinned bridge, .NET, gh and Codex image
   setup                           Guided App configuration and Codex browser sign-in
   configure --repository OWNER/REPO --app-id ID --key-path /absolute/key.pem
-            [--installation-id ID] [--mention-user LOGIN] [--model MODEL]
+            [--installation-id ID] [--mention-user LOGIN] [--model MODEL] [--tool-updates latest|pinned]
   login                           Container-owned Codex device sign-in (reuses valid login)
   import-codex-auth /path/auth.json Explicitly copy an existing Codex auth cache
   skills install /path/skills.json [/path/private-source-token]

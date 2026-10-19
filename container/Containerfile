@@ -1,29 +1,33 @@
 FROM mcr.microsoft.com/dotnet/sdk:11.0.100-rc.2 AS build
 WORKDIR /source
+RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
 COPY global.json ./
 COPY src/ ./src/
 COPY .agents/skills/github-discussion/ ./.agents/skills/github-discussion/
-RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
 RUN dotnet publish src/DiscussionBridge -c Release -o /published --nologo -p:PublishAot=true -p:TreatWarningsAsErrors=true \
     && find /published -name '*.dbg' -delete
+COPY tests/NativeSmoke/ /source/tests/NativeSmoke/
+RUN dotnet publish tests/NativeSmoke -c Release -o /native-smoke --nologo -p:PublishAot=true -p:TreatWarningsAsErrors=true \
+    && /native-smoke/NativeSmoke
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:11.0.0-rc.2 AS runtime
 ARG TARGETARCH
-RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates curl git python3 jq procps \
+RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates curl git python3 python3-yaml jq procps \
     ripgrep file patch diffutils unzip zip less openssh-client \
     && rm -rf /var/lib/apt/lists/*
 COPY container/install-tools.sh /tmp/install-tools.sh
 RUN bash /tmp/install-tools.sh "$TARGETARCH" && rm /tmp/install-tools.sh
 RUN existing=$(getent passwd 1000 | cut -d: -f1); if [ -n "$existing" ]; then userdel "$existing"; fi; \
     useradd --uid 1000 --create-home --shell /bin/bash agent \
-    && mkdir -p /data/credentials/codex /data/config/skills /data/history /data/state /data/participant /data/control /workspace /home/agent/.agents \
+    && mkdir -p /data/credentials/codex /data/config/skills /data/history /data/state /data/tools /data/participant /data/control /workspace /home/agent/.agents \
     && ln -s /data/config/skills /home/agent/.agents/skills \
     && ln -s /data/history /data/credentials/codex/sessions \
     && chown -R agent:agent /data /workspace /home/agent
 COPY --from=build /published/ /opt/bridge/
 COPY container/runtime.py /opt/repoagent/runtime.py
 COPY container/control.py /opt/repoagent/control.py
+COPY container/update_tools.py /opt/repoagent/update_tools.py
 ENV HOME=/home/agent CODEX_HOME=/data/credentials/codex BROWSER=echo
 WORKDIR /workspace
 USER agent

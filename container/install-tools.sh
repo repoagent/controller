@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-case "${1:-$(dpkg --print-architecture)}" in
+architecture=${1:-$(dpkg --print-architecture)}
+case "$architecture" in
   amd64) triplet=x86_64-unknown-linux-musl
     codex_sum=beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4
     host_sum=314263128ba6592e7e807c265deeaf928a692b72dcbfeb5e0b20c9423b703529
@@ -21,9 +22,9 @@ for tool in codex codex-code-mode-host; do
   tar -xzf "$tool.tar.gz"
   install -m 755 "$tool-$triplet" "/usr/local/bin/$tool"
 done
-curl --fail --location --retry 3 -o gh.tar.gz "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_${1}.tar.gz"
+curl --fail --location --retry 3 -o gh.tar.gz "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_${architecture}.tar.gz"
 printf '%s  gh.tar.gz\n' "$gh_sum" | sha256sum --check --status
 tar -xzf gh.tar.gz
-install -m 755 "gh_2.102.0_linux_${1}/bin/gh" /usr/local/bin/gh
+install -m 755 "gh_2.102.0_linux_${architecture}/bin/gh" /usr/local/bin/gh
 codex --version
 gh --version

@@ -215,8 +215,11 @@ ask KEY_PATH "Absolute host path to its PEM private key (mounted read-only):"
 ask INSTALLATION_ID "Expected installation ID (optional):"
 ask MENTION_USER "Dedicated mention login without @ (optional):"
 ask MODEL "Codex model (Enter defaults to gpt-6.1-sol):"
+tool_updates=$("$cli" get toolUpdates 2>/dev/null || true)
+web_search=$("$cli" get webSearch 2>/dev/null || true)
 args=(configure --repository "$REPOSITORY" --app-id "$APP_ID" --key-path "$KEY_PATH"
-  --mention-user "$MENTION_USER" --model "${MODEL:-gpt-6.1-sol}")
+  --mention-user "$MENTION_USER" --model "${MODEL:-gpt-6.1-sol}"
+  --tool-updates "${tool_updates:-latest}" --web-search "${web_search:-live}")
 [[ -z "$INSTALLATION_ID" ]] || args+=(--installation-id "$INSTALLATION_ID")
 "$cli" "${args[@]}"
 stage "Sign in to Codex inside the container"
