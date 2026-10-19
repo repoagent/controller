@@ -37,6 +37,7 @@ CMD ["versions"]
 FROM runtime AS dotnet-development
 USER root
 COPY --from=build /usr/share/dotnet/ /usr/share/dotnet/
+RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 USER agent
 
 FROM build AS live-tests
