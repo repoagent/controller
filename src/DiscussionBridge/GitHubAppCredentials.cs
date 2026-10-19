@@ -131,7 +131,7 @@ public sealed class GitHubAppCredentials : IDisposable
         using var request = new HttpRequestMessage(method, new Uri(new Uri("https://api.github.com/"), path));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
-        request.Headers.UserAgent.ParseAdd("gh-discussion-agent-bridge/0.1");
+        request.Headers.UserAgent.ParseAdd("repoagent-bridge/0.1");
         request.Headers.Add("X-GitHub-Api-Version", "2026-03-10");
         if (body is not null) request.Content = JsonContent.Create(body);
         using var response = await http.SendAsync(request, ct);

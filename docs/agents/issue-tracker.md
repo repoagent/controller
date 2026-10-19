@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and specs live in GitHub Issues for `egil/gh-discussion-agent-bridge`. Use the `gh` CLI from this clone.
+Issues and specs live in GitHub Issues for `egil/repoagent`. Use the `gh` CLI from this clone.
 
 ## Operations
 

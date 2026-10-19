@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Track issues and specs in GitHub Issues for `egil/gh-discussion-agent-bridge`. Before reading or updating tickets, read `docs/agents/issue-tracker.md`.
+Track issues and specs in GitHub Issues for `egil/repoagent`. Before reading or updating tickets, read `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

@@ -1,12 +1,12 @@
-# GhDiscussionAgentBridge
+# RepoAgent
 
-Use GitHub Discussions as the conversation interface for a native coding-agent session. A small bridge forwards observed activity; the agent replies through normal tools under a GitHub App installation identity.
+RepoAgent connects GitHub conversations to native coding-agent sessions. Its CLI, `bridge`, forwards observed activity; the agent replies through normal tools under a GitHub App installation identity. Discussions are the first supported interface; the name leaves room for issues and pull requests.
 
 ## Start here
 
-- [Minimal PoC — issue #2](https://github.com/egil/gh-discussion-agent-bridge/issues/2): the implementation starting point, with manual verification.
-- [Full specification — issue #1](https://github.com/egil/gh-discussion-agent-bridge/issues/1): broader design reference. The PoC's smaller scope takes precedence for the initial build.
-- [Flows, payloads and session instructions](https://github.com/egil/gh-discussion-agent-bridge/issues/2#issuecomment-6276915447).
+- [Minimal PoC — issue #2](https://github.com/egil/repoagent/issues/2): the implementation starting point, with manual verification.
+- [Full specification — issue #1](https://github.com/egil/repoagent/issues/1): broader design reference. The PoC's smaller scope takes precedence for the initial build.
+- [Flows, payloads and session instructions](https://github.com/egil/repoagent/issues/2#issuecomment-6276915447).
 
 The PoC uses one native Codex session per Discussion, a small JSON mapping/checkpoint, GraphQL polling, an ordinary skill plus `gh` for replies, and timestamped stdout logging. After the native harness accepts input, the bridge adds 👀 to the forwarded source Discussion, comment or reply.
 
@@ -14,12 +14,12 @@ Each bridge process monitors one configured repository. Specifications and ticke
 
 ## Run the prototype
 
-Run the bridge in a Linux container containing the .NET 11 RC2 runtime, `gh` and `codex`. Native Codex uses its normal sign-in. GitHub access uses an installed GitHub App with **Discussions: read/write** and a read-only mounted PEM signing key. An agent GitHub-user login is unnecessary. Full interactive container bootstrap and configurable skills are tracked in [#5](https://github.com/egil/gh-discussion-agent-bridge/issues/5).
+Run the bridge in a Linux container containing the .NET 11 RC2 runtime, `gh` and `codex`. Native Codex uses its normal sign-in. GitHub access uses an installed GitHub App with **Discussions: read/write** and a read-only mounted PEM signing key. An agent GitHub-user login is unnecessary. Full interactive container bootstrap and configurable skills are tracked in [#5](https://github.com/egil/repoagent/issues/5).
 
 Pass these arguments to the bridge **inside the configured container**:
 
 ```text
---repo OWNER/REPO --app-id APP_ID_OR_CLIENT_ID \
+bridge --repo egil/repoagent --app-id APP_ID_OR_CLIENT_ID --mention-user repoagent \
 --private-key /run/secrets/github-app.pem --workspace /workspace \
 --state /data/bridge-state.json
 ```
@@ -28,7 +28,7 @@ The bridge discovers the App's installation for the configured repository; `--in
 
 Mention the bot's actual login, such as `@discussion-agent-bridge[bot]`, in a Discussion body/comment/reply, or add `--enroll https://github.com/OWNER/REPO/discussions/123` (repeatable). Enrollment uses literal polled text and does not require GitHub mention notifications or autocomplete. Explicit enrollment persists in the state file and need not be repeated. Each Discussion gets one native Codex session across all comment threads. The default polling interval is ten seconds after each completed poll; every connection is paginated, so large repositories may take longer. Only observed versions are forwarded; changes reverted between polls can be missed.
 
-The bot name comes from the registered App, so another App or an App rename is reflected at startup. Local aliases cannot register GitHub identities and can point to unrelated users. Native mention autocomplete and issue assignment require separate [GitHub agent registration](docs/github-app-auth.md#native-github-agent-ui).
+Add `--mention-user repoagent` to enroll through the dedicated `@repoagent` account. Startup verifies that the configured user exists; enrollment recognizes GitHub-rendered mentions, including emphasized mentions, while profile links, code examples and email addresses stay inactive. The App still authors replies and EYES; the mention account needs no runtime login or token. See [mention-account setup](docs/github-app-auth.md#dedicated-mention-account) for repository access and autocomplete eligibility. Native agent registration remains a separate integration.
 
 The response skill is copied beside the executable and injected through Codex's native skill input. Additional skills and workspace guidance load normally. Native sessions receive the absolute path to an authenticated `gh` wrapper, which reads renewed credentials for every command. The native process inherits neither a static installation token nor the operator's GitHub-user token/configuration. Choose a Codex configuration whose normal tool permissions allow the agent's intended work and network access for `gh` publication. The bridge preserves those permissions and has no approval UI: interactive approval/input requests are logged and rejected for operator attention. Participant clarification questions should be published to GitHub by the response skill.
 

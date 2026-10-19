@@ -1,0 +1,15 @@
+# RepoAgent
+
+**A dedicated automation account maintained by [@egil](https://github.com/egil).**
+
+`@repoagent` is the mention account for **RepoAgent**, which connects GitHub conversations to native coding-agent sessions. This account represents the project, not a person.
+
+In a repository where RepoAgent is configured and running, mention `@repoagent` in a Discussion to reach the agent. The `bridge` CLI forwards the conversation to its native agent session.
+
+Replies and 👀 receipts are published by the configured **GitHub App**, currently `discussion-agent-bridge[bot]`. This user account provides the short, recognizable mention handle. A 👀 receipt means the agent accepted the input; it does not mean the work is finished.
+
+The current implementation supports GitHub Discussions. Mentioning this account elsewhere does not automatically start an agent. Issue and pull request support may follow.
+
+Project and documentation: [egil/repoagent](https://github.com/egil/repoagent) — repository access may be required.
+
+For questions about this account, contact [@egil](https://github.com/egil).

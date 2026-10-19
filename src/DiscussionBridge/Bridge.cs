@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 
 namespace DiscussionBridge;
 
@@ -33,7 +32,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
                 // Read every page, including reactions to agent-authored messages.
                 var sources = await github.Sources(discussion, ct);
                 var bootstrap = record is null || record.Text("sessionId").Length == 0;
-                if (bootstrap && !enroll.Contains(discussion["number"]!.GetValue<int>()) && !sources.Any(MentionsAgent)) continue;
+                if (bootstrap && !enroll.Contains(discussion["number"]!.GetValue<int>()) && !sources.Any(github.IsEnrollmentMention)) continue;
                 if (record is null)
                 {
                     record = new JsonObject { ["url"] = discussion.Text("url"), ["sources"] = new JsonObject() };
@@ -89,7 +88,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
                 }
                 var envelope = new JsonObject
                 {
-                    ["_bridge"] = new JsonObject { ["channel"] = "github-discussions", ["mode"] = bootstrap ? "bootstrap" : "continue", ["repository"] = github.Repository, ["agentLogin"] = github.AgentLogin },
+                    ["_bridge"] = new JsonObject { ["channel"] = "github-discussions", ["mode"] = bootstrap ? "bootstrap" : "continue", ["repository"] = github.Repository, ["agentLogin"] = github.AgentLogin, ["mentionLogin"] = github.MentionUser?.Login },
                     ["discussion"] = Public(discussion), ["changes"] = changes
                 };
                 if (bootstrap) envelope["context"] = new JsonObject { ["existingComments"] = Json.Array(sources.Skip(1).Select(Public)) };
@@ -123,7 +122,6 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
     }
 
     bool Own(JsonNode? actor) => github.IsAgentActor(actor);
-    bool MentionsAgent(JsonNode source) => !Own(source["author"]) && Regex.IsMatch(source.Text("body"), @"(?<![\w-])@" + Regex.Escape(github.AgentLogin) + @"(?![\w-])", RegexOptions.IgnoreCase);
 
     JsonObject Checkpoint(JsonNode source)
     {
@@ -147,6 +145,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
     {
         var copy = source.Copy();
         copy.AsObject().Remove("reactionGroups");
+        copy.AsObject().Remove("bodyHTML");
         return copy;
     }
 }

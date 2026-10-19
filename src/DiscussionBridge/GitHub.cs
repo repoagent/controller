@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace DiscussionBridge;
 
@@ -7,8 +8,9 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
 {
     public string Repository { get; } = repository;
     public string AgentLogin => credentials.AgentLogin;
+    public MentionUser? MentionUser { get; private set; }
     public bool IsAgentActor(JsonNode? actor) => credentials.IsAgentActor(actor);
-    const string MessageFields = "id url body createdAt updatedAt author { __typename login } reactionGroups { content viewerHasReacted }";
+    const string MessageFields = "id url body bodyHTML createdAt updatedAt author { __typename login } reactionGroups { content viewerHasReacted }";
     const string PageInfo = "pageInfo { hasNextPage endCursor }";
 
     public async Task<JsonNode> Query(string query, object variables, CancellationToken ct)
@@ -39,6 +41,21 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
             throw new InvalidOperationException($"Authenticated GitHub viewer {viewer} differs from the configured App identity {AgentLogin}");
         Log.Write("identity", viewer);
     }
+
+    public async Task ConfigureMentionUser(string? login, CancellationToken ct)
+    {
+        if (login is null) return;
+        if (!Regex.IsMatch(login, @"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\z"))
+            throw new ArgumentException("--mention-user must be a GitHub username without @");
+        var user = (await Query("query($login:String!) { user(login:$login) { login } }", new { login }, ct))["user"];
+        if (user is null) throw new ArgumentException("--mention-user must identify an existing GitHub user, not an organization");
+        MentionUser = new MentionUser(user.Text("login"));
+        Log.Write("mention-user", $"@{MentionUser.Login} publishes-as={AgentLogin}");
+    }
+
+    public bool IsEnrollmentMention(JsonNode source) => !IsAgentActor(source["author"]) &&
+        ((MentionUser?.IsMentioned(source.Text("bodyHTML")) ?? false) ||
+         Regex.IsMatch(source.Text("body"), @"(?<![\w-])@" + Regex.Escape(AgentLogin) + @"(?![\w-])", RegexOptions.IgnoreCase));
 
     public async Task<List<JsonNode>> Discussions(CancellationToken ct)
     {
