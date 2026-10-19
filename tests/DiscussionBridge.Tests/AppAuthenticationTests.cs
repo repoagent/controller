@@ -10,6 +10,29 @@ using Xunit;
 
 public sealed class AppAuthenticationTests
 {
+    [Theory]
+    [InlineData("Bot", "discussion-agent-bridge", true)]
+    [InlineData("Bot", "DISCUSSION-AGENT-BRIDGE", true)]
+    [InlineData("Bot", "discussion-agent-bridge[bot]", true)]
+    [InlineData("Bot", "DISCUSSION-AGENT-BRIDGE[BOT]", true)]
+    [InlineData("User", "discussion-agent-bridge", false)]
+    [InlineData("Bot", "another-app", false)]
+    [InlineData("Bot", "discussion-agent-bridge-extra", false)]
+    [InlineData(null, "discussion-agent-bridge", false)]
+    [InlineData(null, null, false)]
+    public async Task App_actor_identity_recognizes_the_observed_Bot_login_without_claiming_human_or_other_App_actors(
+        string? actorType, string? login, bool expected)
+    {
+        using var fixture = new AppFixture();
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        // GitHub returned this App's comment author as Bot + bare slug, while viewer has [bot].
+        var actor = login is null ? null : JsonNode.Parse(JsonSerializer.Serialize(new { __typename = actorType, login }));
+
+        Assert.Equal("discussion-agent-bridge[bot]", credentials.AgentLogin);
+        Assert.Equal(expected, credentials.IsAgentActor(actor));
+    }
+
     [Fact]
     public async Task App_authentication_signs_requests_and_limits_the_token_to_the_selected_repository()
     {

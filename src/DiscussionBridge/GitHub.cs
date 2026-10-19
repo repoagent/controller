@@ -7,7 +7,8 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
 {
     public string Repository { get; } = repository;
     public string AgentLogin => credentials.AgentLogin;
-    const string MessageFields = "id url body createdAt updatedAt author { login } reactionGroups { content viewerHasReacted }";
+    public bool IsAgentActor(JsonNode? actor) => credentials.IsAgentActor(actor);
+    const string MessageFields = "id url body createdAt updatedAt author { __typename login } reactionGroups { content viewerHasReacted }";
     const string PageInfo = "pageInfo { hasNextPage endCursor }";
 
     public async Task<JsonNode> Query(string query, object variables, CancellationToken ct)
@@ -63,7 +64,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         foreach (var source in sources)
         {
             var type = source.Text("id") == discussion.Text("id") ? "Discussion" : "DiscussionComment";
-            source["reactions"] = Json.Array(await Connection(source.Text("id"), type, "reactions", "id content user { login } createdAt", ct));
+            source["reactions"] = Json.Array(await Connection(source.Text("id"), type, "reactions", "id content user { __typename login } createdAt", ct));
         }
         return sources;
     }

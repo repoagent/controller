@@ -27,7 +27,7 @@ The wrapper is the supported GitHub command path. Directly invoking another `gh`
 
 ## Bot identity and existing state
 
-Mention the actual bot login in polled text, for example `@discussion-agent-bridge[bot]`, or enroll the Discussion URL explicitly. Literal mention matching includes the suffix; autocomplete/notification behavior is not needed for enrollment. The actual bot login also identifies own posts and reactions for loop suppression. A human reaction/reply to a bot-authored post is still user activity.
+Mention the actual bot login in polled text, for example `@discussion-agent-bridge[bot]`, or enroll the Discussion URL explicitly. Literal mention matching includes the suffix; autocomplete/notification behavior is not needed for enrollment. GitHub's GraphQL viewer exposes the suffixed login, while Discussion authors can expose a `Bot` with the bare App slug. Loop suppression recognizes both forms; the bare slug is accepted only for a `Bot`, so a human with that name remains participant activity. A human reaction/reply to a bot-authored post is still user activity.
 
 A checkpoint is bound to its repository and authenticated actor. Start with a fresh state file when converting an existing user-backed run to an App, or review/migrate it deliberately with the process stopped. Automatic migration could replay historical instructions or misclassify previous user output, so the bridge rejects mismatched identity. Preserve the old checkpoint and native history for manual inspection. Native session history and compaction remain owned by Codex.
 

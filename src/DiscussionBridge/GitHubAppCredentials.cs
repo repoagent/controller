@@ -19,6 +19,7 @@ public sealed class GitHubAppCredentials : IDisposable
     string? token;
     DateTimeOffset expiresAt;
     long installationId;
+    string appSlug = "";
 
     public string AgentLogin { get; private set; } = "";
     public string TokenFile { get; }
@@ -44,6 +45,7 @@ public sealed class GitHubAppCredentials : IDisposable
         var app = await Send(HttpMethod.Get, "app", CreateJwt(), null, ct);
         var slug = app.Text("slug");
         if (string.IsNullOrWhiteSpace(slug)) throw new InvalidOperationException("GitHub returned no App slug");
+        appSlug = slug;
         AgentLogin = slug + "[bot]";
         var installation = await Send(HttpMethod.Get, $"repos/{repository}/installation", CreateJwt(), null, ct);
         installationId = installation["id"]?.GetValue<long>() ?? 0;
@@ -55,6 +57,14 @@ public sealed class GitHubAppCredentials : IDisposable
             throw new InvalidOperationException("Install the GitHub App on this repository with Discussions read/write permission");
         await GetToken(ct);
         Log.Write("app-installation", $"app={slug} installation={installationId} repository={repository} actor={AgentLogin}");
+    }
+
+    public bool IsAgentActor(JsonNode? actor)
+    {
+        if (appSlug.Length == 0 || actor is null) return false;
+        var login = actor.Text("login");
+        return string.Equals(login, AgentLogin, StringComparison.OrdinalIgnoreCase) ||
+            (actor.Text("__typename") == "Bot" && string.Equals(login, appSlug, StringComparison.OrdinalIgnoreCase));
     }
 
     public async Task<string> GetToken(CancellationToken ct)

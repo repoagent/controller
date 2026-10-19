@@ -122,12 +122,17 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
         return succeeded;
     }
 
-    bool Own(JsonNode? actor) => string.Equals(actor?.Text("login"), github.AgentLogin, StringComparison.OrdinalIgnoreCase);
+    bool Own(JsonNode? actor) => github.IsAgentActor(actor);
     bool MentionsAgent(JsonNode source) => !Own(source["author"]) && Regex.IsMatch(source.Text("body"), @"(?<![\w-])@" + Regex.Escape(github.AgentLogin) + @"(?![\w-])", RegexOptions.IgnoreCase);
 
     JsonObject Checkpoint(JsonNode source)
     {
-        var content = new JsonObject { ["body"] = source.Text("body"), ["author"] = source["author"]?.Copy() };
+        // Actor type is observation metadata; adding it must not replay accepted content.
+        var content = new JsonObject
+        {
+            ["body"] = source.Text("body"),
+            ["author"] = source["author"] is { } author ? new JsonObject { ["login"] = author.Text("login") } : null
+        };
         var state = new JsonObject();
         foreach (var name in new[] { "title", "closed", "locked", "answer", "category" })
             if (source.AsObject().ContainsKey(name)) state[name] = source[name]?.Copy();
