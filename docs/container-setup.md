@@ -90,7 +90,7 @@ The supplied credential must be authorized to read that exact source repository/
 
 Run configuration, skill installation and lifecycle commands sequentially for each instance; concurrent operator commands are not supported. The CLI rejects setup changes when it observes the agent running.
 
-The runtime user is UID 1000. The explicitly selected PEM must be readable by that UID; setup does not change its host permissions. The key is mounted read-only separately from the agent workspace. Container replacement and image rebuild retain the volumes; `restart` replaces the container and checks authentication before starting it again.
+The runtime user is UID 1000. The explicitly selected PEM must be readable by that UID; setup does not change its host permissions. The key is mounted read-only separately from the agent workspace. Container replacement and image rebuild retain the volumes; `restart` replaces the container, updates tools when enabled, and checks authentication before native work.
 
 The runtime publishes no ports and receives no Docker socket, privileged mode, host networking or host home directory. Normal tool permissions apply inside the container (`approval_policy=never`, full container filesystem/network access), because this bridge has no interactive approval channel. Skills and participant instructions run with that container user's authority.
 

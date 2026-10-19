@@ -37,7 +37,7 @@ start() {
     echo "$name is already running."; return;
   }
   docker rm "$name" >/dev/null 2>&1 || true
-  "${base[@]}" "${key_args[@]}" "$image" check
+  # Runtime start updates tools, then verifies Codex/App identity before native work.
   docker run -d --init --name "$name" "${runtime_volumes[@]}" "${key_args[@]}" "$image" start
   local deadline=$((SECONDS + 600))
   while (( SECONDS < deadline )); do
