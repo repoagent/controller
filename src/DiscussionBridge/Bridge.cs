@@ -1,9 +1,8 @@
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 
 namespace DiscussionBridge;
 
-sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> enroll)
+sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> enroll, MentionTrigger mention)
 {
     readonly HashSet<string> blockedLogged = [];
 
@@ -123,7 +122,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
     }
 
     bool Own(JsonNode? actor) => github.IsAgentActor(actor);
-    bool MentionsAgent(JsonNode source) => !Own(source["author"]) && Regex.IsMatch(source.Text("body"), @"(?<![\w-])@" + Regex.Escape(github.AgentLogin) + @"(?![\w-])", RegexOptions.IgnoreCase);
+    bool MentionsAgent(JsonNode source) => !Own(source["author"]) && mention.Matches(source.Text("body"));
 
     JsonObject Checkpoint(JsonNode source)
     {

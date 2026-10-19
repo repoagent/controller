@@ -27,6 +27,10 @@ The wrapper is the supported GitHub command path. Directly invoking another `gh`
 
 ## Bot identity and existing state
 
+Set `--mention-name bridge` for a short trigger such as `@bridge`. Names contain 1–39 letters, digits or hyphens, with a letter or digit at each end; omit the leading `@` in configuration. Matching ignores case and rejects longer usernames and email addresses. The App's full bot login remains an enrollment trigger too. Changing this trigger does not change the authenticated actor, visible author or existing session mapping.
+
+This option is a polling alias, not a registered GitHub account. It does not add mention highlighting or autocomplete to Discussions. GitHub documents autocomplete for its separate [Copilot-backed agent-app flow in pull requests](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/cloud-agent/use-agent-apps); that is not an autocomplete extension API for this native Codex bridge. Avoid aliases that belong to unrelated users or services.
+
 Mention the actual bot login in polled text, for example `@discussion-agent-bridge[bot]`, or enroll the Discussion URL explicitly. Literal mention matching includes the suffix; autocomplete/notification behavior is not needed for enrollment. GitHub's GraphQL viewer exposes the suffixed login, while Discussion authors can expose a `Bot` with the bare App slug. Loop suppression recognizes both forms; the bare slug is accepted only for a `Bot`, so a human with that name remains participant activity. A human reaction/reply to a bot-authored post is still user activity.
 
 A checkpoint is bound to its repository and authenticated actor. Start with a fresh state file when converting an existing user-backed run to an App, or review/migrate it deliberately with the process stopped. Automatic migration could replay historical instructions or misclassify previous user output, so the bridge rejects mismatched identity. Preserve the old checkpoint and native history for manual inspection. Native session history and compaction remain owned by Codex.
