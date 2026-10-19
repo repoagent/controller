@@ -15,7 +15,7 @@ export REPOAGENT_INSTANCE=acceptance
 REPOAGENT_LIVE=1 ./repoagent live-test
 ```
 
-For C06/C07 install the skill at `tests/fixtures/acceptance-marker` from this repository, pinned to a full commit SHA containing that fixture. Public source credentials are unnecessary; a private source requires the explicitly authorized source-read token. The fixture computes a correlated result using its own script and supports a bounded gate for observing input while native work is active.
+For C06/C07 install the skill at `tests/fixtures/acceptance-marker` from this repository, pinned to a full commit SHA containing that fixture. Public source credentials are unnecessary; a private source requires the explicitly authorized source-read token. The fixture computes a correlated result using its own script and supports a bounded gate for observing input while native work is active. C07 checks its unexpired active lease after the additional input is accepted; the skill removes the lease on completion or timeout.
 
 The main journey uses explicit `--tool-updates pinned` for reproducibility. Normal agent setup defaults to checking/updating stable releases on every container start. Record separate startup-update evidence using `--tool-updates latest`, including actual before/after versions and a container restart.
 

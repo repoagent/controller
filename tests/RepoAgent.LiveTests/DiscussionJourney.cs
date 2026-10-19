@@ -94,10 +94,12 @@ public sealed class DiscussionJourney
             await Reply(a, expected, skillRequest["id"]!.ToString());
             Pass("C06", new { skill = "acceptance-marker", correlation = run, expected });
 
-            var hold = await Comment(a, $"Use $acceptance-marker's marker.py with arguments {run} --hold. It creates a ready file and waits up to 90 seconds for the test runner's release file. Run it now and publish its result once after release. If the skill is unavailable, report SKILL_UNAVAILABLE.");
+            var hold = await Comment(a, $"Use $acceptance-marker's marker.py with arguments {run} --hold. It creates a ready file and waits up to 300 seconds for the test runner's release file. Run it now and publish its result once after release. If the skill is unavailable, report SKILL_UNAVAILABLE.");
             await Until(() => Task.FromResult(File.Exists("/workspace/hold-ready-" + run)), "native skill action is active");
             var during = await Comment(a, "While the previous tool is waiting, accept this additional input. After release reply once with ACTIVE_SECOND_" + run);
             await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted during native work");
+            var activeGate = JsonNode.Parse(await File.ReadAllTextAsync("/workspace/hold-ready-" + run))!;
+            Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "native skill gate remains active after the additional input was accepted");
             Assert.False(File.Exists("/workspace/hold-release-" + run));
             File.WriteAllText("/workspace/hold-release-" + run, "release");
             await Reply(a, "ACTIVE_SECOND_" + run, during["id"]!.ToString());
@@ -121,10 +123,12 @@ public sealed class DiscussionJourney
             // The operator path stops the bridge, backs up state and substitutes an invalid native ID.
             await Control("invalidate-session", a["id"]!.ToString());
             var rejected = await Comment(a, "Rejected-input fixture: reply only if this input is accepted. Marker REJECTED_" + run);
-            await Until(async () => (await Logs()).Contains("manual-recovery") && (await Logs()).Contains("invalid-native-session"), "native rejection recorded for the deliberately invalid session");
+            await Until(async () => (await Logs()).Split('\n').Any(line => IsEvent(line, "manual-recovery") && line.Contains(a["url"]!.ToString() + " session=invalid-native-session ") && line.Contains(rejected["id"]!.ToString())), "native rejection recorded for this source and the deliberately invalid session");
             Assert.Equal(0, Eyes(await Source(rejected["id"]!.ToString())));
             var rejectedCount = Forwarded(await Logs());
             await StableAcrossPolls(log => Forwarded(log) == rejectedCount, "rejected input remains stopped without replay", requireSuccessfulPolls: false);
+            Assert.Equal(0, CountAcceptedSources(await Logs(), rejected["id"]!.ToString()));
+            Assert.Equal(0, Eyes(await Source(rejected["id"]!.ToString())));
             await Control("restore-session", a["id"]!.ToString());
             await Reply(a, "REJECTED_" + run, rejected["id"]!.ToString());
             Pass("C10", new { rejectedSource = rejected["url"]!.ToString(), recoveredSession = originalSession });

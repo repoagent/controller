@@ -143,7 +143,7 @@ def install_skills(selection_path, token_path=None):
             shutil.copytree(source, staging / name)
             resolved.append(dict(name=name, repository=repo, revision=revision, path=location))
         SKILLS.mkdir(exist_ok=True)
-        # Setup/start are serialized by the host CLI; never replace skills during native work.
+        # The operator must keep setup/start commands sequential; the host CLI rejects a running agent.
         for old in SKILLS.iterdir():
             if old.is_dir(): shutil.rmtree(old)
             else: old.unlink()

@@ -42,7 +42,7 @@ on_exit() {
   docker logs "$name" 2>&1 | "${helper[@]}" capture || true
   "$root/repoagent" stop >/dev/null 2>&1 || true
   if [[ $(docker inspect --format '{{.State.Running}}' "$runner" 2>/dev/null || true) == true ]]; then
-    docker stop --time 10 "$runner" >/dev/null 2>&1 || true
+    docker stop --timeout 10 "$runner" >/dev/null 2>&1 || true
   fi
   docker logs "$runner" 2>&1 || true
   echo "Evidence retained in Docker volumes $evidence and $control; failed Discussions remain for inspection."
