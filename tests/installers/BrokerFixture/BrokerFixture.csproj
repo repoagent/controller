@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryContentRootAttribute">
+      <_Parameter1>RepoAgent.Auth, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null</_Parameter1>
+      <_Parameter2>$(MSBuildProjectDirectory)/../../../service/auth/src/RepoAgent.Auth</_Parameter2>
+      <_Parameter3>Program.cs</_Parameter3><_Parameter4>0</_Parameter4>
+    </AssemblyAttribute>
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.13" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.13" />
+    <ProjectReference Include="../../../service/auth/src/RepoAgent.Auth/RepoAgent.Auth.csproj" />
+  </ItemGroup>
+</Project>

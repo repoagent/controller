@@ -60,3 +60,7 @@ docker run --rm repoagent-controller-tests
 ```
 
 These focused xUnit tests exercise real RSA signing, private credential files and child-command dispatch with controlled HTTP responses/time. They verify renewal, expiry and failure isolation; they do not prove real App permissions or native Codex compatibility. The separate live checks in the [App guide](docs/github-app-auth.md) provide that evidence.
+
+### Shared-App host enrollment
+
+PowerShell 7.4+ can create approval in one direct repository Agent variable and obtain a private shared-App enrollment through `install.ps1 -Action Enroll`, using separate authenticated host `gh`. See [host setup, recovery and revoke](docs/host-enrollment.md). Complete guided runtime/Azure setup and live broker acceptance remain separate delivery gates.
