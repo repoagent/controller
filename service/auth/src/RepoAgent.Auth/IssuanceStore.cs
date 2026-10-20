@@ -103,41 +103,42 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
             {
                 verifier = await VerifierAsync(grant, ct) ?? throw new IssuanceDenied();
             }
-            // Reuse this exact committed global reservation across known repository conflicts.
-            // A timeout or unknown response never reaches this retry loop.
-            slot ??= await ChargeGlobalAsync(operation, grant.RepositoryId, purpose, reads, now, ct);
-            var quota = await ReadAsync(grant.Partition, "quota", ct);
-            var freshQuota = quota is null;
-            quota ??= NewQuota(grant.Partition);
-            Charge(quota, now, reads, limits.RepositoryAdmissions, limits.RepositoryReads, limits.RepositorySigns, limits.RepositoryMints);
-            if (Number(grant.Gate, "OutstandingTokenCount") >= limits.RepositoryAttempts) throw new IssuanceDenied(429);
-            grant.Gate["OutstandingTokenCount"] = Number(grant.Gate, "OutstandingTokenCount") + 1;
-            if (purpose == "verification") grant.Gate["VerifierAttempt"] = operation;
-            else grant.Device["OutstandingTokenCount"] = checked(Number(grant.Device, "OutstandingTokenCount") + 1);
-            var attempt = new TableEntity(grant.Partition, "attempt:" + operation)
-            {
-                ["OperationId"] = operation, ["RepositoryId"] = grant.RepositoryId,
-                ["DeviceId"] = grant.DeviceId, ["Epoch"] = grant.Epoch, ["Purpose"] = purpose,
-                ["Profile"] = profile, ["InstallationId"] = grant.InstallationId,
-                ["State"] = "reserved", ["ReservedAt"] = now,
-                ["JwtIssuedAt"] = now.AddSeconds(-60), ["JwtExpiresAt"] = now.AddSeconds(120), ["GlobalSlot"] = slot.Value
-            };
-            var extra = new List<TableTransactionAction>
-            {
-                new(freshQuota ? TableTransactionActionType.Add : TableTransactionActionType.UpdateReplace, quota, quota.ETag),
-                new(TableTransactionActionType.Add, attempt)
-            };
-            if (verifier is not null) extra.Add(Update(verifier));
             try
             {
+                // Definite global conflicts have no committed charge; reevaluate with the same operation.
+                // Once charged, reuse that reservation across known repository conflicts.
+                // A timeout or unknown response never reaches this retry loop.
+                slot ??= await ChargeGlobalAsync(operation, grant.RepositoryId, purpose, reads, now, ct);
+                var quota = await ReadAsync(grant.Partition, "quota", ct);
+                var freshQuota = quota is null;
+                quota ??= NewQuota(grant.Partition);
+                Charge(quota, now, reads, limits.RepositoryAdmissions, limits.RepositoryReads, limits.RepositorySigns, limits.RepositoryMints);
+                if (Number(grant.Gate, "OutstandingTokenCount") >= limits.RepositoryAttempts) throw new IssuanceDenied(429);
+                grant.Gate["OutstandingTokenCount"] = Number(grant.Gate, "OutstandingTokenCount") + 1;
+                if (purpose == "verification") grant.Gate["VerifierAttempt"] = operation;
+                else grant.Device["OutstandingTokenCount"] = checked(Number(grant.Device, "OutstandingTokenCount") + 1);
+                var attempt = new TableEntity(grant.Partition, "attempt:" + operation)
+                {
+                    ["OperationId"] = operation, ["RepositoryId"] = grant.RepositoryId,
+                    ["DeviceId"] = grant.DeviceId, ["Epoch"] = grant.Epoch, ["Purpose"] = purpose,
+                    ["Profile"] = profile, ["InstallationId"] = grant.InstallationId,
+                    ["State"] = "reserved", ["ReservedAt"] = now,
+                    ["JwtIssuedAt"] = now.AddSeconds(-60), ["JwtExpiresAt"] = now.AddSeconds(120), ["GlobalSlot"] = slot.Value
+                };
+                var extra = new List<TableTransactionAction>
+                {
+                    new(freshQuota ? TableTransactionActionType.Add : TableTransactionActionType.UpdateReplace, quota, quota.ETag),
+                    new(TableTransactionActionType.Add, attempt)
+                };
+                if (verifier is not null) extra.Add(Update(verifier));
                 await CommitAsync(grant, extra, ct);
+                return (await SnapshotAsync(grant.Partition, grant.DeviceId, ct), await RequiredAttemptAsync(grant, operation, ct));
             }
             catch (TableTransactionFailedException ex) when (ex.Status is 409 or 412)
             {
                 retry = true;
                 continue;
             }
-            return (await SnapshotAsync(grant.Partition, grant.DeviceId, ct), await RequiredAttemptAsync(grant, operation, ct));
         }
     }
 
