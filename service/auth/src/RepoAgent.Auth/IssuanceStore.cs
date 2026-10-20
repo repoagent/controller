@@ -7,7 +7,7 @@ using static RepoAgent.Auth.IssuancePolicy;
 namespace RepoAgent.Auth;
 
 // One Table-specific module owns the two-part conservative reservation and repository EGTs.
-// No capacity is freed here: cleanup/reconciliation must first prove settlement and worker cessation.
+// Capacity release is owned by BrokerCapacityReclamation after repository settlement.
 public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDataProtectionProvider protection, TimeProvider clock, IssuanceLimits? configuredLimits = null)
 {
     private readonly RetainedState retained = new(table, options);
@@ -111,6 +111,8 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
                 // Once charged, reuse that reservation across known repository conflicts.
                 // A timeout or unknown response never reaches this retry loop.
                 slot ??= await ChargeGlobalAsync(operation, generation, grant.RepositoryId, grant.DeviceId, purpose, reads, now, grant.Approval, ct);
+                await retained.RequireIssuanceAsync(operation, generation, grant.RepositoryId, grant.DeviceId,
+                    purpose, grant.Epoch, slot.Value, ct);
                 var quota = await ReadAsync(grant.Partition, "quota", ct);
                 var freshQuota = quota is null;
                 quota ??= NewQuota(grant.Partition);
@@ -124,7 +126,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
                     ["OperationId"] = operation, ["Generation"] = generation, ["RepositoryId"] = grant.RepositoryId,
                     ["DeviceId"] = grant.DeviceId, ["Epoch"] = grant.Epoch, ["Purpose"] = purpose,
                     ["Profile"] = profile, ["InstallationId"] = grant.InstallationId,
-                    ["State"] = "reserved", ["ReservedAt"] = now, ["PayloadPurgeAt"] = now.AddHours(24),
+                    ["RepositoryCharged"] = true, ["State"] = "reserved", ["ReservedAt"] = now, ["PayloadPurgeAt"] = now.AddHours(24),
                     ["JwtIssuedAt"] = now.AddSeconds(-60), ["JwtExpiresAt"] = now.AddSeconds(120), ["GlobalSlot"] = slot.Value
                 };
                 grant.Approval.Write(attempt);
@@ -151,10 +153,11 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
         var quota = (await retained.SchemaAsync(ct)).Issuance;
         _ = await retained.DirectoryAsync(repository, ct) ?? throw new IssuanceDenied();
         // One fixed partition and exactly 128 possible slot keys. No attacker-controlled quota keys.
-        var slot = Number(quota, "Slots");
-        if (slot >= limits.GlobalAttempts) throw new IssuanceDenied(429);
+        var occupancy = Number(quota, "Slots");
+        if (occupancy >= limits.GlobalAttempts) throw new IssuanceDenied(429);
         Charge(quota, now, reads, limits.GlobalAdmissions, limits.GlobalReads, limits.GlobalSigns, limits.GlobalMints);
-        quota["Slots"] = slot + 1;
+        var slot = await retained.FreeSlotAsync(limits.GlobalAttempts, ct);
+        quota["Slots"] = occupancy + 1;
         var reservation = new TableEntity(partition, "slot:" + slot.ToString("D3", CultureInfo.InvariantCulture))
         {
             ["OperationId"] = operation, ["Generation"] = generation, ["RepositoryId"] = repository, ["Purpose"] = purpose,

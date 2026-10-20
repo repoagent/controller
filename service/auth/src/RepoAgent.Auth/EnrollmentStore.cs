@@ -49,9 +49,17 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
         var partition = "repository:" + repository;
         for (var retry = 0; retry < 4; retry++)
         {
+            var gate = await reads.ReadAsync(partition, "gate", ct);
+            var current = await reads.ReadAsync(Global, key, ct) ?? throw new IssuanceDenied();
+            if (Text(current, "Generation") != Text(reservation, "Generation")
+                || current.GetBoolean("PendingCapacityReleased") == true
+                || Text(current, "RepositoryId") != repository || Text(current, "RecoveryHash") != hash
+                || Text(current, "BodyHash") != request.BodyHash) throw new IssuanceDenied();
+            request.Approval.Require(current);
+            RequireLive(current);
+            reservation = current;
             var pending = await reads.ReadAsync(partition, key, ct);
             if (pending is not null) return await SnapshotAsync(Text(reservation, "PendingId"), hash, ct, request.Approval.SetupVersion);
-            var gate = await reads.ReadAsync(partition, "gate", ct);
             var fresh = gate is null;
             gate ??= new(partition, "gate")
             {
@@ -72,6 +80,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
             pending["Variable"] = request.Variable.ToUpperInvariant();
             pending["Profile"] = request.Profile;
             pending["State"] = "discovering";
+            pending["RepositoryCharged"] = true;
             pending["NextWorkAt"] = DateTimeOffset.UnixEpoch;
             pending["PositiveApproval"] = false;
             try
@@ -136,9 +145,10 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
         var actions = new List<TableTransactionAction>();
         if (mint)
         {
-            slot = Number(global, "Slots");
-            if (slot >= limits.GlobalAttempts) throw new IssuanceDenied(429);
-            global["Slots"] = slot + 1;
+            var occupancy = Number(global, "Slots");
+            if (occupancy >= limits.GlobalAttempts) throw new IssuanceDenied(429);
+            slot = await retained.FreeSlotAsync(limits.GlobalAttempts, work.Cancellation);
+            global["Slots"] = occupancy + 1;
             var slotReservation = new TableEntity("global:issuance-v1", "slot:" + slot.Value.ToString("D3", CultureInfo.InvariantCulture))
             {
                 ["OperationId"] = operation, ["Generation"] = generation, ["RepositoryId"] = s.RepositoryId, ["Purpose"] = "verification",
@@ -151,6 +161,8 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
         }
         actions.Add(Action(global));
         await BrokerTable.SubmitAsync(table, actions, work.Cancellation);
+        if (mint) await retained.RequireIssuanceAsync(operation, generation, s.RepositoryId, s.DeviceId,
+            "verification", options.DeploymentEpoch, slot!.Value, work.Cancellation);
         var quota = await reads.ReadAsync(s.Partition, "quota", work.Cancellation);
         var freshQuota = quota is null;
         quota ??= Quota(s.Partition);
@@ -159,7 +171,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
         {
             ["OperationId"] = operation, ["Generation"] = generation, ["RepositoryId"] = s.RepositoryId, ["DeviceId"] = s.DeviceId,
             ["PendingId"] = s.Id, ["Epoch"] = options.DeploymentEpoch, ["Purpose"] = "verification", ["Profile"] = s.Approval.VerifierProfile,
-            ["State"] = "reserved", ["ReservedAt"] = now, ["PayloadPurgeAt"] = now.AddHours(24), ["JwtIssuedAt"] = now.AddSeconds(-60), ["JwtExpiresAt"] = now.AddSeconds(120)
+            ["RepositoryCharged"] = true, ["State"] = "reserved", ["ReservedAt"] = now, ["PayloadPurgeAt"] = now.AddHours(24), ["JwtIssuedAt"] = now.AddSeconds(-60), ["JwtExpiresAt"] = now.AddSeconds(120)
         };
         s.Approval.Write(attempt);
         var extra = new List<TableTransactionAction> { Action(quota, freshQuota) };

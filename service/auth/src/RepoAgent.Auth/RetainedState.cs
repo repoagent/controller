@@ -3,7 +3,7 @@ using static RepoAgent.Auth.IssuancePolicy;
 
 namespace RepoAgent.Auth;
 
-// Allocation only: no bootstrap, refunds, settlement or payload deletion. Quotas are initialized offline.
+// Fixed retained allocations and exact outstanding reservations. Quotas are initialized offline.
 internal sealed class RetainedState(TableClient table, BrokerOptions options)
 {
     internal const string Enrollment = "global:enrollment-v1", Issuance = "global:issuance-v1";
@@ -44,6 +44,37 @@ internal sealed class RetainedState(TableClient table, BrokerOptions options)
         quota["Count"] = Number(quota, "Count") + 1;
         if (newCandidate) quota["CandidateCount"] = Number(quota, "CandidateCount") + 1;
         directory["PendingCount"] = Number(directory, "PendingCount") + 1;
+    }
+
+    internal async Task<long> FreeSlotAsync(long ceiling, CancellationToken ct)
+    {
+        for (long slot = 0; slot < ceiling; slot++)
+            if (await BrokerTable.ReadAsync(table, Issuance, SlotKey(slot), ct) is null) return slot;
+        throw new IssuanceDenied(429);
+    }
+
+    internal static string SlotKey(long slot)
+    {
+        if (slot is < 0 or >= GlobalAttempts) throw new IssuanceDenied();
+        return "slot:" + slot.ToString("D3", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    internal async Task<TableEntity> RequireIssuanceAsync(string operation, string generation, string repository,
+        string device, string purpose, string epoch, long index, CancellationToken ct)
+    {
+        var ledger = await BrokerTable.ReadAsync(table, Issuance, "operation:" + operation, ct) ?? throw new IssuanceDenied();
+        var slot = await BrokerTable.ReadAsync(table, Issuance, SlotKey(index), ct) ?? throw new IssuanceDenied();
+        if (ledger.ContainsKey("CapacityState") && ledger.GetString("CapacityState") != "charged"
+            || Text(ledger, "DeviceId") != device || Number(ledger, "RowCredits") != 4
+            || Text(ledger, "AttemptRowKey") != "attempt:" + operation) throw new IssuanceDenied();
+        foreach (var row in new[] { ledger, slot })
+        {
+            if (Text(row, "OperationId") != operation || Text(row, "Generation") != generation
+                || Text(row, "RepositoryId") != repository || Text(row, "Purpose") != purpose
+                || Text(row, "Epoch") != epoch || Number(row, "GlobalSlot") != index) throw new IssuanceDenied();
+            ApprovalContract.Read(ledger).Require(row);
+        }
+        return slot;
     }
 
     internal TableEntity ChargeIssuance(TableEntity quota, TableEntity slot, string device, string? pending = null)
