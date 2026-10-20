@@ -358,13 +358,17 @@ public sealed partial class CapacityReclamationTests
         await Assert.ThrowsAsync<HttpRequestException>(() => Reclaim(f, runtime, f.Storage.CreateClient(fault)));
         await Reclaim(f, runtime);
         var obligation = await Read(f, RevocationFixture.Partition, "release:" + runtime.GetString("OperationId"));
+        await Reclaim(f, runtime);
+        Assert.Equal(obligation.ETag, (await Read(f, obligation.PartitionKey, obligation.RowKey)).ETag);
+        // #71's duplicate settlement remains inert. After #81's audit horizon,
+        // the resolved runtime allocation retires independently of its enrollment.
         f.Clock.Advance(TimeSpan.FromDays(31));
         await new BrokerPayloadRedaction(f.Storage.Table, Options(f), f.Clock)
             .RedactIssuanceAsync(runtime.GetString("OperationId")!, runtime.GetString("Generation")!, Token);
         await Reclaim(f, runtime);
-        Assert.Equal(obligation.ETag, (await Read(f, obligation.PartitionKey, obligation.RowKey)).ETag);
+        await AssertAbsent(f, obligation.PartitionKey, obligation.RowKey);
         Assert.Equal(1L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("Slots"));
-        Assert.Equal(2L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("RetainedIssuanceCount"));
+        Assert.Equal(1L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("RetainedIssuanceCount"));
         Assert.Equal(1L, (await Read(f, RevocationFixture.Partition, "gate")).GetInt64("OutstandingTokenCount"));
         var current = await Read(f, device.PartitionKey, device.RowKey);
         Assert.Equal(0L, current.GetInt64("OutstandingTokenCount"));
