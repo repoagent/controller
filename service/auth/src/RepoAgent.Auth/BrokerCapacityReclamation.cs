@@ -4,7 +4,7 @@ using static RepoAgent.Auth.IssuancePolicy;
 namespace RepoAgent.Auth;
 
 // One charged identity per call. Repository settlement precedes exact global release.
-// Retained ledgers and release obligations survive; physical retirement belongs to #81.
+// A later invocation retires eligible retained rows using durable deletion proof.
 public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions options, TimeProvider clock)
 {
     private readonly RetainedState retained = new(table, options);
@@ -15,7 +15,9 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
         if (ledger is null) return;
         var gate = await GateAsync(ledger, ct);
         ledger = await LedgerAsync(ledger.PartitionKey, ledger.RowKey, operationId, generation, 4, ct);
-        if (ledger is null || ledger.GetString("CapacityState") == "released") return;
+        if (ledger is null) return;
+        if (ledger.GetString("CapacityState") == "released") { await RetireAsync(ledger, gate, false, ct); return; }
+        if (ledger.ContainsKey("RetirementState")) throw new IssuanceDenied();
         if (ledger.ContainsKey("CapacityState") && ledger.GetString("CapacityState") != "charged") throw new IssuanceDenied();
         var slot = await retained.RequireIssuanceAsync(operationId, generation, Text(ledger, "RepositoryId"),
             Text(ledger, "DeviceId"), Text(ledger, "Purpose"), Text(ledger, "Epoch"), Number(ledger, "GlobalSlot"), ct);
@@ -74,7 +76,9 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
         if (ledger is null) return;
         var gate = await GateAsync(ledger, ct);
         ledger = await LedgerAsync(ledger.PartitionKey, ledger.RowKey, idempotencyId, generation, 8, ct);
-        if (ledger is null || ledger.GetBoolean("PendingCapacityReleased") == true) return;
+        if (ledger is null) return;
+        if (ledger.GetBoolean("PendingCapacityReleased") == true) { await RetireAsync(ledger, gate, true, ct); return; }
+        if (ledger.ContainsKey("RetirementState")) throw new IssuanceDenied();
         if (Text(ledger, "PendingId") != Text(ledger, "RepositoryId") + "_" + idempotencyId) throw new IssuanceDenied();
         var pending = await ReadAsync(gate.PartitionKey, ledger.RowKey, ct);
         var release = await ReadAsync(gate.PartitionKey, "release:" + ledger.RowKey, ct);
@@ -117,6 +121,139 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
         await BrokerTable.SubmitAsync(table, [Action(quota), Action(directory), Action(ledger)], ct);
     }
 
+    // Five bounded transactions: retiring, target deletion receipt, global proof,
+    // receipt deletion, retained refund. No phase treats unexplained absence as proof.
+    private async Task RetireAsync(TableEntity ledger, TableEntity gate, bool enrollment, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(gate.ETag.ToString()) || Text(gate, "RepositoryId") != Text(ledger, "RepositoryId")) throw new IssuanceDenied();
+        var phase = ledger.GetString("RetirementState");
+        if (phase is not (null or "retiring" or "repository-deleted")) throw new IssuanceDenied();
+        var targetKey = enrollment ? ledger.RowKey : Text(ledger, "AttemptRowKey");
+        var releaseKey = "release:" + (enrollment ? ledger.RowKey : Text(ledger, "OperationId"));
+        var target = await ReadAsync(gate.PartitionKey, targetKey, ct);
+        var release = await ReadAsync(gate.PartitionKey, releaseKey, ct);
+        if (target is not null) Bind(ledger, target, true);
+        if (release is not null) BindRelease(ledger, release);
+        if (phase != "repository-deleted")
+        {
+            if (release is null) throw new IssuanceDenied();
+            if (release.GetBoolean("RetirementTargetDeleted") == true)
+            {
+                if (phase != "retiring" || target is not null
+                    || Date(release, "RetirementAuditAt") != Date(ledger, "RetirementAuditAt")) throw new IssuanceDenied();
+            }
+            else
+            {
+                if (target is null) throw new IssuanceDenied();
+                if (!enrollment && Text(release, "SettlementReason") != Text(target, "SettlementReason")) throw new IssuanceDenied();
+                var extra = new List<TableTransactionAction>();
+                var resolved = enrollment ? EnrollmentResolution(ledger, target) : IssuanceResolution(target);
+                if (PayloadClock.Add(resolved, TimeSpan.FromDays(30)) is not { } audit || audit > clock.GetUtcNow()) return;
+                if (enrollment)
+                {
+                    // No completed publisher can exist without these sticky/version proofs.
+                    if (await ReadAsync(gate.PartitionKey, "device:" + Text(ledger, "DeviceId"), ct) is not null
+                        || await ReadAsync("locator:" + Text(ledger, "DeviceId"), "locator", ct) is not null
+                        || await ReadAsync(gate.PartitionKey, "revocation:" + Text(ledger, "DeviceId"), ct) is not null) return;
+                }
+                else if (ledger.GetString("PendingId") is { } pendingId)
+                {
+                    var prefix = Text(ledger, "RepositoryId") + "_";
+                    if (!pendingId.StartsWith(prefix, StringComparison.Ordinal)
+                        || !Guid.TryParseExact(pendingId[prefix.Length..], "N", out _)) throw new IssuanceDenied();
+                    var pending = await ReadAsync(gate.PartitionKey, "pending:" + pendingId[prefix.Length..], ct);
+                    if (pending is not null)
+                    {
+                        Bind(ledger, pending, false);
+                        if (Text(pending, "PendingId") != pendingId) throw new IssuanceDenied();
+                        if (pending.GetString("Attempt") == Text(ledger, "OperationId")
+                            && pending.GetString("State") is not ("closed" or "active")
+                            && Date(pending, "Deadline") > clock.GetUtcNow()) return;
+                        extra.Add(Action(pending));
+                    }
+                }
+                if (phase is null)
+                {
+                    ledger["RetirementState"] = "retiring";
+                    ledger["RetirementAuditAt"] = audit;
+                    await ReplaceAsync(ledger, ct);
+                }
+                else if (Date(ledger, "RetirementAuditAt") != audit) throw new IssuanceDenied();
+                if (!enrollment && gate.GetString("VerifierAttempt") == Text(ledger, "OperationId")) gate.Remove("VerifierAttempt");
+                release["RetirementTargetDeleted"] = true;
+                release["RetirementAuditAt"] = audit;
+                extra.Add(Delete(target));
+                extra.Add(Action(release));
+                await CommitAsync(gate, extra, ct);
+            }
+            // This update is authorized by a positively committed, generation-bound receipt.
+            ledger["RetirementState"] = "repository-deleted";
+            await ReplaceAsync(ledger, ct);
+        }
+        if (Date(ledger, "RetirementAuditAt") > clock.GetUtcNow()) throw new IssuanceDenied();
+        // Capture a new gate BEFORE validating current global proof, never adopt a new
+        // gate under the earlier ledger decision. A concurrent phase worker wins ETags.
+        gate = await ReadAsync(gate.PartitionKey, "gate", ct) ?? throw new IssuanceDenied();
+        var current = await ReadAsync(ledger.PartitionKey, ledger.RowKey, ct) ?? throw new IssuanceDenied();
+        Bind(ledger, current, true);
+        if (current.ETag != ledger.ETag || Text(current, "RetirementState") != "repository-deleted"
+            || Text(gate, "RepositoryId") != Text(ledger, "RepositoryId")) throw new IssuanceDenied();
+        if (await ReadAsync(gate.PartitionKey, targetKey, ct) is not null) throw new IssuanceDenied();
+        release = await ReadAsync(gate.PartitionKey, releaseKey, ct);
+        var deletes = new List<TableTransactionAction>();
+        if (release is not null)
+        {
+            BindRelease(ledger, release);
+            if (release.GetBoolean("RetirementTargetDeleted") != true
+                || Date(release, "RetirementAuditAt") != Date(ledger, "RetirementAuditAt")) throw new IssuanceDenied();
+            deletes.Add(Delete(release));
+        }
+        await CommitAsync(gate, deletes, ct);
+        var schema = await retained.SchemaAsync(ct);
+        var quota = enrollment ? schema.Enrollment : schema.Issuance;
+        Decrement(quota, enrollment ? "RetainedEnrollmentCount" : "RetainedIssuanceCount");
+        await BrokerTable.SubmitAsync(table, [Action(quota), Delete(ledger)], ct);
+    }
+
+    private static void BindRelease(TableEntity ledger, TableEntity release)
+    {
+        Bind(ledger, release, true);
+        if (Number(release, "RowCredits") != Number(ledger, "RowCredits")
+            || PayloadClock.Read(release, "RepositorySettledAt") is null) throw new IssuanceDenied();
+    }
+
+    private static DateTimeOffset? EnrollmentResolution(TableEntity ledger, TableEntity pending)
+    {
+        if (ledger.GetInt64("ReclamationVersion") != 1 || pending.GetInt64("ReclamationVersion") != 1
+            || pending.GetBoolean("MintAdmissionStarted") == true || pending.ContainsKey("CompletionId")
+            || pending.ContainsKey("Attempt") || pending.GetString("State") != "closed"
+            || pending.GetBoolean("PendingCapacityReleased") != true) return null;
+        return PayloadClock.Earlier(PayloadClock.Read(pending, "FirstTerminalAt"), PayloadClock.Read(ledger, "Deadline"));
+    }
+
+    private static DateTimeOffset? IssuanceResolution(TableEntity attempt)
+    {
+        if (attempt.GetBoolean("CapacityReleased") != true || attempt.GetString("State") != "settled") return null;
+        var reason = attempt.GetString("SettlementReason");
+        if (reason == "expired")
+        {
+            var expiry = PayloadClock.Read(attempt, "ExpiresAt");
+            var reserved = PayloadClock.Read(attempt, "ReservedAt");
+            if (attempt.GetBoolean("ScopeValid") != true || expiry is null || reserved is null || expiry <= reserved) return null;
+            return PayloadClock.Add(expiry, TimeSpan.FromMinutes(5));
+        }
+        if (reason == "unsent" && attempt.ContainsKey("SendClaimedAt")
+            || reason == "unpublished" && attempt.GetBoolean("RepositoryCharged") == true) return null;
+        return reason is "revoked" or "unsent" or "unpublished" ? PayloadClock.Read(attempt, "SettledAt") : null;
+    }
+
+    private async Task ReplaceAsync(TableEntity row, CancellationToken ct)
+    {
+        var response = await BrokerTable.SubmitAsync(table, [Action(row)], ct);
+        row.ETag = response.Value[0].Headers.ETag ?? throw new IssuanceDenied();
+    }
+    private static TableTransactionAction Delete(TableEntity row) => new(TableTransactionActionType.Delete, row, row.ETag);
+
     // #78 creates this exact shape only when the repository target was absent.
     // Published rows retain their authority state and payload metadata during redaction.
     private static bool UnpublishedTombstone(TableEntity ledger, TableEntity row)
@@ -126,7 +263,7 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
             ["State"] = "redacted", ["PayloadRedacted"] = true
         };
         foreach (var field in new[] { "Generation", "RepositoryId", "DeviceId", "Epoch", "RowCredits", "PendingId", "OperationId",
-            "Purpose", "GlobalSlot", "ReservedAt", "CreatedAt", "Deadline", "PayloadPurgeAt", "ApprovalKind", "SetupVersion", "PolicyVersion" })
+            "Purpose", "GlobalSlot", "ReservedAt", "CreatedAt", "Deadline", "PayloadPurgeAt", "ApprovalKind", "SetupVersion", "PolicyVersion", "ReclamationVersion" })
             if (ledger.TryGetValue(field, out var value)) expected[field] = value;
         if (ledger.PartitionKey == RetainedState.Enrollment && PayloadClock.Read(ledger, "Deadline") is { } deadline)
             expected["FirstTerminalAt"] = deadline;
@@ -162,6 +299,7 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
         _ = ApprovalContract.Read(row);
         if (credits == 4 && (Text(row, "OperationId") != id || Text(row, "AttemptRowKey") != "attempt:" + id
             || Text(row, "Purpose") is not ("verification" or "runtime"))) throw new IssuanceDenied();
+        if (credits == 8 && Text(row, "PendingId") != Text(row, "RepositoryId") + "_" + id) throw new IssuanceDenied();
         return row;
     }
 
@@ -200,7 +338,7 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
     {
         var row = new TableEntity(partition, key);
         foreach (var field in new[] { "RepositoryId", "DeviceId", "Epoch", "Generation", "OperationId", "Purpose", "PendingId",
-            "GlobalSlot", "ReservedAt", "PayloadPurgeAt", "CreatedAt", "Deadline", "RowCredits" })
+            "GlobalSlot", "ReservedAt", "PayloadPurgeAt", "CreatedAt", "Deadline", "RowCredits", "ReclamationVersion" })
             if (ledger.TryGetValue(field, out var value)) row[field] = value;
         ApprovalContract.Read(ledger).Write(row);
         return row;
