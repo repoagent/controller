@@ -1,0 +1,48 @@
+name: Verify Azure auth deployment access
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: azure-auth-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Sign in to Azure using GitHub OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify resource group and Bicep deployment access
+        shell: bash
+        env:
+          DEPLOYMENT_NAME: github-oidc-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          test "$(az group show --name "$AZURE_RESOURCE_GROUP" --query location --output tsv)" = "$AZURE_LOCATION"
+          az deployment group create \
+            --name "$DEPLOYMENT_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file infra/auth/verify-access.bicep \
+            --mode Incremental \
+            --query properties.outputs \
+            --output json
