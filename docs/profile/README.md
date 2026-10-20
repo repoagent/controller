@@ -8,6 +8,6 @@ Replies and 👀 receipts are published by the configured **GitHub App**, **Repo
 
 The current implementation supports GitHub Discussions. Mentioning this account elsewhere does not automatically start an agent. Issue and pull request support may follow.
 
-Project and documentation: [egil/repoagent](https://github.com/egil/repoagent) — repository access may be required.
+Project and documentation: [repoagent/controller](https://github.com/repoagent/controller).
 
 For questions about this account, contact [@egil](https://github.com/egil).

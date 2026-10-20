@@ -60,7 +60,7 @@ Deleting local storage does not disable or delete the remote hook. For permanent
 | Polling | Available | None; no inbound listener |
 | Fixed URL | Available | Operator-provided HTTPS ingress, independent of Cloudflare |
 | [Quick Tunnel](quick-tunnel.md) | Available | Temporary hostname for local testing, no Cloudflare account/domain |
-| Named tunnel | Planned in [#22](https://github.com/egil/repoagent/issues/22) | Stable hostname with operator-managed Cloudflare configuration |
+| Named tunnel | Planned in [#22](https://github.com/repoagent/controller/issues/22) | Stable hostname with operator-managed Cloudflare configuration |
 
 The same image can run behind external HTTP ingress in Azure Container Apps or another host. Set the public origin to that deployment's HTTPS hostname and the ingress target port to the configured listener port. Run image command `start`; provide the selected key at `/run/secrets/github-app.pem`, container-owned Codex authentication, public configuration, and persistent storage at the paths in the container guide. Keep configuration read-only during native work. Use one replica and persistent storage for the JSON state/native history; do not rely on an ephemeral container filesystem for conversation continuity. Provisioning the cloud resources and HTTPS ingress is operator-owned.
 

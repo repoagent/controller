@@ -4,9 +4,9 @@ RepoAgent connects GitHub conversations to native coding-agent sessions. Its CLI
 
 ## Start here
 
-- [Minimal PoC — issue #2](https://github.com/egil/repoagent/issues/2): the implementation starting point, with manual verification.
-- [Full specification — issue #1](https://github.com/egil/repoagent/issues/1): broader design reference. The PoC's smaller scope takes precedence for the initial build.
-- [Flows, payloads and session instructions](https://github.com/egil/repoagent/issues/2#issuecomment-6276915447).
+- [Minimal PoC — issue #2](https://github.com/repoagent/controller/issues/2): the implementation starting point, with manual verification.
+- [Full specification — issue #1](https://github.com/repoagent/controller/issues/1): broader design reference. The PoC's smaller scope takes precedence for the initial build.
+- [Flows, payloads and session instructions](https://github.com/repoagent/controller/issues/2#issuecomment-6276915447).
 
 The PoC uses one native Codex session per Discussion, a small JSON mapping/checkpoint, GraphQL observation, an ordinary skill plus `gh` for replies, and timestamped stdout logging. After the native harness accepts input, the bridge adds 👀 to the forwarded source Discussion, comment or reply.
 
@@ -17,12 +17,12 @@ Each bridge process monitors one configured repository. Specifications and ticke
 For the packaged Docker setup, run `./install.sh` in Bash or `.\install.ps1` in Windows PowerShell from the checkout. Both explain their steps, prompt for missing values, accept command-line options, reuse an existing Codex sign-in when available, verify the GitHub App and start the agent. Windows uses Docker Desktop Linux containers directly; WSL is optional. See [installation, skills and storage](docs/container-setup.md) and the [executable acceptance catalog](docs/acceptance-cases.md). For event-triggered operation behind your own HTTPS ingress, see [fixed-URL webhooks](docs/webhooks.md).
 For local development without a public hostname, select [Quick Tunnel mode](docs/quick-tunnel.md).
 
-Run the bridge in a Linux container containing `gh` and `codex`. The packaged bridge is Native AOT compiled and needs no installed .NET runtime. Native Codex uses its normal sign-in. GitHub access uses an installed GitHub App with **Discussions: read/write** and a read-only mounted PEM signing key. An agent GitHub-user login is unnecessary. Container bootstrap and live verification are tracked in [#5](https://github.com/egil/repoagent/issues/5).
+Run the bridge in a Linux container containing `gh` and `codex`. The packaged bridge is Native AOT compiled and needs no installed .NET runtime. Native Codex uses its normal sign-in. GitHub access uses an installed GitHub App with **Discussions: read/write** and a read-only mounted PEM signing key. An agent GitHub-user login is unnecessary. Container bootstrap and live verification are tracked in [#5](https://github.com/repoagent/controller/issues/5).
 
 Pass these arguments to the bridge **inside the configured container**:
 
 ```text
-bridge --repo egil/repoagent --app-id APP_ID_OR_CLIENT_ID --mention-user repoagent \
+bridge --repo repoagent/controller --app-id APP_ID_OR_CLIENT_ID --mention-user repoagent \
 --private-key /run/secrets/github-app.pem --workspace /workspace \
 --state /data/bridge-state.json
 ```

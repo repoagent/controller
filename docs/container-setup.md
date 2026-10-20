@@ -7,8 +7,8 @@ Use Docker Engine/Desktop with Linux containers and either Bash or Windows Power
 With Docker Desktop running in Linux container mode, clone or download this repository, then open PowerShell in the checkout:
 
 ```powershell
-git clone https://github.com/egil/repoagent.git
-cd repoagent
+git clone https://github.com/repoagent/controller.git
+cd controller
 .\install.ps1
 ```
 

@@ -44,8 +44,8 @@ sudo apt-get update
 sudo apt-get install -y git
 mkdir -p ~/src
 cd ~/src
-git clone https://github.com/egil/repoagent.git
-cd repoagent
+git clone https://github.com/repoagent/controller.git
+cd controller
 docker version
 docker info --format '{{.OSType}}'
 ```

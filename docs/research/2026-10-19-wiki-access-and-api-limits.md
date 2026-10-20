@@ -1,6 +1,6 @@
 # Wiki access, GraphQL limits and webhook routing
 
-Checked 2026-10-19 for Repo Agent Connector and `egil/repoagent`. Implementation findings refer to [revision `6c60f8d`](https://github.com/egil/repoagent/tree/6c60f8dd670a70726c131e558dd41f21ad3e7eda). No App credentials were accessed, no private-wiki authentication test was run, and no permissions or webhook settings changed during this research.
+Checked 2026-10-19 for Repo Agent Connector and the controller repository (then `egil/repoagent`, now `repoagent/controller`). Implementation findings refer to [revision `6c60f8d`](https://github.com/repoagent/controller/tree/6c60f8dd670a70726c131e558dd41f21ad3e7eda). No App credentials were accessed, no private-wiki authentication test was run, and no permissions or webhook settings changed during this research.
 
 ## Findings that affect the bridge now
 
@@ -21,14 +21,14 @@ There is no basis in the official sources reviewed to claim a classic PAT is man
 ### Current blockers and the smallest useful test
 
 - The target repository reported `has_wiki: false` during this check. A disabled or uninitialized wiki cannot establish authentication compatibility.
-- [`GitHubAppCredentials.GetToken`](https://github.com/egil/repoagent/blob/6c60f8dd670a70726c131e558dd41f21ad3e7eda/src/DiscussionBridge/GitHubAppCredentials.cs) explicitly requests `permissions = new { discussions = "write" }`. Request `contents = "read"` alongside the existing Discussion access to test private Git reads. Other approved App permissions likewise need to be included if sessions are to use them. Alternatively, omitting the permission filter inherits the installation grants; retain the repository restriction either way.
-- The [`gh` wrapper](https://github.com/egil/repoagent/blob/6c60f8dd670a70726c131e558dd41f21ad3e7eda/src/DiscussionBridge/AppGitHubCommand.cs) does not configure Git credentials. HTTPS Git needs a separate credential-helper/askpass handoff supplying the fresh App token; `GH_TOKEN` alone is insufficient.
+- [`GitHubAppCredentials.GetToken`](https://github.com/repoagent/controller/blob/6c60f8dd670a70726c131e558dd41f21ad3e7eda/src/DiscussionBridge/GitHubAppCredentials.cs) explicitly requests `permissions = new { discussions = "write" }`. Request `contents = "read"` alongside the existing Discussion access to test private Git reads. Other approved App permissions likewise need to be included if sessions are to use them. Alternatively, omitting the permission filter inherits the installation grants; retain the repository restriction either way.
+- The [`gh` wrapper](https://github.com/repoagent/controller/blob/6c60f8dd670a70726c131e558dd41f21ad3e7eda/src/DiscussionBridge/AppGitHubCommand.cs) does not configure Git credentials. HTTPS Git needs a separate credential-helper/askpass handoff supplying the fresh App token; `GH_TOKEN` alone is insufficient.
 
 Once an initialized private test wiki is available, mint a fresh parent-repository token with Contents read and run two read-only probes:
 
 ```bash
-git ls-remote --exit-code https://github.com/egil/repoagent.git HEAD
-git ls-remote --exit-code https://github.com/egil/repoagent.wiki.git HEAD
+git ls-remote --exit-code https://github.com/repoagent/controller.git HEAD
+git ls-remote --exit-code https://github.com/repoagent/controller.wiki.git HEAD
 ```
 
 Use an isolated Git configuration with only the App credential, username `x-access-token`, no interactive prompts and no human credential or SSH fallback. Supply the token through a secure helper, never a URL or log. Confirm returned token permissions without printing the token. If the main repository probe fails, repair authentication first. If only the initialized wiki fails, capture the sanitized error before concluding that GitHub rejects that App/wiki combination. Public-wiki reads are not a valid private-authentication test.
@@ -43,7 +43,7 @@ Read response rate-limit headers, or include `rateLimit { limit remaining used r
 
 ### What the present polling code costs
 
-[`GitHub.Sources`](https://github.com/egil/repoagent/blob/6c60f8dd670a70726c131e558dd41f21ad3e7eda/src/DiscussionBridge/GitHub.cs) reads each Discussion's comments, each top-level comment's replies, and every source item's reactions in separate paginated requests. [`Bridge.Poll`](https://github.com/egil/repoagent/blob/6c60f8dd670a70726c131e558dd41f21ad3e7eda/src/DiscussionBridge/Bridge.cs) does this before its enrollment check, except for records stopped for pending/manual recovery.
+[`GitHub.Sources`](https://github.com/repoagent/controller/blob/6c60f8dd670a70726c131e558dd41f21ad3e7eda/src/DiscussionBridge/GitHub.cs) reads each Discussion's comments, each top-level comment's replies, and every source item's reactions in separate paginated requests. [`Bridge.Poll`](https://github.com/repoagent/controller/blob/6c60f8dd670a70726c131e558dd41f21ad3e7eda/src/DiscussionBridge/Bridge.cs) does this before its enrollment check, except for records stopped for pending/manual recovery.
 
 For one Discussion, `C` top-level comments and `R` replies, with every connection fitting one page, a complete read poll makes:
 
@@ -52,7 +52,7 @@ For one Discussion, `C` top-level comments and `R` replies, with every connectio
 = 3 + 2C + R GraphQL requests
 ```
 
-Ten comments and no replies therefore mean **23 requests per poll**, even without new input. At a hypothetical 360 polls/hour, that is at least 8,280 points before receipts or agent activity. Actual frequency is lower: [`Program.cs`](https://github.com/egil/repoagent/blob/6c60f8dd670a70726c131e558dd41f21ad3e7eda/src/DiscussionBridge/Program.cs) waits ten seconds *after* each poll completes. By comparison, a single one-point query every ten seconds would cost 360 points/hour.
+Ten comments and no replies therefore mean **23 requests per poll**, even without new input. At a hypothetical 360 polls/hour, that is at least 8,280 points before receipts or agent activity. Actual frequency is lower: [`Program.cs`](https://github.com/repoagent/controller/blob/6c60f8dd670a70726c131e558dd41f21ad3e7eda/src/DiscussionBridge/Program.cs) waits ten seconds *after* each poll completes. By comparison, a single one-point query every ten seconds would cost 360 points/hour.
 
 The reviewed implementation throws on GraphQL errors but does not yet expose rate telemetry or implement rate-aware backoff. These are small, useful safeguards even for the PoC. Batching reads and avoiding repeated full-history scans can follow if observed usage warrants them.
 

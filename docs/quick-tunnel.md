@@ -1,6 +1,6 @@
 # Local development with a Quick Tunnel
 
-Quick Tunnel mode gives a local container a temporary public HTTPS origin without a Cloudflare account, domain, credentials, host-installed `cloudflared` or inbound router configuration. It is for development/testing: hostnames change on replacement and Cloudflare provides no uptime guarantee. Use a fixed URL or the planned [named tunnel](https://github.com/egil/repoagent/issues/22) for stable hosting.
+Quick Tunnel mode gives a local container a temporary public HTTPS origin without a Cloudflare account, domain, credentials, host-installed `cloudflared` or inbound router configuration. It is for development/testing: hostnames change on replacement and Cloudflare provides no uptime guarantee. Use a fixed URL or the planned [named tunnel](https://github.com/repoagent/controller/issues/22) for stable hosting.
 
 ## Setup
 
@@ -39,6 +39,6 @@ To switch to an operator-provided origin, stop, repeat configuration with the sa
 
 Use a disposable Discussion and the separate human test participant. After startup reconciliation, add a mention/reply; retain its real GitHub delivery status, response URL, source EYES, hook ID and native session ID. Stop/restart the container, verify a different temporary hostname on that same hook and submit a continuation that recalls prior context through the same native session. Confirm the saved hook is inactive after controlled stop, its ID/secret are retained for restart, and the stopped container owns no remaining tunnel process. Also verify fixed-URL SIGTERM deactivation and a network-unavailable shutdown that logs failure and finishes within the stop budget.
 
-Also check a real network-isolated startup fails without readiness, and terminating cloudflared in an idle test container stops the companion bridge with a visible error. These are separate bounded checks; do not automatically retry the entire provider journey. Keep secrets, auth caches and private keys out of evidence. Record results and any provider limitations in [issue #21](https://github.com/egil/repoagent/issues/21).
+Also check a real network-isolated startup fails without readiness, and terminating cloudflared in an idle test container stops the companion bridge with a visible error. These are separate bounded checks; do not automatically retry the entire provider journey. Keep secrets, auth caches and private keys out of evidence. Record results and any provider limitations in [issue #21](https://github.com/repoagent/controller/issues/21).
 
 Reference: [Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
