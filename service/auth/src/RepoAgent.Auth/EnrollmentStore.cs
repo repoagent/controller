@@ -11,8 +11,10 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
     TimeProvider clock, IssuanceLimits limits, IssuanceStore reads)
 {
     private const string Global = "global:enrollment-v1";
+    private readonly RetainedState retained = new(table, options);
     internal async Task<EnrollmentSnapshot> AdmitAsync(EnrollmentInput request, string hash, CancellationToken ct)
     {
+        _ = await retained.SchemaAsync(ct);
         var repository = request.RepositoryId.ToString(CultureInfo.InvariantCulture);
         var key = "pending:" + request.IdempotencyId;
         TableEntity? reservation = null;
@@ -20,24 +22,23 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
         {
             reservation = await reads.ReadAsync(Global, key, ct);
             if (reservation is not null) break;
-            var quota = await reads.ReadAsync(Global, "quota", ct);
-            var fresh = quota is null;
-            quota ??= new(Global, "quota") { ["Count"] = 0L };
-            var field = "Repository" + repository;
-            var count = quota.GetInt64(field) ?? 0;
-            if (Number(quota, "Count") >= GlobalPending || count >= RepositoryPending) throw new IssuanceDenied(429);
-            quota["Count"] = Number(quota, "Count") + 1;
-            quota[field] = count + 1;
+            var quota = (await retained.SchemaAsync(ct)).Enrollment;
+            var directory = await retained.DirectoryAsync(repository, ct);
+            var freshDirectory = directory is null;
+            directory ??= new(Global, "repository:" + repository) { ["RepositoryId"] = repository, ["PendingCount"] = 0L };
+            retained.ChargeEnrollment(quota, directory, freshDirectory);
             var now = clock.GetUtcNow();
             reservation = new(Global, key)
             {
                 ["RepositoryId"] = repository, ["PendingId"] = repository + "_" + request.IdempotencyId,
                 ["RecoveryHash"] = hash, ["BodyHash"] = request.BodyHash, ["Epoch"] = options.DeploymentEpoch,
                 ["CreatedAt"] = now, ["Deadline"] = now.Add(PendingLifetime),
+                ["PayloadPurgeAt"] = now.Add(PendingLifetime).AddHours(24),
+                ["Generation"] = Guid.NewGuid().ToString("N"), ["RowCredits"] = 8L,
                 ["DeviceId"] = Guid.NewGuid().ToString("N"), ["Challenge"] = EnrollmentSecrets.Generate()
             };
             request.Approval.Write(reservation);
-            try { await table.SubmitTransactionAsync([Action(quota, fresh), Action(reservation, true)], ct); break; }
+            try { await BrokerTable.SubmitAsync(table, [Action(quota), Action(directory, freshDirectory), Action(reservation, true)], ct); break; }
             catch (TableTransactionFailedException ex) when (ex.Status is 409 or 412) { reservation = null; }
         }
         if (reservation is null) throw new IssuanceDenied();
@@ -75,7 +76,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
             pending["PositiveApproval"] = false;
             try
             {
-                await table.SubmitTransactionAsync([Action(gate, fresh), Action(pending, true)], ct);
+                await BrokerTable.SubmitAsync(table, [Action(gate, fresh), Action(pending, true)], ct);
                 return await SnapshotAsync(Text(reservation, "PendingId"), hash, ct, request.Approval.SetupVersion);
             }
             catch (TableTransactionFailedException ex) when (ex.Status is 409 or 412) { }
@@ -116,6 +117,8 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
     internal async Task<TableEntity> ReserveWorkAsync(EnrollmentSnapshot s, bool mint, IssuanceWork work)
     {
         RequireLive(s.Pending);
+        _ = await retained.SchemaAsync(work.Cancellation);
+        _ = await retained.DirectoryAsync(s.RepositoryId, work.Cancellation) ?? throw new IssuanceDenied();
         var now = clock.GetUtcNow();
         if (Date(s.Pending, "NextWorkAt") > now) throw new IssuanceDenied(429);
         if (s.Pending.GetString("Attempt") is not null && mint) throw new IssuanceDenied();
@@ -124,10 +127,10 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
         s.Pending["NextWorkAt"] = now.AddSeconds(15);
         s.Pending["WorkStartedAt"] = now;
         await CommitAsync(s, [], work.Cancellation);
-        var global = await reads.ReadAsync("global:issuance-v1", "quota", work.Cancellation);
-        var freshGlobal = global is null;
-        global ??= Quota("global:issuance-v1");
+        var global = (await retained.SchemaAsync(work.Cancellation)).Issuance;
         Charge(global, now, limits.GlobalAdmissions, limits.GlobalReads, limits.GlobalSigns, limits.GlobalMints, mint);
+        var operation = mint ? Guid.NewGuid().ToString("N") : "observation";
+        var generation = Guid.NewGuid().ToString("N");
         long? slot = null;
         var actions = new List<TableTransactionAction>();
         if (mint)
@@ -137,24 +140,25 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
             global["Slots"] = slot + 1;
             var slotReservation = new TableEntity("global:issuance-v1", "slot:" + slot.Value.ToString("D3", CultureInfo.InvariantCulture))
             {
-                ["OperationId"] = s.Id, ["RepositoryId"] = s.RepositoryId, ["Purpose"] = "verification",
-                ["Epoch"] = options.DeploymentEpoch, ["ReservedAt"] = now
+                ["OperationId"] = operation, ["Generation"] = generation, ["RepositoryId"] = s.RepositoryId, ["Purpose"] = "verification",
+                ["Epoch"] = options.DeploymentEpoch, ["ReservedAt"] = now,
+                ["PayloadPurgeAt"] = now.AddHours(24), ["GlobalSlot"] = slot.Value
             };
             s.Approval.Write(slotReservation);
+            actions.Add(Action(retained.ChargeIssuance(global, slotReservation, s.DeviceId, s.Id), true));
             actions.Add(Action(slotReservation, true));
         }
-        actions.Add(Action(global, freshGlobal));
-        await table.SubmitTransactionAsync(actions, work.Cancellation);
+        actions.Add(Action(global));
+        await BrokerTable.SubmitAsync(table, actions, work.Cancellation);
         var quota = await reads.ReadAsync(s.Partition, "quota", work.Cancellation);
         var freshQuota = quota is null;
         quota ??= Quota(s.Partition);
         Charge(quota, now, limits.RepositoryAdmissions, limits.RepositoryReads, limits.RepositorySigns, limits.RepositoryMints, mint);
-        var operation = mint ? Guid.NewGuid().ToString("N") : "observation";
         var attempt = new TableEntity(s.Partition, mint ? "attempt:" + operation : "observation:" + s.Id)
         {
-            ["OperationId"] = operation, ["RepositoryId"] = s.RepositoryId, ["DeviceId"] = s.DeviceId,
+            ["OperationId"] = operation, ["Generation"] = generation, ["RepositoryId"] = s.RepositoryId, ["DeviceId"] = s.DeviceId,
             ["PendingId"] = s.Id, ["Epoch"] = options.DeploymentEpoch, ["Purpose"] = "verification", ["Profile"] = s.Approval.VerifierProfile,
-            ["State"] = "reserved", ["ReservedAt"] = now, ["JwtIssuedAt"] = now.AddSeconds(-60), ["JwtExpiresAt"] = now.AddSeconds(120)
+            ["State"] = "reserved", ["ReservedAt"] = now, ["PayloadPurgeAt"] = now.AddHours(24), ["JwtIssuedAt"] = now.AddSeconds(-60), ["JwtExpiresAt"] = now.AddSeconds(120)
         };
         s.Approval.Write(attempt);
         var extra = new List<TableTransactionAction> { Action(quota, freshQuota) };
@@ -198,7 +202,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
         s.Gate["Sequence"] = checked(Number(s.Gate, "Sequence") + 1);
         var actions = new List<TableTransactionAction> { Action(s.Gate), Action(s.Pending) };
         actions.AddRange(extra);
-        var response = await table.SubmitTransactionAsync(actions, ct);
+        var response = await BrokerTable.SubmitAsync(table, actions, ct);
         for (var i = 0; i < actions.Count; i++)
             if (response.Value[i].Headers.ETag is { } etag) actions[i].Entity.ETag = etag;
     }
@@ -210,7 +214,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
     internal async Task PublishLocatorAsync(EnrollmentSnapshot s, CancellationToken ct)
     {
         var row = new TableEntity("locator:" + s.DeviceId, "locator") { ["RepositoryId"] = s.RepositoryId, ["DeviceId"] = s.DeviceId, ["PendingId"] = s.Id };
-        try { await table.AddEntityAsync(row, ct); }
+        try { await BrokerTable.AddAsync(table, row, ct); }
         catch (RequestFailedException ex) when (ex.Status == 409)
         {
             var current = await reads.ReadAsync(row.PartitionKey, row.RowKey, ct) ?? throw new IssuanceDenied();

@@ -32,10 +32,11 @@ RUN rm /tmp/tool-artifacts.json; if ! getent passwd 1000 >/dev/null; then userad
       elif [ -e /home/agent ] || [ -L /home/agent ]; then echo 'Base /home/agent conflicts with UID 1000 home; adapt the base first.' >&2; exit 1; \
       else ln -s "$userhome" /home/agent; fi; \
     fi; \
-    mkdir -p /data/credentials/codex /data/config/skills /data/history /data/state /data/tools /data/participant /data/control /workspace "$userhome/.agents"; \
+    mkdir -p /data/enrollment /data/credentials/codex /data/config/skills /data/history /data/state /data/tools /data/participant /data/control /workspace "$userhome/.agents"; \
     if [ ! -e "$userhome/.agents/skills" ] && [ ! -L "$userhome/.agents/skills" ]; then ln -s /data/config/skills "$userhome/.agents/skills"; fi; \
     if [ ! -e /data/credentials/codex/sessions ] && [ ! -L /data/credentials/codex/sessions ]; then ln -s /data/history /data/credentials/codex/sessions; fi; \
-    chown 1000 /data /data/config /data/credentials /data/credentials/codex /data/config/skills /data/history /data/state /data/tools /data/participant /data/control /workspace "$userhome" "$userhome/.agents"
+    chmod 0700 /data/enrollment; \
+    chown 1000 /data/enrollment /data /data/config /data/credentials /data/credentials/codex /data/config/skills /data/history /data/state /data/tools /data/participant /data/control /workspace "$userhome" "$userhome/.agents"
 COPY --from=build /published/ /opt/repoagent/controller/
 COPY --from=build /native-smoke/ /opt/repoagent/native-smoke/
 COPY image-inventory.json /opt/repoagent/image-inventory.json

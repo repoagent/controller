@@ -9,6 +9,7 @@ on:
       - 'repoagent.ps1'
       - 'scripts/build-image.*'
       - 'scripts/publish-image.ps1'
+      - 'scripts/private-file.psm1'
       - 'scripts/revoke-approval.ps1'
       - 'scripts/enroll-controller.ps1'
       - 'scripts/host-enrollment.psm1'
@@ -25,6 +26,7 @@ on:
       - 'repoagent.ps1'
       - 'scripts/build-image.*'
       - 'scripts/publish-image.ps1'
+      - 'scripts/private-file.psm1'
       - 'scripts/revoke-approval.ps1'
       - 'scripts/enroll-controller.ps1'
       - 'scripts/host-enrollment.psm1'
@@ -62,7 +64,6 @@ jobs:
         with:
           python-version: '3.13'
       - name: Install the runtime configuration test dependency
-        if: runner.os == 'Linux'
         run: python -m pip install --disable-pip-version-check PyYAML==6.0.3
       - name: Prepare the native executable test fixture
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
@@ -78,6 +79,8 @@ jobs:
         shell: pwsh
         run: |
           if ($IsWindows) {
+            python -m unittest discover -s tests/installers -p test_private_runtime.py -v
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             python -m unittest discover -s tests/installers -p test_approval_revoke.py -v
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             python -m unittest discover -s tests/installers -p test_azure_plan.py -v
