@@ -28,13 +28,13 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
             {
                 Bind(ledger, attempt, true);
                 if (string.IsNullOrEmpty(gate.ETag.ToString()) || attempt.GetBoolean("CapacityReleased") == true) throw new IssuanceDenied();
-                // A redaction tombstone alone is not a counter-settlement receipt.
-                if (attempt.GetString("State") == "redacted") return;
+                if (attempt.GetString("State") == "redacted" && !UnpublishedTombstone(ledger, attempt)) return;
             }
-            var reason = fresh ? "unpublished" : Settlement(attempt!);
+            var unpublished = fresh || UnpublishedTombstone(ledger, attempt!);
+            var reason = unpublished ? "unpublished" : Settlement(attempt!);
             if (reason is null) return;
             var extra = new List<TableTransactionAction>();
-            if (!fresh)
+            if (!unpublished)
             {
                 Decrement(gate, "OutstandingTokenCount");
                 if (Text(ledger, "Purpose") == "runtime")
@@ -86,7 +86,7 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
             {
                 Bind(ledger, pending, true);
                 if (string.IsNullOrEmpty(gate.ETag.ToString()) || pending.GetBoolean("PendingCapacityReleased") == true) throw new IssuanceDenied();
-                if (pending.GetString("State") == "redacted") return;
+                if (pending.GetString("State") == "redacted" && !UnpublishedTombstone(ledger, pending)) return;
             }
             var state = pending?.GetString("State");
             if (state is not ("active" or "closed") && Date(ledger, "Deadline") > clock.GetUtcNow()) return;
@@ -97,7 +97,7 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
                 if (device.GetBoolean("Acknowledged") != true) throw new IssuanceDenied();
                 extra.Add(Action(device));
             }
-            if (!fresh) Decrement(gate, "PendingCount");
+            if (!fresh && !UnpublishedTombstone(ledger, pending!)) Decrement(gate, "PendingCount");
             pending ??= Copy(ledger, gate.PartitionKey, ledger.RowKey);
             if (state != "active") pending["State"] = "closed";
             pending["PendingCapacityReleased"] = true;
@@ -115,6 +115,24 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
         Decrement(directory, "PendingCount");
         ledger["PendingCapacityReleased"] = true;
         await BrokerTable.SubmitAsync(table, [Action(quota), Action(directory), Action(ledger)], ct);
+    }
+
+    // #78 creates this exact shape only when the repository target was absent.
+    // Published rows retain their authority state and payload metadata during redaction.
+    private static bool UnpublishedTombstone(TableEntity ledger, TableEntity row)
+    {
+        var expected = new Dictionary<string, object>
+        {
+            ["State"] = "redacted", ["PayloadRedacted"] = true
+        };
+        foreach (var field in new[] { "Generation", "RepositoryId", "DeviceId", "Epoch", "RowCredits", "PendingId", "OperationId",
+            "Purpose", "GlobalSlot", "ReservedAt", "CreatedAt", "Deadline", "PayloadPurgeAt", "ApprovalKind", "SetupVersion", "PolicyVersion" })
+            if (ledger.TryGetValue(field, out var value)) expected[field] = value;
+        if (ledger.PartitionKey == RetainedState.Enrollment && PayloadClock.Read(ledger, "Deadline") is { } deadline)
+            expected["FirstTerminalAt"] = deadline;
+        var properties = row.Where(p => p.Key is not ("PartitionKey" or "RowKey" or "Timestamp" or "odata.etag")).ToArray();
+        return properties.Length == expected.Count
+            && properties.All(p => expected.TryGetValue(p.Key, out var value) && Equals(value, p.Value));
     }
 
     private string? Settlement(TableEntity attempt)
