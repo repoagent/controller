@@ -65,3 +65,12 @@ The first slice has real utility: an operator can configure an explicit broker s
 Preserve existing direct-App tests and container Native AOT publication with warnings treated as errors. Existing `tests/NativeSmoke/Program.cs` exercises rendered mentions, not the new authentication path; a successful ordinary xUnit run is not new broker AOT evidence. Exercise the compiled/AOT CLI's broker parsing/validation path where the build environment permits, and report any unavailable build evidence explicitly. A broad test rewrite, new agent adapter, live broker, registry publish and Azure apply are outside this first slice.
 
 After R1's factual correction and R2's contract additions are recorded, no further architecture approval is needed to start this bounded slice. R3/R4 and the existing real-storage/hosted-acceptance gates remain open prerequisites for later releases.
+
+## Implementor dispositions (root, 2026-10-20)
+
+- R1: addressed before implementation. The delegated-auth note now documents device-flow `repository_id`, its ignored-selector warning, and the remaining human-actor distinction.
+- R2: addressed in the assigned contract before implementation. [Protocol v1](../broker-protocol.md) and [issue #29](https://github.com/repoagent/controller/issues/29) freeze origin/host/schema/profile/expiry binding and require failed-viewer/stale-cache/active-lock regressions. Implementation and independent code review must still demonstrate those behaviors.
+- R3: tracked as a hosted release prerequisite in [#31](https://github.com/repoagent/controller/issues/31); the unsafe poll-secret confirmation sketch is replaced with trusted administrator browser approval. The ceremony and implementation remain pending.
+- R4: tracked as a hosted release prerequisite in [#34](https://github.com/repoagent/controller/issues/34). Outstanding bearer tokens, mint/response-loss races and partition/suspend evidence are explicit; a lease alone is not a fence. Implementation remains pending.
+
+The reviewer's conditional authorization permits the consumer slice after R1/R2 are recorded. This disposition records that gate; it does not claim that hosted enrollment, fencing or Azure storage is complete.
