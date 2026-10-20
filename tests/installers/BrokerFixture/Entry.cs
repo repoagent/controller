@@ -33,7 +33,29 @@ internal static class Entry
         var table = new TableClient(new Uri(endpoint), tableName, new TableSharedKeyCredential("devstoreaccount1",
             "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="),
             new TableClientOptions { Retry = { MaxRetries = 0 } });
-        await table.CreateIfNotExistsAsync();
+        if (args[4] == "create") {
+            // A successful CREATE, not missing metadata, proves this fixture's
+            // table is fresh. Provision both complete Int64 rows before traffic.
+            await table.CreateAsync();
+            var enrollment = new TableEntity("global:enrollment-v1", "quota") {
+                ["RetentionSchemaVersion"]=1L, ["CandidateCount"]=0L,
+                ["RetainedEnrollmentCount"]=0L, ["Count"]=0L };
+            var issuance = new TableEntity("global:issuance-v1", "quota") {
+                ["RetentionSchemaVersion"]=1L, ["RetainedIssuanceCount"]=0L,
+                ["Window"]=0L, ["Admissions"]=0L, ["Reads"]=0L,
+                ["Signs"]=0L, ["Mints"]=0L, ["Slots"]=0L };
+            foreach (var seed in new[] { enrollment, issuance }) {
+                await table.AddEntityAsync(seed);
+                var verified = (await table.GetEntityAsync<TableEntity>(seed.PartitionKey, seed.RowKey)).Value;
+                foreach (var property in seed.Where(p => p.Value is long))
+                    if (!verified.TryGetValue(property.Key, out var value) || value is not long number || number != (long)property.Value)
+                        throw new InvalidOperationException("Fresh fixture activation did not retain complete Int64 accounting.");
+            }
+            Record(new { activation="fresh-created-and-verified", tableName });
+        } else if (args[4] == "resume") {
+            // Restart never creates, seeds, resets or blesses an existing table.
+            Record(new { activation="resume-existing-fixture-table", tableName });
+        } else throw new InvalidOperationException("Explicit fixture table lifecycle required.");
         var origin = "https://localhost:" + port;
         var github = new GitHubBoundary();
         await using var factory = new BrokerFactory().WithWebHostBuilder(builder =>

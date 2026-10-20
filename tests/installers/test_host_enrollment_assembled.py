@@ -59,16 +59,18 @@ class AssembledHostEnrollmentTests(unittest.TestCase):
         command = ['dotnet', str(ROOT / 'tests/installers/BrokerFixture/bin/Debug/net10.0/BrokerFixture.dll'),
                    str(directory), os.environ['HOST_ENROLLMENT_ASSEMBLED_TABLE_ENDPOINT'], table, str(port)]
         current = None
+        initialized = False
         output = directory / 'service-output.log'
 
         def start():
-            nonlocal current
+            nonlocal current, initialized
             stream = output.open('a', encoding='utf-8')
-            current = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.PIPE, stdout=stream, stderr=stream,
+            current = subprocess.Popen(command + ['resume' if initialized else 'create'], cwd=ROOT, stdin=subprocess.PIPE, stdout=stream, stderr=stream,
                                        text=True, env=journey.environment)
             stream.close()
             for _ in range(150):
                 if 'READY' in output.read_text(encoding='utf-8'):
+                    initialized = True
                     return
                 if current.poll() is not None:
                     self.fail('Real broker failed startup: ' + output.read_text(encoding='utf-8'))
@@ -189,6 +191,8 @@ class AssembledHostEnrollmentTests(unittest.TestCase):
                 self.assertNotIn(secret, result.stdout + result.stderr)
             self.assertTrue(json.loads(consumer_log.read_text().splitlines()[0])['runtimeCredentialObserved'])
             recorded = events()
+            self.assertEqual([event['activation'] for event in recorded if 'activation' in event],
+                             ['fresh-created-and-verified', 'resume-existing-fixture-table'])
             self.assertTrue(any(event.get('path', '').endswith('/installation-token') and event['status'] == 200 for event in recorded))
             scopes = [event['permissions'] for event in recorded if 'permissions' in event]
             self.assertEqual(scopes, [{'agent_variables': 'read'}, {'discussions': 'write'}])
