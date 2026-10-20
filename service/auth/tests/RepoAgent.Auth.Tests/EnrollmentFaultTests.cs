@@ -29,9 +29,11 @@ public sealed class EnrollmentFaultTests
         using var full = await f.Send("/v1/enrollments", f.Request() with { RepositoryId = 999999 });
         Assert.Equal(HttpStatusCode.TooManyRequests, full.StatusCode);
         var rows = await Rows(f);
-        Assert.Equal(65, rows.Count);
-        Assert.All(rows, row => Assert.Equal("global:enrollment-v1", row.PartitionKey));
-        Assert.Equal(64, rows.Single(r => r.RowKey == "quota").GetInt64("Count"));
+        Assert.Equal(82, rows.Count); // 64 ledgers, 16 directories, two initialized quotas.
+        Assert.Single(rows, row => row.PartitionKey == "global:issuance-v1" && row.RowKey == "quota");
+        Assert.All(rows.Where(row => row.PartitionKey != "global:issuance-v1"),
+            row => Assert.Equal("global:enrollment-v1", row.PartitionKey));
+        Assert.Equal(64, rows.Single(r => r.PartitionKey == "global:enrollment-v1" && r.RowKey == "quota").GetInt64("Count"));
         Assert.Equal(0, f.GitHub.Reads);
         Assert.Equal(0, f.GitHub.Mints);
         var deadline = rows.Single(r => r.RowKey == "pending:" + original.IdempotencyId).GetDateTimeOffset("Deadline");
@@ -382,6 +384,10 @@ public sealed class EnrollmentFaultTests
         using var resumed = await f.Send("/v1/enrollments", request);
         var persisted = Assert.Single(await Rows(f), row => row.RowKey.StartsWith("attempt:", StringComparison.Ordinal));
         Assert.Equal(original.GetDateTimeOffset("ReservedAt"), persisted.GetDateTimeOffset("ReservedAt"));
+        Assert.Equal(original.GetDateTimeOffset("ReservedAt")!.Value.AddHours(24), persisted.GetDateTimeOffset("PayloadPurgeAt"));
+        var ledger = Assert.Single(await Rows(f), row => row.RowKey == "operation:" + original.GetString("OperationId"));
+        Assert.Equal(original.GetString("Generation"), ledger.GetString("Generation"));
+        Assert.Equal(persisted.GetDateTimeOffset("PayloadPurgeAt"), ledger.GetDateTimeOffset("PayloadPurgeAt"));
         Assert.Equal(original.GetDateTimeOffset("JwtIssuedAt"), persisted.GetDateTimeOffset("JwtIssuedAt"));
         Assert.Equal(original.GetDateTimeOffset("JwtExpiresAt"), persisted.GetDateTimeOffset("JwtExpiresAt"));
         if (delaySeconds == 120)

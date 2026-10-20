@@ -46,6 +46,12 @@ public sealed class RetainedEnrollmentAdmissionTests
         Assert.Equal("pending:" + request.idempotencyId,
             Assert.Single(rows, row => row.PartitionKey == RevocationFixture.Partition
                 && row.RowKey.StartsWith("pending:", StringComparison.Ordinal)).RowKey);
+        var ledger = Assert.Single(rows, row => row.PartitionKey == "global:enrollment-v1"
+            && row.RowKey == "pending:" + request.idempotencyId);
+        Assert.Equal(ledger.GetDateTimeOffset("CreatedAt")!.Value.AddMinutes(15), ledger.GetDateTimeOffset("Deadline"));
+        Assert.Equal(ledger.GetDateTimeOffset("Deadline")!.Value.AddHours(24), ledger.GetDateTimeOffset("PayloadPurgeAt"));
+        Assert.Equal(8, ledger.GetInt64("RowCredits"));
+        Assert.Equal(1, rows.Single(row => row.PartitionKey == "global:enrollment-v1" && row.RowKey == "quota").GetInt64("RetainedEnrollmentCount"));
         Assert.Equal(1, f.GitHub.VerifierMints);
     }
 }
