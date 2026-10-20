@@ -96,9 +96,11 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
     private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> host = null!;
     private HttpClient client = null!;
     private readonly Dictionary<string, string?> settings = new() { ["Broker:BrokerOrigin"] = "https://broker.example" };
-    public static async Task<EnrollmentFixture> CreateAsync(HttpPipelineTransport? transport = null, Dictionary<string, string?>? settings = null)
+    private IssuanceLimits limits = new();
+    public static async Task<EnrollmentFixture> CreateAsync(HttpPipelineTransport? transport = null, Dictionary<string, string?>? settings = null, IssuanceLimits? limits = null)
     {
         var f = new EnrollmentFixture();
+        if (limits is not null) f.limits = limits;
         await f.Storage.InitializeAsync();
         f.GitHub.Before = request => Task.FromResult<HttpResponseMessage?>(request.RequestUri!.AbsolutePath.EndsWith("/variables", StringComparison.Ordinal)
             ? GitHubTransport.Json(new { total_count = f.GitHub.Marker.Length == 0 ? 0 : 1, variables = f.GitHub.Marker.Length == 0 ? Array.Empty<object>() : [new { name = "APPROVAL", value = f.GitHub.Marker }] }) : null);
@@ -118,7 +120,7 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
         {
             services.AddSingleton<TimeProvider>(Clock);
             services.AddSingleton(Protection);
-            services.AddSingleton(new IssuanceLimits());
+            services.AddSingleton(limits);
             services.AddSingleton(new GitHubIssuance(new HttpClient(GitHub), Clock));
             services.AddSingleton(new AppJwtSigner(new SigningTransport(), Clock));
             services.AddSingleton<IssuanceStore>(); services.AddSingleton<InstallationTokenIssuer>();

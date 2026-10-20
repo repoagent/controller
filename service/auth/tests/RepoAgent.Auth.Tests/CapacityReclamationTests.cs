@@ -6,7 +6,7 @@ using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed class CapacityReclamationTests
+public sealed partial class CapacityReclamationTests
 {
     [Fact]
     public async Task Redacted_unpublished_pending_releases_only_its_global_occupancy()
@@ -71,7 +71,7 @@ public sealed class CapacityReclamationTests
     public async Task Expired_pending_releases_occupancy_without_refunding_retained_or_token_capacity()
     {
         var ct = TestContext.Current.CancellationToken;
-        await using var f = await EnrollmentFixture.CreateAsync();
+        await using var f = await EnrollmentFixture.CreateAsync(settings: new() { ["Broker:RetainedEnrollmentLimit"] = "1" });
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
         var request = new
         {
@@ -113,5 +113,12 @@ public sealed class CapacityReclamationTests
         Assert.Equal(0L, gate.GetInt64("PendingCount"));
         Assert.Equal(1L, quota.GetInt64("RetainedEnrollmentCount"));
         Assert.Equal(1L, gate.GetInt64("OutstandingTokenCount"));
+        using var retainedFull = await f.Send("/v2/enrollments", new
+        {
+            idempotencyId = Guid.NewGuid().ToString("N"), repositoryId = 123456,
+            repository = "owner/project", variable = "APPROVAL", profile = "polling"
+        });
+        Assert.Equal(HttpStatusCode.TooManyRequests, retainedFull.StatusCode);
+        Assert.Equal(1, f.GitHub.Mints);
     }
 }
