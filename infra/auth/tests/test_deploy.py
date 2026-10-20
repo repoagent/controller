@@ -119,6 +119,20 @@ class DeploymentProcessTests(unittest.TestCase):
         self.assert_refused(self.run_deploy('check'), 'separate keys')
         self.assertEqual(self.calls, [])
 
+    def test_check_rejects_case_aliases_of_one_key_even_across_versions(self):
+        self.env['AUTH_SIGNING_KEY_URI'] = f'https://{VAULT}.vault.azure.net/keys/signing/' + 'a' * 32
+        for version in ('a' * 32, 'b' * 32):
+            with self.subTest(protection_version=version):
+                self.env['AUTH_DATA_PROTECTION_KEY_URI'] = f'https://{VAULT}.vault.azure.net/keys/SIGNING/{version}'
+                self.assert_refused(self.run_deploy('check'), 'separate keys')
+                self.assertEqual(self.calls, [])
+
+        self.env['AUTH_DATA_PROTECTION_KEY_URI'] = f'https://{VAULT}.vault.azure.net/keys/SIGNING-Protection/' + 'a' * 32
+        result = self.run_deploy('check')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout)['applied'])
+        self.assertEqual(self.calls, [])
+
     def test_foundation_check_discovers_names_without_runtime_configuration_or_azure(self):
         self.env = {key: value for key, value in self.env.items()
                     if not key.startswith('AUTH_') or key == 'AUTH_APP_NAME'}
