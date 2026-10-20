@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Azure.Core.Pipeline;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -92,29 +94,38 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
     private readonly DirectoryInfo keys = new(Path.Combine(Path.GetTempPath(), "enrollment-keys-" + Guid.NewGuid().ToString("N")));
     private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> host = null!;
     private HttpClient client = null!;
-    public static async Task<EnrollmentFixture> CreateAsync()
+    public static async Task<EnrollmentFixture> CreateAsync(HttpPipelineTransport? transport = null)
     {
         var f = new EnrollmentFixture();
         await f.Storage.InitializeAsync();
         f.GitHub.Before = request => Task.FromResult<HttpResponseMessage?>(request.RequestUri!.AbsolutePath.EndsWith("/variables", StringComparison.Ordinal)
             ? GitHubTransport.Json(new { total_count = f.GitHub.Marker.Length == 0 ? 0 : 1, variables = f.GitHub.Marker.Length == 0 ? Array.Empty<object>() : [new { name = "APPROVAL", value = f.GitHub.Marker }] }) : null);
-        f.host = f.Storage.CreateHost(settings: new() { ["Broker:BrokerOrigin"] = "https://broker.example" }).WithWebHostBuilder(builder => builder.ConfigureServices(services =>
+        await f.RestartAsync(transport);
+        return f;
+    }
+    public async Task RestartAsync(HttpPipelineTransport? transport = null, string? epoch = null)
+    {
+        client?.Dispose();
+        if (host is not null) await host.DisposeAsync();
+        host = Storage.CreateHost(transport, settings: new() { ["Broker:BrokerOrigin"] = "https://broker.example" }).WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
         {
-            services.AddSingleton<TimeProvider>(f.Clock);
-            services.AddSingleton<IDataProtectionProvider>(DataProtectionProvider.Create(f.keys));
+            if (epoch is not null) configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Broker:DeploymentEpoch"] = epoch });
+        }).ConfigureServices(services =>
+        {
+            services.AddSingleton<TimeProvider>(Clock);
+            services.AddSingleton<IDataProtectionProvider>(DataProtectionProvider.Create(keys));
             services.AddSingleton(new IssuanceLimits());
-            services.AddSingleton(new GitHubIssuance(new HttpClient(f.GitHub), f.Clock));
-            services.AddSingleton(new AppJwtSigner(new SigningTransport(), f.Clock));
+            services.AddSingleton(new GitHubIssuance(new HttpClient(GitHub), Clock));
+            services.AddSingleton(new AppJwtSigner(new SigningTransport(), Clock));
             services.AddSingleton<IssuanceStore>(); services.AddSingleton<InstallationTokenIssuer>();
             services.AddSingleton<EnrollmentStore>(); services.AddSingleton<EnrollmentService>();
         }));
-        f.client = f.host.CreateClient();
-        return f;
+        client = host.CreateClient();
     }
     public EnrollmentRequest Request() => new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "approval/environment", "APPROVAL", "polling");
-    public async Task<HttpResponseMessage> Send(string path, object? body = null, string? secret = null)
+    public async Task<HttpResponseMessage> Send(string path, object? body = null, string? secret = null, HttpMethod? method = null)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        using var request = new HttpRequestMessage(method ?? HttpMethod.Post, path);
         request.Headers.Authorization = new("Bearer", secret ?? new string('a', 43));
         if (body is not null) request.Content = JsonContent.Create(body);
         return await client.SendAsync(request, TestContext.Current.CancellationToken);
