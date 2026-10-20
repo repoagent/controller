@@ -18,9 +18,9 @@ internal sealed class IssuanceFixture : IAsyncDisposable
     public GitHubTransport GitHub { get; } = new();
     private readonly DirectoryInfo keyDirectory = new(Path.Combine(Path.GetTempPath(), "issuer-keys-" + Guid.NewGuid().ToString("N")));
     public BrokerOptions Options => new(new Uri("https://example.table.core.windows.net"), Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15);
-    public IssuanceStore Store(HttpPipelineTransport? transport = null) => new(Storage.CreateClient(transport), Options,
-        DataProtectionProvider.Create(keyDirectory), Clock);
-    public InstallationTokenIssuer Issuer(HttpPipelineTransport? transport = null) => new(Store(transport),
+    public IssuanceStore Store(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) => new(Storage.CreateClient(transport), Options,
+        DataProtectionProvider.Create(keyDirectory), Clock, limits);
+    public InstallationTokenIssuer Issuer(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) => new(Store(transport, limits),
         new GitHubIssuance(new HttpClient(GitHub), Clock), new AppJwtSigner(Signing, Clock), Clock);
 
     public static async Task<IssuanceFixture> CreateAsync()
