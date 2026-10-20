@@ -18,12 +18,12 @@ repository=$("$root/repoagent" get repository)
 }
 "$root/repoagent" participant-identity
 "$root/repoagent" check
-actor=$(docker run --rm --mount "type=volume,src=$name-state,dst=/data/state" --entrypoint python3 "$image" -c \
+actor=$(docker run --rm --mount "type=volume,src=$name-state,dst=/data/state" --entrypoint /usr/bin/python3 "$image" -c \
   'import json; print(json.load(open("/data/state/bridge.json"))["agentLogin"])')
-docker build --target live-tests -f "$root/container/Containerfile" -t "$image-live-tests" "$root"
+REPOAGENT_IMAGE="$image-live-tests" REPOAGENT_TARGET=live-tests "$root/repoagent" build
 # Clean only the prior runner container; evidence/fixtures remain operator-owned.
 docker rm "$runner" >/dev/null 2>&1 || true
-helper=(docker run --rm -i --mount "type=volume,src=$control,dst=/data/control" --entrypoint python3 "$image" /opt/repoagent/control.py)
+helper=(docker run --rm -i --mount "type=volume,src=$control,dst=/data/control" --entrypoint /usr/bin/python3 "$image" /opt/repoagent/control.py)
 "$root/repoagent" start
 docker inspect "$name" | "${helper[@]}" inspection
 "$root/repoagent" versions | "${helper[@]}" artifact versions.txt
@@ -38,7 +38,7 @@ docker run -d --name "$runner" \
 on_exit() {
   status=$?
   trap - EXIT
-  docker exec "$name" python3 /opt/repoagent/control.py restore-credential >/dev/null 2>&1 || true
+  docker exec "$name" /usr/bin/python3 /opt/repoagent/control.py restore-credential >/dev/null 2>&1 || true
   docker logs "$name" 2>&1 | "${helper[@]}" capture || true
   "$root/repoagent" stop >/dev/null 2>&1 || true
   if [[ $(docker inspect --format '{{.State.Running}}' "$runner" 2>/dev/null || true) == true ]]; then
@@ -59,7 +59,7 @@ while [[ $(docker inspect --format '{{.State.Running}}' "$runner") == true ]]; d
   case "$operation" in
     capture) docker logs "$name" 2>&1 | "${helper[@]}" capture || status=$? ;;
     read-only-credential|restore-credential)
-      docker exec "$name" python3 /opt/repoagent/control.py "$operation" || status=$? ;;
+      docker exec "$name" /usr/bin/python3 /opt/repoagent/control.py "$operation" || status=$? ;;
     replace|invalidate-session|restore-session)
       docker logs "$name" 2>&1 | "${helper[@]}" archive
       "$root/repoagent" stop
@@ -67,7 +67,7 @@ while [[ $(docker inspect --format '{{.State.Running}}' "$runner") == true ]]; d
         [[ -z "$argument" ]] || "$root/repoagent" enroll "$argument" || status=$?
       else
         "${helper[@]:0:3}" --mount "type=volume,src=$control,dst=/data/control" \
-          --mount "type=volume,src=$name-state,dst=/data/state" --entrypoint python3 "$image" \
+          --mount "type=volume,src=$name-state,dst=/data/state" --entrypoint /usr/bin/python3 "$image" \
           /opt/repoagent/control.py "$operation" "$argument" || status=$?
       fi
       "$root/repoagent" start || status=$? ;;

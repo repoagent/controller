@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "2b. Proposed token issuance with the existing consumer",
+    "output": ".archify/architecture-controller-guide-20261020-120003/renewal/renewal.html",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/repoagent/controller.git",
+      "revision": "d26680680bcbb94c2e3de36317bb61ca6af5b585"
+    }
+  },
+  "participants": [
+    {
+      "id": "controller",
+      "type": "backend",
+      "label": "Controller",
+      "sublabel": "Existing v1 consumer",
+      "sources": [
+        {
+          "path": "src/RepoAgentController/BrokerTokenSource.cs",
+          "line": 79,
+          "end_line": 105
+        },
+        {
+          "path": "src/RepoAgentController/GitHubAppCredentials.cs",
+          "line": 79,
+          "end_line": 132
+        },
+        {
+          "path": "src/RepoAgentController/GitHub.cs",
+          "line": 55,
+          "end_line": 60
+        }
+      ]
+    },
+    {
+      "id": "broker",
+      "type": "security",
+      "label": "UI-free broker",
+      "sublabel": "Live marker + device grant",
+      "sources": [
+        {
+          "path": "docs/research/2026-10-20-auth-delivery-slices.md",
+          "line": 25,
+          "end_line": 27
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "Durable state",
+      "sublabel": "Grant + issuance accounting",
+      "sources": [
+        {
+          "path": "docs/research/2026-10-20-azure-auth-service-operations.md",
+          "line": 27,
+          "end_line": 35
+        },
+        {
+          "path": "docs/research/2026-10-20-azure-auth-service-operations.md",
+          "line": 43,
+          "end_line": 53
+        }
+      ]
+    },
+    {
+      "id": "github",
+      "type": "cloud",
+      "label": "GitHub",
+      "sublabel": "Authority + actual token scope",
+      "sources": [
+        {
+          "path": "docs/research/2026-10-20-auth-delivery-slices.md",
+          "line": 24,
+          "end_line": 27
+        }
+      ]
+    }
+  ],
+  "messages": [
+    {
+      "id": "request",
+      "from": "controller",
+      "to": "broker",
+      "y": 180,
+      "label": "POST installation-token",
+      "variant": "security",
+      "note": "Bearer device secret; no client scope selector."
+    },
+    {
+      "id": "reserve",
+      "from": "broker",
+      "to": "store",
+      "y": 255,
+      "label": "Check grant; reserve issuance",
+      "variant": "default",
+      "note": "Must coordinate with revocation and recovery."
+    },
+    {
+      "id": "grant",
+      "from": "store",
+      "to": "broker",
+      "y": 330,
+      "label": "Active immutable binding",
+      "variant": "return"
+    },
+    {
+      "id": "authority",
+      "from": "broker",
+      "to": "github",
+      "y": 380,
+      "label": "Read approval + installation",
+      "variant": "security",
+      "note": "Direct lookup of bound environment and variable."
+    },
+    {
+      "id": "authorized",
+      "from": "github",
+      "to": "broker",
+      "y": 455,
+      "label": "Marker and repository grant valid",
+      "variant": "return"
+    },
+    {
+      "id": "mint",
+      "from": "broker",
+      "to": "github",
+      "y": 505,
+      "label": "Mint one repository + profile",
+      "variant": "security",
+      "note": "Broker App JWT; exact repository_ids and permissions."
+    },
+    {
+      "id": "actualscope",
+      "from": "github",
+      "to": "broker",
+      "y": 580,
+      "label": "Token, actual scope, expiry",
+      "variant": "return"
+    },
+    {
+      "id": "recheck",
+      "from": "broker",
+      "to": "github",
+      "y": 630,
+      "label": "Recheck approval before release",
+      "variant": "security",
+      "note": "Reviewed freshness; GitHub and Table are not atomic."
+    },
+    {
+      "id": "record",
+      "from": "broker",
+      "to": "store",
+      "y": 705,
+      "label": "Recheck grant; account for token",
+      "variant": "default",
+      "note": "ETag/common gate; preserve unknown-attempt evidence."
+    },
+    {
+      "id": "commit",
+      "from": "store",
+      "to": "broker",
+      "y": 780,
+      "label": "Authorized issuance committed",
+      "variant": "return"
+    },
+    {
+      "id": "lease",
+      "from": "broker",
+      "to": "controller",
+      "y": 830,
+      "label": "Return only if still authorized",
+      "variant": "security",
+      "note": "Consumer validates binding, scope and expiry."
+    },
+    {
+      "id": "viewer",
+      "from": "controller",
+      "to": "github",
+      "y": 905,
+      "label": "Startup: check actual bot viewer",
+      "variant": "security",
+      "note": "Cache is removed if startup verification fails."
+    },
+    {
+      "id": "viewerok",
+      "from": "github",
+      "to": "controller",
+      "y": 980,
+      "label": "Expected App bot identity",
+      "variant": "return"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Consumer code already on main",
+      "items": [
+        "One shared credential lifecycle serves direct-App and broker sources.",
+        "Refresh checks run every minute and acquire a new token within five minutes of expiry. Every native gh command rereads the cache."
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Approval removal and outstanding tokens",
+      "items": [
+        "A confirmed missing/changed marker closes observed enrollment permanently; failed GitHub lookup denies issuance. Recreating the old marker cannot reactivate the grant.",
+        "Fresh enrollment is required. Old GitHub tokens and unknown mint outcomes retain the separate #34 replacement barrier; removal is not an instantaneous token recall."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "A behavior contract, not a database design",
+      "items": [
+        "The diagram names required coordination; it does not claim a database transaction includes the GitHub HTTP call.",
+        "Store, partitioning, concurrency, cleanup and recovery need real-provider proof before hosted readiness."
+      ]
+    }
+  ]
+}

@@ -86,7 +86,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertTrue(state['running'])
                 self.assertEqual(state['settings']['keyPath'], str(key))
                 self.assertEqual(state['settings']['mentionUser'], '')
-                self.assertTrue(any('--entrypoint' in event and 'python3' in event for event in state['events']))
+                self.assertTrue(any('--entrypoint' in event and '/usr/bin/python3' in event for event in state['events']))
                 self.assertIn('type=volume,src=repoagent-sample-config,dst=/data/config,readonly', state['runtime_mounts'])
                 binds = [mount for mount in state['runtime_mounts'] if mount.startswith('type=bind,')]
                 self.assertEqual(binds, [f'type=bind,src={key},dst=/run/secrets/github-app.pem,readonly'])
@@ -107,7 +107,7 @@ class InstallerTests(unittest.TestCase):
                 result, state, _ = self.run_installer(shell, arguments=flags, state=initial)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertFalse(any(event[0] == 'build' for event in state['events']))
-                self.assertFalse(any('--entrypoint' in event and 'python3' in event for event in state['events']))
+                self.assertFalse(any('--entrypoint' in event and '/usr/bin/python3' in event for event in state['events']))
                 self.assertTrue(state['running'])
 
     def test_no_start_verifies_without_running_agent(self):

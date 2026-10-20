@@ -194,6 +194,7 @@ finish() {
 # ──────────────────────────────────────────────────────────────────────────
 # STAGES: repeatable installation and setup. Keep the wizard library unchanged.
 run_wizard() {
+  local -a build_options=()
   local root cli skip_build=false no_start=false non_interactive=false option variable
   root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
   cli="$root/repoagent"
@@ -219,6 +220,9 @@ when available (otherwise offers device sign-in), verifies access and starts Doc
   --reconcile-interval SECONDS  Default: 300
   --tool-updates latest|pinned  Default: latest
   --web-search live|cached|disabled  Default: live
+  --image-manifest PATH         Versioned nonsecret image manifest
+  --derived-dockerfile PATH     Optional user-owned image extension
+  --build-arg NAME=VALUE        Nonsecret derived build argument (repeatable)
   --skip-build                  Use the existing REPOAGENT_IMAGE image
   --no-start                    Configure and verify without starting
   --non-interactive             Use arguments/saved defaults; never prompt or open a browser
@@ -226,6 +230,10 @@ Existing instance settings are offered as defaults. Stop a running instance firs
 No host GitHub login, entire home directory or Docker socket is mounted in the agent.
 USAGE
         return 0 ;;
+      --image-manifest|--derived-dockerfile|--build-arg)
+        (( $# >= 2 )) || { echo "$1 requires a value" >&2; return 1; }
+        option=$1; [[ "$option" != --image-manifest ]] || option=--manifest
+        build_options+=("$option" "$2"); shift 2; continue ;;
       --skip-build) skip_build=true; shift; continue ;;
       --no-start) no_start=true; shift; continue ;;
       --non-interactive) non_interactive=true; shift; continue ;;
@@ -292,7 +300,7 @@ USAGE
   if $skip_build; then say "Using existing image ${REPOAGENT_IMAGE:-repoagent:local}; skipping build."
   else
     say 'Building the Linux image from this checkout. Build tools, Codex and gh are installed inside Docker.'
-    "$cli" build
+    "$cli" build "${build_options[@]}"
   fi
 
   stage 'Choose the repository and GitHub App'
