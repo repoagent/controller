@@ -129,7 +129,9 @@ function Assert-CompatibleContainer {
     } else {
         $key = Invoke-Config get keyPath
         if (-not $key) { throw 'Saved direct configuration is missing its PEM path; resolve manually.' }
-        $expected['/run/secrets/github-app.pem'] = @{ Type = 'bind'; Source = [IO.Path]::GetFullPath($key); RW = $false }
+        # Match Get-FileMount, including Windows short-name expansion.
+        $resolvedKey = (Resolve-Path -LiteralPath $key).ProviderPath
+        $expected['/run/secrets/github-app.pem'] = @{ Type = 'bind'; Source = $resolvedKey; RW = $false }
     }
     if (@($existing.Mounts).Count -ne $expected.Count) { throw 'Existing container has unexpected mounts; resolve manually.' }
     foreach ($mount in $existing.Mounts) {
