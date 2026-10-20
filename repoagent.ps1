@@ -115,8 +115,11 @@ function Assert-CompatibleContainer {
     $expectedImage = Invoke-Docker image inspect --format '{{.Id}}' $image
     $role = Invoke-Docker image inspect --format '{{index .Config.Labels "io.repoagent.role"}}:{{.Config.User}}' $expectedImage
     if ($role -ne 'controller:1000' -or $existing.Image -ne $expectedImage -or $existing.User -ne '1000' -or
-        ($existing.Entrypoint -join "`n") -ne "/usr/bin/python3`n-E`n/opt/repoagent/runtime.py" -or
-        @($existing.Cmd).Count -ne 1 -or $existing.Cmd[0] -ne 'start') {
+        @($existing.Entrypoint).Count -ne 3 -or
+        -not [StringComparer]::Ordinal.Equals($existing.Entrypoint[0], '/usr/bin/python3') -or
+        -not [StringComparer]::Ordinal.Equals($existing.Entrypoint[1], '-E') -or
+        -not [StringComparer]::Ordinal.Equals($existing.Entrypoint[2], '/opt/repoagent/runtime.py') -or
+        @($existing.Cmd).Count -ne 1 -or -not [StringComparer]::Ordinal.Equals($existing.Cmd[0], 'start')) {
         throw 'Existing container differs from the selected controller image/start configuration. Resolve it manually.'
     }
     # Container destinations and Docker volume names use Linux identity on every host.
