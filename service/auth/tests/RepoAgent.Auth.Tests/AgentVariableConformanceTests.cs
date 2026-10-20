@@ -340,6 +340,98 @@ public sealed class AgentVariableConformanceTests
         Assert.Empty(await Rows(f));
     }
 
+    [Theory]
+    [InlineData("two-page-mismatch")]
+    [InlineData("single-page-absence")]
+    public async Task Stale_negative_runtime_observation_denies_without_closure_and_fresh_approval_recovers(string observation)
+    {
+        await using var f = await AgentFixture();
+        var receipt = await Complete(f, await Start(f));
+        await Ack(f, receipt);
+        var normal = f.GitHub.Before!;
+        var listingReads = 0;
+        f.GitHub.Before = request =>
+        {
+            if (request.RequestUri!.AbsolutePath != "/repos/owner/project/agents/variables") return normal(request);
+            listingReads++;
+            if (observation == "two-page-mismatch" && !request.RequestUri.Query.Contains("page=2", StringComparison.Ordinal))
+                return Reply(Listing(31, Unrelated(30)));
+            // The final response is well formed but its oldest contributing read
+            // is now11s old: outside freshness10s, inside operation lifetime15s.
+            f.Clock.Advance(TimeSpan.FromSeconds(11));
+            return Reply(observation == "two-page-mismatch"
+                ? Listing(31, [Variable("APPROVAL", "changed-public-marker")]) : Listing(0, []));
+        };
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var stale = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
+        Assert.NotEqual(HttpStatusCode.OK, stale.StatusCode);
+        Assert.Equal(observation == "two-page-mismatch" ? 2 : 1, listingReads);
+        Assert.DoesNotContain("token", await stale.Content.ReadAsStringAsync(Token));
+
+        f.GitHub.Before = normal;
+        await f.RestartAsync();
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var recovered = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
+        Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
+        Assert.Equal(Device(receipt), (await Rows(f)).Single(r => r.RowKey == "gate").GetString("OwnerDeviceId"));
+    }
+
+    [Theory]
+    [InlineData("installation", true)]
+    [InlineData("repository-name", true)]
+    [InlineData("repository-id", true)]
+    [InlineData("installation-stale", false)]
+    [InlineData("repository-name-stale", false)]
+    [InlineData("repository-id-stale", false)]
+    [InlineData("denied", false)]
+    [InlineData("malformed", false)]
+    public async Task Runtime_binding_change_is_terminal_only_when_well_formed_and_fresh(string observation, bool terminal)
+    {
+        await using var f = await AgentFixture();
+        var receipt = await Complete(f, await Start(f));
+        await Ack(f, receipt);
+        var normal = f.GitHub.Before!;
+        var observed = false;
+        f.GitHub.Before = request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (observation == "denied" && path.EndsWith("/installation", StringComparison.Ordinal))
+            {
+                observed = true;
+                return Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.Forbidden));
+            }
+            if (observation.StartsWith("installation", StringComparison.Ordinal) && path.EndsWith("/installation", StringComparison.Ordinal))
+            {
+                observed = true;
+                if (observation.EndsWith("-stale", StringComparison.Ordinal)) f.Clock.Advance(TimeSpan.FromSeconds(11));
+                return Reply(new { id = 790, app_id = IssuancePolicy.AppId, app_slug = IssuancePolicy.AppSlug,
+                    suspended_at = (string?)null, permissions = new { discussions = "write", agent_variables = "read" } });
+            }
+            if (path == "/installation/repositories")
+            {
+                observed = true;
+                if (observation.EndsWith("-stale", StringComparison.Ordinal)) f.Clock.Advance(TimeSpan.FromSeconds(11));
+                if (observation == "malformed") return Reply(new { total_count = 1, repositories = new[] { new { id = 123456 } } });
+                return Reply(new { total_count = 1, repositories = new[] { new {
+                    id = observation.StartsWith("repository-id", StringComparison.Ordinal) ? 999999 : 123456,
+                    full_name = observation.StartsWith("repository-name", StringComparison.Ordinal) ? "other/project" : "owner/project" } } });
+            }
+            return normal(request);
+        };
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var changed = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
+        Assert.True(observed);
+        Assert.NotEqual(HttpStatusCode.OK, changed.StatusCode);
+        Assert.DoesNotContain("token", await changed.Content.ReadAsStringAsync(Token));
+
+        f.GitHub.Before = normal;
+        await f.RestartAsync();
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var restored = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
+        Assert.Equal(terminal ? HttpStatusCode.Unauthorized : HttpStatusCode.OK, restored.StatusCode);
+        if (terminal) Assert.Equal("closed", (await Rows(f)).Single(r => r.RowKey == "gate").GetString("State"));
+    }
+
     private static async Task<EnrollmentFixture> AgentFixture()
     {
         var f = await EnrollmentFixture.CreateAsync();
