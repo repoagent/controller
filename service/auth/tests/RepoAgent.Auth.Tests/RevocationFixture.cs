@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Text;
+using Azure.Core.Pipeline;
 using Azure.Data.Tables;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -18,13 +20,19 @@ public sealed class RevocationFixture : IAsyncLifetime
     public TableClient Table => CreateClient();
 
     // Only tests use shared development credentials. Production receives an SDK client via DI.
-    public TableClient CreateClient() => new("UseDevelopmentStorage=true", TableName,
-        new TableClientOptions { Retry = { MaxRetries = 0 } });
+    public TableClient CreateClient(HttpPipelineTransport? transport = null)
+    {
+        var options = new TableClientOptions { Retry = { MaxRetries = 0 } };
+        if (transport is not null) options.Transport = transport;
+        var endpoint = Environment.GetEnvironmentVariable("AUTH_TEST_TABLE_ENDPOINT") ?? "http://127.0.0.1:10002/devstoreaccount1";
+        return new TableClient(new Uri(endpoint), TableName, new TableSharedKeyCredential("devstoreaccount1",
+            "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="), options);
+    }
 
     public async ValueTask InitializeAsync() => await Table.CreateAsync();
     public async ValueTask DisposeAsync() => await Table.DeleteAsync();
 
-    public WebApplicationFactory<Program> CreateHost() => new WebApplicationFactory<Program>()
+    public WebApplicationFactory<Program> CreateHost(HttpPipelineTransport? transport = null, Dictionary<string, string?>? settings = null) => new WebApplicationFactory<Program>()
         .WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
@@ -33,19 +41,19 @@ public sealed class RevocationFixture : IAsyncLifetime
                     ["Broker:DeploymentEpoch"] = Epoch,
                     ["Broker:TableEndpoint"] = "https://example.table.core.windows.net",
                     ["Broker:TableName"] = TableName
-                }));
+                }.Concat(settings ?? new Dictionary<string, string?>())));
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<TableClient>();
-                services.AddSingleton(CreateClient());
+                services.AddSingleton(CreateClient(transport));
             });
         });
 
-    public async Task<EnrolledDevice> EnrollAsync()
+    public async Task<EnrolledDevice> EnrollAsync(string? suppliedDeviceId = null, string? suppliedSecret = null)
     {
-        var deviceId = Base64Url(RandomNumberGenerator.GetBytes(24));
+        var deviceId = suppliedDeviceId ?? Base64Url(RandomNumberGenerator.GetBytes(24));
         var secretBytes = RandomNumberGenerator.GetBytes(32);
-        var secret = Base64Url(secretBytes);
+        var secret = suppliedSecret ?? Base64Url(secretBytes);
         var table = Table;
         await table.AddEntityAsync(new TableEntity("locator:" + deviceId, "locator")
         {
@@ -61,7 +69,7 @@ public sealed class RevocationFixture : IAsyncLifetime
             new TableTransactionAction(TableTransactionActionType.Add, new TableEntity(Partition, "device:" + deviceId)
             {
                 ["RepositoryId"] = RepositoryId, ["DeviceId"] = deviceId, ["Epoch"] = Epoch,
-                ["SecretHash"] = Convert.ToHexString(SHA256.HashData(secretBytes)),
+                ["SecretHash"] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret))),
                 ["ExpiresAt"] = DateTimeOffset.UtcNow.AddHours(1), ["State"] = "active",
                 ["OutstandingTokenCount"] = 1L
             }),
