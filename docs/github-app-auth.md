@@ -15,7 +15,15 @@ The bridge authenticates the App, discovers the installation for the selected re
 
 Webhook mode additionally requires owner-approved **Webhooks: read and write** and includes `repository_hooks: write` in renewed installation tokens. Polling-only tokens remain Discussions-only. See [repository webhook setup](webhooks.md).
 
+## App ownership
+
+**Repo Agent Connector** is owned by the `repoagent` account. The controller repository is `repoagent/controller`; App registration ownership and repository ownership are managed separately.
+
+On 20 October 2026, GitHub blocked this App's transfer from `egil` while the App was private. The operator made the App public and completed the transfer to `repoagent`. The public API confirmed the same App ID `5387625` and slug `repo-agent-connector` afterward. This is the observed fix for this transfer; GitHub's [ownership-transfer documentation](https://docs.github.com/en/apps/maintaining-github-apps/transferring-ownership-of-a-github-app) permits personal-account destinations but does not explain this specific rejection. See the [transfer investigation](research/2026-10-20-github-app-transfer.md) for the evidence and limits.
+
 ## Renewal and native commands
+
+The current PEM-based setup is for an operator who owns the App registration and trusts the controller machine. Do not distribute the shared Repo Agent Connector App's PEM to other users: a private key grants authentication across the App's installations, even though this controller normally narrows its issued tokens to one repository. A read-only Docker mount prevents modification of the host file; processes that can read the mount can still use its contents. GitHub explicitly advises against shipping an App private key to user devices. See [GitHub's credential guidance](https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/best-practices-for-creating-a-github-app#private-keys).
 
 GitHub [installation tokens expire after one hour](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation). The bridge checks the credential every minute independently of polling, as well as before every GitHub operation, and renews it when five minutes or less remain. This continues during long polls and while native work is active. The returned expiry is authoritative. A signed short-lived JWT authenticates App and token-issuance requests; the signing key is not passed as a native process environment variable.
 
