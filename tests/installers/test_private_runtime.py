@@ -112,7 +112,7 @@ Set-Acl -LiteralPath $Path -AclObject $acl
         self.assertNotIn(ENROLLMENT_CANARY, json.dumps(state))
         if success:
             self.assertEqual(result.returncode, 0, output)
-        else:
+        elif success is False:
             self.assertNotEqual(result.returncode, 0, output)
         return result
 
@@ -179,6 +179,22 @@ Set-Acl -LiteralPath $Path -AclObject $acl
             with self.subTest(options=options):
                 self.invoke('configure', '--repository', 'owner/repository', '--app-id', '123', *options, success=False)
                 self.assertFalse(self.state())
+
+    def test_abbreviated_broker_options_cannot_mount_or_configure_foreign_volumes(self):
+        volumes = {NAME + '-' + storage: {'Labels': None, 'foreignCanary': 'preserve-me'}
+                   for storage in STORAGE}
+        self.state_path.write_text(json.dumps({
+            'volumes': volumes, 'containers': {}, 'settings': {}, 'events': [], 'running': False}))
+        result = self.invoke('configure', '--repository', 'owner/repository', '--app-id', '123',
+            '--broker-u', BROKER, '--enrollment-f', str(self.enrollment), success=None)
+        state = self.state()
+        self.assertNotEqual(result.returncode, 0,
+            f"Abbreviated broker configure succeeded; saved configuration={bool(state['settings'])}. "
+            + result.stdout + result.stderr)
+        self.assertEqual(state['volumes'], volumes)
+        self.assertEqual(state['settings'], {})
+        self.assertFalse(any(event[0] in ('run', 'rm', 'stop') or event[:2] == ['volume', 'create']
+                             for event in state['events']))
 
     def test_private_source_rejections_happen_before_docker(self):
         if os.name == 'nt':
