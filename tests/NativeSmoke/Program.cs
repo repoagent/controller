@@ -1,4 +1,4 @@
-using DiscussionBridge;
+using RepoAgentController;
 
 // Native AOT trimming is a separate compatibility boundary from the ordinary xUnit run.
 var mention = new MentionUser("repoagent");

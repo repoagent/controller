@@ -1,0 +1,5 @@
+# Keep the shared App key out of controller installations
+
+The controller must preserve the shared GitHub App bot identity without giving installed coding agents the signing authority for every App installation. We will consume repository-bound installation tokens from a separate maintainer-operated credential broker; the shared PEM and human authorization credentials stay in that trusted service. Direct device login remains a possible human-attributed mode, but cannot mint installation tokens. Direct PEM mode remains explicit for operators using their own App.
+
+The broker adds a service dependency and must not be presented as available until enrollment approval, durable authorization, revocation and hosted acceptance pass [plan #28](https://github.com/repoagent/controller/issues/28). The first implementation is limited to the [v1 consumer contract](../broker-protocol.md); Azure storage and outstanding-token fencing remain release gates.

@@ -20,7 +20,7 @@ CONFIG = Path('/data/config/settings.json')
 CODEX = Path('/data/credentials/codex')
 SKILLS = Path('/data/config/skills')
 STATE = '/data/state/bridge.json'
-BRIDGE = ['/opt/bridge/bridge']
+CONTROLLER = ['/opt/repoagent/controller/RepoAgentController']
 
 
 def run(args, **kwargs):
@@ -197,7 +197,7 @@ def main():
     elif args.command == 'get': print(settings().get(args.key) or '')
     elif args.command == 'versions':
         print('RepoAgent container; uid=' + str(os.getuid()), flush=True)
-        print('bridge: Native AOT, built with .NET SDK 11.0.100-rc.2', flush=True)
+        print('RepoAgentController: Native AOT, built with .NET SDK 11.0.100-rc.2', flush=True)
         for command in [['gh', '--version'], ['codex', '--version'], ['python3', '--version'], ['rg', '--version'], ['cloudflared', '--version']]: run(command)
     elif args.command == 'install-skills': install_skills(args.selection, args.token_file)
     elif args.command == 'skills': print((CONFIG.parent / 'skills.json').read_text() if (CONFIG.parent / 'skills.json').exists() else '[]')
@@ -228,11 +228,11 @@ def main():
         if args.command == 'check':
             # Check the webhook grant without creating a tunnel or registering a hook.
             endpoint = ['--webhook-url', 'https://quick-tunnel.invalid'] if config.get('mode') == 'quick-tunnel' else []
-            run(BRIDGE + bridge_args(config) + endpoint + ['--check-auth'])
+            run(CONTROLLER + bridge_args(config) + endpoint + ['--check-auth'])
         elif config.get('mode') == 'quick-tunnel':
-            sys.exit(quick_tunnel.run(BRIDGE + bridge_args(config), config.get('listenPort', 8080)))
+            sys.exit(quick_tunnel.run(CONTROLLER + bridge_args(config), config.get('listenPort', 8080)))
         else:
-            os.execv(BRIDGE[0], BRIDGE + bridge_args(config))
+            os.execv(CONTROLLER[0], CONTROLLER + bridge_args(config))
 
 
 if __name__ == '__main__':

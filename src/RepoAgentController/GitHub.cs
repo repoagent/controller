@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
-namespace DiscussionBridge;
+namespace RepoAgentController;
 
 sealed class GitHub(string repository, GitHubAppCredentials credentials, string executable)
 {

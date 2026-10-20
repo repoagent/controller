@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json.Nodes;
 
-namespace DiscussionBridge;
+namespace RepoAgentController;
 
 sealed class Codex : IAsyncDisposable
 {

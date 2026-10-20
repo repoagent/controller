@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 
-namespace DiscussionBridge;
+namespace RepoAgentController;
 
 sealed class StateStore : IDisposable
 {
@@ -9,13 +9,14 @@ sealed class StateStore : IDisposable
     public JsonObject State { get; }
     public JsonObject Discussions => State["discussions"]!.AsObject();
 
-    public StateStore(string path, string repository)
+    public StateStore(string path, string repository, Action? onLockAcquired = null)
     {
         this.path = path;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         lease = new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         try
         {
+            onLockAcquired?.Invoke();
             State = File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path))!.AsObject() : new JsonObject
             {
                 ["version"] = 1, ["repository"] = repository, ["discussions"] = new JsonObject()
