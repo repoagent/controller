@@ -6,17 +6,17 @@ from pathlib import Path
 import sys
 import time
 
-scenario = json.loads(Path(os.environ['REVOKE_GH_SCENARIO']).read_text())
+scenario = json.loads(Path(os.environ['REVOKE_GH_SCENARIO']).read_text(encoding='utf-8'))
 log = Path(os.environ['REVOKE_GH_LOG'])
-events = log.read_text().splitlines() if log.exists() else []
+events = log.read_text(encoding='utf-8').splitlines() if log.exists() else []
 index = len(events)
-with log.open('a') as stream:
+with log.open('a', encoding='utf-8') as stream:
     stream.write(json.dumps({'argv': sys.argv[1:], 'pid': os.getpid()}) + '\n')
 if index >= len(scenario):
     sys.exit(99)
 response = scenario[index]
 if 'replace_value' in response:
-    Path(os.environ['REVOKE_REMOTE_VALUE']).write_text(response['replace_value'])
+    Path(os.environ['REVOKE_REMOTE_VALUE']).write_text(response['replace_value'], encoding='utf-8')
 if response.get('delete_value'):
     Path(os.environ['REVOKE_REMOTE_VALUE']).unlink(missing_ok=True)
 # Delay after recording a request models a possibly transmitted DELETE.

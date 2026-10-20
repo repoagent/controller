@@ -1,6 +1,7 @@
 """Public PowerShell revoke orchestration; only the external gh executable is doubled.
 
-Linux pwsh evidence does not establish native Windows or live GitHub compatibility.
+Runs on POSIX and native Windows; provider behavior is supplied by a gh double.
+Native Windows acceptance requires an actual Windows run; live GitHub is separate.
 """
 import hashlib
 import json
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -30,23 +32,58 @@ def responses(value=VALUE):
             {'body': {'name': VARIABLE, 'value': value}}, {'status': 204}]
 
 
-@unittest.skipUnless(os.name == 'posix' and shutil.which('pwsh'),
-                     'POSIX executable fixture and PowerShell 7 required; native Windows unverified')
 class ApprovalRevokeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not shutil.which('pwsh'):
+            if os.name == 'nt':
+                raise RuntimeError('Native Windows acceptance requires PowerShell 7 on PATH')
+            raise unittest.SkipTest('PowerShell 7 required')
+        cls.native_fixture = os.name == 'nt' or os.environ.get('REVOKE_GH_NATIVE_FIXTURE') == '1'
+        cls.fixture_build = None
+        if cls.native_fixture:
+            if not shutil.which('dotnet'):
+                raise RuntimeError('The native gh test fixture requires the .NET 10 SDK')
+            # Outside the repo: its global.json pins an unrelated .NET 11 SDK.
+            temporary = tempfile.TemporaryDirectory(prefix='native gh fixture ')
+            cls.addClassCleanup(temporary.cleanup)
+            build = Path(temporary.name)
+            shutil.copytree(Path(__file__).with_name('GhFixture'), build / 'project')
+            (build / 'global.json').write_text(json.dumps({'sdk': {
+                'version': '10.0.100', 'rollForward': 'latestFeature', 'allowPrerelease': False}}),
+                encoding='utf-8')
+            cls.fixture_build = build / 'output'
+            result = subprocess.run(['dotnet', 'build', str(build / 'project/GhFixture.csproj'),
+                                     '--output', str(cls.fixture_build), '--nologo',
+                                     '--verbosity', 'quiet', '--ignore-failed-sources'],
+                                    cwd=build, capture_output=True, text=True, encoding='utf-8', timeout=120)
+            if result.returncode:
+                raise RuntimeError('Native gh fixture build failed:\n' + result.stdout + result.stderr)
+
     def run_revoke(self, *, arguments=(), scenario=None, apply=False, expected=None,
                    repository='example/project', script_root=ROOT, interactive_input=None):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='revoke boundary ')))
-        gh = directory / 'gh'
-        shutil.copyfile(Path(__file__).with_name('gh_fixture.py'), gh)
-        gh.chmod(0o755)
+        if self.native_fixture:
+            for artifact in self.fixture_build.iterdir():
+                shutil.copy2(artifact, directory / artifact.name)
+        else:
+            gh = directory / 'gh'
+            shutil.copyfile(Path(__file__).with_name('gh_fixture.py'), gh)
+            gh.chmod(0o755)
         scenario_path = directory / 'scenario.json'
-        scenario_path.write_text(json.dumps(scenario if scenario is not None else responses()))
+        scenario_path.write_text(json.dumps(scenario if scenario is not None else responses()), encoding='utf-8')
         log = directory / 'requests.jsonl'
         remote = directory / 'remote-value'
-        remote.write_text(VALUE)
+        remote.write_text(VALUE, encoding='utf-8')
         environment = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ['PATH'],
                            REVOKE_GH_SCENARIO=str(scenario_path), REVOKE_GH_LOG=str(log),
-                           REVOKE_REMOTE_VALUE=str(remote), CODEX_HOME=str(directory / 'absent-codex'))
+                           REVOKE_REMOTE_VALUE=str(remote), CODEX_HOME=str(directory / 'absent-codex'),
+                           REVOKE_GH_PYTHON=sys.executable,
+                           REVOKE_GH_FIXTURE=str(Path(__file__).with_name('gh_fixture.py').resolve()),
+                           PYTHONUTF8='1')
+        expected_gh = directory / ('gh.exe' if os.name == 'nt' else 'gh')
+        self.assertEqual(Path(shutil.which('gh', path=environment['PATH']) or '').resolve(),
+                         expected_gh.resolve(), 'Executable fixture must take precedence over host gh')
         command = ['pwsh', '-NoLogo', '-NoProfile', '-File', str(script_root / 'install.ps1'),
                    '-Action', 'Revoke']
         if interactive_input is None:
@@ -59,7 +96,7 @@ class ApprovalRevokeTests(unittest.TestCase):
             command += ['-ExpectedValueSha256', expected]
         command.extend(arguments)
         started = time.monotonic()
-        result = subprocess.run(command, input=interactive_input or '', capture_output=True, text=True,
+        result = subprocess.run(command, input=interactive_input or '', capture_output=True, text=True, encoding='utf-8',
                                 env=environment, cwd=directory, timeout=65)
         elapsed = time.monotonic() - started
         output = result.stdout + result.stderr
@@ -70,7 +107,7 @@ class ApprovalRevokeTests(unittest.TestCase):
         outcome = outcomes[0]
         self.assertEqual(outcome['brokerClosure'], 'unconfirmed')
         self.assertEqual(outcome['outstandingTokens'], 'unsettled')
-        events = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        events = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()] if log.exists() else []
         self.assertLessEqual(len(events), 4, events)
         self.assertTrue(all(event['argv'][0] == 'api' for event in events))
         methods = [event['argv'][event['argv'].index('--method') + 1] for event in events]
@@ -218,8 +255,29 @@ class ApprovalRevokeTests(unittest.TestCase):
                 self.assert_process_terminated(events[-1]['pid'])
 
     def assert_process_terminated(self, pid):
-        with self.assertRaises(ProcessLookupError):
-            os.kill(pid, 0)
+        if os.name == 'nt':
+            # Query/wait only: os.kill(pid, 0) can terminate processes on Windows.
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.CloseHandle.restype = wintypes.BOOL
+            handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE, no terminate rights
+            if not handle:
+                self.assertEqual(ctypes.get_last_error(), 87, 'Could not verify fixture process exit')
+                return  # ERROR_INVALID_PARAMETER: PID no longer exists
+            try:
+                self.assertEqual(kernel.WaitForSingleObject(handle, 5000), 0,
+                                 'Fixture child did not exit after installer termination')
+            finally:
+                kernel.CloseHandle(handle)
+        else:
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
 
     def test_combined_stream_output_limit_aborts_before_child_finishes(self):
         for index in (0, 3):
