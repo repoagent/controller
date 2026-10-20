@@ -103,6 +103,7 @@ class CompiledDeploymentContractTests(unittest.TestCase):
         container = app['properties']['template']['containers'][0]
         env = {entry['name']: entry['value'] for entry in container['env']}
         self.assertEqual({name: value for name, value in env.items() if name.startswith('Broker__')}, {
+            'Broker__BrokerOrigin': env['Broker__BrokerOrigin'],
             'Broker__TableEndpoint': "[reference(resourceId('Microsoft.Storage/storageAccounts', parameters('storageName')), '2023-05-01').primaryEndpoints.table]",
             'Broker__TableName': "[parameters('tableName')]",
             'Broker__DeploymentEpoch': "[parameters('deploymentEpoch')]",

@@ -1,8 +1,8 @@
 """Public CLI orchestration with executable provider doubles, never live credentials.
 
-The doubles capture final argv and supply provider-shaped projected JSON. The fixed
-Azure query below checks our adapter's outbound translation; it does not claim
-that Azure evaluates that query or that a real revision is ready.
+The doubles capture final argv and supply provider-shaped raw JSON. The fixed
+Azure query is evaluated against raw fixture resources with the installed JMESPath
+library (or Azure CLI's bundled copy); no cloud readiness is established.
 """
 import json
 from pathlib import Path
@@ -17,9 +17,15 @@ REPOSITORY = 'ghcr.io/repoagent/controller-auth'
 IMAGE = REPOSITORY + '@sha256:' + 'a' * 64
 SUBSCRIPTION = '33333333-3333-3333-3333-333333333333'
 TARGET = ['--subscription', SUBSCRIPTION, '--resource-group', 'auth-rg', '--name', 'auth-service']
+DOMAIN = 'gentle-field-123.swedencentral.azurecontainerapps.io'
+ORIGIN = 'https://auth-service.' + DOMAIN
+ENVIRONMENT_ID = f'/subscriptions/{SUBSCRIPTION}/resourceGroups/auth-rg/providers/Microsoft.App/managedEnvironments/auth-service-environment'
+ENV_SHOW = ['az', 'resource', 'show', '--ids', ENVIRONMENT_ID, '--api-version', '2025-01-01', '--subscription', SUBSCRIPTION, '-o', 'json']
 # Provider request contract, intentionally independent of production helpers.
 APP_QUERY = ('{id:id,role:tags."repoagent-role",mode:properties.configuration.activeRevisionsMode,'
              'containers:properties.template.containers[].{name:name,image:image},'
+             'environment:properties.environmentId,location:location,ingress:properties.configuration.ingress,'
+             'origins:properties.template.containers[].env[?name==`Broker__BrokerOrigin`].value[],'
              'latest:properties.latestRevisionName,ready:properties.latestReadyRevisionName}')
 INSPECT = ['skopeo', 'inspect', '--no-creds', '--config', '--override-os', 'linux',
            '--override-arch', 'amd64', 'docker://' + IMAGE]
@@ -28,7 +34,8 @@ UPDATE = ['az', 'containerapp', 'update', *TARGET, '--container-name', 'auth',
           '--image', IMAGE, '--output', 'none']
 
 # A transport transcript, not an Azure emulator: no project validation decisions
-# or query evaluator are implemented here. Unexpected provider calls fail closed.
+# are implemented here. The real JMESPath library evaluates query projections.
+# Unexpected provider calls fail closed.
 PROVIDER_DOUBLE = '''import json, os, pathlib, sys
 command = [pathlib.Path(sys.argv[0]).name, *sys.argv[1:]]
 ledger = pathlib.Path(os.environ['TEST_LEDGER'])
@@ -44,20 +51,52 @@ responses = [step, *step.get('alternatives', [])]
 match = next((entry for entry in responses if command == entry['argv']), None)
 if match is None:
     sys.exit('Unexpected provider command: ' + json.dumps(command))
-print(json.dumps(match['response']))
+response = match['response']
+if '--query' in command:
+    sys.path.insert(0, os.environ['TEST_JMESPATH_DIRECTORY'])
+    import jmespath
+    response = jmespath.search(command[command.index('--query') + 1], response)
+print(json.dumps(response))
 '''
 
 
 def existing_app():
     """Azure show response after the requested projection, with one existing app."""
     return dict(id=f'/subscriptions/{SUBSCRIPTION}/resourceGroups/auth-rg/providers/Microsoft.App/containerApps/auth-service',
-                role='auth-service', mode='Single', containers=[dict(name='auth', image='ghcr.io/example/auth:previous')],
+                role='auth-service', mode='Single', location='swedencentral', environment=ENVIRONMENT_ID,
+                ingress=dict(external=True, fqdn=ORIGIN.removeprefix('https://')), origins=[ORIGIN], containers=[dict(name='auth', image='ghcr.io/example/auth:previous')],
                 latest='auth-service--previous', ready='auth-service--previous')
 
 
 def auth_image():
     return dict(config=dict(Labels={'io.repoagent.role': 'auth-service'}, User='10001:10001'),
                 os='linux', architecture='amd64')
+
+
+def jmespath_directory():
+    try:
+        import jmespath
+        return Path(jmespath.__file__).resolve().parents[1]
+    except ModuleNotFoundError:
+        candidates = list(Path('/opt/az/lib').glob('python*/site-packages/jmespath/__init__.py'))
+        if not candidates:
+            raise RuntimeError('Install jmespath or Azure CLI to evaluate the real application query')
+        return candidates[0].parents[1]
+
+
+def raw_app(projected):
+    return dict(id=projected['id'], tags={'repoagent-role': projected['role']}, location=projected['location'],
+                properties=dict(environmentId=projected['environment'],
+                    configuration=dict(activeRevisionsMode=projected['mode'], ingress=projected['ingress']),
+                    template=dict(containers=[dict(**container, env=[dict(name='Broker__BrokerOrigin', value=origin)
+                        for origin in projected['origins']]) for container in projected['containers']]),
+                    latestRevisionName=projected['latest'], latestReadyRevisionName=projected['ready']))
+
+
+def owned_environment():
+    return dict(id=ENVIRONMENT_ID, type='Microsoft.App/managedEnvironments', location='swedencentral',
+                tags=dict(repositoryId='1426154477', ownerId='345029828', managedBy='repoagent-auth', role='auth-environment'),
+                properties=dict(defaultDomain=DOMAIN))
 
 
 class DeploymentCliTests(unittest.TestCase):
@@ -81,11 +120,14 @@ class DeploymentCliTests(unittest.TestCase):
                         argv=['skopeo', 'inspect', '--override-os', 'linux', '--override-arch', 'amd64', argv[-1]],
                         response=dict(Labels=config.get('Labels', {}), Os=response.get('os'),
                                       Architecture=response.get('architecture')))]
+                if argv == SHOW:
+                    entry['response'] = raw_app(response)
                 steps.append(entry)
             fixture.write_text(json.dumps(steps))
             ledger = root / 'calls.jsonl'
             env = dict(PATH=str(root), HOME=str(root), LANG='C.UTF-8',
                        TEST_TRANSCRIPT=str(fixture), TEST_LEDGER=str(ledger),
+                       TEST_JMESPATH_DIRECTORY=str(jmespath_directory()),
                        AZURE_CLIENT_ID='11111111-1111-1111-1111-111111111111',
                        AZURE_TENANT_ID='22222222-2222-2222-2222-222222222222',
                        AZURE_SUBSCRIPTION_ID=SUBSCRIPTION,
@@ -142,7 +184,7 @@ class DeploymentCliTests(unittest.TestCase):
                     # A valid Azure path is available to expose accidental update,
                     # while the intended command must stop at image inspection.
                     result, calls = self.invoke(verb, [(INSPECT, dict(auth_image(), config=config)),
-                        (SHOW, existing_app()), (UPDATE, {}), (SHOW, ready)])
+                        (SHOW, existing_app()), (ENV_SHOW, owned_environment()), (UPDATE, {}), (SHOW, ready)])
 
                     self.assertEqual(result.returncode, 1)
                     self.assertIn('explicit nonzero numeric USER', result.stderr)
@@ -157,7 +199,7 @@ class DeploymentCliTests(unittest.TestCase):
                      latest='auth-service--new', ready='auth-service--new')
         for verb in ['preflight', 'deploy']:
             with self.subTest(verb=verb):
-                result, calls = self.invoke(verb, [(inspect, auth_image()), (SHOW, existing_app()),
+                result, calls = self.invoke(verb, [(inspect, auth_image()), (SHOW, existing_app()), (ENV_SHOW, owned_environment()),
                     (update, {}), (SHOW, ready)],
                     {'AUTH_IMAGE_REPOSITORY': wrong_repository, 'AUTH_IMAGE': wrong_image})
 
@@ -180,35 +222,60 @@ class DeploymentCliTests(unittest.TestCase):
                 self.assertEqual(result.stderr.strip(), error)
                 self.assertEqual(calls, [INSPECT, SHOW])
 
+    def test_unowned_or_malformed_environment_refuses_before_update(self):
+        for change in (dict(id=ENVIRONMENT_ID + '-foreign'), dict(type='Microsoft.App/containerApps'),
+                       dict(tags={}), dict(location='other-region'), dict(properties=dict(defaultDomain='https://bad.test'))):
+            with self.subTest(change=change):
+                result, calls = self.invoke('deploy', [(INSPECT, auth_image()), (SHOW, existing_app()),
+                    (ENV_SHOW, dict(owned_environment(), **change))])
+                self.assertEqual(result.returncode, 1)
+                self.assertNotIn(UPDATE, calls)
+                self.assertNotIn('Unexpected provider command', result.stderr)
+
+    def test_public_origin_mismatch_refuses_before_update_and_after_rollout(self):
+        for change in (dict(ingress=dict(external=True, fqdn='foreign.example.test')),
+                       dict(environment=ENVIRONMENT_ID + '-foreign'), dict(origins=['https://foreign.example.test'])):
+            with self.subTest(change=change):
+                result, calls = self.invoke('deploy', [(INSPECT, auth_image()), (SHOW, dict(existing_app(), **change)), (ENV_SHOW, owned_environment())])
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('Public ingress or configured broker origin', result.stderr)
+                self.assertNotIn(UPDATE, calls)
+        after = dict(existing_app(), containers=[dict(name='auth', image=IMAGE)],
+                     latest='new', ready='new', ingress=dict(external=True, fqdn='foreign.example.test'))
+        result, calls = self.invoke('deploy', [(INSPECT, auth_image()), (SHOW, existing_app()), (ENV_SHOW, owned_environment()), (UPDATE, {}), (SHOW, after)])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('Public ingress or configured broker origin', result.stderr)
+        self.assertIn(UPDATE, calls)
+
     def test_deployment_updates_only_the_selected_container_and_checks_readiness(self):
         ready = dict(existing_app(), containers=[dict(name='auth', image=IMAGE)],
                      latest='auth-service--new', ready='auth-service--new')
-        result, calls = self.invoke('deploy', [(INSPECT, auth_image()), (SHOW, existing_app()),
+        result, calls = self.invoke('deploy', [(INSPECT, auth_image()), (SHOW, existing_app()), (ENV_SHOW, owned_environment()),
                                               (UPDATE, {}), (SHOW, ready)])
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), 'Intended immutable image is configured and latest revision is ready.')
-        self.assertEqual(calls, [INSPECT, SHOW, UPDATE, SHOW])
+        self.assertEqual(result.stdout.strip(), 'Broker origin: ' + ORIGIN + '\nIntended immutable image is configured and latest revision is ready.')
+        self.assertEqual(calls, [INSPECT, SHOW, ENV_SHOW, UPDATE, SHOW])
 
     def test_not_ready_revision_is_rechecked_before_success(self):
         pending = dict(existing_app(), containers=[dict(name='auth', image=IMAGE)],
                        latest='auth-service--new')
         ready = dict(pending, ready='auth-service--new')
-        result, calls = self.invoke('deploy', [(INSPECT, auth_image()), (SHOW, existing_app()),
+        result, calls = self.invoke('deploy', [(INSPECT, auth_image()), (SHOW, existing_app()), (ENV_SHOW, owned_environment()),
                                               (UPDATE, {}), (SHOW, pending), (SHOW, ready)])
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), 'Intended immutable image is configured and latest revision is ready.')
-        self.assertEqual(calls, [INSPECT, SHOW, UPDATE, SHOW, SHOW])
+        self.assertEqual(result.stdout.strip(), 'Broker origin: ' + ORIGIN + '\nIntended immutable image is configured and latest revision is ready.')
+        self.assertEqual(calls, [INSPECT, SHOW, ENV_SHOW, UPDATE, SHOW, SHOW])
 
     def test_resulting_image_mismatch_is_reported_after_update(self):
         # An unrelated/latest image is not a successful deployment, even if ready.
-        result, calls = self.invoke('deploy', [(INSPECT, auth_image()), (SHOW, existing_app()),
+        result, calls = self.invoke('deploy', [(INSPECT, auth_image()), (SHOW, existing_app()), (ENV_SHOW, owned_environment()),
                                               (UPDATE, {}), (SHOW, existing_app())])
 
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stderr.strip(), 'Resulting app image differs from requested immutable image')
-        self.assertEqual(calls, [INSPECT, SHOW, UPDATE, SHOW])
+        self.assertEqual(calls, [INSPECT, SHOW, ENV_SHOW, UPDATE, SHOW])
 
 
 if __name__ == '__main__':
