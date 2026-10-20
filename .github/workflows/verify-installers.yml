@@ -87,8 +87,31 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             python -m unittest discover -s tests/installers -p test_image_publication.py -v
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            python -m unittest discover -s tests/installers -p test_host_enrollment.py -v
           } else {
             python -m unittest discover -s tests/installers -v
           }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  windows-host-enrollment:
+    name: Host enrollment (windows-2025)
+    runs-on: windows-2025
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Prepare the native executable test fixture
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: '10.0.x'
+      - name: Run all Windows host enrollment cases with fail-fast feedback
+        shell: pwsh
+        run: |
+          $PSVersionTable.PSVersion.ToString()
+          python -m unittest discover -s tests/installers -p test_host_enrollment.py -f -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

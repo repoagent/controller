@@ -56,17 +56,38 @@ class EnrollmentJourney:
         if os.name == 'nt':
             der = ssl.PEM_cert_to_DER_cert(cert.read_text(encoding='ascii'))
             thumbprint = hashlib.sha1(der).hexdigest()
-            def certificate_store(operation, value):
-                # Request force explicitly; docs do not guarantee root UI
-                # suppression. Any prompt/store stall must fail within 15 seconds.
-                # No inherited console input or captured pipe can wait on conhost.
-                subprocess.run(['certutil', '-user', '-f', operation, 'Root', value], check=True,
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+            der_path = self.directory / 'public-certificate.der'
+            der_path.write_bytes(der)
+            def certificate_store(operation):
+                # The helper launches no descendants. A file, rather than a pipe,
+                # retains the last fixed API phase even if a native call hangs.
+                diagnostic = self.directory / ('certificate-' + operation + '.jsonl')
+                failure = None
+                with diagnostic.open('wb') as output:
+                    try:
+                        result = subprocess.run([sys.executable,
+                            str(Path(__file__).with_name('windows_certificate_fixture.py')),
+                            operation, str(der_path), thumbprint], stdin=subprocess.DEVNULL,
+                            stdout=output, stderr=output, timeout=15,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+                        if result.returncode:
+                            failure = 'failed'
+                    except subprocess.TimeoutExpired:
+                        failure = 'timed out'
+                    except OSError as error:
+                        failure = 'could not launch'
+                        output.write((json.dumps({'operation': operation, 'phase': 'launch', 'status': 'error',
+                                                  'win32': getattr(error, 'winerror', None) or 0}) + '\n').encode('utf-8'))
+                with diagnostic.open('rb') as output:
+                    phases = output.read(8192).decode('utf-8', errors='replace')
+                print('WINDOWS_TRUST ' + operation + '\n' + phases, flush=True)
+                if failure:
+                    raise RuntimeError('Temporary CurrentUser Root ' + operation + ' ' + failure +
+                                       '; bounded API phases:\n' + phases) from None
             # An interrupted add may already have succeeded. Remove only this
             # unique fixture certificate even when installation fails or times out.
-            case.addCleanup(certificate_store, '-delstore', thumbprint)
-            certificate_store('-addstore', str(cert))
+            case.addCleanup(certificate_store, 'remove')
+            certificate_store('add')
         journey = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
