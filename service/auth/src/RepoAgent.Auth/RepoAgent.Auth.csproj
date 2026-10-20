@@ -8,5 +8,8 @@
   <ItemGroup>
     <PackageReference Include="Azure.Data.Tables" Version="12.13.0" />
     <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="Azure.Security.KeyVault.Keys" Version="4.10.2" />
+    <PackageReference Include="Azure.Extensions.AspNetCore.DataProtection.Blobs" Version="1.5.4" />
+    <PackageReference Include="Azure.Extensions.AspNetCore.DataProtection.Keys" Version="1.6.4" />
   </ItemGroup>
 </Project>
