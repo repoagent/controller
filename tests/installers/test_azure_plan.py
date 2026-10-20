@@ -179,6 +179,62 @@ class AzurePlanTests(unittest.TestCase):
                 self.assertEqual(result.stdout, '')
                 self.assertNotIn('PRIVATE', result.stderr)
 
+    def test_malformed_discovery_scalars_never_establish_ownership(self):
+        cases = [
+            ('account show', ('id',), []),
+            ('account show', ('state',), ['Enabled']),
+            ('provider show', ('registrationState',), []),
+            ('group show', ('id',), [BASE]),
+            ('containerapp env show', ('id',), None),
+            ('containerapp env show', ('properties', 'provisioningState'), True),
+            ('containerapp show', ('id',), [APP]),
+            ('containerapp show', ('tags', 'repoagent-controller-id'), [CONTROLLER]),
+            ('containerapp show', ('tags', 'repoagent-repository-id'), ['123', '456']),
+            ('containerapp show', ('tags', 'repoagent-repository-id'), 123),
+            ('containerapp show', ('tags',), []),
+        ]
+        for operation, field, value in cases:
+            with self.subTest(operation=operation, field=field, value=value):
+                data = scenario()
+                data['containerapp show'] = {'body': {'id': APP, 'location': 'westeurope',
+                    'tags': {'repoagent-controller-id': CONTROLLER,
+                             'repoagent-repository-id': '123'},
+                    'properties': {'managedEnvironmentId': ENV}}}
+                target = data[operation]['body']
+                for key in field[:-1]:
+                    target = target[key]
+                target[field[-1]] = value
+                result, _ = self.run_plan(data)
+                action = json.loads(result.stdout)['resources'][-1]['action'] if result.stdout else None
+                self.assertNotEqual(result.returncode, 0, f'Malformed response produced {action}')
+                self.assertEqual(result.stdout, '')
+
+    def test_manifest_scalar_shapes_are_rejected_before_discovery(self):
+        cases = [
+            (('platform',), []),
+            (('platform',), ['linux/amd64']),
+            (('controller', 'source'), []),
+            (('agent', 'profile'), ['codex']),
+            (('controller', 'sha256'), []),
+            (('agent', 'profile'), None),
+            (('controller', 'source'), True),
+            (('platform',), 7),
+        ]
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        manifest = directory / 'image.json'
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                data = json.loads((ROOT / 'image/default.json').read_text())
+                target = data
+                for key in field[:-1]:
+                    target = target[key]
+                target[field[-1]] = value
+                manifest.write_text(json.dumps(data))
+                result, calls = self.run_plan(extra=['-ImageManifest', str(manifest)])
+                self.assertNotEqual(result.returncode, 0, f'Malformed manifest accepted: {field}={value}')
+                self.assertEqual(calls, [])
+                self.assertEqual(result.stdout, '')
+
     def test_invalid_name_and_mutable_image_fail_before_discovery(self):
         for extra in (['-AppName', 'INVALID'], ['-Image', 'regis.azurecr.io/controller:latest']):
             result, calls = self.run_plan(extra=extra)
