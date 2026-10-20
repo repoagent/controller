@@ -57,6 +57,20 @@ class CompiledDeploymentContractTests(unittest.TestCase):
         self.assertFalse(any(item['type'].startswith('Microsoft.Authorization/') for item in template['resources']))
         self.assertFalse(any(item['type'].startswith('Microsoft.Consumption/') for item in template['resources']))
 
+    def test_runtime_origin_binds_owned_environment_domain_and_is_output(self):
+        template = self.templates['main']
+        app = resource(template, 'Microsoft.App/containerApps')
+        env = {entry['name']: entry['value']
+               for entry in app['properties']['template']['containers'][0]['env']}
+        self.assertIn('Broker__BrokerOrigin', env)
+        origin = env['Broker__BrokerOrigin']
+        # Bicep may retain a variable or inline it; inspect the compiled expression either way.
+        if origin.startswith("[variables('"):
+            origin = template['variables'][origin[len("[variables('"):-3]]
+        self.assertEqual(origin,
+                         "[format('https://{0}.{1}', parameters('appName'), reference(resourceId('Microsoft.App/managedEnvironments', format('{0}-environment', parameters('appName'))), '2025-01-01').defaultDomain)]")
+        self.assertEqual(template['outputs']['brokerOrigin']['value'], env['Broker__BrokerOrigin'])
+
     def test_container_binds_exact_production_table_identity_epoch_and_http_options(self):
         template = self.templates['main']
         app = resource(template, 'Microsoft.App/containerApps')
