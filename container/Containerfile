@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:11.0.100-rc.2 AS build
+FROM __SDK_IMAGE__ AS build
 WORKDIR /source
 RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -11,41 +11,55 @@ COPY tests/NativeSmoke/ /source/tests/NativeSmoke/
 RUN dotnet publish tests/NativeSmoke -c Release -o /native-smoke --nologo -p:PublishAot=true -p:TreatWarningsAsErrors=true \
     && /native-smoke/NativeSmoke
 
-FROM mcr.microsoft.com/dotnet/runtime-deps:11.0.0-rc.2 AS runtime
+FROM __RUNTIME_IMAGE__ AS runtime
+USER root
+SHELL ["/bin/sh", "-c"]
 ARG TARGETARCH
-RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certificates curl git python3 python3-yaml jq procps \
-    ripgrep file patch diffutils unzip zip less openssh-client \
-    && rm -rf /var/lib/apt/lists/*
-COPY container/install-tools.sh /tmp/install-tools.sh
+RUN . /etc/os-release; test "$ID:$VERSION_ID:$(uname -m)" = "ubuntu:26.04:x86_64" \
+    || { echo 'Unsupported base: initial controller images require Ubuntu 26.04 linux/amd64 (Native AOT ABI and signed package snapshot). Supply a compatible digest-pinned base.' >&2; exit 1; }
+COPY container/prepare-runtime.sh /tmp/prepare-runtime.sh
+RUN bash /tmp/prepare-runtime.sh && rm /tmp/prepare-runtime.sh
+COPY container/install-tools.sh tool-artifacts.json /tmp/
 RUN bash /tmp/install-tools.sh "$TARGETARCH" && rm /tmp/install-tools.sh
 COPY container/install-cloudflared.sh /tmp/install-cloudflared.sh
 RUN bash /tmp/install-cloudflared.sh "$TARGETARCH" && rm /tmp/install-cloudflared.sh
-RUN existing=$(getent passwd 1000 | cut -d: -f1); if [ -n "$existing" ]; then userdel "$existing"; fi; \
-    useradd --uid 1000 --create-home --shell /bin/bash agent \
-    && mkdir -p /data/credentials/codex /data/config/skills /data/history /data/state /data/tools /data/participant /data/control /workspace /home/agent/.agents \
-    && ln -s /data/config/skills /home/agent/.agents/skills \
-    && ln -s /data/history /data/credentials/codex/sessions \
-    && chown -R agent:agent /data /workspace /home/agent
+RUN rm /tmp/tool-artifacts.json; if ! getent passwd 1000 >/dev/null; then useradd --uid 1000 --create-home --shell /bin/bash agent; fi; \
+    userhome=$(getent passwd 1000 | cut -d: -f6); \
+    case "$userhome" in /home/*) ;; *) echo 'UID 1000 must have a dedicated home under /home; adapt the base image first.' >&2; exit 1 ;; esac; \
+    mkdir -p "$userhome"; \
+    if [ "$userhome" != /home/agent ]; then \
+      if [ /home/agent -ef "$userhome" ]; then :; \
+      elif [ -e /home/agent ] || [ -L /home/agent ]; then echo 'Base /home/agent conflicts with UID 1000 home; adapt the base first.' >&2; exit 1; \
+      else ln -s "$userhome" /home/agent; fi; \
+    fi; \
+    mkdir -p /data/credentials/codex /data/config/skills /data/history /data/state /data/tools /data/participant /data/control /workspace "$userhome/.agents"; \
+    if [ ! -e "$userhome/.agents/skills" ] && [ ! -L "$userhome/.agents/skills" ]; then ln -s /data/config/skills "$userhome/.agents/skills"; fi; \
+    if [ ! -e /data/credentials/codex/sessions ] && [ ! -L /data/credentials/codex/sessions ]; then ln -s /data/history /data/credentials/codex/sessions; fi; \
+    chown 1000 /data /data/config /data/credentials /data/credentials/codex /data/config/skills /data/history /data/state /data/tools /data/participant /data/control /workspace "$userhome" "$userhome/.agents"
 COPY --from=build /published/ /opt/repoagent/controller/
+COPY --from=build /native-smoke/ /opt/repoagent/native-smoke/
+COPY image-inventory.json /opt/repoagent/image-inventory.json
+RUN dpkg-query -W > /opt/repoagent/os-packages.txt
 COPY container/runtime.py /opt/repoagent/runtime.py
 COPY container/quick_tunnel.py /opt/repoagent/quick_tunnel.py
 COPY container/control.py /opt/repoagent/control.py
 COPY container/update_tools.py /opt/repoagent/update_tools.py
+LABEL io.repoagent.role="controller"
 ENV HOME=/home/agent CODEX_HOME=/data/credentials/codex BROWSER=echo
-ENV PATH="/opt/repoagent/controller:${PATH}"
+ENV PATH="/opt/repoagent/controller:/opt/repoagent/tools/bin:${PATH}"
 WORKDIR /workspace
-USER agent
-ENTRYPOINT ["python3", "/opt/repoagent/runtime.py"]
+USER 1000
+ENTRYPOINT ["/usr/bin/python3", "-E", "/opt/repoagent/runtime.py"]
 CMD ["versions"]
 
 FROM runtime AS dotnet-development
 USER root
 COPY --from=build /usr/share/dotnet/ /usr/share/dotnet/
 RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
-USER agent
+USER 1000
 
 FROM build AS live-tests
-COPY --from=runtime /usr/local/bin/gh /usr/local/bin/gh
+COPY --from=runtime /opt/repoagent/tools/bin/gh /usr/local/bin/gh
 COPY tests/RepoAgent.LiveTests/ /source/tests/RepoAgent.LiveTests/
 RUN dotnet build tests/RepoAgent.LiveTests -c Release --nologo
 RUN mkdir -p /data/control /data/participant /evidence && chown -R 1000 /data /evidence

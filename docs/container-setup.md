@@ -1,3 +1,5 @@
+For versioned software choices, a repository-owned base image, and shared Bash/PowerShell image builds, see [image composition](image-composition.md).
+
 # Container setup
 
 Use Docker Engine/Desktop with Linux containers and either Bash or Windows PowerShell 5.1+. Run every command below from the checkout. The host runs a small launcher; the bridge, Codex, GitHub CLI and setup helpers execute inside containers. No host .NET, Node.js or GitHub CLI installation is required.
