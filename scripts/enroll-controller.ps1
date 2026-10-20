@@ -67,7 +67,15 @@ function Check-Recovery {
     } else { Assert-Text $recovery.secret '\A[A-Za-z0-9_-]{43}\z' }
 }
 function Broker([string]$Method, [string]$Path, [string]$Secret, $Body = $null) {
-    $r = Invoke-EnrollmentBroker $BrokerOrigin $Method $Path $Secret $Body
+    try {
+        $r = Invoke-EnrollmentBroker $BrokerOrigin $Method $Path $Secret $Body
+    } finally {
+        # The broker starts its durable work interval after transport/admission.
+        # Keep the pre-send crash checkpoint, but pace subsequent work from the
+        # completed attempt, including unknown transport outcomes.
+        $recovery.lastWorkAt = [DateTimeOffset]::UtcNow.ToString('O')
+        Write-PrivateJson $recoveryPath $recovery
+    }
     if ($r.Status -ne 200) { Stop-Enrollment "Broker operation failed (HTTP $($r.Status)); private state is retained. Retry the same enrollment after inspection; no new identity was created." }
     return Read-HostJson $r.Body
 }
@@ -107,7 +115,7 @@ function Check-Enrollment($Enrollment, $Marker) {
 }
 function Wait-Work {
     if ($config.deadline -and [DateTimeOffset]::Parse($config.deadline) -le [DateTimeOffset]::UtcNow.AddSeconds(5)) { Stop-Enrollment 'Original enrollment deadline reached; private recovery state retained.' }
-    # Persist BEFORE sending: process restart also honors the provider's shared floor.
+    # Keep a pre-send checkpoint if the process dies during the request.
     if ($recovery.lastWorkAt) {
         $remaining = ([DateTimeOffset]::Parse($recovery.lastWorkAt).AddSeconds(5) - [DateTimeOffset]::UtcNow).TotalMilliseconds
         if ($remaining -gt 6000) { Stop-Enrollment 'Local work timestamp is in the future; inspect the host clock.' }
