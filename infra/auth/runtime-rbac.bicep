@@ -6,7 +6,9 @@ param storageName string
 param vaultName string
 param signingKeyName string
 param dataProtectionKeyName string
-param oauthClientSecretName string
+@minLength(3)
+@maxLength(63)
+param tableName string = 'brokerstate'
 
 resource runtime 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
   name: '${appName}-runtime'
@@ -14,7 +16,6 @@ resource runtime 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' e
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' existing = { name: vaultName }
 resource signing 'Microsoft.KeyVault/vaults/keys@2023-07-01' existing = { parent: vault, name: signingKeyName }
 resource wrapping 'Microsoft.KeyVault/vaults/keys@2023-07-01' existing = { parent: vault, name: dataProtectionKeyName }
-resource oauth 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = { parent: vault, name: oauthClientSecretName }
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = { name: storageName }
 resource blobs 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' existing = { parent: storage, name: 'default' }
 resource keyRing 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' existing = { parent: blobs, name: 'data-protection' }
@@ -22,7 +23,6 @@ resource keyRing 'Microsoft.Storage/storageAccounts/blobServices/containers@2023
 var permissions = [
   { role: 'sign', operations: ['Microsoft.KeyVault/vaults/keys/read', 'Microsoft.KeyVault/vaults/keys/sign/action'] }
   { role: 'wrap', operations: ['Microsoft.KeyVault/vaults/keys/read', 'Microsoft.KeyVault/vaults/keys/wrap/action', 'Microsoft.KeyVault/vaults/keys/unwrap/action'] }
-  { role: 'oauth', operations: ['Microsoft.KeyVault/vaults/secrets/readMetadata/action', 'Microsoft.KeyVault/vaults/secrets/getSecret/action'] }
   { role: 'keyring', operations: ['Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read', 'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write'] }
 ]
 resource roles 'Microsoft.Authorization/roleDefinitions@2022-04-01' = [for permission in permissions: {
@@ -45,13 +45,19 @@ resource wrappingAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: wrapping
   properties: { principalId: runtime.properties.principalId, principalType: 'ServicePrincipal', roleDefinitionId: roles[1].id }
 }
-resource oauthAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(oauth.id, runtime.id, roles[2].id)
-  scope: oauth
+resource keyRingAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyRing.id, runtime.id, roles[2].id)
+  scope: keyRing
   properties: { principalId: runtime.properties.principalId, principalType: 'ServicePrincipal', roleDefinitionId: roles[2].id }
 }
-resource keyRingAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyRing.id, runtime.id, roles[3].id)
-  scope: keyRing
-  properties: { principalId: runtime.properties.principalId, principalType: 'ServicePrincipal', roleDefinitionId: roles[3].id }
+
+resource tables 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' existing = { parent: storage, name: 'default' }
+resource brokerTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = { parent: tables, name: tableName }
+var tableContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
+resource tableAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(brokerTable.id, runtime.id, tableContributor)
+  scope: brokerTable
+  properties: { principalId: runtime.properties.principalId, principalType: 'ServicePrincipal', roleDefinitionId: tableContributor }
 }
+output tableResourceId string = brokerTable.id
+output runtimeIdentityPrincipalId string = runtime.properties.principalId

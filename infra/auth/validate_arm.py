@@ -12,6 +12,17 @@ def validate(path):
     expected = [kind.lower() for kind in RESOURCE_TYPES]
     if sorted(actual) != sorted(expected):
         raise ValueError("Template write set differs from the guarded resource manifest")
+    app = next(resource for resource in resources if resource["type"] == "Microsoft.App/containerApps")
+    container = app["properties"]["template"]["containers"][0]
+    scale = app["properties"]["template"]["scale"]
+    logs = next(resource for resource in resources if resource["type"] == "Microsoft.OperationalInsights/workspaces")
+    if (scale["minReplicas"], scale["maxReplicas"], container["resources"],
+            logs["properties"]["retentionInDays"], logs["properties"]["workspaceCapping"]["dailyQuotaGb"]) != (
+            0, 1, {"cpu": "[json('0.25')]", "memory": "0.5Gi"}, 30, 1):
+        raise ValueError("Template exceeds the approved pilot capacity/log envelope")
+    storage = next(resource for resource in resources if resource["type"] == "Microsoft.Storage/storageAccounts")
+    if storage["properties"].get("allowSharedKeyAccess") is not False:
+        raise ValueError("Storage shared-key access must remain disabled")
     if any("scope" in resource or "subscriptionId" in resource or "resourceGroup" in resource for resource in resources):
         raise ValueError("Template may only write the selected resource group")
     if not template["$schema"].endswith("/deploymentTemplate.json#"):
