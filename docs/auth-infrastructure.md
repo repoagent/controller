@@ -1,5 +1,7 @@
 # Authentication service infrastructure
 
+Design update, 2026-10-20: the approved [UI-free repository-held approval contract](auth-repository-approval.md) supersedes the human OAuth/browser assumptions in the foundation configuration described below. Azure Table Storage is selected. The existing template still requires OAuth configuration and does not create that store; these are implementation gaps, not permission to fabricate readiness or provision obsolete credentials. Update the provider/template contract before runtime deployment. Data Protection may still protect completion/recovery payloads.
+
 [Issue #47](https://github.com/repoagent/controller/issues/47) supplies the Azure foundation and a gated Container App template. It does not supply the credential broker provider, its transactional database or independent cleanup worker. No live resources or endpoint have been created by this change. The existing [deployment runbook](azure-auth-deployment.md) remains authoritative for the subscription, resource group, OIDC identity and immutable repository subject.
 
 ## Resources and boundaries
@@ -99,9 +101,9 @@ Supply `appName`, `storageName`, `vaultName`, `signingKeyName`, `dataProtectionK
 
 ## Remaining hosted work
 
-1. Approve and implement the provider database/transaction/partition/recovery contract. Cosmos DB is still a proposal; this template creates no database and proves no store semantics.
+1. Implement and prove the selected Azure Table Storage transaction/partition/recovery contract. This template creates no authorization store and proves no store semantics.
 2. Implement and provision independent cleanup (for example a reviewed scheduled job) with bounded physical deletion and cleanup-lag monitoring. No cleanup worker exists here.
-3. Implement the real provider configuration and health contract, durable Data Protection SDK wiring, signing, enrollment approval and current-administrator checks.
+3. Implement the UI-free provider configuration and health contract, durable Data Protection SDK wiring, signing and repository-held approval checks. Remove obsolete human OAuth configuration/secret-role prerequisites through the corresponding implementation slice.
 4. Import protected credentials, grant minimal runtime/store roles and verify managed-identity access. Verify old wrapping-key access during version rotation.
 5. Run real ARM validation/what-if, initial and repeated hosted deployments, restart/cold-start, HTTPS, rollback, enrollment, token scope, revocation and recovery acceptance. Check budgets and diagnostics before advertising an endpoint.
 

@@ -4,15 +4,15 @@ These product decisions were approved by the maintainer on 2026-10-20 for [plan 
 
 ## Authorization lifetime
 
-Enrollment is an independent grant approved by a repository administrator. Before issuing or renewing a controller token, require all of the following:
+Enrollment is a repository-held grant under the [UI-free approval contract](auth-repository-approval.md). Before issuing or renewing a controller token, require all of the following:
 
 - The device is active, acknowledged, unexpired and not revoked.
-- The approving person's immutable GitHub user identity still has repository-admin authority. A renamed or reused login cannot substitute for that identity.
+- The exact enrollment-specific approval remains present in the selected GitHub Environment variable, independently verified by the broker under a reviewed bounded-freshness policy.
 - The enrolled GitHub host, App, installation, immutable repository and server-defined permission profile remain valid and agree with actual GitHub grants.
 
-Discard personal GitHub OAuth access/refresh credentials after enrollment; never put them in the controller, image or browser authentication ticket. Personal OAuth-consent withdrawal alone does not revoke the independent enrollment. Losing administrator authority prevents further issuance; a new approving person requires new approval. See [the decision and tradeoff](adr/0002-bind-enrollment-renewal-to-the-approving-administrator.md).
+The installer uses the operator's host GitHub authority to create or safely reuse a user-named environment and write a user-named approval variable. Host credentials stay on that host; the broker has no human login or admin UI. A particular person's departure, administrator-role loss or OAuth-consent withdrawal alone does not revoke repository-held approval. Controller tokens cannot modify the marker. See [the superseding decision](adr/0003-use-repository-held-approval-for-a-ui-free-broker.md).
 
-App uninstall and explicit enrollment revocation always prevent future issuance. Failure to establish current authority fails closed. None of these decisions claims to revoke a GitHub token already issued: retain the v1 outstanding-token accounting and safe ownership-transfer requirements.
+App uninstall and explicit enrollment revocation prevent future issuance. Confirmed missing or changed approval permanently closes the observed grant; restoring an old marker cannot reopen it. Failed GitHub reads deny issuance without inventing evidence of deletion. Fresh enrollment requires a new controller identity and approval challenge. The install scripts expose `revoke` without requiring the lost device secret and `uninstall` with persistent data and shared settings preserved by default. None of these decisions claims instantaneous observation or revocation of an already-issued GitHub token: retain outstanding-token accounting and safe ownership-transfer requirements.
 
 ## Hosting behavior
 
@@ -27,14 +27,14 @@ The implementation should use .NET framework and first-party libraries, managed 
 | Pending approval | 15 minutes | Approval after expiry is rejected, even if physical cleanup has not run. |
 | Abandoned enrollment data | Clean within 24 hours | Expired/unacknowledged completion cannot leave an active usable device. |
 | Operational audit logs | 30 days | Redact secrets; bound event size, admission rate, retained volume and recovery copies. |
-| Inactive enrollment | 90 days | Deny renewal and require fresh sign-in/administrator approval after expiry. |
+| Inactive enrollment | 90 days | Deny renewal and require fresh enrollment and repository-held approval after expiry. |
 
 These are configurable defaults. Activity means acknowledged enrollment or a successful authorized token issuance; invalid requests, polling or failed renewals cannot keep a device alive. Active controllers normally renew tokens, so normal use does not require re-enrollment every 90 days.
 
-Outstanding-token accounting, revocation/recovery records and protection keys are retained until their relevant safety windows end, even if that exceeds a routine cleanup window. Define each safety window and its finite cleanup bound in the storage/recovery design; do not retain everything forever or delete evidence while an old token could authorize work. Missing devices deny access, identifiers are not reused, and restoring a backup cannot resurrect a revoked or expired enrollment. Browser Data Protection keys need a separate policy that accounts for protected-payload and recovery lifetimes.
+Outstanding-token accounting, revocation/recovery records and protection keys are retained until their relevant safety windows end, even if that exceeds a routine cleanup window. Define each safety window and its finite cleanup bound in the storage/recovery design; do not retain everything forever or delete evidence while an old token could authorize work. Missing devices deny access, identifiers are not reused, and restoring a backup cannot resurrect a revoked or expired enrollment. Data Protection keys used for encrypted completion/recovery payloads need a separate lifetime policy; broker browser sessions are no longer in scope.
 
 The 24-hour abandonment-cleanup bound needs a mechanism independent of HTTP traffic, such as managed database expiry with bounded-lag monitoring or an independently scheduled cleanup job. It is a requirement to demonstrate, not a guarantee supplied merely by enabling TTL. Admission caps and rate/size limits remain necessary because expiry alone does not bound cardinality or cost.
 
 ## Remaining engineering work
 
-Choose and review the durable transaction, partition, concurrency, expiry and recovery design; split it into bounded implementation issues. Prove actual GitHub current-admin/scope checks, trusted browser approval, real store races/restarts, Key Vault access/signing, cleanup while scaled to zero and hosted recovery before claiming service readiness. These engineering choices do not require the maintainer to select database mechanics without a recommendation.
+Azure Table Storage is selected; review and prove the repository partition/common gate, per-entity ETags, expiry, independent cleanup and external restore-epoch design in the implementation slices. Prove actual GitHub marker/scope checks, broker-only approval-read permissions, marker freshness/recreation semantics, real store races/restarts, Key Vault access/signing, cleanup while scaled to zero and hosted recovery before claiming service readiness. The detailed [approval contract](auth-repository-approval.md) and [issue #31](https://github.com/repoagent/controller/issues/31) govern the handover.

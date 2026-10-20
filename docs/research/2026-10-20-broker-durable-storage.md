@@ -1,5 +1,7 @@
 # Credential broker durable storage proposal
 
+Historical proposal: the maintainer subsequently selected Azure Table Storage and [repository-held approval](../auth-repository-approval.md) with no broker browser/admin UI. The Cosmos recommendation and administrator/browser ceremony below are superseded. Retain this research as background; use the current approval contract, [broker policy](../broker-policy.md) and implementation issues for delivery requirements.
+
 Research date: 2026-10-20. Engineering proposal for #30/#35, following [runtime research](2026-10-20-azure-auth-service-operations.md) and [the .NET stack](2026-10-20-dotnet-authorization-stack.md). No resources, credentials or live-store tests were used. Storage is not yet approved or implemented.
 
 ## Recommendation and evidence
