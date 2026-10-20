@@ -17,13 +17,15 @@ APP = BASE + '/providers/Microsoft.App/containerApps/repoagent-123'
 REG = BASE + '/providers/Microsoft.ContainerRegistry/registries/regis'
 CONTROLLER = '33333333-3333-3333-3333-333333333333'
 FIXTURE = '''#!/usr/bin/env python3
-import json, os, sys, time
+import json, os, subprocess, sys, time
 args = sys.argv[1:]
 with open(os.environ['AZ_PLAN_LOG'], 'a') as out: out.write(json.dumps(args) + '\\n')
 responses = json.load(open(os.environ['AZ_PLAN_RESPONSES']))
 key = ' '.join(args[:3]) if args[:2] == ['containerapp', 'env'] else ' '.join(args[:2])
 r = responses[key]
 if r.get('sleep'): time.sleep(r['sleep'])
+if r.get('hold_pipes'):
+    subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'])
 print(r.get('raw', json.dumps(r.get('body'))))
 print(r.get('error', ''), file=sys.stderr)
 sys.exit(r.get('code', 0))
@@ -46,8 +48,8 @@ def scenario():
 
 @unittest.skipUnless(shutil.which('pwsh'), 'PowerShell subprocess fixture')
 class AzurePlanTests(unittest.TestCase):
-    def run_plan(self, responses=None, extra=()):
-        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='azure plan ')))
+    def run_plan(self, responses=None, extra=(), fixture_prefix='azure plan '):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix=fixture_prefix)))
         fixture = directory / 'fixture.py'
         fixture.write_text(FIXTURE)
         if os.name == 'nt':
@@ -62,16 +64,22 @@ class AzurePlanTests(unittest.TestCase):
         log = directory / 'log'
         env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ['PATH'],
                    AZ_PLAN_RESPONSES=str(path), AZ_PLAN_LOG=str(log))
-        args = ['pwsh', '-NoLogo', '-NoProfile', '-File', str(ROOT / 'scripts/plan-azure.ps1'),
-                '-SubscriptionId', SUB, '-ResourceGroup', 'rg', '-Location', 'westeurope',
-                '-EnvironmentName', 'env', '-RegistryName', 'regis', '-RepositoryId', '123',
-                '-ControllerId', CONTROLLER, '-Image', 'regis.azurecr.io/controller@sha256:' + 'a' * 64]
-        result = subprocess.run(args + list(extra), env=env, capture_output=True, text=True, timeout=20)
+        options = {'-SubscriptionId': SUB, '-ResourceGroup': 'rg', '-Location': 'westeurope',
+                   '-EnvironmentName': 'env', '-RegistryName': 'regis', '-RepositoryId': '123',
+                   '-ControllerId': CONTROLLER,
+                   '-Image': 'regis.azurecr.io/controller@sha256:' + 'a' * 64}
+        options.update(zip(extra[::2], extra[1::2]))
+        args = ['pwsh', '-NoLogo', '-NoProfile', '-File', str(ROOT / 'scripts/plan-azure.ps1')]
+        for name, value in options.items():
+            args.extend((name, value))
+        result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=20)
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         for call in calls:
             self.assertEqual(call[call.index('--subscription') + 1], SUB)
-            self.assertIn(tuple(call[:2]), {('account', 'show'), ('provider', 'show'),
-                ('group', 'show'), ('containerapp', 'env'), ('containerapp', 'show'), ('acr', 'show')})
+            operation = tuple(call[:3] if call[:2] == ['containerapp', 'env'] else call[:2])
+            self.assertIn(operation, {('account', 'show'), ('provider', 'show'),
+                ('group', 'show'), ('containerapp', 'env', 'show'), ('containerapp', 'show'),
+                ('acr', 'show')})
         return result, calls
 
     def test_missing_app_proposes_create_but_never_claims_hosted_readiness(self):
@@ -126,6 +134,50 @@ class AzurePlanTests(unittest.TestCase):
         result, _ = self.run_plan(data)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Conflicting', result.stderr)
+
+    def test_denial_cannot_be_overridden_by_a_not_found_error_line(self):
+        data = scenario()
+        data['containerapp env show'] = {'code': 1, 'error':
+            'ERROR: (ResourceNotFound) PRIVATE\nERROR: (AuthorizationFailed) PRIVATE'}
+        result, _ = self.run_plan(data)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('denied', result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertNotIn('PRIVATE', result.stderr)
+
+    def test_open_output_pipes_cannot_outlive_the_discovery_timeout(self):
+        data = scenario()
+        data['containerapp env show']['hold_pipes'] = True
+        result, _ = self.run_plan(data, ['-RequestTimeoutSeconds', '1'])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('timed out', result.stderr)
+        self.assertEqual(result.stdout, '')
+
+    def test_resource_group_argument_is_preserved_as_one_token(self):
+        group = 'rg.with-(parentheses)'
+        data = scenario()
+        for response in data.values():
+            if response.get('body', {}).get('id'):
+                response['body']['id'] = response['body']['id'].replace('/rg', '/' + group)
+        result, calls = self.run_plan(data, ['-ResourceGroup', group])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['resourceGroup'], group)
+        for call in calls:
+            if call[:2] == ['group', 'show']:
+                self.assertEqual(call[call.index('--name') + 1], group)
+            elif '--resource-group' in call:
+                self.assertEqual(call[call.index('--resource-group') + 1], group)
+
+    @unittest.skipUnless(os.name == 'nt', 'native Windows batch launcher')
+    def test_batch_launcher_rejects_shell_metacharacters_before_discovery(self):
+        for character in ('%', '!', '&', '^'):
+            with self.subTest(character=character):
+                result, calls = self.run_plan(fixture_prefix='azure plan PRIVATE' + character)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('unsupported command characters', result.stderr)
+                self.assertEqual(calls, [])
+                self.assertEqual(result.stdout, '')
+                self.assertNotIn('PRIVATE', result.stderr)
 
     def test_invalid_name_and_mutable_image_fail_before_discovery(self):
         for extra in (['-AppName', 'INVALID'], ['-Image', 'regis.azurecr.io/controller:latest']):
