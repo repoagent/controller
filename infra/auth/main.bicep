@@ -8,8 +8,20 @@ param deployApp bool = false
 param image string = ''
 param signingKeyUri string = ''
 param dataProtectionKeyUri string = ''
-param oauthClientSecretUri string = ''
-param storeResourceId string = ''
+@minLength(3)
+@maxLength(63)
+param tableName string = 'brokerstate'
+@maxLength(128)
+param deploymentEpoch string = ''
+@minValue(1)
+@maxValue(10000)
+param requestLimitPerMinute int = 120
+@minValue(1)
+@maxValue(128)
+param concurrentRequestLimit int = 8
+@minValue(1)
+@maxValue(60)
+param requestTimeoutSeconds int = 15
 
 var ownership = {
   repositoryId: '1426154477'
@@ -81,6 +93,18 @@ resource keyRing 'Microsoft.Storage/storageAccounts/blobServices/containers@2023
   }
 }
 
+// Tables have no ARM tags/metadata. The owned account and reserved exact name
+// are the ownership boundary; never enumerate or change other tables.
+resource tableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' existing = {
+  parent: storage
+  name: 'default'
+}
+resource brokerTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+  parent: tableService
+  name: tableName
+  properties: {}
+}
+
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: vaultName
   location: location
@@ -116,7 +140,6 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = if (deployApp) {
         targetPort: 8080
         transport: 'http'
       }
-      secrets: [{ name: 'oauth-client-secret', keyVaultUrl: oauthClientSecretUri, identity: runtime.id }]
     }
     template: {
       containers: [{
@@ -130,8 +153,13 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = if (deployApp) {
           { name: 'Auth__DataProtectionKeyUri', value: dataProtectionKeyUri }
           { name: 'Auth__DataProtectionBlobUri', value: '${storage.properties.primaryEndpoints.blob}data-protection/keyring.xml' }
           { name: 'Auth__DataProtectionApplicationName', value: 'repoagent-auth-${appName}' }
-          { name: 'Auth__StoreResourceId', value: storeResourceId }
-          { name: 'Auth__OAuthClientSecret', secretRef: 'oauth-client-secret' }
+          { name: 'Broker__TableEndpoint', value: storage.properties.primaryEndpoints.table }
+          { name: 'Broker__TableName', value: brokerTable.name }
+          { name: 'Broker__DeploymentEpoch', value: deploymentEpoch }
+          { name: 'Broker__ManagedIdentityClientId', value: runtime.properties.clientId }
+          { name: 'Broker__RequestLimitPerMinute', value: string(requestLimitPerMinute) }
+          { name: 'Broker__ConcurrentRequestLimit', value: string(concurrentRequestLimit) }
+          { name: 'Broker__RequestTimeoutSeconds', value: string(requestTimeoutSeconds) }
         ]
         probes: [
           { type: 'Startup', httpGet: { path: '/health/live', port: 8080 }, periodSeconds: 5, failureThreshold: 60 }
@@ -152,3 +180,8 @@ output appName string = appName
 output runtimeIdentityId string = runtime.id
 output keyVaultName string = vault.name
 output dataProtectionBlobUri string = '${storage.properties.primaryEndpoints.blob}data-protection/keyring.xml'
+output runtimeIdentityPrincipalId string = runtime.properties.principalId
+output runtimeIdentityClientId string = runtime.properties.clientId
+output tableEndpoint string = storage.properties.primaryEndpoints.table
+output tableName string = brokerTable.name
+output tableResourceId string = brokerTable.id

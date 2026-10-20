@@ -26,6 +26,7 @@ RESOURCE_TYPES = (
     "Microsoft.Storage/storageAccounts/blobServices/containers",
     "Microsoft.KeyVault/vaults",
     "Microsoft.App/containerApps",
+    "Microsoft.Storage/storageAccounts/tableServices/tables",
 )
 
 
@@ -43,7 +44,7 @@ def required(name):
 class Deployment:
     def __init__(self, mode):
         self.mode = mode
-        self.foundation = mode.startswith("foundation-")
+        self.foundation = mode.startswith("foundation-") or mode == "cost-plan"
         self.subscription = required("AZURE_SUBSCRIPTION_ID")
         self.group = required("AZURE_RESOURCE_GROUP")
         self.location = required("AZURE_LOCATION")
@@ -59,8 +60,12 @@ class Deployment:
         suffix = hashlib.sha256(f"{self.scope}/{self.app}".encode()).hexdigest()[:16]
         self.storage = f"ra{suffix}dp"
         self.vault = f"ra-{suffix}-kv"
+        self.table = os.environ.get("AUTH_TABLE_NAME", "brokerstate")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{2,62}", self.table):
+            raise DeploymentError("AUTH_TABLE_NAME must be 3-63 ASCII alphanumeric characters starting with a letter")
+        self.identity = {"clientId": None, "principalId": None}
         self.params = {"location": self.location, "appName": self.app, "storageName": self.storage,
-                       "vaultName": self.vault, "deployApp": not self.foundation}
+                       "vaultName": self.vault, "deployApp": not self.foundation, "tableName": self.table}
         self.resources = [
             (RESOURCE_TYPES[0], self.app + "-runtime", "2023-01-31", "auth-runtime"),
             (RESOURCE_TYPES[1], self.app + "-logs", "2023-09-01", "auth-logs"),
@@ -69,10 +74,11 @@ class Deployment:
             (RESOURCE_TYPES[4], self.storage + "/default/data-protection", "2023-05-01", "auth-data-protection"),
             (RESOURCE_TYPES[5], self.vault, "2023-07-01", "auth-security"),
         ]
+        self.resources.append((RESOURCE_TYPES[7], self.storage + "/default/" + self.table, "2023-05-01", "auth-broker-state"))
         if not self.foundation:
             self.runtime_configuration()
             self.resources.append((RESOURCE_TYPES[6], self.app, "2025-01-01", "auth-service"))
-        if mode not in ("check", "foundation-check", "foundation-plan", "foundation-apply"):
+        if mode not in ("check", "foundation-check", "foundation-plan", "foundation-apply", "cost-plan"):
             image = required("AUTH_IMAGE")
             if not re.fullmatch(r"[a-z0-9][a-z0-9.:-]*/[a-z0-9][a-z0-9/_.-]*@sha256:[0-9a-f]{64}", image):
                 raise DeploymentError("AUTH_IMAGE must be a registry-qualified sha256 digest")
@@ -88,7 +94,6 @@ class Deployment:
         for name, param, kind in (
             ("AUTH_SIGNING_KEY_URI", "signingKeyUri", "keys"),
             ("AUTH_DATA_PROTECTION_KEY_URI", "dataProtectionKeyUri", "keys"),
-            ("AUTH_OAUTH_CLIENT_SECRET_URI", "oauthClientSecretUri", "secrets"),
         ):
             value = required(name)
             if not re.fullmatch(rf"https://{re.escape(self.vault)}\.vault\.azure\.net/{kind}/[A-Za-z0-9-]+/[0-9a-f]{{32}}", value):
@@ -100,10 +105,19 @@ class Deployment:
         protection_key = self.params["dataProtectionKeyUri"].rsplit("/", 1)[0].casefold()
         if signing_key == protection_key:
             raise DeploymentError("App signing and Data Protection must use separate keys")
-        store = required("AUTH_STORE_RESOURCE_ID")
-        if not re.fullmatch(rf"/subscriptions/{re.escape(self.subscription)}/resourceGroups/[A-Za-z0-9_.()-]+/providers/[A-Za-z0-9.]+(?:/[A-Za-z0-9_.()-]+){{2,}}", store):
-            raise DeploymentError("AUTH_STORE_RESOURCE_ID must be a nonsecret resource ID in the selected subscription")
-        self.params["storeResourceId"] = store
+        epoch = required("AUTH_DEPLOYMENT_EPOCH")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", epoch):
+            raise DeploymentError("AUTH_DEPLOYMENT_EPOCH must be 1-128 ASCII letters/digits/hyphen/underscore")
+        self.params["deploymentEpoch"] = epoch
+        for name, param, default, maximum in (
+            ("AUTH_REQUEST_LIMIT_PER_MINUTE", "requestLimitPerMinute", 120, 10000),
+            ("AUTH_CONCURRENT_REQUEST_LIMIT", "concurrentRequestLimit", 8, 128),
+            ("AUTH_REQUEST_TIMEOUT_SECONDS", "requestTimeoutSeconds", 15, 60),
+        ):
+            value = os.environ.get(name, str(default))
+            if not re.fullmatch(r"[0-9]+", value) or not 1 <= int(value) <= maximum:
+                raise DeploymentError(f"{name} must be an integer between 1 and {maximum}")
+            self.params[param] = int(value)
 
     def resource_id(self, kind, name):
         provider, *types = kind.split("/")
@@ -145,7 +159,13 @@ class Deployment:
                 continue
             if str(resource.get("id", "")).lower() != resource_id.lower() or str(resource.get("type", "")).lower() != kind.lower():
                 raise DeploymentError("Azure malformed resource identity")
+            # Table ARM resources cannot carry tags/metadata: ownership follows
+            # the already-checked account and reserved exact Table ID. No Table
+            # ACLs or neighboring tables are rewritten.
+            table = kind.endswith("/tables")
             container = kind.endswith("/containers")
+            if table:
+                continue
             if container and not isinstance(resource.get("properties"), dict):
                 raise DeploymentError("Azure malformed container properties")
             tags = resource.get("properties", {}).get("metadata") if container else resource.get("tags")
@@ -154,8 +174,18 @@ class Deployment:
                 raise DeploymentError(f"Ownership conflict for {name}; refusing adoption")
             if not container and resource.get("location") != self.location:
                 raise DeploymentError(f"Resource location conflict for {name}")
+            if kind == RESOURCE_TYPES[0]:
+                properties = resource.get("properties", {})
+                for key in self.identity:
+                    value = properties.get(key)
+                    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value):
+                        raise DeploymentError("Azure malformed runtime identity " + key)
+                    self.identity[key] = value
 
     def run(self):
+        if self.mode == "cost-plan":
+            from cost_plan import budget_plan
+            return {**self.outputs(False), "budgetPlan": budget_plan(self.scope)}
         if self.mode in ("check", "foundation-check"):
             return self.outputs(False)
         # Validate the real template before any Azure calls.
@@ -190,17 +220,36 @@ class Deployment:
                 result = self.az(["deployment", "group", "create", *common])
                 if not isinstance(result.get("properties"), dict) or result["properties"].get("provisioningState") != "Succeeded":
                     raise DeploymentError("Deployment did not report Succeeded; inspect Azure before retrying")
+                # Foundation creates the identity; read its platform-issued IDs.
+                self.inspect()
         return self.outputs(applied)
 
     def outputs(self, applied):
+        endpoint = f"https://{self.storage}.table.core.windows.net/"
+        configuration = {
+            "Broker__TableEndpoint": endpoint, "Broker__TableName": self.table,
+            "Broker__ManagedIdentityClientId": self.identity["clientId"],
+        }
+        if not self.foundation:
+            configuration.update({"Broker__DeploymentEpoch": self.params["deploymentEpoch"],
+                "Broker__RequestLimitPerMinute": self.params["requestLimitPerMinute"],
+                "Broker__ConcurrentRequestLimit": self.params["concurrentRequestLimit"],
+                "Broker__RequestTimeoutSeconds": self.params["requestTimeoutSeconds"]})
         return {"appName": self.app, "runtimeIdentityId": self.resource_id(RESOURCE_TYPES[0], self.app + "-runtime"),
+                "runtimeIdentityClientId": self.identity["clientId"], "runtimeIdentityPrincipalId": self.identity["principalId"],
                 "keyVaultName": self.vault, "dataProtectionBlobUri": f"https://{self.storage}.blob.core.windows.net/data-protection/keyring.xml",
+                "tableEndpoint": endpoint, "tableName": self.table,
+                "tableResourceId": self.resource_id(RESOURCE_TYPES[7], self.storage + "/default/" + self.table),
+                "runtimeConfiguration": configuration,
+                "capacityPlan": {"minReplicas": 0, "maxReplicas": 1, "cpu": 0.25, "memory": "0.5Gi",
+                                 "logRetentionDays": 30, "logDailyQuotaGb": 1,
+                                 "hardSpendingCap": False, "requestLimitsAreProcessLocal": True},
                 "applied": applied}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("check", "plan", "apply", "foundation-check", "foundation-plan", "foundation-apply"))
+    parser.add_argument("mode", choices=("check", "plan", "apply", "foundation-check", "foundation-plan", "foundation-apply", "cost-plan"))
     args = parser.parse_args()
     try:
         print(json.dumps(Deployment(args.mode).run()))
