@@ -62,6 +62,7 @@ public sealed class DeviceRevocation(TableClient table, BrokerOptions options, T
                 gate["State"] = "closed";
                 gate["Sequence"] = checked(sequence + 1);
                 device["State"] = "revoked";
+                PayloadClock.FirstTerminal(device, clock.GetUtcNow());
                 var newReceipt = new TableEntity(partition, receiptKey)
                 {
                     ["RepositoryId"] = repository, ["DeviceId"] = deviceId,

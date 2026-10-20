@@ -52,6 +52,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
 
     public string Recover(GrantSnapshot grant, TableEntity attempt)
     {
+        PayloadClock.RequireAttempt(attempt);
         BindAttempt(grant, attempt, Text(attempt, "Purpose"));
         var token = Protector(grant, attempt).Unprotect(Text(attempt, "ProtectedToken"));
         if (!IsBearer(token)) throw new IssuanceDenied();
@@ -173,6 +174,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
 
     public async Task<TableEntity> ClaimSendAsync(GrantSnapshot grant, TableEntity attempt, CancellationToken ct)
     {
+        PayloadClock.RequireAttempt(attempt);
         BindAttempt(grant, attempt, Text(attempt, "Purpose"));
         if (Text(attempt, "State") != "reserved" || Date(attempt, "JwtExpiresAt") <= clock.GetUtcNow()) throw new IssuanceDenied();
         if (Text(attempt, "Purpose") == "runtime") grant.RequireActive(clock.GetUtcNow());
@@ -184,6 +186,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
 
     public async Task<TableEntity> RecordKnownAsync(GrantSnapshot original, TableEntity attempt, IssuedToken token, CancellationToken ct)
     {
+        PayloadClock.RequireAttempt(attempt);
         var grant = await SnapshotAsync(original.Partition, original.DeviceId, ct);
         BindAttempt(grant, attempt, Text(attempt, "Purpose"));
         if (Text(attempt, "State") != "sending") throw new IssuanceDenied();
@@ -197,6 +200,8 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
 
     public async Task ReleaseAsync(GrantSnapshot grant, TableEntity attempt, TableEntity verifier, CancellationToken ct)
     {
+        PayloadClock.RequireAttempt(attempt);
+        PayloadClock.RequireAttempt(verifier);
         grant.RequireActive(clock.GetUtcNow());
         BindAttempt(grant, attempt, "runtime");
         BindAttempt(grant, verifier, "verification");
@@ -206,7 +211,8 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
             || Date(verifier, "ExpiresAt") <= clock.GetUtcNow().AddMinutes(5)
             || Text(grant.Gate, "VerifierAttempt") != Text(verifier, "OperationId")) throw new IssuanceDenied();
         attempt["State"] = "released";
-        attempt["ReleasedAt"] = clock.GetUtcNow();
+        PayloadClock.FirstTerminal(attempt, clock.GetUtcNow());
+        if (!attempt.ContainsKey("ReleasedAt")) attempt["ReleasedAt"] = clock.GetUtcNow();
         grant.Device["LastActivityAt"] = clock.GetUtcNow();
         grant.Device["ExpiresAt"] = clock.GetUtcNow().AddDays(90);
         await CommitAsync(grant, [Update(attempt), Update(verifier)], ct);
@@ -217,6 +223,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
         if (Text(grant.Gate, "State") != "active" || Text(grant.Device, "State") != "active") return;
         grant.Gate["State"] = "closed";
         grant.Device["State"] = "revoked";
+        PayloadClock.FirstTerminal(grant.Device, clock.GetUtcNow());
         var receipt = new TableEntity(grant.Partition, "revocation:" + grant.DeviceId)
         {
             ["RepositoryId"] = grant.RepositoryId, ["DeviceId"] = grant.DeviceId, ["Epoch"] = grant.Epoch,
@@ -227,10 +234,12 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
 
     public async Task MarkRevokedAsync(GrantSnapshot original, TableEntity attempt, CancellationToken ct)
     {
+        PayloadClock.RequireAttempt(attempt);
         var grant = await SnapshotAsync(original.Partition, original.DeviceId, ct);
         BindAttempt(grant, attempt, Text(attempt, "Purpose"));
         attempt["State"] = "settled";
-        attempt["SettledAt"] = clock.GetUtcNow();
+        PayloadClock.FirstTerminal(attempt, clock.GetUtcNow());
+        if (!attempt.ContainsKey("SettledAt")) attempt["SettledAt"] = clock.GetUtcNow();
         attempt.Remove("ProtectedToken");
         await CommitAsync(grant, [Update(attempt)], ct);
     }

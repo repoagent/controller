@@ -28,6 +28,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         var s = await store.AdmitAsync(request, Convert.ToHexString(hash), work.Cancellation);
         if (s.Pending.ContainsKey("Marker")) return Status(s);
         var existing = s.Pending.ContainsKey("Attempt") ? await store.AttemptAsync(s, work.Cancellation) : null;
+        if (existing is not null) PayloadClock.RequireAttempt(existing);
         if (existing is not null && Text(existing, "State") is not ("known" or "reserved")) throw new IssuanceDenied();
         // A definitely unsent reservation can resume. A sending/unknown outcome never retries POST.
         if (existing is not null && Text(existing, "State") == "reserved" && Date(existing, "JwtExpiresAt") <= clock.GetUtcNow()) throw new IssuanceDenied();
@@ -171,6 +172,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         device["LastActivityAt"] = clock.GetUtcNow(); device["ExpiresAt"] = clock.GetUtcNow().AddDays(90);
         s.Gate["State"] = "active";
         s.Pending["State"] = "active";
+        PayloadClock.FirstTerminal(s.Pending, clock.GetUtcNow());
         s.Pending.Remove("RecoveryHash"); s.Pending.Remove("ProtectedCompletion");
         await store.FinishAsync(s, [Action(device), Action(attempt)], work.Cancellation);
         return new(200, new { state = "active" });
@@ -203,12 +205,14 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         {
             var device = await DeviceAsync(s, ct);
             device["State"] = "revoked"; s.Gate["State"] = "closed";
+            PayloadClock.FirstTerminal(device, clock.GetUtcNow());
             extra.Add(Action(device));
             var receipt = new TableEntity(s.Partition, "revocation:" + s.DeviceId)
             { ["RepositoryId"] = s.RepositoryId, ["DeviceId"] = s.DeviceId, ["Epoch"] = options.DeploymentEpoch, ["RevokedAt"] = clock.GetUtcNow() };
             extra.Add(Action(receipt, true));
         }
         s.Pending["State"] = "closed";
+        PayloadClock.FirstTerminal(s.Pending, clock.GetUtcNow());
         s.Pending.Remove("ProtectedCompletion");
         await store.FinishAsync(s, extra, ct);
     }
@@ -245,7 +249,11 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         try
         {
             await github.RevokeAsync(token, allowance.Token);
-            attempt["State"] = "settled"; attempt["SettledAt"] = clock.GetUtcNow(); attempt.Remove("ProtectedToken");
+            PayloadClock.RequireAttempt(attempt);
+            PayloadClock.FirstTerminal(attempt, clock.GetUtcNow());
+            attempt["State"] = "settled";
+            if (!attempt.ContainsKey("SettledAt")) attempt["SettledAt"] = clock.GetUtcNow();
+            attempt.Remove("ProtectedToken");
             await store.CommitAsync(s, [Action(attempt)], allowance.Token);
         }
         catch (Exception ex) when (Expected(ex)) { /* Retain unresolved evidence; never compensate counters. */ }

@@ -110,6 +110,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
 
     internal void RequireLive(TableEntity pending)
     {
+        PayloadClock.RequirePayload(pending);
         if (Text(pending, "Epoch") != options.DeploymentEpoch || Date(pending, "Deadline") <= clock.GetUtcNow()) throw new IssuanceDenied(410);
         if (pending.GetString("State") is "closed" or "active") throw new IssuanceDenied(410);
     }
@@ -188,6 +189,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
     }
     internal string Recover(EnrollmentSnapshot s, TableEntity attempt)
     {
+        PayloadClock.RequireAttempt(attempt);
         if (Text(attempt, "State") != "known" || attempt.GetBoolean("ScopeValid") != true
             || Number(attempt, "InstallationId") != Number(s.Pending, "InstallationId")
             || Date(attempt, "ExpiresAt") <= clock.GetUtcNow().AddMinutes(5)) throw new IssuanceDenied();
@@ -199,6 +201,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
 
     internal async Task CommitAsync(EnrollmentSnapshot s, IEnumerable<TableTransactionAction> extra, CancellationToken ct)
     {
+        PayloadClock.RequirePayload(s.Pending);
         s.Gate["Sequence"] = checked(Number(s.Gate, "Sequence") + 1);
         var actions = new List<TableTransactionAction> { Action(s.Gate), Action(s.Pending) };
         actions.AddRange(extra);
