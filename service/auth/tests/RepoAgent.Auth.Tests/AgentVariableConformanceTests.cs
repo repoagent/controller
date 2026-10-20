@@ -432,6 +432,74 @@ public sealed class AgentVariableConformanceTests
         if (terminal) Assert.Equal("closed", (await Rows(f)).Single(r => r.RowKey == "gate").GetString("State"));
     }
 
+    [Theory]
+    [InlineData("empty", false, false)]
+    [InlineData("empty", true, false)]
+    [InlineData("nonpositive-id", false, false)]
+    [InlineData("nonpositive-id", true, false)]
+    [InlineData("null-name", false, false)]
+    [InlineData("null-name", true, false)]
+    [InlineData("installation-stale", false, false)]
+    [InlineData("installation-stale", true, false)]
+    [InlineData("repository-id-stale", false, false)]
+    [InlineData("repository-id-stale", true, false)]
+    [InlineData("repository-name-stale", false, false)]
+    [InlineData("repository-name-stale", true, false)]
+    [InlineData("installation-fresh", true, true)]
+    [InlineData("repository-name-fresh", true, true)]
+    public async Task Completion_and_ack_binding_uncertainty_is_recoverable_but_fresh_changes_are_terminal(string observation, bool acknowledge, bool terminal)
+    {
+        await using var f = await AgentFixture();
+        var pending = await Start(f);
+        var receipt = await Complete(f, pending);
+        var normal = f.GitHub.Before!;
+        var observed = false;
+        f.GitHub.Before = request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (observation.StartsWith("installation-", StringComparison.Ordinal) && path.EndsWith("/installation", StringComparison.Ordinal))
+            {
+                observed = true;
+                if (observation.EndsWith("-stale", StringComparison.Ordinal)) f.Clock.Advance(TimeSpan.FromSeconds(11));
+                return Reply(new { id = 790, app_id = IssuancePolicy.AppId, app_slug = IssuancePolicy.AppSlug,
+                    suspended_at = (string?)null, permissions = new { discussions = "write", agent_variables = "read" } });
+            }
+            if (!observation.StartsWith("installation-", StringComparison.Ordinal) && path == "/installation/repositories")
+            {
+                observed = true;
+                if (observation.EndsWith("-stale", StringComparison.Ordinal)) f.Clock.Advance(TimeSpan.FromSeconds(11));
+                object[] repositories = observation == "empty" ? [] : [new {
+                    id = observation == "nonpositive-id" ? 0 : observation == "repository-id-stale" ? 999999 : 123456,
+                    full_name = observation == "null-name" ? null : observation.StartsWith("repository-name-", StringComparison.Ordinal) ? "other/project" : "owner/project" }];
+                return Reply(new { total_count = 1, repositories });
+            }
+            return normal(request);
+        };
+        var continuationPath = acknowledge ? $"/v2/devices/{Device(receipt)}/acknowledgment" : $"/v2/enrollments/{pending}/completion";
+        object? body = acknowledge ? new { completionId = receipt.GetProperty("completionId").GetString() } : null;
+        var credential = acknowledge ? Secret(receipt) : null;
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var denied = await f.Send(continuationPath, body, credential);
+        Assert.True(observed);
+        Assert.NotEqual(HttpStatusCode.OK, denied.StatusCode);
+        Assert.DoesNotContain(Secret(receipt), await denied.Content.ReadAsStringAsync(Token));
+
+        f.GitHub.Before = normal;
+        await f.RestartAsync();
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var restored = await f.Send(continuationPath, body, credential);
+        Assert.Equal(terminal ? HttpStatusCode.Gone : HttpStatusCode.OK, restored.StatusCode);
+        if (terminal) return;
+        if (!acknowledge)
+        {
+            Assert.Equal(receipt.ToString(), (await Json(restored)).ToString());
+            await Ack(f, receipt);
+        }
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var runtime = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
+        Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
+    }
+
     private static async Task<EnrollmentFixture> AgentFixture()
     {
         var f = await EnrollmentFixture.CreateAsync();
