@@ -102,6 +102,7 @@ jobs:
         run: |
           (cd service/auth && bash verify.sh)
           bash infra/auth/validate.sh
+          python3 -m unittest discover -s infra/auth/tests -v
   publish:
     needs: verify-service
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'

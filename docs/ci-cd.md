@@ -42,7 +42,7 @@ Verify the archive checksum before extraction, then run `sha256sum -c SHA256SUMS
 
 ## Automatic auth-service delivery
 
-`Auth service CI` retains the existing manual access check and adds read-only PR verification plus automatic main delivery. Its paths cover `service/auth`, `infra/auth`, auth delivery scripts/tests/workflows and shared root MSBuild/NuGet files. Controller-only changes do not trigger auth delivery. The actual service tests and Bicep compiler run before publication. PR jobs receive no publication or Azure credentials.
+`Auth service CI` retains the existing manual access check and adds read-only PR verification plus automatic main delivery. Its paths cover `service/auth`, `infra/auth`, auth delivery scripts/tests/workflows and shared root MSBuild/NuGet files. Controller-only changes do not trigger auth delivery. The actual service tests, Bicep compiler and infrastructure process/compiled-template tests run before publication. PR jobs receive no publication or Azure credentials.
 
 **The current service implements self-revocation only.** Issuance, enrollment and independent cleanup remain outstanding; `/health/ready` returns 503. Source verification can pass while production delivery remains blocked. Missing acceptance or configuration produces an actionable failure before publication/provisioning; it is never reported as a successful deployment or replaced with a healthy placeholder.
 
@@ -69,7 +69,7 @@ Reuse the exact resource group, subscription, identity and main-only OIDC subjec
 | `AUTH_CONCURRENT_REQUEST_LIMIT` | Optional: 8 by default, allowed 1–128 |
 | `AUTH_REQUEST_TIMEOUT_SECONDS` | Optional: 15 by default, allowed 1–60 |
 
-The Table/runtime configuration above is supplied by the #55 infrastructure follow-up. The endpoint and managed-identity client ID derive from owned resources. There is no human GitHub OAuth client secret in the UI-free protocol. The approval Environment/variable is managed separately by the installing operator's host GitHub CLI; controller tokens cannot change it.
+The Table/runtime configuration above is implemented in the merged #55 infrastructure changes. The endpoint and managed-identity client ID derive from owned resources. There is no human GitHub OAuth client secret in the UI-free protocol. The approval Environment/variable is managed separately by the installing operator's host GitHub CLI; controller tokens cannot change it.
 
 Readiness flags are operator attestations, not automated proof. Keep them unset while requirements are incomplete. Real Azure managed-identity Table transactions and scoped denial, signing, GitHub authorization, cleanup, restore and the staged user journey remain required before enabling production delivery.
 
