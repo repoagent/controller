@@ -56,9 +56,17 @@ class EnrollmentJourney:
         if os.name == 'nt':
             der = ssl.PEM_cert_to_DER_cert(cert.read_text(encoding='ascii'))
             thumbprint = hashlib.sha1(der).hexdigest()
-            subprocess.run(['certutil', '-user', '-addstore', 'Root', str(cert)], check=True, capture_output=True)
-            case.addCleanup(subprocess.run, ['certutil', '-user', '-delstore', 'Root', thumbprint],
-                            check=True, capture_output=True)
+            def certificate_store(operation, value):
+                # Request force explicitly; docs do not guarantee root UI
+                # suppression. Any prompt/store stall must fail within 15 seconds.
+                # No inherited console input or captured pipe can wait on conhost.
+                subprocess.run(['certutil', '-user', '-f', operation, 'Root', value], check=True,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+            # An interrupted add may already have succeeded. Remove only this
+            # unique fixture certificate even when installation fails or times out.
+            case.addCleanup(certificate_store, '-delstore', thumbprint)
+            certificate_store('-addstore', str(cert))
         journey = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
