@@ -66,6 +66,7 @@ class Deployment:
         self.identity = {"clientId": None, "principalId": None}
         self.params = {"location": self.location, "appName": self.app, "storageName": self.storage,
                        "vaultName": self.vault, "deployApp": not self.foundation, "tableName": self.table}
+        self.request_budget()
         self.resources = [
             (RESOURCE_TYPES[0], self.app + "-runtime", "2023-01-31", "auth-runtime"),
             (RESOURCE_TYPES[1], self.app + "-logs", "2023-09-01", "auth-logs"),
@@ -109,6 +110,8 @@ class Deployment:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", epoch):
             raise DeploymentError("AUTH_DEPLOYMENT_EPOCH must be 1-128 ASCII letters/digits/hyphen/underscore")
         self.params["deploymentEpoch"] = epoch
+
+    def request_budget(self):
         for name, param, default, maximum in (
             ("AUTH_REQUEST_LIMIT_PER_MINUTE", "requestLimitPerMinute", 120, 10000),
             ("AUTH_CONCURRENT_REQUEST_LIMIT", "concurrentRequestLimit", 8, 128),
@@ -234,12 +237,12 @@ class Deployment:
         configuration = {
             "Broker__TableEndpoint": endpoint, "Broker__TableName": self.table,
             "Broker__ManagedIdentityClientId": self.identity["clientId"],
+            "Broker__RequestLimitPerMinute": self.params["requestLimitPerMinute"],
+            "Broker__ConcurrentRequestLimit": self.params["concurrentRequestLimit"],
+            "Broker__RequestTimeoutSeconds": self.params["requestTimeoutSeconds"],
         }
         if not self.foundation:
-            configuration.update({"Broker__DeploymentEpoch": self.params["deploymentEpoch"],
-                "Broker__RequestLimitPerMinute": self.params["requestLimitPerMinute"],
-                "Broker__ConcurrentRequestLimit": self.params["concurrentRequestLimit"],
-                "Broker__RequestTimeoutSeconds": self.params["requestTimeoutSeconds"]})
+            configuration["Broker__DeploymentEpoch"] = self.params["deploymentEpoch"]
         return {"appName": self.app, "runtimeIdentityId": self.resource_id(RESOURCE_TYPES[0], self.app + "-runtime"),
                 "runtimeIdentityClientId": self.identity["clientId"], "runtimeIdentityPrincipalId": self.identity["principalId"],
                 "keyVaultName": self.vault, "dataProtectionBlobUri": f"https://{self.storage}.blob.core.windows.net/data-protection/keyring.xml",
