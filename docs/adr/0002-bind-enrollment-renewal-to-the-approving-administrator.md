@@ -1,4 +1,10 @@
+---
+status: superseded by ADR-0004
+---
+
 # Bind enrollment renewal to the approving administrator
+
+Superseded by [repository-held approval](0004-use-repository-approval-and-manual-race-recovery.md) under updated issue #31. The text below records the earlier decision.
 
 An enrollment is a separate administrator-approved grant: every token renewal requires its approving user to remain a repository administrator, along with the enrolled App installation, repository and permission binding remaining valid. Discard personal GitHub OAuth credentials after enrollment instead of retaining and rotating human refresh credentials; withdrawing personal OAuth consent alone does not cancel this separate grant. The maintainer selected this policy to reduce retained secrets and routine maintenance while keeping an accountable administrator; App uninstall, explicit enrollment revocation and inactivity expiry still deny future renewal.
 

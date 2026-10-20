@@ -1,0 +1,5 @@
+# Use repository approval and manual race recovery
+
+Require a repository-held approval and a separate private device credential instead of continuing authority of a named administrator, as approved in [#31](https://github.com/repoagent/controller/issues/31). Trust the principals GitHub permits to manage the selected Environment variable; the value cannot attest a particular human or deployment reviewer, and host GitHub credentials stay on the operator's machine. This supersedes [ADR 0002](0002-bind-enrollment-renewal-to-the-approving-administrator.md).
+
+Host revocation checks the exact observed value and makes one name-addressed deletion. GitHub offers no atomic compare-delete, so an independent writer may lose a newer approval; accept temporary service loss and manual inspection/reapproval rather than adding distributed locks, leases or automatic repair. Broker closure and settlement of already-issued tokens remain separate safety gates, while preapproval verification has its own finite admission, token-mint and storage budgets.
