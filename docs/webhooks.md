@@ -45,6 +45,8 @@ The generated secret and returned hook ID live in private persistent state, sepa
 
 Webhook mode reconciles once at startup and then at the configured interval, default five minutes. Reconciliation covers missed notifications and emoji reactions, for which GitHub documents no Discussion reaction webhook. Activity removed between observations can still be missed. The in-memory scheduling queue is not a durable event history; uncertain native acceptance retains the existing explicit manual-recovery behavior.
 
+If the first registration is interrupted after GitHub creates the hook but before its ID is saved locally, inspect repository Webhooks before retrying. Remove only that deployment’s orphan hook (verify its endpoint and creation time), then retry with the retained private state. Registration is not an atomic transaction across GitHub and the local filesystem.
+
 Stopping or deleting local storage does not delete the upstream repository webhook. For permanent decommissioning, remove only this deployment's recorded hook in the repository's **Settings → Webhooks**. Keep its private state if you intend to restart or switch endpoint modes; deleting it loses the saved hook identity and secret.
 
 ## Hosting choices
