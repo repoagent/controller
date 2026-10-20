@@ -94,7 +94,11 @@ class Deployment:
             if not re.fullmatch(rf"https://{re.escape(self.vault)}\.vault\.azure\.net/{kind}/[A-Za-z0-9-]+/[0-9a-f]{{32}}", value):
                 raise DeploymentError(f"{name} must be a versioned reference in the foundation vault")
             self.params[param] = value
-        if self.params["signingKeyUri"].rsplit("/", 1)[0] == self.params["dataProtectionKeyUri"].rsplit("/", 1)[0]:
+        # Key Vault object names are case-insensitive; versions do not define
+        # separate signing and wrapping keys.
+        signing_key = self.params["signingKeyUri"].rsplit("/", 1)[0].casefold()
+        protection_key = self.params["dataProtectionKeyUri"].rsplit("/", 1)[0].casefold()
+        if signing_key == protection_key:
             raise DeploymentError("App signing and Data Protection must use separate keys")
         store = required("AUTH_STORE_RESOURCE_ID")
         if not re.fullmatch(rf"/subscriptions/{re.escape(self.subscription)}/resourceGroups/[A-Za-z0-9_.()-]+/providers/[A-Za-z0-9.]+(?:/[A-Za-z0-9_.()-]+){{2,}}", store):
