@@ -1,4 +1,4 @@
-name: Verify Azure auth deployment access
+name: Auth service CI
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: azure-auth-bootstrap
+  group: auth-service-ci
   cancel-in-progress: false
 
 jobs:

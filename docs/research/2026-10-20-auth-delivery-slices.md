@@ -2,6 +2,8 @@
 
 Design proposal, 2026-10-20. No broker deployment or live authentication is claimed. GitHub facts and primary citations are in [the delegated-auth investigation](2026-10-20-controller-delegated-auth.md); the protocol below is proposed project behavior.
 
+Deployment access has since been bootstrapped and verified through GitHub OIDC and an outputs-only Bicep deployment; see the [deployment runbook](../azure-auth-deployment.md). This does not complete the maintainer broker deployment slice or its hosted acceptance gates.
+
 ## Recommendation and first deliverable
 
 Preserve installation-token bot identity. GitHub App device login authorizes a human to enroll a controller; it does not replace the App JWT needed to mint installation tokens. Operate one maintainer-controlled broker separately from users' local or Azure controllers. Only the broker receives the shared App PEM.

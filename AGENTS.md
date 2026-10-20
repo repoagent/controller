@@ -11,3 +11,7 @@ Use the five default triage labels. Before triaging issues, read `docs/agents/tr
 ### Domain docs
 
 Use a single-context layout: root `GLOSSARY.md` and `docs/adr/`. Before exploring domain concepts or decisions, read `docs/agents/domain.md`.
+
+### Azure deployment
+
+Before changing auth-service Azure resources, deployment workflows, or GitHub OIDC trust, read `docs/azure-auth-deployment.md`.

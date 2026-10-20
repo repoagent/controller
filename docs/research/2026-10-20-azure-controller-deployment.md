@@ -1,6 +1,8 @@
 # Azure controller deployment research
 
-Researched 2026-10-20 against Microsoft documentation. This is an installer design proposal, not a verified deployment. No cloud resources were created, credentials read, or deployment commands executed. Existing controller requirements below were supplied by the coordinating task; this note does not independently review runtime implementation.
+Researched 2026-10-20 against Microsoft documentation. This is an installer design proposal, not a verified deployment. This research did not create cloud resources, read credentials or execute deployment commands. Existing controller requirements below were supplied by the coordinating task; this note does not independently review runtime implementation.
+
+This research concerns user-hosted controllers. The separately maintained authentication service has its own [Azure deployment runbook](../azure-auth-deployment.md), including the provisioned deployment identity and verified GitHub OIDC/Bicep access. That bootstrap does not verify the controller deployment proposed here.
 
 ## Decision and release gates
 

@@ -2,9 +2,11 @@
 
 Research date: 2026-10-20. This is a proposal for issues [#30](https://github.com/repoagent/controller/issues/30) and [#35](https://github.com/repoagent/controller/issues/35), not an approved storage decision or a deployed service. The maintainer has offered to own and fund the small Azure service. Users own their separately hosted controllers. The [existing ADR](../adr/0001-keep-the-shared-app-key-out-of-controller-installations.md) keeps the shared App key in the trusted broker; the [library research](2026-10-20-dotnet-authorization-stack.md) describes the proposed .NET implementation.
 
+Subsequent setup selected Azure Container Apps and established the resource group, GitHub OIDC identity and a successful Bicep access check. The [deployment runbook](../azure-auth-deployment.md) owns the current configuration and evidence. Runtime resources and hosted broker acceptance remain pending; the other recommendations below remain proposals.
+
 ## Runtime and traffic
 
-Propose a separate .NET 10 LTS ASP.NET Core service on Azure Container Apps, with HTTPS ingress, HTTP scaling, minimum zero and an initial maximum of one replica. HTTP can wake the app from zero. Cold starts are an explicit availability/latency tradeoff. Platform maintenance can temporarily produce extra replicas, and limits apply per revision, so maximum one is not authorization serialization. All mint/revoke coordination must be durable. [Container Apps scaling](https://learn.microsoft.com/en-us/azure/container-apps/scale-app)
+Azure Container Apps is the selected hosting platform. Propose a separate .NET 10 LTS ASP.NET Core service with HTTPS ingress, HTTP scaling, minimum zero and an initial maximum of one replica. HTTP can wake the app from zero. Cold starts are an explicit availability/latency tradeoff. Platform maintenance can temporarily produce extra replicas, and limits apply per revision, so maximum one is not authorization serialization. All mint/revoke coordination must be durable. [Container Apps scaling](https://learn.microsoft.com/en-us/azure/container-apps/scale-app)
 
 The controller caches GitHub's one-hour installation token and renews before expiry. At one renewal every 55 minutes, a continuously running controller makes about 26 routine issuance requests per day, plus enrollment, retries and restarts. This is an estimate, not a measured request budget. GitHub content requests and agent traffic go directly to GitHub; the broker does not proxy them. The provider may reuse a short-lived App JWT under a bounded expiry policy to reduce Key Vault signing operations, while still rechecking enrollment and GitHub authorization for each issuance. Add renewal jitter, bounded retries, rate limits and admission caps.
 
@@ -68,4 +70,4 @@ Propose scheduled dependency/base-image update checks, automated test/build/depl
 - Prove cleanup and expiry work while the HTTP service has zero replicas, including bounded backlog and request bursts.
 - Execute the staged GitHub/Azure deployment journey and document cold-start behavior, measured traffic, cost controls and recovery.
 
-No Azure resources were provisioned and no live service behavior was verified for this note.
+Live broker behavior remains unverified. The subsequent deployment-access bootstrap and its evidence are recorded in the deployment runbook.
