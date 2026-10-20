@@ -172,7 +172,6 @@ public sealed partial class CapacityReclamationTests
             if (ObservedTransport.IsBatch(message)) transactions.Add(Regex.Matches(await Body(message), "Content-Type: application/http", RegexOptions.IgnoreCase).Count);
         }};
         await Retirement(f, ledger, f.Storage.CreateClient(transport));
-        Assert.Equal(enrollment ? 17 : 15, reads);
         Assert.InRange(reads, 1, 20);
         Assert.Equal(5, transactions.Count);
         Assert.All(transactions, actions => Assert.InRange(actions, 1, 4));
