@@ -55,21 +55,21 @@ public sealed class IssuanceFaultTests
         };
         var result = await f.IssueAsync(Token, transport);
         Assert.True(injected);
-        Assert.Equal(existingQuota ? 412 : 409, conflictStatus);
+        Assert.Equal(412, conflictStatus); // Offline schema already created the global quota.
         Assert.Equal("reserved", competingAttempt!.GetString("State"));
         Assert.Equal(200, result.Status);
-        var slots = existingQuota ? 4 : 3;
+        var slots = existingQuota ? 5 : 4;
         var global = await GlobalQuota(f);
         Assert.Equal(slots, global.GetInt64("Slots"));
         Assert.Equal(existingQuota ? 2 : 3, global.GetInt64("Admissions"));
         var rows = await GlobalRows(f);
         Assert.Equal(slots, rows.Count(e => e.RowKey.StartsWith("slot:", StringComparison.Ordinal)));
-        Assert.Single(rows, e => e.TryGetValue("OperationId", out var id) && (string)id == competingAttempt.GetString("OperationId"));
+        Assert.Single(rows, e => e.RowKey.StartsWith("slot:", StringComparison.Ordinal) && e.TryGetValue("OperationId", out var id) && (string)id == competingAttempt.GetString("OperationId"));
         var attempts = await f.AttemptsAsync();
         var admitted = attempts.Where(a => !priorAttempts.Contains(a.RowKey)).ToList();
         Assert.Equal(existingQuota ? 1 : 2, admitted.Count);
         foreach (var attempt in admitted)
-            Assert.Single(rows, e => e.TryGetValue("OperationId", out var id) && (string)id == attempt.GetString("OperationId"));
+            Assert.Single(rows, e => e.RowKey.StartsWith("slot:", StringComparison.Ordinal) && e.TryGetValue("OperationId", out var id) && (string)id == attempt.GetString("OperationId"));
         var retried = Assert.Single(admitted, a => a.GetString("Purpose") == (existingQuota ? "runtime" : "verification"));
         Assert.Equal(reservedAt, retried.GetDateTimeOffset("ReservedAt"));
         Assert.Equal(reservedAt.AddSeconds(-60), retried.GetDateTimeOffset("JwtIssuedAt"));
@@ -103,8 +103,8 @@ public sealed class IssuanceFaultTests
         Assert.Equal(16, f.GitHub.Reads);
         Assert.Equal(3, f.GitHub.Mints);
         Assert.Equal(2, (await f.AttemptsAsync()).Count(a => a.GetString("State") == "released"));
-        Assert.Equal(3, (await GlobalQuota(f)).GetInt64("Slots"));
-        var slot = Assert.Single(await GlobalRows(f), e => e.RowKey == "slot:002");
+        Assert.Equal(4, (await GlobalQuota(f)).GetInt64("Slots"));
+        var slot = Assert.Single(await GlobalRows(f), e => e.RowKey == "slot:003");
         var attempt = Assert.Single(await f.AttemptsAsync(), a => a.GetString("OperationId") == slot.GetString("OperationId"));
         Assert.Equal(reservedAt, attempt.GetDateTimeOffset("ReservedAt"));
         Assert.Equal(reservedAt.AddSeconds(-60), attempt.GetDateTimeOffset("JwtIssuedAt"));
@@ -145,7 +145,7 @@ public sealed class IssuanceFaultTests
         Assert.Equal("known", verifier.GetString("State"));
         Assert.Equal(reservedAt, verifier.GetDateTimeOffset("ReservedAt"));
         Assert.Equal(reservedAt.AddSeconds(120), verifier.GetDateTimeOffset("JwtExpiresAt"));
-        Assert.Equal(2, (await GlobalQuota(f)).GetInt64("Slots"));
+        Assert.Equal(3, (await GlobalQuota(f)).GetInt64("Slots"));
         Assert.Equal(2, (await f.GateAsync()).GetInt64("OutstandingTokenCount"));
         Assert.False((await f.DeviceAsync()).ContainsKey("LastActivityAt"));
         var quota = (await f.Storage.Table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "quota", cancellationToken: Token)).Value;
@@ -182,7 +182,7 @@ public sealed class IssuanceFaultTests
         Assert.Equal(2, f.GitHub.Mints);
         Assert.Equal(2, f.Signing.Calls);
         Assert.Equal(2, (await f.AttemptsAsync()).Count);
-        Assert.Equal(3, (await GlobalQuota(f)).GetInt64("Slots"));
+        Assert.Equal(4, (await GlobalQuota(f)).GetInt64("Slots"));
         Assert.Equal(lastActivity, (await f.DeviceAsync()).GetDateTimeOffset("LastActivityAt"));
     }
 
@@ -227,7 +227,7 @@ public sealed class IssuanceFaultTests
             Assert.Equal(expectedState, preserved.GetString("State"));
             Assert.Equal("runtime", preserved.GetString("Purpose"));
         }
-        var slots = stage == 1 && !afterCommit ? 2 : 3;
+        var slots = stage == 1 && !afterCommit ? 3 : 4;
         Assert.Equal(slots, (await GlobalQuota(f)).GetInt64("Slots"));
         Assert.Equal(slots, (await GlobalRows(f)).Count(e => e.RowKey.StartsWith("slot:", StringComparison.Ordinal)));
         Assert.Equal(stage >= 4 ? 3 : 2, f.GitHub.Mints);
@@ -268,7 +268,7 @@ public sealed class IssuanceFaultTests
             Assert.Equal(503, (await f.IssueAsync(Token)).Status);
             Assert.Equal("reserved", Assert.Single(await f.AttemptsAsync()).GetString("State"));
             Assert.Equal(0, f.GitHub.Mints);
-            Assert.Equal(1, (await GlobalQuota(f)).GetInt64("Slots"));
+            Assert.Equal(2, (await GlobalQuota(f)).GetInt64("Slots"));
         }
         finally { continueSigning.TrySetResult(); }
         Assert.Equal(200, (await first).Status);
@@ -298,7 +298,7 @@ public sealed class IssuanceFaultTests
         Assert.Equal("reserved", Assert.Single(await f.AttemptsAsync(), a => a.GetString("State") == "reserved").GetString("State"));
         Assert.Equal("closed", (await f.GateAsync()).GetString("State"));
         Assert.Equal(f.Clock.GetUtcNow().AddMinutes(-1), (await f.DeviceAsync()).GetDateTimeOffset("LastActivityAt"));
-        Assert.Equal(3, (await GlobalQuota(f)).GetInt64("Slots"));
+        Assert.Equal(4, (await GlobalQuota(f)).GetInt64("Slots"));
         Assert.Equal(401, (await f.IssueAsync(Token)).Status);
         Assert.Equal(2, f.GitHub.Mints);
     }
@@ -322,7 +322,7 @@ public sealed class IssuanceFaultTests
         Assert.Equal(7, f.GitHub.Mints);
         Assert.Equal(7, f.Signing.Calls);
         Assert.Equal(7, (await f.AttemptsAsync()).Count);
-        Assert.Equal(11, (await GlobalQuota(f)).GetInt64("Slots"));
+        Assert.Equal(12, (await GlobalQuota(f)).GetInt64("Slots"));
     }
 
     [Fact]
@@ -336,7 +336,7 @@ public sealed class IssuanceFaultTests
             Assert.Equal(429, (await f.Issuer(limits: limits).IssueAsync(f.Device.DeviceId, f.Device.Secret, Token)).Status);
         var quota = await GlobalQuota(f);
         Assert.Equal(4, quota.GetInt64("Slots"));
-        Assert.Equal(4, quota.GetInt64("Admissions"));
+        Assert.Equal(3, quota.GetInt64("Admissions"));
         Assert.Equal(2, (await f.AttemptsAsync()).Count);
         Assert.Equal(2, f.Signing.Calls);
         Assert.Equal(2, f.GitHub.Mints);
@@ -344,8 +344,12 @@ public sealed class IssuanceFaultTests
         Assert.Equal(429, (await f.Issuer(limits: limits).IssueAsync(f.Device.DeviceId, f.Device.Secret, Token)).Status);
         Assert.Equal(quota.ETag, (await GlobalQuota(f)).ETag);
         var rows = await GlobalRows(f);
-        Assert.Equal(5, rows.Count);
-        Assert.Equal(new[] { "quota", "slot:000", "slot:001", "slot:002", "slot:003" }, rows.Select(e => e.RowKey).Order());
+        Assert.Equal(9, rows.Count); // Quota, four charged slots and four immutable ledgers.
+        Assert.Equal(new[] { "slot:000", "slot:001", "slot:002", "slot:003" },
+            rows.Where(e => e.RowKey.StartsWith("slot:", StringComparison.Ordinal)).Select(e => e.RowKey).Order());
+        Assert.Equal(4, rows.Count(e => e.RowKey.StartsWith("operation:", StringComparison.Ordinal)));
+        Assert.Equal("one", Assert.Single(rows, e => e.RowKey == "slot:000").GetString("OperationId"));
+        Assert.Equal("outstanding", (await f.Storage.Table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "attempt:one", cancellationToken: Token)).Value.GetString("State"));
     }
 
     private static async Task<TableEntity> GlobalQuota(IssuanceFixture f) =>
@@ -354,6 +358,19 @@ public sealed class IssuanceFaultTests
     {
         var rows = new List<TableEntity>();
         await foreach (var row in f.Storage.Table.QueryAsync<TableEntity>(e => e.PartitionKey == "global:issuance-v1", cancellationToken: Token)) rows.Add(row);
+        var slots = rows.Where(r => r.RowKey.StartsWith("slot:", StringComparison.Ordinal)).ToList();
+        var ledgers = rows.Where(r => r.RowKey.StartsWith("operation:", StringComparison.Ordinal)).ToList();
+        Assert.Equal(slots.Count, ledgers.Count);
+        Assert.Equal(ledgers.Count, rows.Single(r => r.RowKey == "quota").GetInt64("RetainedIssuanceCount"));
+        foreach (var slot in slots)
+        {
+            var ledger = Assert.Single(ledgers, r => r.RowKey == "operation:" + slot.GetString("OperationId"));
+            Assert.Equal(slot.GetString("Generation"), ledger.GetString("Generation"));
+            Assert.Equal(slot.GetDateTimeOffset("ReservedAt"), ledger.GetDateTimeOffset("ReservedAt"));
+            Assert.Equal(slot.GetDateTimeOffset("ReservedAt")!.Value.AddHours(24), ledger.GetDateTimeOffset("PayloadPurgeAt"));
+            Assert.Equal(4, ledger.GetInt64("RowCredits"));
+        }
+        Assert.Equal("attempt:one", Assert.Single(ledgers, r => r.RowKey == "operation:one").GetString("AttemptRowKey"));
         return rows;
     }
 
@@ -370,6 +387,11 @@ public sealed class IssuanceFaultTests
         }
         var gate = Copy(await f.GateAsync(), partition);
         var device = Copy(await f.DeviceAsync(), partition);
+        // This competitor has an enrollment but no inherited unknown attempt.
+        // The primary repository's original unknown authority remains charged.
+        gate["OutstandingTokenCount"] = 0L;
+        device["OutstandingTokenCount"] = 0L;
+        await f.Storage.ChargeOfflineEnrollmentAsync(repository, f.Device.DeviceId, f.Clock.GetUtcNow());
         device["Repository"] = "owner/competing";
         device["Marker"] = ApprovalMarker.Create(new(gate, device));
         await f.Storage.Table.SubmitTransactionAsync(new[]

@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.Json;
 using Azure;
 using Azure.Data.Tables;
 using Microsoft.AspNetCore.DataProtection;
@@ -11,6 +10,7 @@ namespace RepoAgent.Auth;
 // No capacity is freed here: cleanup/reconciliation must first prove settlement and worker cessation.
 public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDataProtectionProvider protection, TimeProvider clock, IssuanceLimits? configuredLimits = null)
 {
+    private readonly RetainedState retained = new(table, options);
     private readonly IssuanceLimits limits = configuredLimits ?? new();
 
     public async Task<GrantSnapshot> AuthenticateAsync(string deviceId, string? secret, CancellationToken ct)
@@ -72,6 +72,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
         var verifierOperation = grant.Gate.GetString("VerifierAttempt");
         var now = clock.GetUtcNow();
         var operation = Guid.NewGuid().ToString("N");
+        var generation = Guid.NewGuid().ToString("N");
         var reads = purpose == "runtime" ? 8 : 0;
         long? slot = null;
         var retry = false;
@@ -108,7 +109,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
                 // Definite global conflicts have no committed charge; reevaluate with the same operation.
                 // Once charged, reuse that reservation across known repository conflicts.
                 // A timeout or unknown response never reaches this retry loop.
-                slot ??= await ChargeGlobalAsync(operation, grant.RepositoryId, purpose, reads, now, grant.Approval, ct);
+                slot ??= await ChargeGlobalAsync(operation, generation, grant.RepositoryId, grant.DeviceId, purpose, reads, now, grant.Approval, ct);
                 var quota = await ReadAsync(grant.Partition, "quota", ct);
                 var freshQuota = quota is null;
                 quota ??= NewQuota(grant.Partition);
@@ -119,10 +120,10 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
                 else grant.Device["OutstandingTokenCount"] = checked(Number(grant.Device, "OutstandingTokenCount") + 1);
                 var attempt = new TableEntity(grant.Partition, "attempt:" + operation)
                 {
-                    ["OperationId"] = operation, ["RepositoryId"] = grant.RepositoryId,
+                    ["OperationId"] = operation, ["Generation"] = generation, ["RepositoryId"] = grant.RepositoryId,
                     ["DeviceId"] = grant.DeviceId, ["Epoch"] = grant.Epoch, ["Purpose"] = purpose,
                     ["Profile"] = profile, ["InstallationId"] = grant.InstallationId,
-                    ["State"] = "reserved", ["ReservedAt"] = now,
+                    ["State"] = "reserved", ["ReservedAt"] = now, ["PayloadPurgeAt"] = now.AddHours(24),
                     ["JwtIssuedAt"] = now.AddSeconds(-60), ["JwtExpiresAt"] = now.AddSeconds(120), ["GlobalSlot"] = slot.Value
                 };
                 grant.Approval.Write(attempt);
@@ -143,12 +144,11 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
         }
     }
 
-    private async Task<long> ChargeGlobalAsync(string operation, string repository, string purpose, int reads, DateTimeOffset now, ApprovalContract approval, CancellationToken ct)
+    private async Task<long> ChargeGlobalAsync(string operation, string generation, string repository, string device, string purpose, int reads, DateTimeOffset now, ApprovalContract approval, CancellationToken ct)
     {
         const string partition = "global:issuance-v1";
-        var quota = await ReadAsync(partition, "quota", ct);
-        var fresh = quota is null;
-        quota ??= NewQuota(partition);
+        var quota = (await retained.SchemaAsync(ct)).Issuance;
+        _ = await retained.DirectoryAsync(repository, ct) ?? throw new IssuanceDenied();
         // One fixed partition and exactly 128 possible slot keys. No attacker-controlled quota keys.
         var slot = Number(quota, "Slots");
         if (slot >= limits.GlobalAttempts) throw new IssuanceDenied(429);
@@ -156,12 +156,15 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
         quota["Slots"] = slot + 1;
         var reservation = new TableEntity(partition, "slot:" + slot.ToString("D3", CultureInfo.InvariantCulture))
         {
-            ["OperationId"] = operation, ["RepositoryId"] = repository, ["Purpose"] = purpose,
-            ["Epoch"] = options.DeploymentEpoch, ["ReservedAt"] = now
+            ["OperationId"] = operation, ["Generation"] = generation, ["RepositoryId"] = repository, ["Purpose"] = purpose,
+            ["Epoch"] = options.DeploymentEpoch, ["ReservedAt"] = now,
+            ["PayloadPurgeAt"] = now.AddHours(24), ["GlobalSlot"] = slot
         };
         approval.Write(reservation);
-        await table.SubmitTransactionAsync([
-            new(fresh ? TableTransactionActionType.Add : TableTransactionActionType.UpdateReplace, quota, quota.ETag),
+        var ledger = retained.ChargeIssuance(quota, reservation, device);
+        await BrokerTable.SubmitAsync(table, [
+            new(TableTransactionActionType.UpdateReplace, quota, quota.ETag),
+            new(TableTransactionActionType.Add, ledger),
             new(TableTransactionActionType.Add, reservation)
         ], ct);
         // Never compensate on an ambiguous or failed repository commit.
@@ -232,17 +235,8 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
         await CommitAsync(grant, [Update(attempt)], ct);
     }
 
-    public async Task<TableEntity?> ReadAsync(string partition, string row, CancellationToken ct)
-    {
-        try
-        {
-            var e = (await table.GetEntityAsync<TableEntity>(partition, row, cancellationToken: ct)).Value;
-            if (e.Count > 128 || e.ETag == ETag.All || string.IsNullOrEmpty(e.ETag.ToString())
-                || JsonSerializer.SerializeToUtf8Bytes(e).Length > 64 * 1024) throw new IssuanceDenied();
-            return e;
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404 && ex.ErrorCode == "ResourceNotFound") { return null; }
-    }
+    public Task<TableEntity?> ReadAsync(string partition, string row, CancellationToken ct) =>
+        BrokerTable.ReadAsync(table, partition, row, ct);
     private async Task<TableEntity> RequiredAttemptAsync(GrantSnapshot grant, string operation, CancellationToken ct) =>
         await ReadAsync(grant.Partition, "attempt:" + operation, ct) ?? throw new IssuanceDenied();
     private static TableTransactionAction Update(TableEntity e) => new(TableTransactionActionType.UpdateReplace, e, e.ETag);
@@ -251,7 +245,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
         grant.Gate["Sequence"] = checked(Number(grant.Gate, "Sequence") + 1);
         var actions = new List<TableTransactionAction> { Update(grant.Gate), Update(grant.Device) };
         actions.AddRange(extra);
-        await table.SubmitTransactionAsync(actions, ct);
+        await BrokerTable.SubmitAsync(table, actions, ct);
         // Post-observation conflicts invalidate the decision and deny; only admission owns a bounded reevaluation loop.
     }
     private IDataProtector Protector(GrantSnapshot grant, TableEntity attempt) => grant.Approval.TokenProtector(

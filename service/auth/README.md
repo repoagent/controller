@@ -17,6 +17,8 @@ Production requires these environment variables:
 | `Broker__DeploymentEpoch` | External epoch identifier, 1–128 ASCII letters/digits, `-` or `_` |
 | `Broker__ManagedIdentityClientId` | Optional user-assigned identity client ID; otherwise system-assigned identity |
 
+Enrollment and issuance admission require explicit offline initialization of both global quota rows before traffic is enabled. See [retained-state activation, limits and the complete writer inventory](retained-state.md). The service never bootstraps these rows over an existing table.
+
 The service uses `ManagedIdentityCredential` only. It never creates the table or loads account keys, developer credentials, or emulator connection strings. Provision the table in the storage account planned for auth infrastructure and grant the runtime identity **Storage Table Data Contributor** at that table's scope. Deployment Contributor and Blob key-ring access do not grant Table data access. Actual Azure managed-identity acceptance remains required before hosted release. Production ingress must require TLS; the container listens on internal HTTP port 8080 behind that ingress.
 
 Keep the deployment epoch outside the restored table backup. Recovery must fence old workers/access and establish a new epoch; restoring both data and its old epoch must never resurrect grants. Explicit cleanup and backup/restore are separate delivery work. See [the storage decision](../../docs/adr/0005-use-table-storage-for-broker-state.md).
@@ -51,7 +53,7 @@ One dedicated table contains routing hints in `locator:<deviceId>` partitions (r
 | `device:<deviceId>` | `RepositoryId`, `DeviceId`, `Epoch`, `SecretHash` (64 hex digits), `ExpiresAt` (DateTimeOffset), `State` (`active`/`revoked`) |
 | `revocation:<deviceId>` | `RepositoryId`, `DeviceId`, `Epoch`, `RevokedAt` (DateTimeOffset) |
 
-Revocation conditionally replaces gate and device using both observed ETags, creates one receipt in the same entity-group transaction, and preserves all other properties and attempt rows. A conflict rereads and reevaluates the whole decision. No wildcard updates, upserts, grants recreated on missing data, partition scans or production seed endpoint exist. Read entities are capped at 128 properties and 64 KiB of JSON; the three-operation batch stays below Azure's 100-operation/4 MiB limits. Future admission and cleanup must preserve these accounting and partition rules.
+Revocation conditionally replaces gate and device using both observed ETags, creates one receipt in the same entity-group transaction, and preserves all other properties and attempt rows. A conflict rereads and reevaluates the whole decision. No wildcard updates, upserts, grants recreated on missing data, partition scans or production seed endpoint exist. All writes and reads are capped at 128 properties and 64 KiB of JSON; broker transactions are limited to 32 operations and 1 MiB including a framing allowance. Admission requires preinitialized retained-state metadata and preserves these accounting and partition rules.
 
 ## Verification
 

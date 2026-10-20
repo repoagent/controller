@@ -69,7 +69,7 @@ public sealed class DeviceRevocation(TableClient table, BrokerOptions options, T
                 };
                 try
                 {
-                    await table.SubmitTransactionAsync([
+                    await BrokerTable.SubmitAsync(table, [
                         new(TableTransactionActionType.UpdateReplace, gate, gate.ETag),
                         new(TableTransactionActionType.UpdateReplace, device, device.ETag),
                         new(TableTransactionActionType.Add, newReceipt)
