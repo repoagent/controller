@@ -47,6 +47,8 @@ def budget_plan(scope):
                 dates[field] = date.fromisoformat(value)
             except ValueError as error:
                 raise ValueError(f"Budget {field} must be a calendar date YYYY-MM-DD") from error
+    if "startDate" in dates and dates["startDate"] < date(2017, 6, 1):
+        raise ValueError("Budget startDate must be on or after 2017-06-01")
     if "startDate" in dates and dates["startDate"].day != 1:
         raise ValueError("Budget startDate must be the first day of a month")
     if len(dates) == 2 and dates["endDate"] <= dates["startDate"]:
