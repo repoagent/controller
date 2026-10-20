@@ -9,7 +9,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: auth-service-deployment
+  group: auth-service-delivery
   cancel-in-progress: false
 jobs:
   deploy:

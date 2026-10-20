@@ -1,18 +1,52 @@
 name: Auth service CI
-
 on:
   workflow_dispatch:
-
+    inputs:
+      operation:
+        description: Verify existing access or run the full service delivery pipeline
+        type: choice
+        options: [access-check, deploy]
+        default: access-check
+        required: true
+  push:
+    branches: [main]
+    paths: &auth-paths
+      - 'service/auth/**'
+      - 'infra/auth/**'
+      - 'scripts/delivery/auth-pipeline.py'
+      - 'scripts/delivery/deploy-auth.py'
+      - 'scripts/delivery/test_*auth*.py'
+      - '.github/workflows/ci-auth-service.yml'
+      - '.github/workflows/deploy-auth.yml'
+      - 'Directory.Build.*'
+      - 'Directory.Packages.props'
+      - 'NuGet.Config'
+      - 'nuget.config'
+  pull_request:
+    paths: *auth-paths
 permissions:
   contents: read
-
 concurrency:
-  group: auth-service-ci
+  group: auth-service-${{ github.event_name == 'pull_request' && github.ref || 'delivery' }}
   cancel-in-progress: false
-
+env:
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+  AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+  AUTH_APP_NAME: ${{ vars.AUTH_APP_NAME }}
+  AUTH_IMAGE_REPOSITORY: ${{ vars.AUTH_IMAGE_REPOSITORY }}
+  AUTH_DEPLOYMENT_READY: ${{ vars.AUTH_DEPLOYMENT_READY }}
+  AUTH_PROVIDER_READY: ${{ vars.AUTH_PROVIDER_READY }}
+  AUTH_STORAGE_READY: ${{ vars.AUTH_STORAGE_READY }}
+  AUTH_CLEANUP_READY: ${{ vars.AUTH_CLEANUP_READY }}
+  AUTH_RUNTIME_ACCESS_READY: ${{ vars.AUTH_RUNTIME_ACCESS_READY }}
+  AUTH_SIGNING_KEY_URI: ${{ vars.AUTH_SIGNING_KEY_URI }}
+  AUTH_DATA_PROTECTION_KEY_URI: ${{ vars.AUTH_DATA_PROTECTION_KEY_URI }}
+  AUTH_OAUTH_CLIENT_SECRET_URI: ${{ vars.AUTH_OAUTH_CLIENT_SECRET_URI }}
+  AUTH_STORE_RESOURCE_ID: ${{ vars.AUTH_STORE_RESOURCE_ID }}
 jobs:
-  verify:
-    if: github.ref == 'refs/heads/main'
+  access-check:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'access-check'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -23,7 +57,9 @@ jobs:
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Sign in to Azure using GitHub OIDC
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -46,3 +82,89 @@ jobs:
             --mode Incremental \
             --query properties.outputs \
             --output json
+  verify-service:
+    if: github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Require real service and infrastructure sources
+        run: python3 scripts/delivery/auth-pipeline.py source
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          global-json-file: service/auth/global.json
+      - name: Verify the service and compile Bicep without cloud credentials
+        run: |
+          (cd service/auth && bash verify.sh)
+          bash infra/auth/validate.sh
+  publish:
+    needs: verify-service
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Check readiness and existing public registry before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/delivery/auth-pipeline.py check
+      - run: sudo apt-get update && sudo apt-get install -y skopeo
+      - name: Sign in to dedicated GitHub registry
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
+      - name: Build verified source, inspect role/user, publish and resolve immutable digest
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/delivery/auth-pipeline.py publish
+      - name: Clear registry credentials
+        if: always()
+        run: docker logout ghcr.io
+  deploy:
+    needs: publish
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CORE_OUTPUT: none
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AUTH_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AUTH_IMAGE: ${{ needs.publish.outputs.image }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y skopeo
+      - name: Verify anonymous immutable auth image before any infrastructure write
+        run: |
+          python3 scripts/delivery/deploy-auth.py preflight
+          python3 scripts/delivery/auth-pipeline.py attest
+          bash infra/auth/deploy.sh check
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Guard ownership, plan and apply runtime Bicep in existing resource group
+        env:
+          AUTH_IMAGE_ROLE: auth-service
+          AUTH_IMAGE_NON_ROOT: 'true'
+          AUTH_IMAGE_PUBLIC: 'true'
+        run: bash infra/auth/deploy.sh apply
+      - name: Verify deployed immutable image and ready revision
+        run: python3 scripts/delivery/deploy-auth.py deploy
