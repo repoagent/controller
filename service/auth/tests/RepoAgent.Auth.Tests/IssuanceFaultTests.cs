@@ -15,6 +15,7 @@ public sealed class IssuanceFaultTests
         await using var f = await IssuanceFixture.CreateAsync();
         Assert.Equal(200, (await f.IssueAsync(Token)).Status);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var reservedAt = f.Clock.GetUtcNow();
         var batches = 0;
         var transport = new ObservedTransport { Before = async message =>
         {
@@ -23,11 +24,93 @@ public sealed class IssuanceFaultTests
             var row = changed == "gate" ? await f.GateAsync() : await f.DeviceAsync();
             row["ConcurrentObservation"] = "one harmless competing write";
             await f.Storage.Table.UpdateEntityAsync(row, row.ETag, TableUpdateMode.Replace, Token);
+            f.Clock.Advance(TimeSpan.FromSeconds(2));
         }};
         Assert.Equal(200, (await f.IssueAsync(Token, transport)).Status);
         Assert.Equal(16, f.GitHub.Reads);
         Assert.Equal(3, f.GitHub.Mints);
         Assert.Equal(2, (await f.AttemptsAsync()).Count(a => a.GetString("State") == "released"));
+        Assert.Equal(3, (await GlobalQuota(f)).GetInt64("Slots"));
+        var slot = Assert.Single(await GlobalRows(f), e => e.RowKey == "slot:002");
+        var attempt = Assert.Single(await f.AttemptsAsync(), a => a.GetString("OperationId") == slot.GetString("OperationId"));
+        Assert.Equal(reservedAt, attempt.GetDateTimeOffset("ReservedAt"));
+        Assert.Equal(reservedAt.AddSeconds(-60), attempt.GetDateTimeOffset("JwtIssuedAt"));
+        Assert.Equal(reservedAt.AddSeconds(120), attempt.GetDateTimeOffset("JwtExpiresAt"));
+        var quota = (await f.Storage.Table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "quota", cancellationToken: Token)).Value;
+        Assert.Equal(1, quota.GetInt64("Admissions"));
+        Assert.Equal(8, quota.GetInt64("Reads"));
+        Assert.Equal(1, quota.GetInt64("Signs"));
+        Assert.Equal(1, quota.GetInt64("Mints"));
+    }
+
+    [Fact]
+    public async Task Admission_conflict_budget_is_shared_by_verifier_and_runtime_without_duplicate_global_charges()
+    {
+        await using var f = await IssuanceFixture.CreateAsync();
+        var reservedAt = f.Clock.GetUtcNow();
+        var batches = 0;
+        var conflicts = 0;
+        var transport = new ObservedTransport { Before = async message =>
+        {
+            if (!ObservedTransport.IsBatch(message)) return;
+            // Two verifier-admission conflicts precede its successful third evaluation.
+            // Runtime's first admission consumes the fourth shared evaluation and conflicts too.
+            if (++batches is not (2 or 3 or 8)) return;
+            var gate = await f.GateAsync();
+            gate["ConcurrentObservation"] = ++conflicts;
+            await f.Storage.Table.UpdateEntityAsync(gate, gate.ETag, TableUpdateMode.Replace, Token);
+            f.Clock.Advance(TimeSpan.FromSeconds(1));
+        }};
+        Assert.Equal(503, (await f.IssueAsync(Token, transport)).Status);
+        Assert.Equal(3, conflicts);
+        Assert.Equal(8, batches);
+        Assert.Equal(1, f.Signing.Calls);
+        Assert.Equal(1, f.GitHub.Mints);
+        Assert.Equal(0, f.GitHub.Reads);
+        var verifier = Assert.Single(await f.AttemptsAsync());
+        Assert.Equal("verification", verifier.GetString("Purpose"));
+        Assert.Equal("known", verifier.GetString("State"));
+        Assert.Equal(reservedAt, verifier.GetDateTimeOffset("ReservedAt"));
+        Assert.Equal(reservedAt.AddSeconds(120), verifier.GetDateTimeOffset("JwtExpiresAt"));
+        Assert.Equal(2, (await GlobalQuota(f)).GetInt64("Slots"));
+        Assert.Equal(2, (await f.GateAsync()).GetInt64("OutstandingTokenCount"));
+        Assert.False((await f.DeviceAsync()).ContainsKey("LastActivityAt"));
+        var quota = (await f.Storage.Table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "quota", cancellationToken: Token)).Value;
+        Assert.Equal(1, quota.GetInt64("Admissions"));
+    }
+
+    [Theory]
+    [InlineData("revoked")]
+    [InlineData("secret")]
+    public async Task Changed_authority_during_admission_retry_cannot_inherit_the_original_authentication(string changed)
+    {
+        await using var f = await IssuanceFixture.CreateAsync();
+        Assert.Equal(200, (await f.IssueAsync(Token)).Status);
+        var lastActivity = (await f.DeviceAsync()).GetDateTimeOffset("LastActivityAt");
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var batches = 0;
+        var changedAuthority = false;
+        var transport = new ObservedTransport { Before = async message =>
+        {
+            if (!ObservedTransport.IsBatch(message) || ++batches != 2) return;
+            if (changed == "revoked")
+                Assert.Equal(204, await new DeviceRevocation(f.Storage.Table, f.Options, f.Clock).RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
+            else
+            {
+                var device = await f.DeviceAsync();
+                device["SecretHash"] = new string('0', 64);
+                await f.Storage.Table.UpdateEntityAsync(device, device.ETag, TableUpdateMode.Replace, Token);
+            }
+            changedAuthority = true;
+        }};
+        Assert.NotEqual(200, (await f.IssueAsync(Token, transport)).Status);
+        Assert.True(changedAuthority);
+        Assert.Equal(8, f.GitHub.Reads);
+        Assert.Equal(2, f.GitHub.Mints);
+        Assert.Equal(2, f.Signing.Calls);
+        Assert.Equal(2, (await f.AttemptsAsync()).Count);
+        Assert.Equal(3, (await GlobalQuota(f)).GetInt64("Slots"));
+        Assert.Equal(lastActivity, (await f.DeviceAsync()).GetDateTimeOffset("LastActivityAt"));
     }
 
     [Theory]
