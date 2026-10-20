@@ -74,6 +74,34 @@ function Assert-Text($Value, [string]$Pattern) {
 function Assert-Id($Value) {
     if (($Value -isnot [long] -and $Value -isnot [int]) -or $Value -le 0) { throw 'Invalid numeric identity.' }
 }
+function Get-ApprovalStateKind($State) {
+    Assert-Id $State.version
+    if ($State.version -eq 1) {
+        Assert-Fields $State @('version','repository','repositoryId','brokerOrigin','repoEnvironment','environmentId','approvalVariable','profile','pendingId','deadline','marker','expectedValueSha256','approvalWriteAttempted','approvalObserved')
+        Assert-Id $State.environmentId
+        Assert-Text $State.repoEnvironment '\A[^\p{Cc}]{1,255}\z'
+        $kind = 'environment-variable'
+    } elseif ($State.version -eq 2) {
+        Assert-Fields $State @('version','setupVersion','approvalKind','repository','repositoryId','brokerOrigin','approvalVariable','profile','pendingId','deadline','marker','expectedValueSha256','approvalWriteAttempted','approvalObserved')
+        Assert-Id $State.setupVersion
+        if ($State.setupVersion -ne 2 -or $State.approvalKind -cne 'repository-agent-variable') { throw 'Unsupported approval state binding.' }
+        $kind = 'repository-agent-variable'
+    } else { throw 'Unsupported approval state version.' }
+    Assert-Id $State.repositoryId
+    Assert-Text $State.repository '\A[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\z'
+    Assert-Text $State.profile '\A(?:polling|webhook)\z'
+    Assert-Text $State.approvalVariable '\A[A-Z_][A-Z0-9_]{0,99}\z'
+    $null = Get-BrokerOrigin $State.brokerOrigin
+    if ($State.approvalWriteAttempted -isnot [bool] -or $State.approvalObserved -isnot [bool]) { throw 'Invalid approval progress flags.' }
+    foreach ($field in @('pendingId','deadline','marker','expectedValueSha256')) {
+        if ($null -ne $State[$field] -and $State[$field] -isnot [string]) { throw 'Invalid approval state field.' }
+    }
+    if ($State.marker) {
+        Assert-Text $State.expectedValueSha256 '\A[0-9a-f]{64}\z'
+        if ((Get-ValueHash $State.marker) -cne $State.expectedValueSha256) { throw 'Saved marker fingerprint differs.' }
+    } elseif ($State.expectedValueSha256 -or $State.approvalObserved -or $State.approvalWriteAttempted) { throw 'Missing saved marker.' }
+    return $kind
+}
 function Get-BrokerOrigin([string]$Value) {
     if ($Value -cnotmatch '\Ahttps://[A-Za-z0-9.-]+(?::[0-9]+)?/?\z') { throw 'Supply a canonical HTTPS broker origin.' }
     $uri = [Uri]$Value
@@ -168,7 +196,7 @@ function Invoke-HostGitHub([string]$Method, [string]$Endpoint, $Body = $null) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = (Get-Command gh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $start.UseShellExecute = $false; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true; $start.RedirectStandardInput = $true
-    foreach ($argument in @('api', '--hostname', 'github.com', '--method', $Method, '--include', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2022-11-28', $Endpoint)) { $start.ArgumentList.Add($argument) }
+    foreach ($argument in @('api', '--hostname', 'github.com', '--method', $Method, '--include', '-H', 'Accept: application/vnd.github+json', '-H', 'X-GitHub-Api-Version: 2026-03-10', $Endpoint)) { $start.ArgumentList.Add($argument) }
     if ($null -ne $Body) { $start.ArgumentList.Add('--input'); $start.ArgumentList.Add('-') }
     $start.Environment['GH_PROMPT_DISABLED'] = '1'; $start.Environment['GH_PAGER'] = 'cat'
     $process = [Diagnostics.Process]::new(); $process.StartInfo = $start
@@ -211,7 +239,9 @@ function Invoke-HostGitHub([string]$Method, [string]$Endpoint, $Body = $null) {
 function Invoke-EnrollmentBroker([string]$Origin, [string]$Method, [string]$Path, [string]$Secret, $Body = $null) {
     $origin = Get-BrokerOrigin $Origin
     Assert-Text $Secret '\A[A-Za-z0-9_-]{43,128}\z'
-    if ($Path -cnotmatch '\A/v1/(?:enrollments(?:/[A-Za-z0-9_-]+(?:/completion)?)?|devices/[A-Za-z0-9_-]+(?:/acknowledgment)?)\z') { throw 'Invalid broker route.' }
+    if ($Path -cnotmatch '\A(?:/v2/enrollments(?:/[A-Za-z0-9_-]+(?:/completion)?)?|/v2/devices/[A-Za-z0-9_-]+/acknowledgment|/v1/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker route.' }
+    $operation = $Method + ' ' + $Path
+    if ($operation -cnotmatch '\A(?:POST /v2/enrollments|GET /v2/enrollments/[A-Za-z0-9_-]+|POST /v2/enrollments/[A-Za-z0-9_-]+/completion|POST /v2/devices/[A-Za-z0-9_-]+/acknowledgment|DELETE /v1/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker operation.' }
     $handler = [Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect = $false; $handler.UseCookies = $false
     $client = [Net.Http.HttpClient]::new($handler)
     $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), $origin + $Path)

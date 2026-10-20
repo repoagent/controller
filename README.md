@@ -61,4 +61,4 @@ These focused xUnit tests exercise real RSA signing, private credential files an
 
 ### Shared-App host enrollment
 
-PowerShell 7.4+ can obtain a private shared-App enrollment through `install.ps1 -Action Enroll` using separate authenticated host `gh`. See [host setup, recovery and revoke](docs/host-enrollment.md). Complete guided runtime/Azure setup and live broker acceptance remain separate delivery gates.
+PowerShell 7.4+ can create approval in one direct repository Agent variable and obtain a private shared-App enrollment through `install.ps1 -Action Enroll`, using separate authenticated host `gh`. See [host setup, recovery and revoke](docs/host-enrollment.md). Complete guided runtime/Azure setup and live broker acceptance remain separate delivery gates.

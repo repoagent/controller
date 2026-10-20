@@ -1,63 +1,67 @@
 # Host enrollment for the shared GitHub App
 
-Run these commands from a trusted checkout of this repository. Host enrollment requires **PowerShell 7.4 or later** and an authenticated host **GitHub CLI (`gh`)**. The host's GitHub identity creates repository-held approval; its credentials stay in gh and are never copied to the broker, controller, image or enrollment file. No broker browser sign-in or marker copying is involved.
-
-The broker must already be deployed and configured with its canonical HTTPS origin. Source-level enrollment support does not establish hosted readiness. Use the origin supplied by the broker operator; responses cannot redirect credentials elsewhere.
+Run the installer from a trusted checkout. Enrollment requires **PowerShell 7.4 or later**, an authenticated host **GitHub CLI (`gh`)**, and the broker operator's canonical HTTPS origin. The host writes one direct repository Agent variable; it creates no deployment Environment and performs no broker browser sign-in. Its GitHub credential stays in gh, outside the broker, controller and image.
 
 ```powershell
-# Read-only preview; no GitHub or broker writes, and no private state is created.
+# Read-only preview: no GitHub/broker writes or private state allocation.
 ./install.ps1 -Action Enroll -Repository owner/project `
-  -BrokerOrigin https://credentials.example.org `
-  -GitHubEnvironment 'controller/production' -ApprovalVariable CONTROLLER_APPROVAL `
+  -BrokerOrigin https://credentials.example.org -ApprovalVariable TEAM_CONTROLLER_APPROVAL `
   -StateDirectory "$HOME/project-enrollment" -NonInteractive
 
-# Execute the same plan explicitly.
+# Apply the plan explicitly.
 ./install.ps1 -Action Enroll -Repository owner/project `
-  -BrokerOrigin https://credentials.example.org `
-  -GitHubEnvironment 'controller/production' -ApprovalVariable CONTROLLER_APPROVAL `
+  -BrokerOrigin https://credentials.example.org -ApprovalVariable TEAM_CONTROLLER_APPROVAL `
   -StateDirectory "$HOME/project-enrollment" -Apply -NonInteractive
 
-# Resume with saved coordinates and profile. Do not delete recovery state.
+# Resume the same setup using its saved coordinates and private possession.
 ./install.ps1 -Action Enroll -StateDirectory "$HOME/project-enrollment" -Apply -NonInteractive
 ```
 
-The state directory's parent must exist. Without `-NonInteractive`, missing repository/origin and the two GitHub names are prompted. Environment defaults to `repoagent`; variable defaults to `APPROVED_CONTROLLER`. Both names persist independently of Azure environment/resource names. Variables are normalized to uppercase and enrollment accepts at most 100 characters; `GITHUB_` names are rejected. Environment names may contain spaces or slashes and are encoded as one path segment.
+The state directory's parent must exist. Interactive mode prompts for missing repository/origin and the variable name; noninteractive mode never prompts. The variable defaults to `APPROVED_CONTROLLER`, is normalized to uppercase and accepts at most100 ASCII letters/digits/underscores, with no initial digit or `GITHUB_` prefix. It is unrelated to Azure resource names. `-EnrollmentProfile polling` grants Discussions write; explicit `webhook` adds repository_hooks write. The shared App is `repo-agent-connector`, ID5387625.
 
-`-EnrollmentProfile polling` is the default, granting Discussions write. Select `webhook` explicitly to include repository_hooks write. The shared App is `repo-agent-connector`, ID `5387625`. Direct-App `Install` and native coding-agent sign-in/history are unchanged. This command only obtains enrollment; complete local/Azure runtime setup and uninstall are tracked in #39. Docker Desktop secret delivery from Windows into the Linux runtime still needs integration evidence. The unchanged controller consumer runs on Linux/macOS, not Windows. Do not relax its file permissions to mount a Windows file. Azure CLI is needed only for later Azure provisioning.
+Direct-App `Install` and native coding-agent sign-in/history remain unchanged. This action obtains enrollment only; #39 owns guided runtime/Azure setup and uninstall. Docker Desktop delivery from Windows into the Linux runtime remains an integration gate: do not weaken private-file permissions to mount a Windows file. The unchanged controller consumer runs on Linux/macOS, not Windows. Azure CLI is required only for later Azure provisioning.
 
-## GitHub access and apply
+## GitHub authority and bounded setup
 
-Use `gh auth status --hostname github.com` to inspect the host account separately. Environment variables require repository Environments read/write permission for fine-grained credentials; creating an Environment additionally requires Administration write. Classic OAuth/PAT credentials use `repo` scope. Private/internal repositories need a plan that supports Environments. Successful reads alone do not prove write permission or plan support. GitHub authorizes the variable writer; enrollment does not attest a particular human administrator. See [GitHub variable permissions](https://docs.github.com/en/rest/actions/variables#create-an-environment-variable) and [Environment permissions and availability](https://docs.github.com/en/rest/deployments/environments#create-or-update-an-environment).
+Inspect the host account with `gh auth status --hostname github.com`. Fine-grained host credentials need **Agent variables read/write** on the repository; classic OAuth/PAT credentials use `repo` scope. No Administration or deployment-Environment permission is required for this flow. GitHub authorizes the writer; the broker neither authenticates nor tracks a named human administrator. A successful host read does not establish write authority, private-repository availability or App-installation grants. See [Agent-variable API permissions](https://docs.github.com/en/rest/agents/variables).
 
-Explicit apply may first create the Environment and then start one pending enrollment. Therefore the fresh server marker cannot appear in the read-only preview. Before writing the variable, the host validates its exact repository, App, installation, Environment numeric identity, profile and device binding against trusted setup intent. Existing Environments are reused without PUT. Existing matching variable values are reused without PATCH. Conflicts stop; there is no takeover, lock, lease or automatic repair.
+The host validates the repository's numeric ID/name and the chosen broker origin/App/profile. The broker independently validates the installation and exact repository through its App JWT and scoped verifier. The host pins that returned installation/device/challenge/epoch binding; ordinary human gh credentials cannot perform the App-JWT lookup. Runtime tokens receive neither approval-variable read nor write access. The nonsecret marker may be exposed in Copilot's environment; it contains no recovery or device credential.
 
-A lost GitHub write response is unresolved. Rerun with the same state directory to inspect it. If a previous marker write was attempted and its value is absent, the client stops instead of restoring it. Independent writers can race GitHub reads and mutations; inspect and recover manually. No GitHub compare-and-swap guarantee is claimed.
+Explicit apply starts one v2 pending enrollment after validating repository access and direct Agent-variable API availability. The fresh marker therefore appears only after start. Its exact marker2/kind/policy and full binding are checked before variable creation. Existing matching approval is reused without PATCH. Conflicts stop; there is no takeover, migration, automatic repair or restoration.
+
+Only `/repos/{owner}/{repo}/agents/variables` authorizes this flow; organization/inherited variables cannot substitute. A selected GET can establish the exact observed value. An isolated404 cannot establish absence: creation requires a valid complete single listing containing at most30 entries. Multi-page nonappearance is unverifiable because concurrent changes can move an unchanged marker between pages. Creation stops in that case. The broker can observe selected values within at most60 variables, but disappearance above30 may require manual broker closure. No snapshot or immutable variable-ID guarantee is claimed.
+
+A variable POST is attempted at most once per invocation, with its attempt recorded beforehand. A lost response stays unresolved. Rerun with the same state to inspect it; a previously attempted or observed marker that disappeared is never automatically restored. Enrollment limits host GitHub work to12 calls, individual transport calls to15seconds, and polling to the original pending deadline with at leastfive seconds between expensive broker operations.
 
 ## Private state and recovery
 
-The selected directory is owner-only: 0700 on Linux, a protected current-user-only DACL on Windows. Files are 0600/current-user-only. Unsafe existing modes, owners, links or reparse points fail closed. Writes use a fresh private temporary file, flushed contents and an atomic, flushed rename before acknowledgment. Keep the directory on a local filesystem supporting these guarantees; failures stop enrollment.
+The directory must be owned by the current user: Linux0700 with files0600, or Windows protected current-user-only DACLs. Unsafe ownership/modes, links and reparse points fail closed. The host uses exclusive temporary files, flushed contents and an atomic flushed rename, then reopens the private enrollment before acknowledging it. Use a local filesystem supporting these operations.
 
-- `approval.json` contains nonsecret selected coordinates, immutable IDs, exact public marker, fingerprint and write-attempt evidence. A copy can be retained independently for credential-free revoke.
-- `recovery.json` privately stores the original request, random recovery credential, completion receipt and operation progress. It exists before the first broker start. Never publish or copy it into the controller.
-- `enrollment.json` is exactly the frozen v1 private consumer document. It is saved and reopened before acknowledgment. It contains the device secret and must never be logged, committed or included in an image.
+- `approval.json` is nonsecret metadata: host format2, setupVersion2, approval kind `repository-agent-variable`, repository/variable/profile, exact marker/hash and operation progress. Retain a separate copy for credential-free revoke.
+- `recovery.json` is private. It contains the same explicit setup discriminators, immutable request, random256-bit recovery credential, completion receipt and ack progress. It is saved before the first broker request and must not enter the controller.
+- `enrollment.json` contains exactly the frozen **v1** consumer fields, including the device secret. Its protocolVersion1 does not select a setup backend. Never log, commit or include it in an image.
 
-Reruns preserve the idempotency ID and original pending deadline. Completion and acknowledgment honor the broker's shared five-second work interval. A crash before local receipt recovers the same envelope; a crash after receipt retries with the saved device credential. A lost acknowledgment retries the same device/completion pair, including after the original pending deadline when activation may already have committed. Only the broker can confirm activation. Confirmed activation retires the local recovery credential. Expired/closed grants cannot be revived by restoring an old marker. Unknown outcomes remain unconfirmed, and unresolved old authority may require operator intervention.
+Setup uses `/v2/enrollments`, its status/completion routes, and `/v2/devices/{deviceId}/acknowledgment`. Lost start reuses the same request/idempotency ID; lost completion recovers the same authorized envelope. CompletionId is persisted before the device file, and both precede fresh acknowledgment. Lost ack retries the saved device/completion pair even if the original pending deadline has elapsed and activation may already have committed; the broker remains authoritative. Confirmed activation clears local recovery authority. No rerun extends pending deadlines or reopens a closed grant. HTTPS responses cannot redirect credentials.
 
-## Revoke without the original machine
+## Revoke and prototype compatibility
 
-Copy only the nonsecret `approval.json`, or supply repository/Environment/variable and expected IDs/fingerprint explicitly. Existing revoke accepts variable names up to its original 255-character limit.
+Revoke defaults to the **Agent-variable** coordinate. Use a copied nonsecret approval file or explicit repository/variable plus the expected exact-value SHA256 and optional repository ID. It does not require the original machine or device secret.
 
 ```powershell
 ./install.ps1 -Action Revoke -ApprovalStatePath ./approval.json -NonInteractive
 ./install.ps1 -Action Revoke -ApprovalStatePath ./approval.json -Apply -NonInteractive
 
-# If the original private directory remains, also attempt device self-revocation.
+# Optionally attempt broker self-revocation when private enrollment remains.
 ./install.ps1 -Action Revoke -ApprovalStatePath "$HOME/project-enrollment/approval.json" `
   -EnrollmentFile "$HOME/project-enrollment/enrollment.json" -Apply -NonInteractive
 ```
 
-Revoke independently reads repository and Environment IDs and the exact variable immediately before at most one DELETE. An independent writer may replace the value between read and DELETE, withdrawing a newer approval and causing temporary outage; manual inspection/reapproval is the accepted recovery. There is no automatic restoration. The JSON result reports `githubMarker`, `brokerClosure` and `outstandingTokens` separately. A successful variable DELETE does not prove durable broker closure or settle outstanding GitHub tokens. Optional self-revoke uses the saved trusted origin and matching private device; its failure leaves closure unconfirmed. This action does not stop/remove runtimes or delete persistent data, shared Environments or App installations.
+Revoke validates repository binding and the exact selected value immediately before at mostone DELETE. An independent writer can replace the value between read and DELETE, causing withdrawal of a newer approval and temporary outage; manual inspection/reapproval after old authority is resolved is the accepted recovery. There are no CAS, locks or restoration. Reported `githubMarker`, `brokerClosure` and `outstandingTokens` are separate: removal does not prove broker closure or settle outstanding tokens. Optional self-revoke uses the saved trusted origin/matching device and the unchanged `DELETE /v1/devices/{deviceId}`. Its failure leaves closure unconfirmed. Runtime/data/App-installation teardown belongs to #39.
+
+The unmerged Environment host prototype's format1 state cannot resume through Agent setup. It is recognized only as the complete historical schema, retained unchanged, and refused before remote work. Settle/revoke the old enrollment separately and choose a new state directory for fresh Agent enrollment; the broker's shared owner barrier still prevents replacement of unsettled authority.
+
+There is one installer and no legacy enrollment wizard. Narrow legacy **revoke only** remains: supply its complete format1 `approval.json`, or explicitly use `-GitHubEnvironment <name>` with the repository, variable and expected hash/ID. That explicit legacy path retains its255-character variable limit. No Environment is defaulted; Agent state mixed with Environment arguments is rejected. This default differs from the old prototype, so preview the coordinate before applying.
 
 ## Verification boundary
 
-Actual PowerShell/gh process tests, real private filesystem behavior, native Windows ACL acceptance, and an assembled broker/Azurite/DataProtection journey are required verification. Linux validates the unchanged consumer; native Windows validates the host and private output. Deterministic provider substitutes do not prove live GitHub permissions, broker hosting or Windows Docker Desktop delivery. Those remain separate acceptance gates.
+Required evidence includes actual pwsh/gh process and HTTPS journeys, native Windows DACL/atomic-file execution, the unchanged Linux consumer and an assembled real v2 broker/Azurite/DataProtection journey with controlled external GitHub/signing transports. Linux preview success alone is not conformance. Live selected-repository host-write/App-read/runtime-denial, private-repository availability, hosted service readiness and Windows Docker Desktop delivery remain separate gates.

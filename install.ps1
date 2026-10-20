@@ -61,10 +61,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 if ($Action -eq 'Enroll') {
+    if ($GitHubEnvironment -or $ExpectedEnvironmentId) { throw 'Enroll uses a repository Agent variable; Environment inputs are only for explicit legacy revoke.' }
     $enrollOptions = @{}
     if ($EnrollmentProfile) { $enrollOptions.Profile = $EnrollmentProfile }
     & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions -Repository $Repository -BrokerOrigin $BrokerOrigin `
-        -StateDirectory $StateDirectory -GitHubEnvironment $GitHubEnvironment -ApprovalVariable $ApprovalVariable `
+        -StateDirectory $StateDirectory -ApprovalVariable $ApprovalVariable `
         -Apply:$Apply -NonInteractive:$NonInteractive
     exit $LASTEXITCODE
 }
