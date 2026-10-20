@@ -20,7 +20,7 @@ repository=$("$root/repoagent" get repository)
 "$root/repoagent" check
 actor=$(docker run --rm --mount "type=volume,src=$name-state,dst=/data/state" --entrypoint python3 "$image" -c \
   'import json; print(json.load(open("/data/state/bridge.json"))["agentLogin"])')
-docker build --target live-tests -f "$root/container/Containerfile" -t "$image-live-tests" "$root"
+REPOAGENT_IMAGE="$image-live-tests" REPOAGENT_TARGET=live-tests "$root/repoagent" build
 # Clean only the prior runner container; evidence/fixtures remain operator-owned.
 docker rm "$runner" >/dev/null 2>&1 || true
 helper=(docker run --rm -i --mount "type=volume,src=$control,dst=/data/control" --entrypoint python3 "$image" /opt/repoagent/control.py)

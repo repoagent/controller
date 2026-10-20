@@ -85,9 +85,17 @@ function Start-Agent {
 
 switch ($Command) {
     'build' {
-        $target = if ($env:REPOAGENT_TARGET) { $env:REPOAGENT_TARGET } else { 'runtime' }
-        Invoke-Docker build --target $target -f "$PSScriptRoot/container/Containerfile" -t $image $PSScriptRoot
-        Invoke-Docker run --rm $image versions
+        $options = @{}
+        for ($index = 0; $index -lt $CommandArguments.Count; $index += 2) {
+            if ($index + 1 -ge $CommandArguments.Count) { throw 'Image build option requires a value' }
+            switch ($CommandArguments[$index]) {
+                '--manifest' { $options.Manifest = $CommandArguments[$index + 1] }
+                '--derived-dockerfile' { $options.DerivedDockerfile = $CommandArguments[$index + 1] }
+                '--build-arg' { $options.BuildArg = @($options.BuildArg | Where-Object { $null -ne $_ }) + $CommandArguments[$index + 1] }
+                default { throw 'Unknown image build option' }
+            }
+        }
+        & "$PSScriptRoot/scripts/build-image.ps1" @options
     }
     'setup' {
         Assert-Stopped

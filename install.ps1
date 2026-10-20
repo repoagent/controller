@@ -18,6 +18,9 @@ credentials must then be supplied or already present in the container.
 #>
 [CmdletBinding()]
 param(
+    [string]$ImageManifest,
+    [string]$DerivedDockerfile,
+    [string[]]$BuildArg = @(),
     [string]$Repository,
     [string]$AppId,
     [string]$KeyPath,
@@ -82,7 +85,11 @@ if ($running) { throw 'Stop the running instance before installing; its stored d
 if ($SkipBuild) { Write-Host 'Using the existing image; -SkipBuild skips the Docker build.' }
 else {
     Write-Host 'Building the Linux image from this checkout. Build tools, Codex and gh are installed inside Docker.'
-    & $cli build
+    $buildOptions = @{}
+    if ($ImageManifest) { $buildOptions.Manifest = $ImageManifest }
+    if ($DerivedDockerfile) { $buildOptions.DerivedDockerfile = $DerivedDockerfile }
+    if ($BuildArg.Count) { $buildOptions.BuildArg = $BuildArg }
+    & "$PSScriptRoot/scripts/build-image.ps1" @buildOptions
 }
 
 Show-Stage 'Choose the repository and GitHub App'

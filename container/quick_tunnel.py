@@ -52,7 +52,7 @@ def run(bridge, port):
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous[signum] = signal.signal(signum, stop)
         tunnel = subprocess.Popen([
-            '/usr/local/bin/cloudflared', 'tunnel', '--no-autoupdate', '--protocol', 'http2',
+            'cloudflared', 'tunnel', '--no-autoupdate', '--protocol', 'http2',
             '--url', 'http://127.0.0.1:' + str(port)
         ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
         processes.append(tunnel)

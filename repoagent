@@ -69,8 +69,7 @@ start() {
 }
 case "${1:-help}" in
   build)
-    docker build --target "${REPOAGENT_TARGET:-runtime}" -f "$root/container/Containerfile" -t "$image" "$root"
-    docker run --rm "$image" versions ;;
+    shift; exec bash "$root/scripts/build-image.sh" "$@" ;;
   setup) stopped; shift; exec bash "$root/scripts/setup-wizard.sh" --skip-build --no-start "$@" ;;
   configure) stopped; shift; config configure "$@" ;;
   get) shift; config get "$@" ;;

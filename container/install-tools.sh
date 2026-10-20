@@ -12,6 +12,7 @@ case "$architecture" in
     gh_sum=7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484 ;;
   *) echo 'Only linux/amd64 and linux/arm64 are supported.' >&2; exit 1 ;;
 esac
+mkdir -p /opt/repoagent/tools/bin
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
@@ -20,11 +21,11 @@ for tool in codex codex-code-mode-host; do
   if [[ "$tool" == codex ]]; then checksum=$codex_sum; else checksum=$host_sum; fi
   printf '%s  %s\n' "$checksum" "$tool.tar.gz" | sha256sum --check --status
   tar -xzf "$tool.tar.gz"
-  install -m 755 "$tool-$triplet" "/usr/local/bin/$tool"
+  install -m 755 "$tool-$triplet" "/opt/repoagent/tools/bin/$tool"
 done
 curl --fail --location --retry 3 -o gh.tar.gz "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_${architecture}.tar.gz"
 printf '%s  gh.tar.gz\n' "$gh_sum" | sha256sum --check --status
 tar -xzf gh.tar.gz
-install -m 755 "gh_2.102.0_linux_${architecture}/bin/gh" /usr/local/bin/gh
-codex --version
-gh --version
+install -m 755 "gh_2.102.0_linux_${architecture}/bin/gh" /opt/repoagent/tools/bin/gh
+/opt/repoagent/tools/bin/codex --version
+/opt/repoagent/tools/bin/gh --version
