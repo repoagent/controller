@@ -10,14 +10,26 @@ function Invoke-Docker {
 }
 function Get-InputFile([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or $Path -match '[,\r\n]') { throw 'Input must be a file; Docker mount paths cannot contain commas or newlines.' }
-    return (Resolve-Path -LiteralPath $Path).ProviderPath
+    $resolved = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $item = Get-Item -LiteralPath $resolved -Force
+    while ($null -ne $item) {
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Build inputs cannot use symlinks or symlink ancestors.' }
+        if ($item -is [System.IO.DirectoryInfo]) { $item = $item.Parent } else { $item = $item.Directory }
+    }
+    return $resolved
 }
 if ($BuildArg.Count -and -not $DerivedDockerfile) { throw '-BuildArg requires -DerivedDockerfile' }
 $Manifest = Get-InputFile $Manifest
 $context = Join-Path ([System.IO.Path]::GetTempPath()) ('repoagent-image-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $context | Out-Null
 try {
-    $mounts = @('--mount', "type=bind,src=$root,dst=/source,readonly", '--mount', "type=bind,src=$Manifest,dst=/input/manifest.json,readonly", '--mount', "type=bind,src=$context,dst=/output")
+    $mounts = @('--mount', "type=bind,src=$Manifest,dst=/input/manifest.json,readonly", '--mount', "type=bind,src=$context,dst=/output")
+    $inventory = Get-InputFile (Join-Path $root 'image/source-files.txt')
+    foreach ($relative in (Get-Content -LiteralPath $inventory)) {
+        if ($relative -cnotmatch '^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$' -or $relative.Split('/') -contains '..' -or $relative.Split('/') -contains '.') { throw 'Source inventory requires safe relative file paths' }
+        $sourceFile = Get-InputFile (Join-Path $root $relative)
+        $mounts += @('--mount', "type=bind,src=$sourceFile,dst=/source/$relative,readonly")
+    }
     $arguments = @('--source', '/source', '--manifest', '/input/manifest.json', '--output', '/output')
     if ($DerivedDockerfile) {
         $DerivedDockerfile = Get-InputFile $DerivedDockerfile

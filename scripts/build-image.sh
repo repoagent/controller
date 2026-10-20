@@ -19,12 +19,27 @@ done
 [[ -n "$derived" || ${#build_args[@]} == 0 ]] || { echo '--build-arg requires --derived-dockerfile' >&2; exit 2; }
 absolute_file() {
   [[ -f "$1" && "$1" != *','* && "$1" != *$'\n'* && "$1" != *$'\r'* ]] || { echo 'Input must be a file; Docker mount paths cannot contain commas or newlines.' >&2; return 2; }
-  (cd -- "$(dirname -- "$1")" && printf '%s/%s' "$PWD" "$(basename -- "$1")")
+  local absolute=$1 current='' part
+  [[ "$absolute" == /* ]] || absolute="$PWD/$absolute"
+  local -a parts
+  IFS=/ read -r -a parts <<< "$absolute"
+  for part in "${parts[@]}"; do
+    [[ -n "$part" ]] || continue
+    current+="/$part"
+    [[ ! -L "$current" ]] || { echo 'Build inputs cannot use symlinks or symlink ancestors.' >&2; return 2; }
+  done
+  (cd -- "$(dirname -- "$absolute")" && printf '%s/%s' "$PWD" "$(basename -- "$absolute")")
 }
 manifest=$(absolute_file "$manifest")
 context=$(mktemp -d)
 trap 'rm -rf -- "$context"' EXIT
-mounts=(--mount "type=bind,src=$root,dst=/source,readonly" --mount "type=bind,src=$manifest,dst=/input/manifest.json,readonly" --mount "type=bind,src=$context,dst=/output")
+mounts=(--mount "type=bind,src=$manifest,dst=/input/manifest.json,readonly" --mount "type=bind,src=$context,dst=/output")
+inventory=$(absolute_file "$root/image/source-files.txt")
+while IFS= read -r relative || [[ -n "$relative" ]]; do
+  [[ "$relative" =~ ^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$ && "/$relative/" != *'/../'* && "/$relative/" != *'/./'* ]] || { echo 'Source inventory requires safe relative file paths' >&2; exit 2; }
+  source_file=$(absolute_file "$root/$relative")
+  mounts+=(--mount "type=bind,src=$source_file,dst=/source/$relative,readonly")
+done < "$inventory"
 arguments=(--source /source --manifest /input/manifest.json --output /output)
 if [[ -n "$derived" ]]; then
   derived=$(absolute_file "$derived")

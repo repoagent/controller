@@ -198,7 +198,8 @@ def main():
     elif args.command == 'versions':
         print('RepoAgent container; uid=' + str(os.getuid()), flush=True)
         print('RepoAgentController: Native AOT, built with .NET SDK 11.0.100-rc.2', flush=True)
-        for name in ['gh', 'codex', 'python3', 'rg', 'cloudflared']:
+        run([sys.executable, '--version'])
+        for name in ['gh', 'codex', 'rg', 'cloudflared']:
             if shutil.which(name): run([name, '--version'])
     elif args.command == 'install-skills': install_skills(args.selection, args.token_file)
     elif args.command == 'skills': print((CONFIG.parent / 'skills.json').read_text() if (CONFIG.parent / 'skills.json').exists() else '[]')

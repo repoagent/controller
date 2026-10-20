@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:11.0.100-rc.2 AS build
+FROM __SDK_IMAGE__ AS build
 WORKDIR /source
 RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -11,7 +11,7 @@ COPY tests/NativeSmoke/ /source/tests/NativeSmoke/
 RUN dotnet publish tests/NativeSmoke -c Release -o /native-smoke --nologo -p:PublishAot=true -p:TreatWarningsAsErrors=true \
     && /native-smoke/NativeSmoke
 
-FROM mcr.microsoft.com/dotnet/runtime-deps:11.0.0-rc.2 AS runtime
+FROM __RUNTIME_IMAGE__ AS runtime
 USER root
 SHELL ["/bin/sh", "-c"]
 ARG TARGETARCH
@@ -19,17 +19,18 @@ RUN . /etc/os-release; test "$ID:$VERSION_ID:$(uname -m)" = "ubuntu:26.04:x86_64
     || { echo 'Unsupported base: initial controller images require Ubuntu 26.04 linux/amd64 (Native AOT ABI and signed package snapshot). Supply a compatible digest-pinned base.' >&2; exit 1; }
 COPY container/prepare-runtime.sh /tmp/prepare-runtime.sh
 RUN bash /tmp/prepare-runtime.sh && rm /tmp/prepare-runtime.sh
-COPY container/install-tools.sh /tmp/install-tools.sh
+COPY container/install-tools.sh tool-artifacts.json /tmp/
 RUN bash /tmp/install-tools.sh "$TARGETARCH" && rm /tmp/install-tools.sh
 COPY container/install-cloudflared.sh /tmp/install-cloudflared.sh
 RUN bash /tmp/install-cloudflared.sh "$TARGETARCH" && rm /tmp/install-cloudflared.sh
-RUN if ! getent passwd 1000 >/dev/null; then useradd --uid 1000 --create-home --shell /bin/bash agent; fi; \
+RUN rm /tmp/tool-artifacts.json; if ! getent passwd 1000 >/dev/null; then useradd --uid 1000 --create-home --shell /bin/bash agent; fi; \
     userhome=$(getent passwd 1000 | cut -d: -f6); \
     case "$userhome" in /home/*) ;; *) echo 'UID 1000 must have a dedicated home under /home; adapt the base image first.' >&2; exit 1 ;; esac; \
     mkdir -p "$userhome"; \
     if [ "$userhome" != /home/agent ]; then \
-      if [ -e /home/agent ] || [ -L /home/agent ]; then echo 'Base /home/agent conflicts with UID 1000 home; adapt the base first.' >&2; exit 1; fi; \
-      ln -s "$userhome" /home/agent; \
+      if [ /home/agent -ef "$userhome" ]; then :; \
+      elif [ -e /home/agent ] || [ -L /home/agent ]; then echo 'Base /home/agent conflicts with UID 1000 home; adapt the base first.' >&2; exit 1; \
+      else ln -s "$userhome" /home/agent; fi; \
     fi; \
     mkdir -p /data/credentials/codex /data/config/skills /data/history /data/state /data/tools /data/participant /data/control /workspace "$userhome/.agents"; \
     if [ ! -e "$userhome/.agents/skills" ] && [ ! -L "$userhome/.agents/skills" ]; then ln -s /data/config/skills "$userhome/.agents/skills"; fi; \
@@ -47,7 +48,7 @@ ENV HOME=/home/agent CODEX_HOME=/data/credentials/codex BROWSER=echo
 ENV PATH="/opt/repoagent/controller:/opt/repoagent/tools/bin:${PATH}"
 WORKDIR /workspace
 USER 1000
-ENTRYPOINT ["python3", "/opt/repoagent/runtime.py"]
+ENTRYPOINT ["/usr/bin/python3", "-E", "/opt/repoagent/runtime.py"]
 CMD ["versions"]
 
 FROM runtime AS dotnet-development

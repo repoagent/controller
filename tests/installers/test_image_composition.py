@@ -1,11 +1,9 @@
 """Behavior at the public image-build commands and their Docker process boundary."""
-import importlib.util
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -23,9 +21,9 @@ class ImageCompositionTests(unittest.TestCase):
         self.environment = dict(os.environ, PATH=str(self.directory) + os.pathsep + os.environ['PATH'],
                                 INSTALLER_DOCKER_STATE=str(self.state_path))
 
-    def invoke(self, shell, *arguments):
-        command = (["bash", str(ROOT / 'repoagent'), 'build'] if shell == 'bash' else
-                   ['pwsh', '-NoLogo', '-NoProfile', '-File', str(ROOT / 'repoagent.ps1'), 'build'])
+    def invoke(self, shell, *arguments, root=ROOT):
+        command = (["bash", str(root / 'repoagent'), 'build'] if shell == 'bash' else
+                   ['pwsh', '-NoLogo', '-NoProfile', '-File', str(root / 'repoagent.ps1'), 'build'])
         result = subprocess.run(command + list(arguments), cwd=self.directory, env=self.environment,
                                 text=True, capture_output=True, timeout=40)
         state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {'events': []}
@@ -81,6 +79,7 @@ class ImageCompositionTests(unittest.TestCase):
                 self.assertEqual(build['inventory']['platform'], 'linux/amd64')
                 self.assertEqual(build['inventory']['agent'], DEFAULT['agent'])
                 self.assertTrue(build['inventory']['artifacts']['codex']['sha256'])
+                self.assertEqual(build['tool_artifacts'], build['inventory']['artifacts'])
                 observed.append((files, build['inventory']))
         self.assertEqual(observed[0], observed[1])
 
@@ -148,26 +147,48 @@ class ImageCompositionTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertFalse(any(event[0] == 'build' for event in state['events']))
 
-    def test_symlinked_source_file_is_rejected(self):
-        spec = importlib.util.spec_from_file_location('compose_image', ROOT / 'scripts/compose-image.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        source = self.directory / 'source'
-        for relative in module.SOURCE_FILES:
-            destination = source / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / relative, destination)
-        original = source / module.SOURCE_FILES[0]
-        replacement = self.directory / 'outside credential'
-        replacement.write_text('CANARY-SECRET')
-        original.unlink()
-        original.symlink_to(replacement)
-        result = subprocess.run([sys.executable, str(ROOT / 'scripts/compose-image.py'),
-                                 '--source', str(source), '--manifest', str(self.manifest()),
-                                 '--output', str(self.directory / 'output')], text=True, capture_output=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse((self.directory / 'output').exists())
-        self.assertNotIn('CANARY-SECRET', result.stdout + result.stderr)
+    def checkout_with_canaries(self):
+        checkout = self.directory / 'checkout'
+        shutil.copytree(ROOT, checkout, ignore=shutil.ignore_patterns('.git', 'artifacts', 'bin', 'obj', '__pycache__'))
+        for relative in ('.aws/credentials', '.codex/auth.json', 'operator.pem', 'enrollment-token.json'):
+            file = checkout / relative
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text('CANARY-SECRET')
+        return checkout
+
+    def test_helper_mounts_exclude_credentials_in_both_host_paths(self):
+        checkout = self.checkout_with_canaries()
+        forbidden = {str(checkout / relative) for relative in
+                     ('.aws/credentials', '.codex/auth.json', 'operator.pem', 'enrollment-token.json')}
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                self.state_path.unlink(missing_ok=True)
+                result, state = self.invoke(shell, '--manifest', str(self.manifest()), root=checkout)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(len(state['helper_mounts']), 1)
+                sources = set(state['helper_mounts'][0].values())
+                self.assertNotIn(str(checkout), sources)
+                self.assertTrue(sources.isdisjoint(forbidden))
+                visible = state['helper_visible_files'][0]
+                expected = {'source/' + name for name in (checkout / 'image/source-files.txt').read_text().splitlines()}
+                expected.add('input/manifest.json')
+                self.assertEqual(set(visible), expected)
+                self.assertFalse(any(name.endswith(('credentials', 'auth.json', 'operator.pem', 'enrollment-token.json')) for name in visible))
+                self.assertNotIn('CANARY-SECRET', result.stdout + result.stderr)
+
+    def test_symlinked_source_file_is_rejected_before_helper_starts(self):
+        checkout = self.checkout_with_canaries()
+        source = checkout / 'global.json'
+        source.unlink()
+        source.symlink_to(checkout / 'operator.pem')
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                self.state_path.unlink(missing_ok=True)
+                result, state = self.invoke(shell, '--manifest', str(self.manifest()), root=checkout)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(any(event[0] == 'run' and any(value.startswith('python@sha256:') for value in event)
+                                     for event in state['events']))
+                self.assertNotIn('CANARY-SECRET', result.stdout + result.stderr)
 
 
 if __name__ == '__main__':

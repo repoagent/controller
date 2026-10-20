@@ -3,8 +3,10 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 
 path = Path(os.environ['INSTALLER_DOCKER_STATE'])
 state = json.loads(path.read_text()) if path.exists() else {'settings': {}, 'events': [], 'authenticated': False, 'running': False}
@@ -31,6 +33,7 @@ if command == 'build':
         'files': sorted(str(file.relative_to(context)) for file in context.rglob('*') if file.is_file()),
         'inventory': json.loads((context / 'image-inventory.json').read_text()),
         'dockerfile': (context / 'container/Containerfile').read_text(),
+        'tool_artifacts': json.loads((context / 'tool-artifacts.json').read_text()),
         'derived': (context / 'Derived.Dockerfile').read_text() if (context / 'Derived.Dockerfile').exists() else None,
     })
     finish(output='Fixture image built')
@@ -72,14 +75,26 @@ if image.startswith('python@sha256:') and operation[:1] == ['/source/scripts/com
     for mount in mounts:
         parts = dict(part.split('=', 1) for part in mount.split(',') if '=' in part)
         bindings[parts['dst']] = parts['src']
-    def host_path(value):
-        for destination, source in sorted(bindings.items(), key=lambda item: len(item[0]), reverse=True):
-            if value == destination or value.startswith(destination + '/'):
-                return source + value[len(destination):]
-        return value
-    helper_args = [host_path(value) for value in operation[1:]]
-    source = Path(bindings['/source']) / 'scripts/compose-image.py'
-    result = subprocess.run([sys.executable, str(source), *helper_args], text=True, capture_output=True)
+    state.setdefault('helper_mounts', []).append(bindings)
+    with tempfile.TemporaryDirectory(prefix='docker-helper-files-') as directory:
+        helper_root = Path(directory)
+        for destination, source in bindings.items():
+            if destination == '/output':
+                continue
+            target = helper_root / destination.lstrip('/')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+        state.setdefault('helper_visible_files', []).append(sorted(
+            str(file.relative_to(helper_root)) for file in helper_root.rglob('*') if file.is_file()))
+        def helper_path(value):
+            if value == '/output' or value.startswith('/output/'):
+                return bindings['/output'] + value[len('/output'):]
+            if value.startswith(('/source/', '/input/')) or value in ('/source', '/input'):
+                return str(helper_root / value.lstrip('/'))
+            return value
+        helper_args = [helper_path(value) for value in operation[1:]]
+        source = helper_root / operation[0].lstrip('/')
+        result = subprocess.run([sys.executable, str(source), *helper_args], text=True, capture_output=True)
     if result.stdout:
         print(result.stdout, end='')
     if result.stderr:
@@ -87,7 +102,7 @@ if image.startswith('python@sha256:') and operation[:1] == ['/source/scripts/com
     finish(result.returncode)
 if options.get('--entrypoint') == 'sh':
     finish(1 if os.environ.get('INSTALLER_UNREADABLE_KEY') else 0)
-if options.get('--entrypoint') == 'python3':
+if options.get('--entrypoint') in ('python3', '/usr/bin/python3'):
     state['authenticated'] = True
     finish()
 if operation == ['versions']:

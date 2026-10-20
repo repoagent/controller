@@ -21,19 +21,15 @@ ARTIFACTS = {
     'gh': ('2.102.0', 'https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_amd64.tar.gz', 'bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386'),
     'cloudflared': ('2026.10.1', 'https://github.com/cloudflare/cloudflared/releases/download/2026.10.1/cloudflared-linux-amd64', '3bfc539f45d2620c71debb7a86be0efa737ed5ccbad9eb85c787116900e5c586'),
 }
-# Explicit files, not recursive directory copies: unexpected files cannot enter.
-SOURCE_FILES = [
-    'global.json', '.agents/skills/github-discussion/SKILL.md',
-    *['src/RepoAgentController/' + name for name in (
-        'AppGitHubCommand.cs', 'Bridge.cs', 'BridgeCommand.cs', 'BrokerTokenSource.cs',
-        'Codex.cs', 'DirectAppTokenSource.cs', 'DiscussionWebhooks.cs', 'GitHub.cs',
-        'GitHubAppCredentials.cs', 'MentionUser.cs', 'Program.cs', 'RepoAgentController.csproj', 'StateStore.cs')],
-    'tests/NativeSmoke/NativeSmoke.csproj', 'tests/NativeSmoke/Program.cs',
-    'tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj', 'tests/RepoAgent.LiveTests/DiscussionJourney.cs',
-    'container/Containerfile', 'container/runtime.py', 'container/control.py',
-    'container/quick_tunnel.py', 'container/update_tools.py',
-    'container/install-tools.sh', 'container/install-cloudflared.sh', 'container/prepare-runtime.sh',
-]
+# The same plain inventory drives exact-file host mounts and context construction.
+def source_files(root):
+    files = regular_file(root / 'image/source-files.txt').decode('utf-8').splitlines()
+    if not files or len(files) != len(set(files)):
+        raise ValueError('Source inventory must be nonempty without duplicate paths')
+    for name in files:
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*', name) or any(part in ('.', '..') for part in name.split('/')):
+            raise ValueError('Source inventory requires safe relative file paths')
+    return files
 
 
 def object_keys(value, required, optional=()):
@@ -89,7 +85,7 @@ def regular_file(path):
 
 def compose(root, manifest, output, derived=None):
     value = validate(manifest)
-    inputs = {name: regular_file(root / name) for name in SOURCE_FILES}
+    inputs = {name: regular_file(root / name) for name in source_files(root)}
     digest = hashlib.sha256()
     for name, content in sorted(inputs.items()):
         digest.update(name.encode() + b'\0' + hashlib.sha256(content).digest())
@@ -114,10 +110,11 @@ def compose(root, manifest, output, derived=None):
     reference = inventory['baseImages']['runtime']
     (output / 'base-reference.txt').write_text(reference + '\n')
     from_reference = 'repoagent-local-base:' + reference[7:] if reference.startswith('sha256:') else reference
+    (output / 'tool-artifacts.json').write_text(json.dumps(inventory['artifacts'], sort_keys=True) + '\n')
     dockerfile = (output / 'container/Containerfile').read_text()
-    dockerfile = dockerfile.replace('mcr.microsoft.com/dotnet/sdk:11.0.100-rc.2', SDK).replace('mcr.microsoft.com/dotnet/runtime-deps:11.0.0-rc.2', from_reference)
+    dockerfile = dockerfile.replace('__SDK_IMAGE__', SDK).replace('__RUNTIME_IMAGE__', from_reference)
     dockerfile = dockerfile.replace('RUN apt-get update', f'RUN sed -i -E "s|https?://[^ /]+/ubuntu/?|https://snapshot.ubuntu.com/ubuntu/{SNAPSHOT}/|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update')
-    dockerfile = dockerfile.replace('RUN bash /tmp/prepare-runtime.sh', 'RUN bash /tmp/prepare-runtime.sh ' + ('true' if value['tools'].get('developerUtilities', False) else 'false'))
+    dockerfile = dockerfile.replace('RUN bash /tmp/prepare-runtime.sh', 'RUN bash /tmp/prepare-runtime.sh ' + ('true' if value['tools'].get('developerUtilities', False) else 'false') + ' ' + SNAPSHOT)
     if 'cloudflared' not in value['tools']:
         dockerfile = '\n'.join(line for line in dockerfile.splitlines() if 'install-cloudflared.sh' not in line) + '\n'
     (output / 'container/Containerfile').write_text(dockerfile)

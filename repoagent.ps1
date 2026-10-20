@@ -110,7 +110,7 @@ switch ($Command) {
         if ($CommandArguments.Count -ne 1) { throw 'Supply one auth.json file path.' }
         $authMount = Get-FileMount $CommandArguments[0] '/run/secrets/codex-auth.json'
         $copyAuth = "import json,pathlib; p=pathlib.Path('/run/secrets/codex-auth.json'); json.loads(p.read_text()); d=pathlib.Path('/data/credentials/codex/auth.json'); d.write_bytes(p.read_bytes()); d.chmod(0o600)"
-        Invoke-Docker run --rm --init @volumeArguments @authMount --entrypoint python3 $image -c $copyAuth
+        Invoke-Docker run --rm --init @volumeArguments @authMount --entrypoint /usr/bin/python3 $image -c $copyAuth
     }
     'check' { Assert-Stopped; $keyMount = Get-KeyMount; Invoke-Docker run --rm --init @volumeArguments @keyMount $image check }
     'start' { Start-Agent }

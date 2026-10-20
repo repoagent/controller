@@ -12,7 +12,7 @@ Build a Linux amd64 image with Docker and the existing Bash or PowerShell host t
 .\install.ps1 -ImageManifest image/default.json
 ```
 
-The installers accept the same manifest. The build first runs a digest-pinned Python helper container with networking disabled, read-only source and manifest mounts, and a fresh writable temporary context. It validates choices before Docker **build** runs. It never mounts the host home or Docker socket. Docker may pull this helper using the host's registry authentication; those credentials do not enter the context or runtime. The helper prints the resolved nonsecret inventory, and the host prints the resulting image ID. Temporary contexts are removed on success or failure.
+The installers accept the same manifest. The build first runs a digest-pinned Python helper container with networking disabled, individual read-only source-file and manifest mounts, and a fresh writable temporary context. It validates choices before Docker **build** runs. It never mounts the host home or Docker socket. Docker may pull this helper using the host's registry authentication; those credentials do not enter the context or runtime. The helper prints the resolved nonsecret inventory, and the host prints the resulting image ID. Temporary contexts are removed on success or failure.
 
 ## Version 1 manifest
 
@@ -34,7 +34,9 @@ The default manifest enables Cloudflared and developer utilities, preserving the
 
 Software archives use fixed HTTPS release URLs and SHA-256 verification before extraction. SDK and runtime bases are pinned by digest. Ubuntu packages come from the signed `20261020T000000Z` snapshot. The final image contains `/opt/repoagent/image-inventory.json` with resolved selections, artifact hashes, base identities and controller source digest, plus `/opt/repoagent/os-packages.txt` with actual installed package versions. There is no fallback to `latest`. Runtime `toolUpdates=latest` remains the existing, separately configured startup behavior; choose `pinned` during setup to keep running the image's tools.
 
-The source digest is SHA-256 over sorted allowlisted path names, a NUL byte, and each file's binary SHA-256 digest. To freeze a checkout, copy the emitted `controller.sha256` into your manifest. Any allowlisted source/build asset change then fails validation until you deliberately update that identity. New source files require updating the explicit allowlist.
+The shared `image/source-files.txt` inventory drives both host mounts and helper context creation. Host adapters reject symbolic links, reparse points and unsafe relative paths before mounting source files. Excluded checkout credentials are therefore invisible even to the helper.
+
+The source digest is SHA-256 over sorted allowlisted path names, a NUL byte, and each file's binary SHA-256 digest. To freeze a checkout, copy the emitted `controller.sha256` into your manifest. Any allowlisted source/build asset change then fails validation until you deliberately update that identity. New source files require updating that single explicit allowlist.
 
 ## Build on your repository's image
 
@@ -52,7 +54,7 @@ The initial supported base is **Ubuntu 26.04, Linux amd64**, with its standard U
 
 Composition retains base layers, files, toolchain, PATH entries and package repository configuration. Controller binaries and pinned tools are installed under `/opt/repoagent`, and their paths are prepended so the selected agent/gh versions take precedence. Those paths are reserved for this overlay. Existing UID 1000 accounts and their home contents are retained. A home under `/home` is required; `/home/agent` aliases that home when necessary. Conflicting `/home/agent` content fails the build instead of being removed. If UID 1000 is absent, an `agent` account is created. Existing home skills are preserved; otherwise the standard skills-volume link is installed.
 
-The result intentionally runs as UID 1000, uses `/workspace`, and replaces the base ENTRYPOINT/CMD with the controller runtime. Runtime state, sessions and credentials retain the existing `/data` volume layout. Repo-local skills in `/workspace` remain available. Neither repository cloning nor credential enrollment is part of image composition. Future authenticated clone/agent HTTPS operations must use the runtime's configured trust roots; host Docker authentication is not inherited by those processes.
+The runtime uses `/usr/bin/python3` with its system PyYAML dependency, even when the base has a different Python earlier on PATH. The base Python remains available to repository tools. The result intentionally runs as UID 1000, uses `/workspace`, and replaces the base ENTRYPOINT/CMD with the controller runtime. Runtime state, sessions and credentials retain the existing `/data` volume layout. Repo-local skills in `/workspace` remain available. Neither repository cloning nor credential enrollment is part of image composition. Future authenticated clone/agent HTTPS operations must use the runtime's configured trust roots; host Docker authentication is not inherited by those processes.
 
 ## Explicit derived Dockerfile
 

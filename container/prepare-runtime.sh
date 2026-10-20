@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Use a signed immutable Ubuntu snapshot without changing the base's repositories.
-cat > /tmp/repoagent.sources <<'SOURCES'
+snapshot=${2:?A reviewed Ubuntu snapshot is required}
+cat > /tmp/repoagent.sources <<SOURCES
 Types: deb
-URIs: https://snapshot.ubuntu.com/ubuntu/20261020T000000Z/
+URIs: https://snapshot.ubuntu.com/ubuntu/$snapshot/
 Suites: resolute resolute-updates resolute-security
 Components: main universe
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
