@@ -27,9 +27,14 @@ internal sealed class EnrollmentGitHub(GitHubIssuance github, TimeProvider clock
         using var repositories = await github.ReadAsync("installation/repositories?per_page=2", token, work);
         var root = repositories.RootElement;
         if (root.GetProperty("total_count").GetInt32() != 1) throw new IssuanceDenied();
-        try { GitHubIssuance.ValidateRepository(root.GetProperty("repositories"), snapshot.RepositoryId, Text(p, "RequestedRepository")); }
-        catch (IssuanceDenied) when (p.ContainsKey("Marker")) { throw new ApprovalChanged(); }
-        var canonical = root.GetProperty("repositories")[0].GetProperty("full_name").GetString()!;
+        var observed = GitHubIssuance.RepositoryIdentity(root.GetProperty("repositories"));
+        if (observed.Id != Id(snapshot.RepositoryId)
+            || !string.Equals(observed.Name, Text(p, "RequestedRepository"), StringComparison.OrdinalIgnoreCase))
+        {
+            if (p.ContainsKey("Marker")) throw new ApprovalChanged();
+            throw new IssuanceDenied();
+        }
+        var canonical = observed.Name;
         if (snapshot.Approval == ApprovalContract.Agent) return (canonical, null, null);
         using var environment = await github.ReadAsync($"repos/{RepositoryPath(canonical)}/environments/{Uri.EscapeDataString(Text(p, "Environment"))}", token, work);
         var id = environment.RootElement.GetProperty("id").GetInt64();
@@ -42,8 +47,18 @@ internal sealed class EnrollmentGitHub(GitHubIssuance github, TimeProvider clock
     public async Task<(bool Approved, DateTimeOffset Started)> ObserveAsync(EnrollmentSnapshot snapshot, string jwt, string token, IssuanceWork work)
     {
         var started = clock.GetUtcNow();
-        await DiscoverAsync(snapshot, jwt, work);
-        await BindAsync(snapshot, token, work);
+        try
+        {
+            await DiscoverAsync(snapshot, jwt, work);
+            await BindAsync(snapshot, token, work);
+        }
+        catch (ApprovalChanged)
+        {
+            // Early binding mismatches must satisfy the same oldest-read freshness
+            // boundary as marker observations before the service may close a grant.
+            work.Fresh(started);
+            throw;
+        }
         var p = snapshot.Pending;
         if (snapshot.Approval == ApprovalContract.Agent)
         {

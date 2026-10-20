@@ -34,11 +34,7 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         using var repositories = await ReadAsync("installation/repositories?per_page=2", verifier, work);
         var repos = repositories.RootElement;
         if (repos.GetProperty("total_count").GetInt32() != 1) throw new IssuanceDenied();
-        var accessible = repos.GetProperty("repositories");
-        if (accessible.ValueKind != JsonValueKind.Array || accessible.GetArrayLength() != 1) throw new IssuanceDenied();
-        var repositoryId = accessible[0].GetProperty("id").GetInt64();
-        var repository = accessible[0].GetProperty("full_name").GetString();
-        if (repositoryId <= 0 || !IsRepositoryName(repository)) throw new IssuanceDenied();
+        var (repositoryId, repository) = RepositoryIdentity(repos.GetProperty("repositories"));
         if (repositoryId != Id(grant.RepositoryId) || !string.Equals(repository, grant.Repository, StringComparison.OrdinalIgnoreCase))
         {
             work.Fresh(started);
@@ -182,11 +178,20 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
     internal static void ValidateRepository(JsonElement repositories, string repositoryId, string repository)
     {
-        if (repositories.ValueKind != JsonValueKind.Array || repositories.GetArrayLength() != 1
-            || repositories[0].GetProperty("id").GetInt64() != Id(repositoryId)
-            || !string.Equals(repositories[0].GetProperty("full_name").GetString(), repository, StringComparison.OrdinalIgnoreCase))
+        var observed = RepositoryIdentity(repositories);
+        if (observed.Id != Id(repositoryId) || !string.Equals(observed.Name, repository, StringComparison.OrdinalIgnoreCase))
             throw new IssuanceDenied();
     }
+    // Shape validation is separate from comparison: malformed evidence never proves withdrawal.
+    internal static (long Id, string Name) RepositoryIdentity(JsonElement repositories)
+    {
+        if (repositories.ValueKind != JsonValueKind.Array || repositories.GetArrayLength() != 1) throw new IssuanceDenied();
+        var id = repositories[0].GetProperty("id").GetInt64();
+        var name = repositories[0].GetProperty("full_name").GetString();
+        if (id <= 0 || !IsRepositoryName(name)) throw new IssuanceDenied();
+        return (id, name!);
+    }
+
     private static void RejectDuplicates(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
