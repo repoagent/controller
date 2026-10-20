@@ -17,7 +17,6 @@ internal sealed class RetainedState(TableClient table, BrokerOptions options)
             || Number(enrollment, "Count") > GlobalPending || Number(issuance, "RetainedIssuanceCount") > 4096
             || Number(issuance, "Slots") > GlobalAttempts
             || Number(enrollment, "Count") > Number(enrollment, "RetainedEnrollmentCount")
-            || Number(enrollment, "CandidateCount") > Number(enrollment, "RetainedEnrollmentCount")
             || Number(issuance, "Slots") > Number(issuance, "RetainedIssuanceCount")) throw new IssuanceDenied();
         foreach (var field in new[] { "Window", "Admissions", "Reads", "Signs", "Mints" }) _ = Number(issuance, field);
         return (enrollment, issuance);
@@ -64,7 +63,7 @@ internal sealed class RetainedState(TableClient table, BrokerOptions options)
     {
         var ledger = await BrokerTable.ReadAsync(table, Issuance, "operation:" + operation, ct) ?? throw new IssuanceDenied();
         var slot = await BrokerTable.ReadAsync(table, Issuance, SlotKey(index), ct) ?? throw new IssuanceDenied();
-        if (ledger.ContainsKey("CapacityState") && ledger.GetString("CapacityState") != "charged"
+        if (ledger.ContainsKey("RetirementState") || ledger.ContainsKey("CapacityState") && ledger.GetString("CapacityState") != "charged"
             || Text(ledger, "DeviceId") != device || Number(ledger, "RowCredits") != 4
             || Text(ledger, "AttemptRowKey") != "attempt:" + operation) throw new IssuanceDenied();
         foreach (var row in new[] { ledger, slot })

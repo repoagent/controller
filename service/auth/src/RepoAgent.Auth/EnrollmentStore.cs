@@ -34,7 +34,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
                 ["RecoveryHash"] = hash, ["BodyHash"] = request.BodyHash, ["Epoch"] = options.DeploymentEpoch,
                 ["CreatedAt"] = now, ["Deadline"] = now.Add(PendingLifetime),
                 ["PayloadPurgeAt"] = now.Add(PendingLifetime).AddHours(24),
-                ["Generation"] = Guid.NewGuid().ToString("N"), ["RowCredits"] = 8L,
+                ["Generation"] = Guid.NewGuid().ToString("N"), ["RowCredits"] = 8L, ["ReclamationVersion"] = 1L,
                 ["DeviceId"] = Guid.NewGuid().ToString("N"), ["Challenge"] = EnrollmentSecrets.Generate()
             };
             request.Approval.Write(reservation);
@@ -52,7 +52,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
             var gate = await reads.ReadAsync(partition, "gate", ct);
             var current = await reads.ReadAsync(Global, key, ct) ?? throw new IssuanceDenied();
             if (Text(current, "Generation") != Text(reservation, "Generation")
-                || current.GetBoolean("PendingCapacityReleased") == true
+                || current.GetBoolean("PendingCapacityReleased") == true || current.ContainsKey("RetirementState")
                 || Text(current, "RepositoryId") != repository || Text(current, "RecoveryHash") != hash
                 || Text(current, "BodyHash") != request.BodyHash) throw new IssuanceDenied();
             request.Approval.Require(current);
@@ -136,6 +136,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
         // Claim one durable operation before global/provider admission; all endpoints share this field.
         s.Pending["NextWorkAt"] = now.AddSeconds(15);
         s.Pending["WorkStartedAt"] = now;
+        if (mint) s.Pending["MintAdmissionStarted"] = true;
         await CommitAsync(s, [], work.Cancellation);
         var global = (await retained.SchemaAsync(work.Cancellation)).Issuance;
         Charge(global, now, limits.GlobalAdmissions, limits.GlobalReads, limits.GlobalSigns, limits.GlobalMints, mint);
