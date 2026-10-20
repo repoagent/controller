@@ -9,6 +9,8 @@ on:
       - 'repoagent.ps1'
       - 'scripts/build-image.*'
       - 'scripts/revoke-approval.ps1'
+      - 'scripts/plan-azure.ps1'
+      - 'scripts/azure/**'
       - 'container/**'
       - 'tests/installers/**'
       - '.github/workflows/verify-installers.yml'
@@ -20,6 +22,8 @@ on:
       - 'repoagent.ps1'
       - 'scripts/build-image.*'
       - 'scripts/revoke-approval.ps1'
+      - 'scripts/plan-azure.ps1'
+      - 'scripts/azure/**'
       - 'container/**'
       - 'tests/installers/**'
       - '.github/workflows/verify-installers.yml'
@@ -69,6 +73,8 @@ jobs:
         run: |
           if ($IsWindows) {
             python -m unittest discover -s tests/installers -p test_approval_revoke.py -v
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            python -m unittest discover -s tests/installers -p test_azure_plan.py -v
           } else {
             python -m unittest discover -s tests/installers -v
           }
