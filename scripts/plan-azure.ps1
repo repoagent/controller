@@ -44,15 +44,45 @@ function Invoke-Discovery([string[]]$Arguments, [string]$ResourceId = '', [switc
     $start.Environment['AZURE_EXTENSION_USE_DYNAMIC_INSTALL'] = 'no'
     $start.Environment['AZURE_CORE_COLLECT_TELEMETRY'] = 'no'
     $p = [Diagnostics.Process]::new(); $p.StartInfo = $start
+    $capture = @([IO.MemoryStream]::new(), [IO.MemoryStream]::new())
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $started = $false
     try {
-        if (-not $p.Start()) { Fail 'Azure CLI could not start.' }
-        $stdout = $p.StandardOutput.ReadToEndAsync(); $stderr = $p.StandardError.ReadToEndAsync()
-        if (-not $p.WaitForExit($RequestTimeoutSeconds * 1000)) { Fail 'Azure discovery timed out; resource absence is unverified.' }
-        $text = $stdout.GetAwaiter().GetResult(); $errorText = $stderr.GetAwaiter().GetResult()
+        $started = $p.Start()
+        if (-not $started) { Fail 'Azure CLI could not start.' }
+        # The same deadline covers process exit and both pipes. A child may keep
+        # inherited pipes open after az exits; neither reads nor capture may grow
+        # without bounds. Provider content stays private, including on failure.
+        $streams = @($p.StandardOutput.BaseStream, $p.StandardError.BaseStream)
+        $buffers = @([byte[]]::new(8192), [byte[]]::new(8192))
+        $reads = @($streams[0].ReadAsync($buffers[0], 0, 8192), $streams[1].ReadAsync($buffers[1], 0, 8192))
+        $byteCount = 0
+        while ($null -ne $reads[0] -or $null -ne $reads[1]) {
+            $remaining = $RequestTimeoutSeconds * 1000 - $clock.ElapsedMilliseconds
+            if ($remaining -le 0) { Fail 'Azure discovery timed out; resource absence is unverified.' }
+            $slots = @(0, 1 | Where-Object { $null -ne $reads[$_] })
+            [Threading.Tasks.Task[]]$active = @($slots | ForEach-Object { $reads[$_] })
+            $completed = [Threading.Tasks.Task]::WaitAny($active, [int]$remaining)
+            if ($completed -eq -1) { Fail 'Azure discovery timed out; resource absence is unverified.' }
+            $slot = $slots[$completed]
+            $count = $reads[$slot].GetAwaiter().GetResult()
+            if ($count -eq 0) { $reads[$slot] = $null; continue }
+            $byteCount += $count
+            if ($byteCount -gt 1048576) { Fail 'Azure discovery response exceeded the 1 MiB processing limit; resource absence is unverified.' }
+            $capture[$slot].Write($buffers[$slot], 0, $count)
+            $reads[$slot] = $streams[$slot].ReadAsync($buffers[$slot], 0, 8192)
+        }
+        $remaining = $RequestTimeoutSeconds * 1000 - $clock.ElapsedMilliseconds
+        if ($remaining -le 0 -or -not $p.WaitForExit([int]$remaining)) { Fail 'Azure discovery timed out; resource absence is unverified.' }
+        $encoding = [Text.UTF8Encoding]::new($false, $true)
+        try {
+            $text = $encoding.GetString($capture[0].ToArray())
+            $errorText = $encoding.GetString($capture[1].ToArray())
+        } catch { Fail 'Malformed Azure response encoding; resource absence is unverified.' }
         if ($p.ExitCode -ne 0) {
             # Only provider error codes establish absence; permission/network errors never do.
-            if ($AllowMissing -and $errorText -match '(?m)^ERROR: \((ResourceNotFound|ResourceGroupNotFound)\)') { return $null }
             if ($errorText -match '(AuthorizationFailed|Forbidden|AuthenticationFailed|InvalidAuthenticationToken)') { Fail 'Azure discovery denied or inaccessible; resource absence is unverified.' }
+            if ($AllowMissing -and $errorText -match '(?m)^ERROR: \((ResourceNotFound|ResourceGroupNotFound)\)') { return $null }
             Fail 'Azure discovery failed; check subscription, permissions, network and installed containerapp support. Resource absence is unverified.'
         }
         try { $result = ConvertFrom-Json -InputObject $text -AsHashtable -ErrorAction Stop } catch { Fail 'Malformed Azure JSON response; resource absence is unverified.' }
@@ -60,8 +90,9 @@ function Invoke-Discovery([string[]]$Arguments, [string]$ResourceId = '', [switc
         if ($ResourceId -and $result.id -ine $ResourceId) { Fail 'Azure returned a wrong-subscription or unexpected resource identity.' }
         return $result
     } finally {
-        if ($p.Id -and -not $p.HasExited) { $p.Kill($true); $p.WaitForExit() }
+        if ($started -and -not $p.HasExited) { $p.Kill($true); $null = $p.WaitForExit(1000) }
         $p.Dispose()
+        foreach ($buffer in $capture) { $buffer.Dispose() }
     }
 }
 try {
