@@ -1,0 +1,45 @@
+name: Deploy auth service
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Approved public auth-service repository@sha256 digest
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: auth-service-delivery
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AZURE_CORE_OUTPUT: none
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AUTH_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AUTH_APP_NAME: ${{ vars.AUTH_APP_NAME }}
+      AUTH_IMAGE_REPOSITORY: ${{ vars.AUTH_IMAGE_REPOSITORY }}
+      AUTH_DEPLOYMENT_READY: ${{ vars.AUTH_DEPLOYMENT_READY }}
+      AUTH_IMAGE: ${{ inputs.image }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y skopeo
+      - name: Validate setup and auth image before login
+        run: python3 scripts/delivery/deploy-auth.py preflight
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Update intended existing app and verify ready revision
+        run: python3 scripts/delivery/deploy-auth.py deploy
