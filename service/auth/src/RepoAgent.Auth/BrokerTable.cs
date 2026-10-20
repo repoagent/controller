@@ -47,8 +47,8 @@ internal static class BrokerTable
             // of the JSON plus per-entity protocol and multipart framing.
             bytes = checked(bytes + 2 * Validate(action.Entity) + 8192);
             if (action.Entity.PartitionKey != partition || !keys.Add(action.Entity.RowKey)
-                || action.ActionType is not (TableTransactionActionType.Add or TableTransactionActionType.UpdateReplace)
-                || action.ActionType == TableTransactionActionType.UpdateReplace
+                || action.ActionType is not (TableTransactionActionType.Add or TableTransactionActionType.UpdateReplace or TableTransactionActionType.Delete)
+                || action.ActionType != TableTransactionActionType.Add
                     && (action.ETag == ETag.All || string.IsNullOrEmpty(action.ETag.ToString())))
                 throw new InvalidDataException("Invalid conditional transaction.");
         }
