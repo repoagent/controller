@@ -237,6 +237,18 @@ $privateBytes = $null
 $configArguments = @($CommandArguments)
 $configureBroker = $false
 if ($Command -eq 'configure') {
+    # Credential mode must be decided before any Docker mount or resource write.
+    # Keep argparse's optional long-option abbreviations out of this boundary.
+    foreach ($argument in $CommandArguments) {
+        $option = ($argument -split '=', 2)[0]
+        if ($option.StartsWith('--') -and $option.Length -gt 2) {
+            foreach ($selector in @('--broker-url', '--enrollment-file', '--key-path')) {
+                if ($option -cne $selector -and $selector.StartsWith($option, [StringComparison]::Ordinal)) {
+                    throw 'Spell credential selectors in full: --broker-url, --enrollment-file, --key-path.'
+                }
+            }
+        }
+    }
     $hasBroker = @($CommandArguments | Where-Object { $_ -match '^--(broker-url|enrollment-file)(=|$)' }).Count -gt 0
     if ($hasBroker) {
         if (@($CommandArguments | Where-Object { $_ -match '^--key-path(=|$)' }).Count) { throw 'Broker and direct-App inputs are mutually exclusive.' }

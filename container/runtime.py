@@ -225,7 +225,7 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
-    configure_parser = sub.add_parser('configure')
+    configure_parser = sub.add_parser('configure', allow_abbrev=False)
     configure_parser.add_argument('--repository', required=True)
     configure_parser.add_argument('--app-id', required=True)
     configure_parser.add_argument('--key-path')
