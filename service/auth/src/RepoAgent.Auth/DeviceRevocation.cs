@@ -54,9 +54,9 @@ public sealed class DeviceRevocation(TableClient table, BrokerOptions options, T
                     _ = RequiredDate(receipt, "RevokedAt");
                     return 204;
                 }
-                if (deviceState is not ("active" or "revoked") || gateState is not ("active" or "closed")) return 503;
+                if (deviceState is not ("active" or "unacknowledged" or "revoked") || gateState is not ("active" or "unacknowledged" or "closed")) return 503;
                 // Point reads may straddle another successful revoke. Reconcile from a fresh snapshot.
-                if (deviceState != "active" || gateState != "active" || receipt is not null) continue;
+                if (deviceState != gateState || deviceState is not ("active" or "unacknowledged") || receipt is not null) continue;
 
                 // Retain all other properties, including outstanding-token bounds. Never delete attempts here.
                 gate["State"] = "closed";

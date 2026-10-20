@@ -41,10 +41,13 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         return started;
     }
 
-    public async Task<IssuedToken> MintAsync(GrantSnapshot grant, string profile, string jwt, CancellationToken ct)
+    public Task<IssuedToken> MintAsync(GrantSnapshot grant, string profile, string jwt, CancellationToken ct) =>
+        MintAsync(grant.RepositoryId, grant.Repository, grant.InstallationId, profile, jwt, ct);
+
+    internal async Task<IssuedToken> MintAsync(string repositoryId, string repository, long installationId, string profile, string jwt, CancellationToken ct)
     {
-        using var request = Request(HttpMethod.Post, $"app/installations/{grant.InstallationId}/access_tokens", jwt);
-        request.Content = JsonContent.Create(new { repository_ids = new[] { Id(grant.RepositoryId) }, permissions = Permissions(profile) });
+        using var request = Request(HttpMethod.Post, $"app/installations/{installationId}/access_tokens", jwt);
+        request.Content = JsonContent.Create(new { repository_ids = new[] { Id(repositoryId) }, permissions = Permissions(profile) });
         using var response = await SendAsync(request, HttpStatusCode.Created, ct);
         var root = response.RootElement;
         var token = root.GetProperty("token").GetString();
@@ -56,7 +59,7 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         try
         {
             expiry = root.GetProperty("expires_at").GetDateTimeOffset();
-            ValidateRepository(root.GetProperty("repositories"), grant);
+            ValidateRepository(root.GetProperty("repositories"), repositoryId, repository);
             var expected = Permissions(profile);
             var actual = root.GetProperty("permissions");
             if (actual.ValueKind != JsonValueKind.Object) throw new IssuanceDenied();
@@ -79,7 +82,7 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         if (response.StatusCode != HttpStatusCode.NoContent) throw new IssuanceDenied();
     }
 
-    private async Task<JsonDocument> ReadAsync(string path, string token, IssuanceWork work)
+    internal async Task<JsonDocument> ReadAsync(string path, string token, IssuanceWork work)
     {
         work.Read();
         using var request = Request(HttpMethod.Get, path, token);
@@ -116,11 +119,12 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true, NoStore = true };
         return request;
     }
-    private static void ValidateRepository(JsonElement repositories, GrantSnapshot grant)
+    private static void ValidateRepository(JsonElement repositories, GrantSnapshot grant) => ValidateRepository(repositories, grant.RepositoryId, grant.Repository);
+    internal static void ValidateRepository(JsonElement repositories, string repositoryId, string repository)
     {
         if (repositories.ValueKind != JsonValueKind.Array || repositories.GetArrayLength() != 1
-            || repositories[0].GetProperty("id").GetInt64() != Id(grant.RepositoryId)
-            || !string.Equals(repositories[0].GetProperty("full_name").GetString(), grant.Repository, StringComparison.OrdinalIgnoreCase))
+            || repositories[0].GetProperty("id").GetInt64() != Id(repositoryId)
+            || !string.Equals(repositories[0].GetProperty("full_name").GetString(), repository, StringComparison.OrdinalIgnoreCase))
             throw new IssuanceDenied();
     }
     private static void RejectDuplicates(JsonElement element)
