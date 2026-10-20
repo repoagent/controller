@@ -5,6 +5,7 @@ import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -43,7 +44,11 @@ def save(value):
 
 def bridge_args(config):
     args = ['--repo', config['repository'], '--app-id', config['appId'],
-            '--private-key', '/run/secrets/github-app.pem', '--workspace', '/workspace', '--state', STATE]
+            '--workspace', '/workspace', '--state', STATE]
+    if config.get('brokerUrl'):
+        args += ['--broker-url', config['brokerUrl'], '--enrollment-file', '/data/enrollment/enrollment.json']
+    else:
+        args += ['--private-key', '/run/secrets/github-app.pem']
     if config.get('installationId'):
         args += ['--installation-id', str(config['installationId'])]
     if config.get('mentionUser'):
@@ -71,9 +76,21 @@ def configure(args):
         raise ValueError('Repository must be OWNER/REPO.')
     if not re.fullmatch(r'(?:[0-9]+|Iv[A-Za-z0-9.]+)', args.app_id):
         raise ValueError('Supply the App ID or client ID, not a token.')
-    # This is a host bind-mount source, including when Docker Desktop runs on Windows.
-    if not (Path(args.key_path).is_absolute() or PureWindowsPath(args.key_path).is_absolute()) or any(c in args.key_path for c in ',\n\r'):
+    broker_url = getattr(args, 'broker_url', None)
+    enrollment_file = getattr(args, 'enrollment_file', None)
+    broker = bool(broker_url or enrollment_file)
+    if broker:
+        if not broker_url or not enrollment_file or args.key_path:
+            raise ValueError('Supply both --broker-url and --enrollment-file, without --key-path.')
+        url = urllib.parse.urlsplit(broker_url)
+        if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment:
+            raise ValueError('Broker URL must be a trusted HTTPS origin.')
+    elif not args.key_path or not (Path(args.key_path).is_absolute() or PureWindowsPath(args.key_path).is_absolute()) or any(c in args.key_path for c in ',\n\r'):
         raise ValueError('Private-key path must be an absolute host path without commas/newlines.')
+    if config and bool(config.get('brokerUrl')) != broker:
+        raise ValueError('Changing credential mode requires a fresh instance.')
+    if config.get('brokerUrl') and config['brokerUrl'] != broker_url:
+        raise ValueError('Changing broker requires a fresh instance.')
     if args.mention_user and not re.fullmatch(r'[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*', args.mention_user):
         raise ValueError('Mention user must be a GitHub login without @.')
     if config and any(config.get(k) != v for k, v in [('repository', args.repository), ('appId', args.app_id)]):
@@ -87,6 +104,7 @@ def configure(args):
         if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment:
             raise ValueError('Fixed URL needs a public HTTPS origin without credentials, path, query or fragment.')
     config.update(repository=args.repository, appId=args.app_id, keyPath=args.key_path,
+                  brokerUrl=broker_url,
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
                   toolUpdates=args.tool_updates, mode=args.mode, publicUrl=args.public_url,
                   listenPort=args.listen_port, reconcileInterval=args.reconcile_interval)
@@ -95,6 +113,42 @@ def configure(args):
     # The container is the operator-selected execution boundary. The bridge has no approval UI.
     (CODEX / 'config.toml').write_text('model = ' + json.dumps(args.model) + '\nweb_search = ' + json.dumps(args.web_search) + '\napproval_policy = "never"\nsandbox_mode = "danger-full-access"\ncli_auth_credentials_store = "file"\n')
     print(f"Configured {args.repository}; App {args.app_id}; model {args.model}.")
+
+
+def import_enrollment():
+    """Transport only: the native consumer owns all credential policy."""
+    directory = Path('/data/enrollment')
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 1000 or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError('Enrollment volume must be a private UID1000 directory.')
+    target = directory / 'enrollment.json'
+    def check_target():
+        try:
+            existing = target.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(existing.st_mode) or existing.st_uid != 1000 or stat.S_IMODE(existing.st_mode) != 0o600 or existing.st_nlink != 1:
+            raise ValueError('Unsafe existing enrollment target; refusing import.')
+    check_target()
+    data = sys.stdin.buffer.read(65537)
+    if not data or len(data) > 65536:
+        raise ValueError('Enrollment input must contain 1..65536 bytes.')
+    descriptor, temporary = tempfile.mkstemp(prefix='.enrollment-', dir=directory)
+    try:
+        with os.fdopen(descriptor, 'wb') as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        check_target()
+        os.replace(temporary, target)
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 class SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -171,10 +225,12 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
-    configure_parser = sub.add_parser('configure')
+    configure_parser = sub.add_parser('configure', allow_abbrev=False)
     configure_parser.add_argument('--repository', required=True)
     configure_parser.add_argument('--app-id', required=True)
-    configure_parser.add_argument('--key-path', required=True)
+    configure_parser.add_argument('--key-path')
+    configure_parser.add_argument('--broker-url')
+    configure_parser.add_argument('--enrollment-file')
     configure_parser.add_argument('--installation-id', type=int)
     configure_parser.add_argument('--mention-user', default='repoagent')
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
@@ -187,13 +243,14 @@ def main():
     get = sub.add_parser('get'); get.add_argument('key')
     login = sub.add_parser('login')
     login.add_argument('--non-interactive', action='store_true')
-    for name in ['versions', 'check', 'start', 'participant-login', 'participant-identity', 'state', 'skills']:
+    for name in ['import-enrollment', 'versions', 'check', 'start', 'participant-login', 'participant-identity', 'state', 'skills']:
         sub.add_parser(name)
     skills = sub.add_parser('install-skills'); skills.add_argument('selection'); skills.add_argument('--token-file')
     enroll = sub.add_parser('enroll'); enroll.add_argument('urls', nargs='+')
     args = parser.parse_args()
     select_tools(settings() if CONFIG.exists() else {})
-    if args.command == 'configure': configure(args)
+    if args.command == 'import-enrollment': import_enrollment()
+    elif args.command == 'configure': configure(args)
     elif args.command == 'get': print(settings().get(args.key) or '')
     elif args.command == 'versions':
         print('RepoAgent container; uid=' + str(os.getuid()), flush=True)
