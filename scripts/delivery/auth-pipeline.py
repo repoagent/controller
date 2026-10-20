@@ -42,7 +42,7 @@ def check_publication():
     # Infrastructure owns its readiness and versioned-reference contract.
     command(['bash', 'infra/auth/deploy.sh', 'check'])
     try:
-        package = json.loads(command(['gh', 'api', 'orgs/repoagent/packages/container/controller-auth'], capture=True))
+        package = json.loads(command(['gh', 'api', 'users/repoagent/packages/container/controller-auth'], capture=True))
     except ValueError:
         raise ValueError('GHCR package metadata is unavailable; bootstrap public controller-auth and grant repository Actions access') from None
     if package.get('visibility') != 'public':
