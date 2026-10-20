@@ -175,7 +175,9 @@ class Deployment:
             if not container and resource.get("location") != self.location:
                 raise DeploymentError(f"Resource location conflict for {name}")
             if kind == RESOURCE_TYPES[0]:
-                properties = resource.get("properties", {})
+                properties = resource.get("properties")
+                if not isinstance(properties, dict):
+                    raise DeploymentError("Azure malformed runtime identity properties")
                 for key in self.identity:
                     value = properties.get(key)
                     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value):
@@ -221,7 +223,10 @@ class Deployment:
                 if not isinstance(result.get("properties"), dict) or result["properties"].get("provisioningState") != "Succeeded":
                     raise DeploymentError("Deployment did not report Succeeded; inspect Azure before retrying")
                 # Foundation creates the identity; read its platform-issued IDs.
-                self.inspect()
+                if self.foundation:
+                    self.inspect()
+                    if not all(self.identity.values()):
+                        raise DeploymentError("Deployment identity unavailable after apply; inspect Azure before retrying")
         return self.outputs(applied)
 
     def outputs(self, applied):
