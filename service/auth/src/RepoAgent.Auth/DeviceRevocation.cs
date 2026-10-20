@@ -46,14 +46,17 @@ public sealed class DeviceRevocation(TableClient table, BrokerOptions options, T
                 if (RequiredDate(device, "ExpiresAt") <= clock.GetUtcNow()) return 401;
                 if (deviceState == "revoked" && gateState == "closed")
                 {
-                    if (receipt is null || RequiredString(receipt, "RepositoryId") != repository
+                    if (receipt is null) continue;
+                    if (RequiredString(receipt, "RepositoryId") != repository
                         || RequiredString(receipt, "DeviceId") != deviceId
                         || RequiredString(receipt, "Epoch") != options.DeploymentEpoch)
                         return 503;
                     _ = RequiredDate(receipt, "RevokedAt");
                     return 204;
                 }
-                if (deviceState != "active" || gateState != "active" || receipt is not null) return 503;
+                if (deviceState is not ("active" or "revoked") || gateState is not ("active" or "closed")) return 503;
+                // Point reads may straddle another successful revoke. Reconcile from a fresh snapshot.
+                if (deviceState != "active" || gateState != "active" || receipt is not null) continue;
 
                 // Retain all other properties, including outstanding-token bounds. Never delete attempts here.
                 gate["State"] = "closed";
@@ -82,7 +85,7 @@ public sealed class DeviceRevocation(TableClient table, BrokerOptions options, T
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception exception) when (exception is RequestFailedException or AuthenticationFailedException
-            or HttpRequestException or IOException or InvalidCastException or FormatException
+            or HttpRequestException or IOException or InvalidDataException or InvalidCastException or FormatException
             or JsonException or OverflowException or OperationCanceledException)
         {
             // SDK errors may contain entity values. Neither log nor return their bodies or messages.
