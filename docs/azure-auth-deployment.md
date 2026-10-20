@@ -70,6 +70,8 @@ Use the IDs and resource-group name in the tables above. Updating a repository v
 
 ## Completing service deployment
 
+The guarded Bicep foundation, runtime gates, operator-only permission template and local verification commands are documented in [authentication infrastructure](auth-infrastructure.md). They are source artifacts; no foundation or runtime apply has been performed.
+
 The intended delivery flow is to test and build the authentication service when its code or deployment configuration changes on `main`, publish an immutable image, deploy the required resources with Bicep into the existing resource group, and deploy and verify a Container App revision. Reuse this OIDC login and resource-group boundary. The manual bootstrap workflow is the current access check, not that delivery pipeline.
 
 Implement the service resources, runtime permissions, image publication, rollout/rollback and hosted acceptance before reporting the service as available. The existing [delivery slices](research/2026-10-20-auth-delivery-slices.md#delivery-sequence-and-exit-criteria) and operations research retain those requirements; this bootstrap does not settle their open storage or authorization decisions.
