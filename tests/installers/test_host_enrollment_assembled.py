@@ -4,6 +4,7 @@ Run with HOST_ENROLLMENT_ASSEMBLED_TABLE_ENDPOINT and REPOAGENT_TEST_NATIVE_CONT
 The caller owns Azurite lifecycle. Every run uses a unique disposable table.
 """
 import hashlib
+import datetime
 import json
 import os
 from pathlib import Path
@@ -94,7 +95,34 @@ class AssembledHostEnrollmentTests(unittest.TestCase):
                                             timeout=15) as response:
                     return response.status, json.load(response)
             except urllib.error.HTTPError as error:
-                return error.code, None
+                with error:
+                    return error.code, None
+
+        def provider_work():
+            return sum('provider' in event or 'signing' in event for event in events())
+
+        def cross_exhausted_window(path):
+            # Real System time/default ceilings: extra recovery observations can
+            # consume both repository signs in one fixed minute. Explicitly wait
+            # for that actual window; never change limits or silently ignore429.
+            observed = [event for event in events() if event.get('quotaObservation') and
+                        event['path'] == path and event['status'] == 429 and event['partition'] == 'repository:123'][-1]
+            counters = observed['counters']
+            self.assertEqual(counters['Signs'], 2, observed)
+            repository_snapshots = [event for event in events() if event.get('quotaObservation') and
+                                    event['partition'] == 'repository:123']
+            preceding = repository_snapshots[:repository_snapshots.index(observed)]
+            same_window = [event for event in preceding if event['counters']['Window'] == counters['Window']]
+            self.assertTrue(same_window, 'A quota denial must have a measured prior repository ledger')
+            self.assertEqual(counters, same_window[-1]['counters'], 'Denied work must not change repository quota')
+            target = (counters['Window'] + 1) * 60 + 0.2
+            floors = [event for event in events() if event.get('floorObservation')]
+            if path.endswith('/completion') and floors:
+                target = max(target, datetime.datetime.fromisoformat(floors[-1]['nextWorkAt']).timestamp() + 0.1)
+            delay = max(0, target - time.time())
+            self.assertLessEqual(delay, 61, observed)
+            print('ASSEMBLED legitimate quota cooldown=' + json.dumps(observed) + f' waitSeconds={delay:.3f}', flush=True)
+            time.sleep(delay)
 
         try:
             start()
@@ -105,6 +133,8 @@ class AssembledHostEnrollmentTests(unittest.TestCase):
             receipt = journey.read('enrollment.json')
             recovery = journey.read('recovery.json')
             approval = journey.read('approval.json')
+            for secret in (receipt['deviceSecret'], recovery['secret']):
+                self.assertNotIn(secret, result.stdout + result.stderr)
             self.assertTrue(recovery['ackAttempted'])
             self.assertEqual(approval['marker'], json.loads(journey.model.read_text())['variables'][journey.variable])
             marker = json.loads(approval['marker'])
@@ -115,8 +145,14 @@ class AssembledHostEnrollmentTests(unittest.TestCase):
             self.assertTrue(any((directory / 'keys').glob('*.xml')), 'Real persisted Data Protection keyring required')
             output.write_text('', encoding='utf-8')
             start()
+            completion_path = '/v2/enrollments/' + approval['pendingId'] + '/completion'
+            before_recovery = provider_work()
             status, delivered = complete(recovery['secret'], approval['pendingId'])
-            self.assertEqual(status, 200)
+            if status == 429:
+                self.assertEqual(provider_work(), before_recovery, 'Quota denial must not perform signing/provider work')
+                cross_exhausted_window(completion_path)
+                status, delivered = complete(recovery['secret'], approval['pendingId'])
+            self.assertEqual(status, 200, json.dumps(events()))
             self.assertEqual(delivered, {'completionId': recovery['completionId'], 'enrollment': receipt})
             provider_before = sum('provider' in event for event in events())
             status, _ = complete(recovery['secret'], approval['pendingId'])
@@ -124,7 +160,7 @@ class AssembledHostEnrollmentTests(unittest.TestCase):
             self.assertEqual(sum('provider' in event for event in events()), provider_before)
             time.sleep(5.1)
             result = journey.run(saved=True)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr + output.read_text())
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr + output.read_text() + json.dumps(events()))
             self.assertEqual(journey.read('enrollment.json'), receipt)
             self.assertEqual(journey.read('recovery.json')['completionId'], recovery['completionId'])
             self.assertIsNone(journey.read('recovery.json')['secret'])
@@ -132,14 +168,25 @@ class AssembledHostEnrollmentTests(unittest.TestCase):
             self.assertEqual(sum('POST' in event['argv'] for event in journey.github()), 1)
             time.sleep(5.1)
             consumer_log = directory / 'consumer-gh.jsonl'
-            result = subprocess.run([str(native), '--repo', 'example/project', '--app-id', '5387625',
+            native_command = [str(native), '--repo', 'example/project', '--app-id', '5387625',
                                      '--broker-url', journey.origin, '--enrollment-file', str(journey.state / 'enrollment.json'),
-                                     '--state', str(directory / 'consumer-state.json'), '--check-auth'],
-                                    env=dict(journey.environment, HOST_ENROLLMENT_NATIVE_CONSUMER='1',
-                                             REVOKE_GH_LOG=str(consumer_log)), cwd=directory,
-                                    capture_output=True, text=True, timeout=45)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr + output.read_text())
+                                     '--state', str(directory / 'consumer-state.json'), '--check-auth']
+            def invoke_native():
+                return subprocess.run(native_command, env=dict(journey.environment, HOST_ENROLLMENT_NATIVE_CONSUMER='1',
+                    REVOKE_GH_LOG=str(consumer_log)), cwd=directory, capture_output=True, text=True, timeout=45)
+            before_native = provider_work()
+            result = invoke_native()
+            runtime_path = '/v1/devices/' + receipt['deviceId'] + '/installation-token'
+            if result.returncode and 'HTTP 429' in result.stdout + result.stderr:
+                self.assertEqual(provider_work(), before_native, 'Quota denial must not mint or sign new authority')
+                self.assertFalse(consumer_log.exists(), 'Denied runtime lease must not reach authenticated gh')
+                self.assertEqual(journey.read('enrollment.json'), receipt)
+                cross_exhausted_window(runtime_path)
+                result = invoke_native()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr + output.read_text() + json.dumps(events()))
             self.assertIn('repo-agent-connector[bot]', result.stdout)
+            for secret in (receipt['deviceSecret'], 'assembled-runtime-token', journey.environment['GH_TOKEN']):
+                self.assertNotIn(secret, result.stdout + result.stderr)
             self.assertTrue(json.loads(consumer_log.read_text().splitlines()[0])['runtimeCredentialObserved'])
             recorded = events()
             self.assertTrue(any(event.get('path', '').endswith('/installation-token') and event['status'] == 200 for event in recorded))

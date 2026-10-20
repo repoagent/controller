@@ -89,6 +89,14 @@ internal sealed class Observation : IStartupFilter
             }
             await following();
             Entry.Record(new { path, status=context.Response.StatusCode });
+            if (path.EndsWith("/installation-token") || path.EndsWith("/completion") || path.EndsWith("/acknowledgment")) {
+                var table = context.RequestServices.GetRequiredService<TableClient>();
+                foreach (var partition in new[] { "global:issuance-v1", "repository:123" }) {
+                    var quota = await table.GetEntityAsync<TableEntity>(partition, "quota");
+                    Entry.Record(new { quotaObservation=true, path, status=context.Response.StatusCode, partition,
+                        observedAt=DateTimeOffset.UtcNow, counters=quota.Value.Where(p=>p.Key is "Window" or "Admissions" or "Reads" or "Signs" or "Mints" or "Slots").ToDictionary(p=>p.Key,p=>p.Value) });
+                }
+            }
             if (context.Response.StatusCode == 429 && path.EndsWith("/completion")) {
                 var pendingId = path.Split('/')[3];
                 var parts = pendingId.Split('_', 2);
