@@ -48,7 +48,9 @@ if 'HOST_ENROLLMENT_GH_MODEL' in os.environ:
             model['variables'].pop(name, None)
             model_path.write_text(json.dumps(model), encoding='utf-8')
             status = 204
-    print(f'HTTP/2.0 {status} Fixture\r\nContent-Type: application/json\r\n\r\n' + json.dumps(value))
+    wire = f'HTTP/2.0 {status} Fixture\r\nContent-Type: application/json\r\n\r\n' + json.dumps(value) + '\n'
+    sys.stdout.buffer.write(wire.encode('utf-8'))
+    sys.stdout.buffer.flush()
     sys.exit(0 if status < 400 else 1)
 
 scenario = json.loads(Path(os.environ['REVOKE_GH_SCENARIO']).read_text(encoding='utf-8'))

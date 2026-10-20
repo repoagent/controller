@@ -235,6 +235,20 @@ class EnrollmentJourney:
             self.case.assertNotIn(recovery['secret'], output)
         return result
 
+    def diagnostic(self, result):
+        output = result.stdout + result.stderr
+        secrets = [self.environment['GH_TOKEN'], 's' * 43]
+        if (self.state / 'recovery.json').exists():
+            secrets.append(self.read('recovery.json')['secret'])
+        for secret in filter(None, secrets):
+            output = output.replace(secret, '[redacted]')
+        return json.dumps(dict(returncode=result.returncode,
+            output=output.encode('utf-8')[:8192].decode('utf-8', errors='replace'),
+            stateExists=self.state.exists(), approvalExists=(self.state / 'approval.json').exists(),
+            recoveryExists=(self.state / 'recovery.json').exists(),
+            githubCalls=len(self.log.read_text(encoding='utf-8').splitlines()) if self.log.exists() else 0,
+            brokerHandlerErrors=len(self.errors)))
+
     def github(self):
         events = [json.loads(line) for line in self.log.read_text(encoding='utf-8').splitlines()]
         for event in events:
@@ -411,8 +425,10 @@ class HostEnrollmentTests(unittest.TestCase):
         journey.model.write_text(json.dumps({'variables': {journey.variable: 'another grant'}}), encoding='utf-8')
         result = journey.run()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('conflicts', result.stdout)
-        self.assertEqual(len(journey.events), 1)
+        diagnostic = journey.diagnostic(result)
+        self.assertEqual(len(journey.events), 1, diagnostic)
+        self.assertIn('Approval conflicts with this enrollment. Nothing was replaced; resolve old authority manually.',
+                      result.stdout, diagnostic)
         self.assertFalse(any('POST' in event['argv'] for event in journey.github()))
         self.assertFalse((journey.state / 'enrollment.json').exists())
 
