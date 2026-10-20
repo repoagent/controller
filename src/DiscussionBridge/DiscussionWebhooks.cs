@@ -43,6 +43,8 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
         finally
         {
             await stop.CancelAsync();
+            // The runtime token is cancelled: remote cleanup gets its own bounded budget.
+            await registration.Deactivate();
             listener.Close();
             work.Writer.TryComplete();
             try { await Task.WhenAll(receive, worker, reconcile); }
@@ -200,6 +202,24 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             settings["url"] = endpoint.AbsoluteUri;
             Save();
             Log.Write(hook is null ? "webhook-registered" : "webhook-updated", $"hook={id} url={endpoint}");
+        }
+
+        public async Task Deactivate()
+        {
+            if (settings["hookId"]?.GetValue<long>() is not { } hook) return;
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                // Omit config entirely: preserve the secret, URL and subscribed events.
+                var result = await github.Rest("PATCH", $"hooks/{hook}", Json.Object(("active", false)), cleanup.Token);
+                if (result?["id"]?.GetValue<long>() != hook || result?["active"]?.GetValue<bool>() != false)
+                    throw new IOException("GitHub did not confirm that the saved hook is inactive");
+                Log.Write("webhook-disabled", $"hook={hook}");
+            }
+            catch (Exception error)
+            {
+                Log.Write("webhook-disable-error", $"hook={hook}; disable not confirmed; manually deactivate the saved hook in repository Settings > Webhooks. {error.Message}");
+            }
         }
 
         void Save()

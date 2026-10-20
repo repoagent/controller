@@ -47,7 +47,11 @@ Webhook mode reconciles once at startup and then at the configured interval, def
 
 If the first registration is interrupted after GitHub creates the hook but before its ID is saved locally, inspect repository Webhooks before retrying. Remove only that deployment’s orphan hook (verify its endpoint and creation time), then retry with the retained private state. Registration is not an atomic transaction across GitHub and the local filesystem.
 
-Stopping or deleting local storage does not delete the upstream repository webhook. For permanent decommissioning, remove only this deployment's recorded hook in the repository's **Settings → Webhooks**. Keep its private state if you intend to restart or switch endpoint modes; deleting it loses the saved hook identity and secret.
+Controlled shutdown attempts to disable only this deployment’s saved repository hook before closing the listener. It uses an independent five-second cleanup budget; success logs `webhook-disabled`, while an unconfirmed result logs `webhook-disable-error` with manual deactivation guidance. The hook ID, URL, secret and events are retained; restart re-enables and updates the same hook. No webhook is deleted.
+
+This is best-effort cleanup: forced termination, network loss, insufficient permissions or a stop grace period that is too short can leave the hook active. Inspect repository **Settings → Webhooks** and deactivate only the recorded hook if shutdown cannot confirm success. GitHub does not automatically redeliver failed deliveries; startup reconciliation covers observable activity that remains available. Disabling a hook avoids sending future repository payloads to a stale endpoint. Signatures authenticate payloads; they do not encrypt their contents or reserve a temporary hostname.
+
+Deleting local storage does not disable or delete the remote hook. For permanent decommissioning, remove only this deployment’s recorded hook in repository settings after shutdown. Keep its private state if you intend to restart or switch endpoint modes; deleting it loses the saved hook identity and secret.
 
 ## Hosting choices
 
@@ -76,4 +80,4 @@ Use authorized disposable Discussions and separate human participant credentials
 
 Successful disposable fixtures can be deleted after snapshots are retained. Failed fixtures stay until diagnosis is complete. Preserve only redacted conversation/log evidence; do not copy App credential caches, hook secrets, Codex auth files or the PEM into artifacts.
 
-References: [GitHub repository hooks](https://docs.github.com/en/rest/repos/webhooks), [delivery practices](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks), [signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries), [Discussion events](https://docs.github.com/en/webhooks/webhook-events-and-payloads#discussion), [Azure external ingress](https://learn.microsoft.com/en-us/azure/container-apps/ingress-overview).
+References: [GitHub repository hooks](https://docs.github.com/en/rest/repos/webhooks), [failed deliveries](https://docs.github.com/en/webhooks/using-webhooks/handling-failed-webhook-deliveries), [delivery practices](https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks), [signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries), [Discussion events](https://docs.github.com/en/webhooks/webhook-events-and-payloads#discussion), [Azure external ingress](https://learn.microsoft.com/en-us/azure/container-apps/ingress-overview).

@@ -33,19 +33,20 @@ def run(bridge, port):
             if ' ERR ' in line or ' WRN ' in line:
                 log('tunnel-diagnostic', line.strip()[:800])
 
-    def terminate(process):
+    def terminate(process, grace):
+        # Signal only the bridge first: it must disable its hook before ingress stops.
+        if process.poll() is None:
+            process.terminate()
         try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            process.wait(timeout=8)
+            process.wait(timeout=grace)
         except subprocess.TimeoutExpired:
+            log('tunnel-diagnostic', 'process shutdown exceeded its grace period; forcing owned process-group cleanup')
+        finally:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            process.wait(timeout=3)
+            process.wait(timeout=1)
 
     try:
         for signum in (signal.SIGINT, signal.SIGTERM):
@@ -91,7 +92,7 @@ def run(bridge, port):
         return 1
     finally:
         for process in reversed(processes):
-            terminate(process)
+            terminate(process, 12 if process is not processes[0] else 3)
         for signum, handler in previous.items():
             signal.signal(signum, handler)
         if processes:
