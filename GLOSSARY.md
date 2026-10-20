@@ -9,3 +9,6 @@ An administrator-approved binding of one controller device to an immutable GitHu
 
 **Credential broker**:
 The separate trusted service that authorizes enrolled controllers and mints their repository-bound installation tokens. It owns the shared App signing key and never runs an untrusted coding agent.
+
+**Approving administrator**:
+The person whose repository-administrator authority approved a controller enrollment. That person's continuing authority is required for renewal; the enrollment is separate from their personal GitHub sign-in consent.
