@@ -1,0 +1,195 @@
+"""Run both real installers against the Docker executable boundary.
+
+These tests cover our orchestration. They do not claim Windows Docker Desktop,
+real GitHub installation, or Codex OAuth compatibility.
+"""
+import argparse
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import call, patch
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_runtime():
+    spec = importlib.util.spec_from_file_location('runtime', ROOT / 'container/runtime.py')
+    runtime = importlib.util.module_from_spec(spec)
+    # Sibling modules are real collaborators, not substitutes for configuration.
+    sys.path.insert(0, str(ROOT / 'container'))
+    try:
+        spec.loader.exec_module(runtime)
+    finally:
+        sys.path.pop(0)
+    return runtime
+
+
+class InstallerTests(unittest.TestCase):
+    def run_installer(self, shell, *, arguments=(), interactive=False, auth=True, state=None, extra_env=None,
+                      prompt_for_repository=False):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='repoagent installer ')))
+        docker = directory / 'docker'
+        shutil.copyfile(Path(__file__).with_name('docker_fixture.py'), docker)
+        docker.chmod(0o755)
+        key = directory / 'private key.pem'
+        key.write_text('PRIVATE-KEY-CONTENT-MUST-NOT-APPEAR')
+        codex = directory / 'codex home'
+        codex.mkdir()
+        if auth:
+            (codex / 'auth.json').write_text('{"token":"HOST-TOKEN-MUST-NOT-APPEAR"}')
+        state_path = directory / 'docker-state.json'
+        if state:
+            state_path.write_text(json.dumps(state))
+        environment = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ['PATH'],
+                           CODEX_HOME=str(codex), REPOAGENT_INSTANCE='default',
+                           INSTALLER_DOCKER_STATE=str(state_path))
+        environment.update(extra_env or {})
+        if shell == 'bash':
+            command = ['bash', str(ROOT / 'install.sh'), '--app-id', '123456', '--key-path', str(key), '--instance', 'sample']
+            if not prompt_for_repository:
+                command += ['--repository', 'example/project']
+            if not interactive:
+                command.append('--non-interactive')
+        else:
+            command = ['pwsh', '-NoLogo', '-NoProfile', '-File', str(ROOT / 'install.ps1'),
+                       '-AppId', '123456', '-KeyPath', str(key), '-Instance', 'sample']
+            if not prompt_for_repository:
+                command += ['-Repository', 'example/project']
+            if not interactive:
+                command.append('-NonInteractive')
+        command.extend(arguments)
+        answers = ''
+        if interactive:
+            answers = ('\n' if shell == 'bash' else '') + ('example/project\n' if prompt_for_repository else '') + '\n' * 24
+        result = subprocess.run(command, input=answers, text=True,
+                                capture_output=True, env=environment, cwd=directory, timeout=30)
+        observed = json.loads(state_path.read_text()) if state_path.exists() else None
+        output = result.stdout + result.stderr
+        self.assertNotIn('PRIVATE-KEY-CONTENT-MUST-NOT-APPEAR', output)
+        self.assertNotIn('HOST-TOKEN-MUST-NOT-APPEAR', output)
+        return result, observed, key
+
+    def shells(self):
+        return ['bash'] + (['powershell'] if shutil.which('pwsh') else [])
+
+    def test_arguments_import_existing_sign_in_and_start_isolated_agent(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                result, state, key = self.run_installer(shell)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(state['running'])
+                self.assertEqual(state['settings']['keyPath'], str(key))
+                self.assertEqual(state['settings']['mentionUser'], '')
+                self.assertTrue(any('--entrypoint' in event and 'python3' in event for event in state['events']))
+                self.assertIn('type=volume,src=repoagent-sample-config,dst=/data/config,readonly', state['runtime_mounts'])
+                binds = [mount for mount in state['runtime_mounts'] if mount.startswith('type=bind,')]
+                self.assertEqual(binds, [f'type=bind,src={key},dst=/run/secrets/github-app.pem,readonly'])
+
+    def test_missing_values_can_be_answered_interactively(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                result, state, _ = self.run_installer(shell, interactive=True, prompt_for_repository=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(state['settings']['repository'], 'example/project')
+                self.assertTrue(state['running'])
+
+    def test_skip_build_and_device_login_leave_existing_container_auth_in_place(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                flags = ['--skip-build', '--device-login'] if shell == 'bash' else ['-SkipBuild', '-DeviceLogin']
+                initial = {'settings': {}, 'events': [], 'authenticated': True, 'running': False}
+                result, state, _ = self.run_installer(shell, arguments=flags, state=initial)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(any(event[0] == 'build' for event in state['events']))
+                self.assertFalse(any('--entrypoint' in event and 'python3' in event for event in state['events']))
+                self.assertTrue(state['running'])
+
+    def test_no_start_verifies_without_running_agent(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                flag = '--no-start' if shell == 'bash' else '-NoStart'
+                result, state, _ = self.run_installer(shell, arguments=[flag])
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(state['running'])
+                self.assertTrue(any(event[-1] == 'check' for event in state['events']))
+
+    def test_rerun_preserves_saved_model_and_hosting_choices(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                initial = {'settings': {'repository': 'example/project', 'appId': '123456',
+                    'mode': 'fixed-url', 'publicUrl': 'https://agent.example.com', 'listenPort': '9000',
+                    'reconcileInterval': '120', 'model': 'operator-model', 'toolUpdates': 'pinned',
+                    'webSearch': 'disabled', 'mentionUser': 'custom-user'},
+                    'events': [], 'authenticated': True, 'running': False}
+                flag = '--no-start' if shell == 'bash' else '-NoStart'
+                result, state, _ = self.run_installer(shell, arguments=[flag], state=initial)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for key, value in initial['settings'].items():
+                    self.assertEqual(state['settings'][key], value)
+
+    def test_failed_app_verification_never_starts_agent(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                result, state, _ = self.run_installer(shell, extra_env={'INSTALLER_CHECK_FAILURE': '1'})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(state['running'])
+                self.assertFalse(any(event[-1] == 'start' for event in state['events']))
+
+    def test_unattended_missing_auth_fails_instead_of_starting_device_login(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                result, state, _ = self.run_installer(shell, auth=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('No valid container Codex sign-in', result.stdout + result.stderr)
+                self.assertFalse(state['running'])
+
+    def test_running_agent_is_not_reconfigured_or_rebuilt(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                initial = {'settings': {}, 'events': [], 'authenticated': True, 'running': True}
+                result, state, _ = self.run_installer(shell, state=initial)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(state['running'])
+                self.assertFalse(any(event[0] in ('build', 'run') for event in state['events']))
+
+    def test_linux_containers_required_before_any_installation(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                result, state, _ = self.run_installer(shell, extra_env={'INSTALLER_DOCKER_OS': 'windows'})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Linux containers', result.stdout + result.stderr)
+                self.assertFalse(any(event[0] in ('build', 'run') for event in state['events']))
+
+
+class ContainerConfigurationTests(unittest.TestCase):
+    def test_windows_bind_source_is_persisted_as_host_path(self):
+        runtime = load_runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.CONFIG = Path(directory) / 'config/settings.json'
+            runtime.CODEX = Path(directory) / 'codex'
+            args = argparse.Namespace(repository='example/project', app_id='123456',
+                key_path=r'C:\Users\Someone\App Keys\key.pem', installation_id=None,
+                mention_user='', model='test-model', web_search='live', tool_updates='latest',
+                mode='polling', public_url='', listen_port=8080, reconcile_interval=300)
+            runtime.configure(args)
+            self.assertEqual(json.loads(runtime.CONFIG.read_text())['keyPath'], args.key_path)
+
+    def test_unattended_runtime_login_never_starts_device_auth(self):
+        runtime = load_runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.CONFIG = Path(directory) / 'not-configured.json'
+            with patch.object(sys, 'argv', ['runtime.py', 'login', '--non-interactive']), \
+                 patch.object(runtime.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1)) as codex:
+                with self.assertRaisesRegex(ValueError, 'No valid container Codex sign-in'):
+                    runtime.main()
+                self.assertEqual(codex.call_args_list, [call(['codex', 'login', 'status'])])
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -14,7 +14,7 @@ Each bridge process monitors one configured repository. Specifications and ticke
 
 ## Run RepoAgent
 
-For the packaged Docker setup, use `./repoagent build`, `./repoagent setup`, then `./repoagent start`. See [container setup, skills and storage](docs/container-setup.md) and the [executable acceptance catalog](docs/acceptance-cases.md). For event-triggered operation behind your own HTTPS ingress, see [fixed-URL webhooks](docs/webhooks.md).
+For the packaged Docker setup, run `./install.sh` in Bash or `.\install.ps1` in Windows PowerShell from the checkout. Both explain their steps, prompt for missing values, accept command-line options, reuse an existing Codex sign-in when available, verify the GitHub App and start the agent. Windows uses Docker Desktop Linux containers directly; WSL is optional. See [installation, skills and storage](docs/container-setup.md) and the [executable acceptance catalog](docs/acceptance-cases.md). For event-triggered operation behind your own HTTPS ingress, see [fixed-URL webhooks](docs/webhooks.md).
 For local development without a public hostname, select [Quick Tunnel mode](docs/quick-tunnel.md).
 
 Run the bridge in a Linux container containing `gh` and `codex`. The packaged bridge is Native AOT compiled and needs no installed .NET runtime. Native Codex uses its normal sign-in. GitHub access uses an installed GitHub App with **Discussions: read/write** and a read-only mounted PEM signing key. An agent GitHub-user login is unnecessary. Container bootstrap and live verification are tracked in [#5](https://github.com/egil/repoagent/issues/5).

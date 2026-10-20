@@ -2,7 +2,7 @@
 import argparse
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import subprocess
@@ -71,7 +71,8 @@ def configure(args):
         raise ValueError('Repository must be OWNER/REPO.')
     if not re.fullmatch(r'(?:[0-9]+|Iv[A-Za-z0-9.]+)', args.app_id):
         raise ValueError('Supply the App ID or client ID, not a token.')
-    if not Path(args.key_path).is_absolute() or any(c in args.key_path for c in ',\n\r'):
+    # This is a host bind-mount source, including when Docker Desktop runs on Windows.
+    if not (Path(args.key_path).is_absolute() or PureWindowsPath(args.key_path).is_absolute()) or any(c in args.key_path for c in ',\n\r'):
         raise ValueError('Private-key path must be an absolute host path without commas/newlines.')
     if args.mention_user and not re.fullmatch(r'[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*', args.mention_user):
         raise ValueError('Mention user must be a GitHub login without @.')
@@ -184,7 +185,9 @@ def main():
     configure_parser.add_argument('--listen-port', type=int, default=8080)
     configure_parser.add_argument('--reconcile-interval', type=int, default=300)
     get = sub.add_parser('get'); get.add_argument('key')
-    for name in ['versions', 'check', 'start', 'login', 'participant-login', 'participant-identity', 'state', 'skills']:
+    login = sub.add_parser('login')
+    login.add_argument('--non-interactive', action='store_true')
+    for name in ['versions', 'check', 'start', 'participant-login', 'participant-identity', 'state', 'skills']:
         sub.add_parser(name)
     skills = sub.add_parser('install-skills'); skills.add_argument('selection'); skills.add_argument('--token-file')
     enroll = sub.add_parser('enroll'); enroll.add_argument('urls', nargs='+')
@@ -200,6 +203,8 @@ def main():
     elif args.command == 'skills': print((CONFIG.parent / 'skills.json').read_text() if (CONFIG.parent / 'skills.json').exists() else '[]')
     elif args.command == 'login':
         if subprocess.run(['codex', 'login', 'status']).returncode:
+            if args.non_interactive:
+                raise ValueError('No valid container Codex sign-in. Supply --codex-auth to the installer or rerun interactively to sign in.')
             result = subprocess.run(['codex', 'login', '--device-auth'])
             if result.returncode:
                 raise ValueError('Enable device-code login in ChatGPT security/workspace settings, then rerun login. Alternatively use ./repoagent import-codex-auth /explicit/path/auth.json. No host sign-in is changed.')

@@ -71,10 +71,10 @@ case "${1:-help}" in
   build)
     docker build --target "${REPOAGENT_TARGET:-runtime}" -f "$root/container/Containerfile" -t "$image" "$root"
     docker run --rm "$image" versions ;;
-  setup) stopped; exec bash "$root/scripts/setup-wizard.sh" ;;
+  setup) stopped; shift; exec bash "$root/scripts/setup-wizard.sh" --skip-build --no-start "$@" ;;
   configure) stopped; shift; config configure "$@" ;;
   get) shift; config get "$@" ;;
-  login) stopped; "${base[@]}" "${interactive[@]}" "$image" login ;;
+  login) stopped; shift; "${base[@]}" "${interactive[@]}" "$image" login "$@" ;;
   import-codex-auth)
     stopped
     [[ ${2:-} = /* && -f "$2" ]] || { echo 'Supply an explicit absolute auth.json file path.' >&2; exit 1; }

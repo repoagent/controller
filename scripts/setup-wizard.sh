@@ -192,60 +192,192 @@ finish() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────
-# STAGES: repeatable container setup; only the operator supplies account choices.
-TOTAL_STAGES=3
-root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-cli="$root/repoagent"
-# Defaults come from container-owned configuration; no host dotenv/credential file.
-_existing() {
-  local field
-  case "$1" in
-    REPOSITORY) field=repository ;; APP_ID) field=appId ;; KEY_PATH) field=keyPath ;;
-    INSTALLATION_ID) field=installationId ;; MENTION_USER) field=mentionUser ;; MODEL) field=model ;;
-    MODE) field=mode ;; PUBLIC_URL) field=publicUrl ;; LISTEN_PORT) field=listenPort ;; RECONCILE_INTERVAL) field=reconcileInterval ;;
-  esac
-  "$cli" get "$field" 2>/dev/null || true
-}
-banner "RepoAgent container setup"
-stage "Choose the repository and installed GitHub App"
-say "Use an App already installed with Discussions read/write. App registration and installation approval stay in your browser."
-open_url "https://github.com/settings/apps"
-ask REPOSITORY "Repository (OWNER/REPO):"
-ask APP_ID "App ID or client ID:"
-ask KEY_PATH "Absolute host path to its PEM private key (mounted read-only):"
-ask INSTALLATION_ID "Expected installation ID (optional):"
-ask MENTION_USER "Dedicated mention login without @ (optional):"
-ask MODEL "Codex model (Enter defaults to gpt-6.1-sol):"
-ask MODE "Deployment mode: polling, fixed-url or quick-tunnel (Enter defaults to polling):"
-if [[ "${MODE:-polling}" != polling ]]; then
-  say "Enable repository Webhooks: read and write in the App, then approve updated installation permissions."
-  if [[ "$MODE" == fixed-url ]]; then
-    say "Provide an external HTTPS proxy/ingress. It forwards /github/webhook to the selected container port."
-    ask PUBLIC_URL "Public HTTPS origin (for example https://agent.example.com):"
+# STAGES: repeatable installation and setup. Keep the wizard library unchanged.
+run_wizard() {
+  local root cli skip_build=false no_start=false non_interactive=false option variable
+  root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+  cli="$root/repoagent"
+  while (( $# )); do
+    case "$1" in
+      --help|-h)
+        cat <<'USAGE'
+Usage: ./install.sh [options]
+Prompts for missing settings, builds the image, imports an existing Codex auth.json
+when available (otherwise offers device sign-in), verifies access and starts Docker.
+  --repository OWNER/REPO       Target repository with Discussions enabled
+  --app-id ID                   Installed GitHub App ID or client ID
+  --key-path PATH               PEM private-key file, mounted read-only
+  --codex-auth PATH             Import only this existing Codex auth.json
+  --device-login                Skip automatic host auth import
+  --instance NAME               Isolated instance (default: REPOAGENT_INSTANCE or default)
+  --installation-id ID          Optional expected installation
+  --mention-user LOGIN          Optional existing user; empty disables (default)
+  --model MODEL                 Default: gpt-6.1-sol
+  --mode MODE                   polling (default), fixed-url or quick-tunnel
+  --public-url HTTPS_ORIGIN     Required for fixed-url
+  --listen-port PORT            Default: 8080
+  --reconcile-interval SECONDS  Default: 300
+  --tool-updates latest|pinned  Default: latest
+  --web-search live|cached|disabled  Default: live
+  --skip-build                  Use the existing REPOAGENT_IMAGE image
+  --no-start                    Configure and verify without starting
+  --non-interactive             Use arguments/saved defaults; never prompt or open a browser
+Existing instance settings are offered as defaults. Stop a running instance first.
+No host GitHub login, entire home directory or Docker socket is mounted in the agent.
+USAGE
+        return 0 ;;
+      --skip-build) skip_build=true; shift; continue ;;
+      --no-start) no_start=true; shift; continue ;;
+      --non-interactive) non_interactive=true; shift; continue ;;
+      --device-login) CODEX_AUTH_PATH=''; shift; continue ;;
+      --repository) variable=REPOSITORY ;; --app-id) variable=APP_ID ;;
+      --key-path) variable=KEY_PATH ;; --codex-auth) variable=CODEX_AUTH_PATH ;;
+      --instance) variable=REPOAGENT_INSTANCE ;; --installation-id) variable=INSTALLATION_ID ;;
+      --mention-user) variable=MENTION_USER ;; --model) variable=MODEL ;; --mode) variable=MODE ;;
+      --public-url) variable=PUBLIC_URL ;; --listen-port) variable=LISTEN_PORT ;;
+      --reconcile-interval) variable=RECONCILE_INTERVAL ;; --tool-updates) variable=TOOL_UPDATES ;;
+      --web-search) variable=WEB_SEARCH ;;
+      *) echo "Unknown option: $1. Run ./install.sh --help." >&2; return 1 ;;
+    esac
+    option=$1
+    (( $# >= 2 )) || { echo "$option requires a value." >&2; return 1; }
+    printf -v "$variable" '%s' "$2"
+    shift 2
+  done
+  export REPOAGENT_INSTANCE=${REPOAGENT_INSTANCE:-default}
+  [[ "$REPOAGENT_INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || { echo 'Invalid REPOAGENT_INSTANCE' >&2; return 1; }
+
+  # Values passed explicitly skip prompts. Saved container settings remain defaults.
+  _existing() {
+    local field default=''
+    case "$1" in
+      REPOSITORY) field=repository ;; APP_ID) field=appId ;; KEY_PATH) field=keyPath ;;
+      INSTALLATION_ID) field=installationId ;; MENTION_USER) field=mentionUser ;;
+      MODEL) field=model; default=gpt-6.1-sol ;; MODE) field=mode; default=polling ;;
+      PUBLIC_URL) field=publicUrl ;; LISTEN_PORT) field=listenPort; default=8080 ;;
+      RECONCILE_INTERVAL) field=reconcileInterval; default=300 ;;
+      TOOL_UPDATES) field=toolUpdates; default=latest ;; WEB_SEARCH) field=webSearch; default=live ;;
+      CODEX_AUTH_PATH)
+        local auth=${CODEX_HOME:-$HOME/.codex}/auth.json
+        [[ ! -f "$auth" ]] || printf '%s' "$auth"
+        return 0 ;;
+    esac
+    local saved
+    saved=$("$cli" get "$field" 2>/dev/null || true)
+    printf '%s' "${saved:-$default}"
+  }
+  collect() {
+    local key=$1 prompt=$2 default
+    [[ ! ${!key+x} ]] || return 0
+    default=$(_existing "$key")
+    if $non_interactive; then printf -v "$key" '%s' "$default"
+    else
+      ask "$key" "$prompt${default:+ [$default]}:" || { echo 'Input ended; rerun with arguments or use --non-interactive.' >&2; return 1; }
+    fi
+  }
+
+  TOTAL_STAGES=5
+  if $non_interactive; then say 'RepoAgent installation: 5 stages; noninteractive mode.'
+  else banner 'RepoAgent installation'; fi
+  stage 'Check Docker and prepare the image'
+  say "Instance: $REPOAGENT_INSTANCE. Configuration and conversations stay in its dedicated Docker volumes."
+  say 'The agent can use its container filesystem/network. Its runtime mounts no host home directory or Docker socket.'
+  command -v docker >/dev/null || { echo 'Docker CLI is missing. Install/start Docker Desktop, or enable its WSL integration.' >&2; return 1; }
+  local os
+  os=$(docker info --format '{{.OSType}}') || { echo 'Cannot reach Docker. Start Docker Desktop and retry.' >&2; return 1; }
+  [[ "$os" == linux ]] || { echo 'RepoAgent needs Linux containers. Switch Docker Desktop to Linux containers.' >&2; return 1; }
+  [[ $(docker inspect --format '{{.State.Running}}' "repoagent-$REPOAGENT_INSTANCE" 2>/dev/null || true) != true ]] || {
+    echo 'Stop the running instance before installing; its stored data will be preserved.' >&2; return 1;
+  }
+  if $skip_build; then say "Using existing image ${REPOAGENT_IMAGE:-repoagent:local}; skipping build."
   else
-    say "Quick Tunnel needs no Cloudflare account/domain/credentials; its temporary hostname has no uptime guarantee. Use it for development/testing."
+    say 'Building the Linux image from this checkout. Build tools, Codex and gh are installed inside Docker.'
+    "$cli" build
   fi
-  ask LISTEN_PORT "Listener port (Enter defaults to 8080):"
-  ask RECONCILE_INTERVAL "Reconciliation seconds (Enter defaults to 300):"
-fi
-tool_updates=$("$cli" get toolUpdates 2>/dev/null || true)
-web_search=$("$cli" get webSearch 2>/dev/null || true)
-args=(configure --repository "$REPOSITORY" --app-id "$APP_ID" --key-path "$KEY_PATH"
-  --mention-user "$MENTION_USER" --model "${MODEL:-gpt-6.1-sol}"
-  --tool-updates "${tool_updates:-latest}" --web-search "${web_search:-live}"
-  --mode "${MODE:-polling}")
-if [[ "${MODE:-polling}" != polling ]]; then
-  args+=(--listen-port "${LISTEN_PORT:-8080}" --reconcile-interval "${RECONCILE_INTERVAL:-300}")
-fi
-if [[ "${MODE:-polling}" == fixed-url ]]; then args+=(--public-url "$PUBLIC_URL"); fi
-[[ -z "$INSTALLATION_ID" ]] || args+=(--installation-id "$INSTALLATION_ID")
-"$cli" "${args[@]}"
-stage "Sign in to Codex inside the container"
-say "Follow the printed URL and device code in your browser. Existing valid container credentials are reused."
-say "If device sign-in is unavailable, enable it in ChatGPT security/workspace settings, or explicitly import a cached auth.json using the documented command."
-"$cli" login
-stage "Verify and start"
-"$cli" check
-say "Additional skills are optional: ./repoagent skills install /absolute/path/skills.json"
-say "Start with ./repoagent start; inspect with ./repoagent logs --follow."
-say "Configuration, credentials, workspace, native history and checkpoint persist in dedicated Docker volumes."
+
+  stage 'Choose the repository and GitHub App'
+  say 'Enable Discussions in the target repository: Settings > General > Features > Discussions.'
+  say 'For a new organization App: organization Settings > Developer settings > GitHub Apps > New GitHub App.'
+  say 'Choose a unique name, use your organization URL as Homepage URL, and leave user authorization/callbacks unused.'
+  say 'For polling: turn off Webhook Active; grant repository Discussions: read and write.'
+  say 'Choose Only on this account when the App belongs to the target organization.'
+  say 'Create the App; record its App ID; generate/download a private PEM key.'
+  say 'Install App > select the target organization > Only select repositories > choose the target repository.'
+  say 'App creation, installation and permission approval happen in your browser; no GitHub account token is collected.'
+  if ! $non_interactive && [[ ! ${APP_ID+x} || ! ${KEY_PATH+x} ]]; then open_url 'https://github.com/settings/apps'; fi
+  collect REPOSITORY 'Repository (OWNER/REPO)'
+  collect APP_ID 'App ID or client ID'
+  collect KEY_PATH 'PEM private-key file path (keep outside the checkout)'
+  collect INSTALLATION_ID 'Expected installation ID (optional)'
+  collect MENTION_USER 'Dedicated mention user without @ (optional; empty uses the App bot)'
+  collect MODEL 'Codex model'
+  collect MODE 'Mode: polling, fixed-url or quick-tunnel'
+  collect TOOL_UPDATES 'Tool updates: latest or pinned'
+  collect WEB_SEARCH 'Web search: live, cached or disabled'
+  [[ -n "$REPOSITORY" && -n "$APP_ID" && -n "$KEY_PATH" ]] || {
+    echo 'Repository, App ID and key path are required. Supply --repository, --app-id and --key-path.' >&2; return 1;
+  }
+  [[ -f "$KEY_PATH" ]] || { echo 'PEM private-key file is missing.' >&2; return 1; }
+  KEY_PATH=$(cd -- "$(dirname -- "$KEY_PATH")" && pwd)/$(basename -- "$KEY_PATH")
+  [[ "$KEY_PATH" != *','* && "$KEY_PATH" != *$'\n'* && "$KEY_PATH" != *$'\r'* ]] || {
+    echo 'Private-key paths cannot contain commas or newlines.' >&2; return 1;
+  }
+  local args=(configure --repository "$REPOSITORY" --app-id "$APP_ID" --key-path "$KEY_PATH"
+    "--mention-user=$MENTION_USER" --model "$MODEL" --mode "$MODE"
+    --tool-updates "$TOOL_UPDATES" --web-search "$WEB_SEARCH")
+  if [[ "$MODE" != polling ]]; then
+    say 'Webhook modes also require repository Webhooks: read and write; approve the installation permissions.'
+    collect LISTEN_PORT 'Listener port'
+    collect RECONCILE_INTERVAL 'Reconciliation interval in seconds'
+    args+=(--listen-port "$LISTEN_PORT" --reconcile-interval "$RECONCILE_INTERVAL")
+    if [[ "$MODE" == fixed-url ]]; then
+      say 'Your external HTTPS proxy must forward /github/webhook to the container listener.'
+      collect PUBLIC_URL 'Public HTTPS origin'
+      args+=(--public-url "$PUBLIC_URL")
+    else say 'Quick Tunnel creates a temporary public hostname for development; it needs no Cloudflare account.'; fi
+  fi
+  [[ -z "$INSTALLATION_ID" ]] || args+=(--installation-id "$INSTALLATION_ID")
+  say 'Checking that the container user (UID 1000) can read the read-only PEM mount. Host file permissions are not changed.'
+  docker run --rm --mount "type=bind,src=$KEY_PATH,dst=/run/secrets/github-app.pem,readonly" \
+    --entrypoint sh "${REPOAGENT_IMAGE:-repoagent:local}" -c 'test -r /run/secrets/github-app.pem' || {
+      echo 'Docker cannot read the PEM as UID 1000. Check the file permissions and Docker file sharing.' >&2; return 1;
+    }
+  say "Saving configuration for $REPOSITORY with App $APP_ID in instance $REPOAGENT_INSTANCE."
+  "$cli" "${args[@]}"
+
+  stage 'Reuse your Codex sign-in or sign in inside Docker'
+  say 'Only the selected auth.json is copied into the container credentials volume; host config and history are not imported.'
+  say 'Press Enter to use a detected cache; enter - to skip importing and use container sign-in.'
+  collect CODEX_AUTH_PATH 'Existing Codex auth.json path (optional)'
+  if [[ -n "$CODEX_AUTH_PATH" && "$CODEX_AUTH_PATH" != - ]]; then
+    [[ -f "$CODEX_AUTH_PATH" ]] || { echo 'Selected Codex auth.json file is missing.' >&2; return 1; }
+    CODEX_AUTH_PATH=$(cd -- "$(dirname -- "$CODEX_AUTH_PATH")" && pwd)/$(basename -- "$CODEX_AUTH_PATH")
+    say "Importing $CODEX_AUTH_PATH read-only; its contents are not printed."
+    "$cli" import-codex-auth "$CODEX_AUTH_PATH"
+  fi
+  if $non_interactive; then "$cli" login --non-interactive
+  else
+    say 'Checking the container sign-in. If needed, follow the printed device URL/code in your browser.'
+    say 'Device login must be enabled in ChatGPT security/workspace settings. OS keyring credentials cannot be copied as a file.'
+    "$cli" login
+  fi
+
+  stage 'Verify Codex and the installed GitHub App'
+  say 'Checking Codex login and the actual App installation, repository permission and bot identity before starting work.'
+  "$cli" check
+  stage 'Start the agent and show next steps'
+  if $no_start; then say 'Verification succeeded. --no-start leaves the agent stopped.'
+  else
+    say 'Starting the container; latest mode checks tool updates before starting work. Waiting for the ready log.'
+    "$cli" start
+  fi
+  say "For future commands in this shell: export REPOAGENT_INSTANCE=$REPOAGENT_INSTANCE"
+  say 'Use ./repoagent logs --follow to follow logs; Ctrl+C stops the log viewer.'
+  say 'Use ./repoagent stop, ./repoagent start or ./repoagent restart to manage the container.'
+  say 'Mention the actor login printed above, including [bot], in a Discussion body/comment to start a conversation.'
+  say 'Or, while stopped: ./repoagent enroll https://github.com/OWNER/REPO/discussions/NUMBER'
+  say 'This installation handles Discussions. Its token does not grant repository code pushes or PR creation.'
+  say 'Configuration, Codex credentials, workspace, history, state and updated tools persist in Docker volumes.'
+}
+
+run_wizard "$@"; exit

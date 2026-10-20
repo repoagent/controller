@@ -1,8 +1,95 @@
 # Container setup
 
-Use Docker Engine/Desktop and Bash. Run every command below from the checkout. The host runs the `repoagent` shell wrapper; the bridge, Codex, GitHub CLI, setup helpers and tests execute inside containers.
+Use Docker Engine/Desktop with Linux containers and either Bash or Windows PowerShell 5.1+. Run every command below from the checkout. The host runs a small launcher; the bridge, Codex, GitHub CLI and setup helpers execute inside containers. No host .NET, Node.js or GitHub CLI installation is required.
+
+## Install on Windows
+
+With Docker Desktop running in Linux container mode, clone or download this repository, then open PowerShell in the checkout:
+
+```powershell
+git clone https://github.com/egil/repoagent.git
+cd repoagent
+.\install.ps1
+```
+
+The installer asks questions for missing values and explains each operation before performing it. It checks Docker, builds the image, guides GitHub App configuration, imports an existing Codex sign-in or offers device sign-in, verifies authentication, and starts the agent. It uses Docker Desktop directly; no WSL distribution or Linux shell is needed.
+
+You can supply some answers and let it ask for the rest, or supply the required values and disable all prompts:
+
+```powershell
+.\install.ps1 `
+  -Repository 'my-org/my-repo' `
+  -AppId '12345678' `
+  -KeyPath 'C:\Users\me\Keys\github-app.pem' `
+  -Instance 'my-repo' `
+  -NonInteractive
+```
+
+Replace the repository, App ID and key path with your values. The target repository needs **Discussions** enabled. For a new organization-owned App, the script describes **organization Settings → Developer settings → GitHub Apps → New GitHub App**, repository **Discussions: read and write**, private-key generation and installation on the selected repository. Polling is the default and needs no public URL or active webhook. Registering the App under the target organization lets you choose **Only on this account**. See [GitHub App registration](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app) and [project authentication details](github-app-auth.md).
+
+For an already authenticated Windows Codex CLI, the installer offers `%USERPROFILE%\.codex\auth.json`, or `auth.json` under `CODEX_HOME` when that variable is set. Use `-CodexAuthPath 'C:\path\auth.json'` to select another file. Only that file is mounted read-only during import, copied into this instance's credentials volume, and unmounted afterward. The host's configuration, skills and session history are not copied. The container runs its own Codex executable.
+
+If credentials are held in the OS credential store, an `auth.json` may not exist. Omit `-NonInteractive` and use `-DeviceLogin` to skip host-file import and sign in inside Docker. Device login requires enabling it in ChatGPT security/workspace settings. In noninteractive mode, missing/invalid container credentials fail instead of opening a login flow. See [official OpenAI authentication documentation](https://learn.chatgpt.com/docs/auth).
+
+Follow logs and manage the same instance from PowerShell:
+
+```powershell
+$env:REPOAGENT_INSTANCE = 'my-repo'
+.\repoagent.ps1 logs --follow
+.\repoagent.ps1 stop
+.\repoagent.ps1 start
+.\repoagent.ps1 restart
+```
+
+Ctrl+C exits the log viewer; the container keeps running. Keep Docker Desktop and the machine running for the agent to receive activity. The launcher does not install a Windows service or configure startup at login. It also supports `get`, `configure`, `check`, `login`, `import-codex-auth`, `versions`, `state`, `enroll` and `skills`. The Bash-only live-test runner remains available from a Bash environment.
+
+After startup, use the actor login printed in the logs, including `[bot]`, in a Discussion body or comment. A 👀 receipt means Codex accepted the input; wait for the App-authored reply. Alternatively, stop the agent, explicitly enroll a Discussion, then start it:
+
+```powershell
+.\repoagent.ps1 stop
+.\repoagent.ps1 enroll https://github.com/my-org/my-repo/discussions/123
+.\repoagent.ps1 start
+```
+
+This installs the current Discussion interface. Its repository-scoped token does not grant code pushes or PR creation.
+
+## Install with Bash
+
+```sh
+./install.sh
+# Or supply answers without prompts:
+./install.sh --repository my-org/my-repo --app-id 12345678 \
+  --key-path /absolute/path/github-app.pem --instance my-repo --non-interactive
+```
+
+The Bash installer uses the same setup wizard as `./repoagent setup`, detecting `${CODEX_HOME:-$HOME/.codex}/auth.json` for optional import. Within WSL, this is the Linux home by default. To reuse a Windows-native login from WSL, explicitly supply `--codex-auth /mnt/c/Users/WINDOWS_USER/.codex/auth.json`. Docker Desktop must enable integration for that WSL distribution; use Linux paths for `--key-path`. See [Docker's WSL integration guide](https://docs.docker.com/desktop/features/wsl/).
+
+Both installers preserve saved settings as defaults, reject reconfiguration of a running instance, and stop on build, import, authentication or startup failure. Reuse the same instance to preserve conversations; select a new instance to change the repository/App. They never delete volumes or register a GitHub App automatically. App keys must be readable by container UID 1000; installers verify this without changing host permissions. The normal agent has access to its container filesystem/network; its only host-file mount is the selected read-only App key.
+
+Useful options are available in both shells:
+
+| PowerShell | Bash | Behavior |
+| --- | --- | --- |
+| `-Repository`, `-AppId`, `-KeyPath` | `--repository`, `--app-id`, `--key-path` | Required answers for a new instance |
+| `-CodexAuthPath PATH` | `--codex-auth PATH` | Select an existing auth cache |
+| `-DeviceLogin` | `--device-login` | Skip host auth import; reuse container login or offer device sign-in |
+| `-Instance NAME` | `--instance NAME` | Select isolated container/volumes; default `default` or `REPOAGENT_INSTANCE` |
+| `-NonInteractive` | `--non-interactive` | Use supplied/saved/default values; no prompts or browser opening |
+| `-NoStart` | `--no-start` | Configure and verify, then leave the agent stopped |
+| `-SkipBuild` | `--skip-build` | Use an existing image |
+| `-Model MODEL` | `--model MODEL` | Choose Codex model; new-instance default `gpt-6.1-sol` |
+| `-MentionUser LOGIN` | `--mention-user LOGIN` | Optional existing mention account; default empty, using App mentions/enrollment |
+| `-InstallationId ID` | `--installation-id ID` | Check an expected App installation |
+| `-ToolUpdates latest\|pinned` | `--tool-updates latest\|pinned` | Choose startup tool updates; default `latest` |
+| `-WebSearch live\|cached\|disabled` | `--web-search live\|cached\|disabled` | Choose web search; default `live` |
+| `-Mode polling\|fixed-url\|quick-tunnel` | `--mode polling\|fixed-url\|quick-tunnel` | Choose deployment mode; default `polling` |
+| `-PublicUrl`, `-ListenPort`, `-ReconcileInterval` | `--public-url`, `--listen-port`, `--reconcile-interval` | Webhook configuration; see the hosting guides |
+
+Run `.\install.ps1 -?` / `Get-Help .\install.ps1 -Full` or `./install.sh --help` for usage. PowerShell parameter names use one leading hyphen; Bash options use two. With the PowerShell launcher, use `configure --mention-user=` when explicitly clearing the mention account; this preserves the empty value on Windows PowerShell 5.1.
 
 ## Build and configure
+
+The individual Bash commands remain available when you want to manage each step yourself:
 
 ```sh
 ./repoagent build
@@ -11,7 +98,7 @@ Use Docker Engine/Desktop and Bash. Run every command below from the checkout. T
 ./repoagent logs --follow
 ```
 
-The setup wizard collects the repository, installed App/client ID, absolute PEM file path, optional expected installation ID, optional dedicated mention login and Codex model. It runs Codex device sign-in and checks both Codex authentication and the actual GitHub App installation before allowing work. Visit the printed URLs and enter the displayed codes in your browser; this also works from tmux. App registration, installation and permission approval happen in GitHub, as described in [App setup](github-app-auth.md).
+`./repoagent setup` uses the installer wizard with build/start skipped. It accepts the same options, imports a selected Codex auth cache or offers device sign-in, and checks Codex authentication and the actual GitHub App installation. Visit printed device URLs and enter displayed codes in your browser; this also works from tmux. App registration, installation and permission approval happen in GitHub, as described in [App setup](github-app-auth.md).
 
 The built image seeds Codex **0.163.0**, GitHub CLI **2.102.0** and pins the bridge's build SDK **11.0.100-rc.2**. Downloaded seed binaries have checked SHA-256 digests. The bridge is Native AOT compiled; the final image contains no .NET runtime or SDK. `./repoagent versions` reports the selected tools and non-root UID. Linux amd64 and arm64 builds are configured; record the platform actually verified when reporting acceptance.
 
@@ -110,5 +197,15 @@ To intentionally remove this instance's stored credentials, selected skills, wor
 ```
 
 This does not revoke upstream OAuth authorizations or uninstall the GitHub App. Live-test evidence volumes and retained failed Discussions have separate cleanup described in the [acceptance catalog](acceptance-cases.md).
+
+## Installer verification
+
+Run the host orchestration checks without Docker or account credentials:
+
+```sh
+python3 -m unittest discover -s tests/installers -v
+```
+
+These tests execute the real Bash installer and, when `pwsh` is installed, the PowerShell installer with a controlled Docker executable at the external process boundary. They cover prompted/argument-based setup, paths containing spaces, instance isolation, auth import, noninteractive failure, and stopping before work when verification fails. A focused configuration check exercises real Windows bind-source validation. This is local orchestration evidence, not live proof of Docker Desktop file sharing, GitHub permissions or Codex OAuth on Windows.
 
 For a temporary local HTTPS endpoint without a Cloudflare account/domain or host tools, choose `--mode quick-tunnel`; see [Quick Tunnel setup and lifecycle](quick-tunnel.md). It publishes no host port and owns cloudflared inside the agent container. Fixed-URL and polling modes do not start a tunnel.
