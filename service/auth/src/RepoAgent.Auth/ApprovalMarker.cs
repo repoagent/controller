@@ -12,6 +12,14 @@ public static class ApprovalMarker
         var challenge = Text(grant.Device, "Challenge");
         if (challenge.Length != 43 || !challenge.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))
             throw new IssuanceDenied();
+        if (grant.Approval == ApprovalContract.Agent)
+            return JsonSerializer.Serialize(new
+            {
+                version = 2, approvalKind = grant.Approval.Kind, githubHost = "github.com", appId = AppId, appSlug = AppSlug,
+                repositoryId = Id(grant.RepositoryId), repository = grant.Repository,
+                installationId = grant.InstallationId, deviceId = grant.DeviceId, challenge,
+                profile = grant.Profile, policyVersion = grant.Approval.Policy, epoch = grant.Epoch, variable = grant.Variable
+            });
         return JsonSerializer.Serialize(new
         {
             version = 1, githubHost = "github.com", appId = AppId, appSlug = AppSlug,

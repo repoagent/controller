@@ -17,19 +17,38 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         var repositoryPath = string.Join('/', grant.Repository.Split('/').Select(Uri.EscapeDataString));
         using var installation = await ReadAsync($"repos/{repositoryPath}/installation", jwt, work);
         var root = installation.RootElement;
-        if (root.GetProperty("id").GetInt64() != grant.InstallationId
-            || root.GetProperty("app_id").GetInt64() != AppId
+        var installationId = root.GetProperty("id").GetInt64();
+        if (installationId <= 0 || root.GetProperty("app_id").GetInt64() != AppId
             || root.GetProperty("app_slug").GetString() != AppSlug
             || root.GetProperty("suspended_at").ValueKind != JsonValueKind.Null) throw new IssuanceDenied();
         var permissions = root.GetProperty("permissions");
-        foreach (var required in Permissions(grant.Profile).Concat(Permissions("verification")))
+        foreach (var required in Permissions(grant.Profile).Concat(Permissions(grant.Approval.VerifierProfile)))
             if (!permissions.TryGetProperty(required.Key, out var level)
                 || level.GetString() is not { } actual || actual != required.Value && !(actual == "write" && required.Value == "read"))
                 throw new IssuanceDenied();
+        if (installationId != grant.InstallationId)
+        {
+            work.Fresh(started);
+            throw new ApprovalChanged();
+        }
         using var repositories = await ReadAsync("installation/repositories?per_page=2", verifier, work);
         var repos = repositories.RootElement;
         if (repos.GetProperty("total_count").GetInt32() != 1) throw new IssuanceDenied();
-        ValidateRepository(repos.GetProperty("repositories"), grant);
+        var (repositoryId, repository) = RepositoryIdentity(repos.GetProperty("repositories"));
+        if (repositoryId != Id(grant.RepositoryId) || !string.Equals(repository, grant.Repository, StringComparison.OrdinalIgnoreCase))
+        {
+            work.Fresh(started);
+            throw new ApprovalChanged();
+        }
+        if (grant.Approval == ApprovalContract.Agent)
+        {
+            var approved = await ObserveAgentVariableAsync(grant.Repository, grant.Variable, grant.Marker, verifier, work);
+            // A negative observation is authority to close only while all contributing
+            // evidence is fresh. Stale evidence must leave the grant recoverable.
+            work.Fresh(started);
+            if (!approved) throw new ApprovalChanged();
+            return started;
+        }
         var environmentPath = $"repos/{repositoryPath}/environments/{Uri.EscapeDataString(grant.Environment)}";
         using var environment = await ReadAsync(environmentPath, verifier, work);
         if (environment.RootElement.GetProperty("id").GetInt64() != grant.EnvironmentId
@@ -39,6 +58,40 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
             || marker.RootElement.GetProperty("value").GetString() != grant.Marker) throw new ApprovalChanged();
         work.Fresh(started);
         return started;
+    }
+
+    internal async Task<bool> ObserveAgentVariableAsync(string repository, string selected, string marker, string token, IssuanceWork work)
+    {
+        var path = string.Join('/', repository.Split('/').Select(Uri.EscapeDataString));
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        int? total = null;
+        bool? approved = null;
+        for (var page = 1; page <= 2; page++)
+        {
+            using var response = await ReadAsync($"repos/{path}/agents/variables?per_page=30&page={page}", token, work);
+            var root = response.RootElement;
+            var count = root.GetProperty("total_count").GetInt32();
+            if (count < 0 || count > 60 || total is not null && total != count) throw new IssuanceDenied();
+            total = count;
+            var variables = root.GetProperty("variables");
+            if (variables.GetArrayLength() > 30) throw new IssuanceDenied();
+            foreach (var variable in variables.EnumerateArray())
+            {
+                var name = variable.GetProperty("name").GetString();
+                var value = variable.GetProperty("value").GetString();
+                if (string.IsNullOrEmpty(name) || value is null || !seen.Add(name)) throw new IssuanceDenied();
+                if (name == selected) approved = value == marker;
+            }
+            if (seen.Count == total)
+            {
+                // Offset pages are not a snapshot: an unchanged marker can shift to an
+                // already-read page. Only one complete response can prove absence.
+                if (approved is null && page != 1) throw new IssuanceDenied();
+                return approved ?? false;
+            }
+            if (variables.GetArrayLength() < 30 || seen.Count > total) throw new IssuanceDenied();
+        }
+        throw new IssuanceDenied();
     }
 
     public Task<IssuedToken> MintAsync(GrantSnapshot grant, string profile, string jwt, CancellationToken ct) =>
@@ -119,14 +172,26 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true, NoStore = true };
         return request;
     }
-    private static void ValidateRepository(JsonElement repositories, GrantSnapshot grant) => ValidateRepository(repositories, grant.RepositoryId, grant.Repository);
+    private static bool IsRepositoryName(string? repository) => repository is not null
+        && repository.Split('/') is [var owner, var name] && Segment(owner) && Segment(name);
+    private static bool Segment(string value) => value.Length is > 0 and <= 100 && value is not ("." or "..")
+        && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
     internal static void ValidateRepository(JsonElement repositories, string repositoryId, string repository)
     {
-        if (repositories.ValueKind != JsonValueKind.Array || repositories.GetArrayLength() != 1
-            || repositories[0].GetProperty("id").GetInt64() != Id(repositoryId)
-            || !string.Equals(repositories[0].GetProperty("full_name").GetString(), repository, StringComparison.OrdinalIgnoreCase))
+        var observed = RepositoryIdentity(repositories);
+        if (observed.Id != Id(repositoryId) || !string.Equals(observed.Name, repository, StringComparison.OrdinalIgnoreCase))
             throw new IssuanceDenied();
     }
+    // Shape validation is separate from comparison: malformed evidence never proves withdrawal.
+    internal static (long Id, string Name) RepositoryIdentity(JsonElement repositories)
+    {
+        if (repositories.ValueKind != JsonValueKind.Array || repositories.GetArrayLength() != 1) throw new IssuanceDenied();
+        var id = repositories[0].GetProperty("id").GetInt64();
+        var name = repositories[0].GetProperty("full_name").GetString();
+        if (id <= 0 || !IsRepositoryName(name)) throw new IssuanceDenied();
+        return (id, name!);
+    }
+
     private static void RejectDuplicates(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
