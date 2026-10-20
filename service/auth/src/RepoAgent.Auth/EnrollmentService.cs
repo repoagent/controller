@@ -25,12 +25,13 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         // A definitely unsent reservation can resume. A sending/unknown outcome never retries POST.
         if (existing is not null && Text(existing, "State") == "reserved" && Date(existing, "JwtExpiresAt") <= clock.GetUtcNow()) throw new IssuanceDenied();
         var reservation = await store.ReserveWorkAsync(s, existing is null, work);
+        // Retry admission pays for new work, but an unsent mint keeps its original signed authority.
+        if (existing is not null && Text(existing, "State") == "reserved") reservation = existing;
         var jwt = await signer.SignAsync(reservation, work.Cancellation);
         var installation = await provider.DiscoverAsync(s, jwt, work);
         s.Pending["InstallationId"] = installation;
         if (existing is null || Text(existing, "State") == "reserved")
         {
-            if (existing is not null) reservation = existing;
             reservation["InstallationId"] = installation;
             await store.CommitAsync(s, [Action(reservation)], work.Cancellation);
             if (Date(reservation, "JwtExpiresAt") <= clock.GetUtcNow()) throw new IssuanceDenied();
