@@ -13,51 +13,7 @@ public sealed class AgentVariableEnrollmentTests
     public async Task Agent_approval_requires_private_ack_and_observed_removal_permanently_closes_runtime()
     {
         await using var f = await EnrollmentFixture.CreateAsync();
-        f.GitHub.Before = async request =>
-        {
-            var path = request.RequestUri!.AbsolutePath;
-            if (request.Method == HttpMethod.Post)
-            {
-                var input = await request.Content!.ReadFromJsonAsync<JsonElement>(Token);
-                var permissions = input.GetProperty("permissions");
-                if (permissions.TryGetProperty("agent_variables", out var access))
-                {
-                    Assert.Equal("read", access.GetString());
-                    Assert.Single(permissions.EnumerateObject());
-                    var ids = input.GetProperty("repository_ids");
-                    Assert.Equal(123456, Assert.Single(ids.EnumerateArray()).GetInt64());
-                    f.GitHub.VerifierMints++;
-                    return GitHubTransport.Json(new
-                    {
-                        token = "agent-verifier-token", expires_at = f.Clock.GetUtcNow().AddHours(1),
-                        repository_selection = "selected", permissions,
-                        repositories = new[] { new { id = 123456, full_name = "owner/project" } }
-                    }, HttpStatusCode.Created);
-                }
-                Assert.DoesNotContain(permissions.EnumerateObject(), p => p.Name is "actions" or "environments");
-                return null;
-            }
-            if (path.EndsWith("/installation", StringComparison.Ordinal))
-                return GitHubTransport.Json(new
-                {
-                    id = 789, app_id = IssuancePolicy.AppId, app_slug = IssuancePolicy.AppSlug,
-                    suspended_at = (string?)null,
-                    permissions = new { discussions = "write", agent_variables = "read" }
-                });
-            if (path == "/repos/owner/project/agents/variables")
-            {
-                Assert.Contains("per_page=30", request.RequestUri.Query);
-                return GitHubTransport.Json(new
-                {
-                    total_count = f.GitHub.Marker.Length == 0 ? 0 : 1,
-                    variables = f.GitHub.Marker.Length == 0 ? Array.Empty<object>()
-                        : [new { name = "APPROVAL", value = f.GitHub.Marker }]
-                });
-            }
-            Assert.DoesNotContain("/environments", path);
-            Assert.DoesNotContain("/orgs/", path);
-            return null;
-        };
+        ConfigureGitHub(f);
 
         var request = new
         {
@@ -115,4 +71,66 @@ public sealed class AgentVariableEnrollmentTests
         using var restored = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
+
+    internal static void ConfigureGitHub(EnrollmentFixture f)
+    {
+        f.GitHub.Before = async request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Post)
+            {
+                var input = JsonSerializer.Deserialize<JsonElement>(await request.Content!.ReadAsStringAsync(Token));
+                var permissions = input.GetProperty("permissions");
+                if (permissions.TryGetProperty("agent_variables", out var access))
+                {
+                    Assert.Equal("read", access.GetString());
+                    Assert.Single(permissions.EnumerateObject());
+                    var ids = input.GetProperty("repository_ids");
+                    Assert.Equal(123456, Assert.Single(ids.EnumerateArray()).GetInt64());
+                    f.GitHub.VerifierMints++;
+                    return GitHubTransport.Json(new
+                    {
+                        token = "agent-verifier-token", expires_at = f.Clock.GetUtcNow().AddHours(1),
+                        repository_selection = "selected", permissions,
+                        repositories = new[] { new { id = 123456, full_name = "owner/project" } }
+                    }, HttpStatusCode.Created);
+                }
+                Assert.DoesNotContain(permissions.EnumerateObject(), p => p.Name is "actions" or "environments");
+                Assert.Equal("write", permissions.GetProperty("discussions").GetString());
+                if (permissions.TryGetProperty("repository_hooks", out var hooks))
+                {
+                    Assert.Equal("write", hooks.GetString());
+                    Assert.Equal(2, permissions.EnumerateObject().Count());
+                }
+                else Assert.Single(permissions.EnumerateObject());
+                return GitHubTransport.Json(new
+                {
+                    token = "runtime-token-" + f.GitHub.Mints, expires_at = f.Clock.GetUtcNow().AddHours(1),
+                    repository_selection = "selected", permissions,
+                    repositories = new[] { new { id = 123456, full_name = "owner/project" } }
+                }, HttpStatusCode.Created);
+            }
+            if (path.EndsWith("/installation", StringComparison.Ordinal))
+                return GitHubTransport.Json(new
+                {
+                    id = 789, app_id = IssuancePolicy.AppId, app_slug = IssuancePolicy.AppSlug,
+                    suspended_at = (string?)null,
+                    permissions = new { discussions = "write", repository_hooks = "write", agent_variables = "read" }
+                });
+            if (path == "/repos/owner/project/agents/variables")
+            {
+                Assert.Contains("per_page=30", request.RequestUri.Query);
+                return GitHubTransport.Json(new
+                {
+                    total_count = f.GitHub.Marker.Length == 0 ? 0 : 1,
+                    variables = f.GitHub.Marker.Length == 0 ? Array.Empty<object>()
+                        : [new { name = "APPROVAL", value = f.GitHub.Marker }]
+                });
+            }
+            Assert.DoesNotContain("/environments", path);
+            Assert.DoesNotContain("/orgs/", path);
+            return null;
+        };
+    }
+
 }
