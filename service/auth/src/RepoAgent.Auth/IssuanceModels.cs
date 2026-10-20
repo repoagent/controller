@@ -82,6 +82,7 @@ public sealed class IssuanceWork(TimeProvider clock) : IDisposable
     private readonly DateTimeOffset started = clock.GetUtcNow();
     private readonly CancellationTokenSource lifetime = new(TimeSpan.FromSeconds(15), clock);
     private int reads;
+    private int admissionEvaluations;
     public CancellationToken Cancellation => lifetime.Token;
     public void Check()
     {
@@ -89,6 +90,7 @@ public sealed class IssuanceWork(TimeProvider clock) : IDisposable
         if (clock.GetUtcNow() - started >= TimeSpan.FromSeconds(15)) throw new IssuanceDenied();
     }
     public void Read() { Check(); if (++reads > 8) throw new IssuanceDenied(); }
+    public void EvaluateAdmission() { Check(); if (++admissionEvaluations > 4) throw new IssuanceDenied(); }
     public void Fresh(DateTimeOffset readStart)
     {
         Check();

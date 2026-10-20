@@ -28,8 +28,9 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
                 verifier = await AcquireVerifierAsync(grant, work);
                 grant = await store.SnapshotAsync(grant.Partition, grant.DeviceId, work.Cancellation);
             }
+            (grant, runtime) = await store.ReserveAsync(grant, "runtime", work);
+            verifier = await store.VerifierAsync(grant, work.Cancellation) ?? throw new IssuanceDenied();
             var verifierToken = store.Recover(grant, verifier);
-            (grant, runtime) = await store.ReserveAsync(grant, "runtime", work.Cancellation);
             var jwt = await signer.SignAsync(runtime, work.Cancellation);
             work.Check();
             var admission = await ObserveAsync(grant, jwt, verifierToken, work);
@@ -71,7 +72,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
         IssuedToken? token = null;
         try
         {
-            (grant, attempt) = await store.ReserveAsync(grant, "verification", work.Cancellation);
+            (grant, attempt) = await store.ReserveAsync(grant, "verification", work);
             var jwt = await signer.SignAsync(attempt, work.Cancellation);
             work.Check();
             attempt = await store.ClaimSendAsync(grant, attempt, work.Cancellation);
