@@ -1,6 +1,5 @@
 using System.CommandLine;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using DiscussionBridge;
 
@@ -29,16 +28,8 @@ githubCommand.SetAction(async (result, ct) =>
     catch (Exception error) { Log.Write("app-command-error", error.Message); return 1; }
 });
 root.Subcommands.Add(githubCommand);
-root.SetAction(async (result, commandCancellation) =>
+root.SetAction(async (result, cancellationToken) =>
 {
-    using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(commandCancellation);
-    using var terminate = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM, signal =>
-    {
-        signal.Cancel = true;
-        Log.Write("shutdown-requested", "signal=SIGTERM");
-        shutdown.Cancel();
-    });
-    var cancellationToken = shutdown.Token;
     try
     {
         var repo = result.GetValue(repository)!;

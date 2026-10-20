@@ -93,6 +93,8 @@ def run(bridge, port):
     finally:
         for process in reversed(processes):
             terminate(process, 12 if process is not processes[0] else 3)
+            label = "bridge" if process is not processes[0] else "cloudflared"
+            log("tunnel-process-stopped", "process=" + label + " exit-code=" + str(process.returncode))
         for signum, handler in previous.items():
             signal.signal(signum, handler)
         if processes:
