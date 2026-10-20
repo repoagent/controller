@@ -299,6 +299,44 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
         self.assertTrue(self.state()['running'])
         self.assertFalse(any(event[0] in ('rm', 'stop') for event in self.state()['events']))
 
+    def test_case_distinct_linux_mount_identity_refuses_legacy_stop_or_replacement(self):
+        key = self.directory / 'legacy key.pem'
+        key.write_text('not-a-real-app-key')
+        self.invoke('configure', '--repository', 'owner/repository', '--app-id', '123', '--key-path', str(key))
+        self.invoke('start')
+        compatible = self.state()
+        cases = [('destination', 'stop', True), ('volume-name', 'start', False)]
+        if sys.platform.startswith('linux'):
+            (self.directory / 'LEGACY KEY.pem').write_text('different-synthetic-app-key')
+            cases.append(('pem-source', 'stop', True))
+        for identity, command, running in cases:
+            with self.subTest(identity=identity, command=command):
+                state = json.loads(json.dumps(compatible))
+                container = state['containers'][NAME]
+                mount = next(mount for mount in container['Mounts']
+                             if mount['Type'] == ('bind' if identity == 'pem-source' else 'volume')
+                             and (identity == 'pem-source' or mount['Destination'] == '/data/config'))
+                if identity == 'destination':
+                    mount['Destination'] = '/DATA/config'
+                elif identity == 'volume-name':
+                    mount['Name'] = mount['Name'].upper()
+                    mount['Source'] = mount['Name']
+                    state['volumes'][mount['Name']] = {'Labels': None, 'foreignCanary': 'preserve-case-identity'}
+                else:
+                    mount['Source'] = str(self.directory / 'LEGACY KEY.pem')
+                container['Running'] = state['running'] = running
+                state['events'] = []
+                self.state_path.write_text(json.dumps(state))
+
+                result = self.invoke(command, success=None)
+                observed = self.state()
+                destructive = [event for event in observed['events'] if event[0] in ('stop', 'rm')]
+                self.assertFalse(destructive, f'{identity} mismatch allowed lifecycle mutation: {destructive}')
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(observed['containers'], state['containers'])
+                self.assertEqual(observed['volumes'], state['volumes'])
+                self.assertEqual(observed['settings'], state['settings'])
+
 
 @unittest.skipUnless(os.name == 'posix' and os.environ.get('REPOAGENT_TEST_NATIVE_CONTROLLER'),
                      'Opt-in: freshly compiled current native consumer required')
