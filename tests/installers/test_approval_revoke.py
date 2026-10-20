@@ -116,7 +116,8 @@ class ApprovalRevokeTests(unittest.TestCase):
         self.assert_requests(events, ['GET'] * 3)
 
     def test_exact_decoded_utf8_value_is_hashed_without_normalization(self):
-        values = ['', ' leading and trailing ', 'line\r\n', 'e\u0301', 'é', '{ "a": 1 }', '{"a":1}']
+        values = ['', ' leading and trailing ', 'line\r\n', 'e\u0301', 'é', '{ "a": 1 }', '{"a":1}',
+                  '2026-10-20T10:11:12Z', '2026-10-20T10:11:12.123+02:00']
         for value in values:
             with self.subTest(value=repr(value)):
                 result, outcome, events, _, _ = self.run_revoke(
@@ -174,6 +175,8 @@ class ApprovalRevokeTests(unittest.TestCase):
         cases = [(0, {'status': 403}), (1, {'status': 404}), (2, {'status': 403}),
                  (2, {'status': 404}), (0, {'body': {'id': '123'}}),
                  (1, {'body': {'id': 0}}), (2, {'body': 'not json'}),
+                 (0, {'body': [{'id': 123}]}), (1, {'body': [{'id': 456}]}),
+                 (2, {'body': [{'name': VARIABLE, 'value': VALUE}]}),
                  (2, {'body': {'name': 'OTHER', 'value': VALUE}}),
                  (2, {'body': {'name': VARIABLE, 'value': 123}}),
                  (2, {'raw': 'not HTTP headers'}),
