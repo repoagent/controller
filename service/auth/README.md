@@ -1,6 +1,6 @@
-# Authentication service: durable device self-revocation
+# Authentication service: accounted token issuance and self-revocation
 
-This partial credential broker implements `DELETE /v1/devices/{deviceId}`. A valid enrolled device secret closes its grant and records a durable receipt without deleting outstanding-token evidence. `204` means future broker issuance is closed; it does not invalidate already issued GitHub tokens. Enrollment and token issuance are not implemented. `/health/live` reports process liveness; `/health/ready` always returns `503` until the full provider exists.
+This partial credential broker implements `DELETE /v1/devices/{deviceId}`. A valid enrolled device secret closes its grant and records a durable receipt without deleting outstanding-token evidence. `204` means future broker issuance is closed; it does not invalidate already issued GitHub tokens. The empty-body `POST /v1/devices/{deviceId}/installation-token` implements the frozen v1 token contract for fixture-created, acknowledged active grants. Public enrollment remains issue #52. `/health/live` reports process liveness; `/health/ready` always returns `503` until the full provider exists.
 
 ## Configuration
 
@@ -56,3 +56,38 @@ Run `bash verify.sh` from this directory with .NET SDK 10.0.402, Docker and Pyth
 Azurite 3.37.0 image `sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5` was separately qualified with Azure.Data.Tables 12.13.0: stale gate/device ETags rolled back all changes, valid batches retained accounting, concurrent same-version clients had one winner, and data survived storage restart. Application tests protect the owned revocation path. Azurite Table is a preview emulator; it cannot prove real Azure identity, production consistency, recovery or hosted readiness.
 
 Build the Linux amd64, numeric nonroot image with `docker build --platform linux/amd64 -t repoagent-auth-local service/auth` from the repository root. No cloud deployment or image publication is performed by this directory.
+
+
+## Issuance configuration and boundaries
+
+Issuance is registered when `Auth__SigningKeyUri` is configured. It additionally requires `Auth__DataProtectionKeyUri` (both version-pinned HTTPS Key Vault key IDs), `Auth__DataProtectionBlobUri` (HTTPS key-ring blob, no SAS), and `Auth__DataProtectionApplicationName` (the shared key-ring application discriminator). These are the existing infrastructure outputs. Without signing configuration, token requests return 503 and self-revocation remains available. The server owns App ID 5387625, slug `repo-agent-connector`, and fixed `github.com`/`api.github.com` origins. Neither an App private key nor a human GitHub credential is loaded into this service.
+
+`ManagedIdentityCredential`, `CryptographyClient`, Azure Blob Data Protection storage and Key Vault key wrapping provide the production boundaries. Signing, Table, Blob and wrapping SDK clients disable retries and use three-second network timeouts. GitHub redirects, cookies and automatic POST retries are disabled. GitHub bodies are bounded at 64 KiB and calls at three seconds. Signing uses a persisted reservation's fixed `iat=reserved−60s` and `exp=reserved+120s`; a delayed worker never refreshes either claim.
+
+The request has a 15-second issuance deadline and eight GitHub reads. Each of the two fresh observations uses the repository's App installation lookup, the verifier's exact accessible-repository listing, the bound environment identity, and the selected variable. Release checks both observations from their oldest read start against ten seconds. No positive observation is cached. Conflicts terminate the operation rather than retrying; no transaction is automatically replayed. These checks do not make GitHub and Table atomic or establish continuous approval history. An isolated 404 denies without declaring withdrawal. A successfully read changed identity/value closes the grant monotonically.
+
+The verifier profile is exactly `environments:read` and `actions:read`, allowing only implicit `metadata:read`. It is never returned, never renews device activity and can be acquired internally without an active runtime grant. Its encrypted durable credential is reused until five minutes before actual expiry. A reserved/sending/unverifiable acquisition blocks subsequent acquisition indefinitely. Runtime profiles remain exactly polling `discussions:write` or webhook plus `repository_hooks:write`; actual returned permissions and repository scope must match.
+
+A single `global:issuance-v1` partition precharges fixed UTC minute counters and one of 128 fixed slot keys before the repository transaction. Per-minute admission/read/sign/mint limits are 120/600/20/20 globally and 12/60/2/2 per repository. Optional `Broker__Issuance__{Repository|Global}{Admissions|Reads|Signs|Mints|Attempts}` settings may only lower the corresponding reviewed ceiling; no new setting is required. A runtime reservation conservatively precharges all eight reads; a verifier reservation charges its own admission/sign/mint. Repository capacity is eight combined attempts, including existing gate accounting. The global precharge and repository commit are separate transactions; failed or unknown second commits burn the global slot and work charges. No timeout compensation exists. Pending limits (4/repository, 64/global, absolute 15 minutes) are defined for #52; no pending route is exposed here.
+
+Every repository authority change conditions the common gate, device and relevant attempt ETags. A persisted send claim precedes exactly one POST; restart never replays it. Known tokens are protected under repository, epoch, operation and purpose before release. Revoke-first prevents release; release-first remains accounted even if its response is delayed. Client disconnect after the send claim does not cancel server-owned completion. Failed known-token operations attempt one DELETE and durable settlement under an additional bounded six-second finalization allowance; failed finalization preserves evidence. Only a committed authorized runtime release advances 90-day inactivity.
+
+This source slice deliberately does not reclaim capacity, including settled/expired rows. The independent cleanup/reconciliation slice #54 must prove durable settlement and cessation of the matching worker before reclaiming slots; fixed-window charges are never refunded. An unresolved mint, lost commit response or orphan global slot does not age out. At saturation the service denies; explicit operator reconciliation may be required. Neither JWT expiry nor changing the restore epoch settles a previously unknown token. Do not enable public enrollment or claim sustained production availability until cleanup and live provider acceptance are complete.
+
+## Approval marker encoding
+
+`ApprovalMarker.Create` defines the compact canonical JSON v1 marker, in this property order:
+
+```json
+{"version":1,"githubHost":"github.com","appId":5387625,"appSlug":"repo-agent-connector","repositoryId":123456,"repository":"owner/project","installationId":789,"deviceId":"DEVICE_ID","challenge":"43_CHARACTER_BASE64URL_CHALLENGE_FROM_32_BYTES","profile":"polling","policyVersion":"repository-approval-v1","epoch":"DEPLOYMENT_EPOCH","environment":"approval/environment","environmentId":987,"variable":"APPROVAL"}
+```
+
+The example identifiers/challenge are explanatory placeholders. Enrollment must generate a fresh 32-byte challenge, use unpadded base64url (43 characters), and generate the marker with this canonical serializer. The pending identity becomes the device identity; both the environment name and numeric ID are bound. The device secret is separate and never included. The operator preview may pretty-print these fields, but the written variable value is the exact compact string. This encoding does not change the frozen consumer enrollment or token-response schemas.
+
+Before any issuance, the service recomputes the marker from authoritative durable fields and rejects a stored marker that disagrees. It then compares the independently fetched GitHub value exactly. Copying either the public marker or device ID cannot authenticate a caller. The host revoke tool continues to fingerprint the exact decoded value; it need not parse the marker.
+
+## Verification and remaining acceptance
+
+Tests use real pinned Azurite HTTP/Table transactions and real Data Protection envelopes with temporary disk key rings. Only GitHub and Key Vault signing transports are substituted for deterministic failures. These prove project orchestration and durable accounting, not real GitHub permission compatibility, managed-identity roles, Key Vault JWT acceptance, production Blob/key-ring recovery, Azure Table consistency, scale-to-zero cleanup or safe owner replacement. Those remain mandatory live release gates (#50/#35/#34); `/health/ready` stays 503.
+
+The test project pins ASP.NET hosting, `System.Security.Cryptography.Pkcs` and `System.Security.Cryptography.Xml` to 10.0.13 with NuGet auditing enabled. Azure Data Protection introduced transitive 10.0.10 cryptography packages flagged by [PKCS advisory](https://github.com/advisories/GHSA-846f-f764-76mx) and [XML advisory](https://github.com/advisories/GHSA-r955-8q5j-3h83); 10.0.13 is their documented patched .NET 10 version. Production shared-framework servicing remains an image/release responsibility.
