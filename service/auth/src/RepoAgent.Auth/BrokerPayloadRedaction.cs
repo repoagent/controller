@@ -16,6 +16,9 @@ public sealed class BrokerPayloadRedaction(TableClient table, BrokerOptions opti
         var partition = "repository:" + repository;
         if (Text(ledger, "PendingId") != repository + "_" + idempotencyId) throw new IssuanceDenied();
         var gate = await GateAsync(ledger, ct);
+        ledger = await LedgerAsync(RetainedState.Enrollment, "pending:", idempotencyId, generation, 8, ct);
+        if (ledger is null || ledger.ContainsKey("RetirementState")) return;
+        if (Text(gate, "RepositoryId") != Text(ledger, "RepositoryId")) throw new IssuanceDenied();
         var pending = await BrokerTable.ReadAsync(table, partition, ledger.RowKey, ct);
         var device = await BrokerTable.ReadAsync(table, partition, "device:" + Text(ledger, "DeviceId"), ct);
         var receipt = device is null ? null : await BrokerTable.ReadAsync(table, partition, "revocation:" + Text(ledger, "DeviceId"), ct);
@@ -90,6 +93,9 @@ public sealed class BrokerPayloadRedaction(TableClient table, BrokerOptions opti
         if (Text(ledger, "OperationId") != operationId || Text(ledger, "AttemptRowKey") != "attempt:" + operationId
             || Text(ledger, "Purpose") is not ("verification" or "runtime")) throw new IssuanceDenied();
         var gate = await GateAsync(ledger, ct);
+        ledger = await LedgerAsync(RetainedState.Issuance, "operation:", operationId, generation, 4, ct);
+        if (ledger is null || ledger.ContainsKey("RetirementState")) return;
+        if (Text(gate, "RepositoryId") != Text(ledger, "RepositoryId")) throw new IssuanceDenied();
         var partition = "repository:" + Text(ledger, "RepositoryId");
         var attempt = await BrokerTable.ReadAsync(table, partition, Text(ledger, "AttemptRowKey"), ct);
         if (attempt is not null)
@@ -140,6 +146,9 @@ public sealed class BrokerPayloadRedaction(TableClient table, BrokerOptions opti
         if (!Guid.TryParseExact(Text(ledger, "DeviceId"), "N", out _)) throw new IssuanceDenied();
         _ = Text(ledger, "Epoch");
         _ = ApprovalContract.Read(ledger);
+        if (credits == 8 && Text(ledger, "PendingId") != repository + "_" + id
+            || credits == 4 && (Text(ledger, "OperationId") != id || Text(ledger, "AttemptRowKey") != "attempt:" + id
+                || Text(ledger, "Purpose") is not ("verification" or "runtime"))) throw new IssuanceDenied();
         _ = await retained.SchemaAsync(ct);
         _ = await retained.DirectoryAsync(repository, ct) ?? throw new IssuanceDenied();
         return ledger;
@@ -174,7 +183,7 @@ public sealed class BrokerPayloadRedaction(TableClient table, BrokerOptions opti
     {
         var row = new TableEntity(partition, key);
         foreach (var field in new[] { "Generation", "RepositoryId", "DeviceId", "Epoch", "RowCredits", "PendingId", "OperationId",
-            "Purpose", "GlobalSlot", "ReservedAt", "CreatedAt", "Deadline", "PayloadPurgeAt", "ApprovalKind", "SetupVersion", "PolicyVersion" })
+            "Purpose", "GlobalSlot", "ReservedAt", "CreatedAt", "Deadline", "PayloadPurgeAt", "ApprovalKind", "SetupVersion", "PolicyVersion", "ReclamationVersion" })
             if (ledger.TryGetValue(field, out var value)) row[field] = value;
         row["State"] = "redacted";
         return row;
