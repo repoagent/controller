@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Xunit;
 
@@ -47,7 +48,8 @@ public sealed class DiscussionJourney
             }
             var aMarker = "LIVE_A_" + run;
             var bMarker = "LIVE_B_" + run;
-            var explicitJourney = Environment.GetEnvironmentVariable("REPOAGENT_LIVE_CASE") == "explicit-journey";
+            var recoveryOnly = Environment.GetEnvironmentVariable("REPOAGENT_LIVE_CASE") == "recovery";
+            var explicitJourney = recoveryOnly || Environment.GetEnvironmentVariable("REPOAGENT_LIVE_CASE") == "explicit-journey";
             var mention = explicitJourney ? "" : "@" + actor + " ";
             var a = await Create(repo, category, "mention", $"{mention}Authorized disposable live acceptance test. Reply once with {aMarker}. Remember the word LYCHEE for continuation; use the authenticated GitHub response skill. Only perform this test's requests.");
             if (explicitJourney) await Control("replace", a["url"]!.ToString());
@@ -57,73 +59,76 @@ public sealed class DiscussionJourney
             Pass(explicitJourney ? "SETUP_EXPLICIT" : "C01", new { discussion = a["url"]!.ToString(), session = originalSession, reply = initial["url"]!.ToString() });
             await Until(async () => NativeTurnsFinished(await Logs()), "initial turn completed before container replacement");
 
-            var b = await Create(repo, category, "explicit URL", $"Authorized disposable explicit-enrollment test. Reply once with {bMarker}; remember MANGOSTEEN.");
-            await Control("replace", b["url"]!.GetValue<string>());
-            await Reply(b, bMarker);
-            await Receipt(b["id"]!.GetValue<string>());
-            Assert.NotEqual(originalSession, await Session(b));
-            Pass("C02", new { discussion = b["url"]!.ToString(), session = await Session(b) });
+            if (!recoveryOnly)
+            {
+                var b = await Create(repo, category, "explicit URL", $"Authorized disposable explicit-enrollment test. Reply once with {bMarker}; remember MANGOSTEEN.");
+                await Control("replace", b["url"]!.GetValue<string>());
+                await Reply(b, bMarker);
+                await Receipt(b["id"]!.GetValue<string>());
+                Assert.NotEqual(originalSession, await Session(b));
+                Pass("C02", new { discussion = b["url"]!.ToString(), session = await Session(b) });
 
-            var root1 = await Comment(a, "Reply once with ROOT_ONE_" + run);
-            var root2 = await Comment(a, "Reply once with ROOT_TWO_" + run);
-            await Reply(a, "ROOT_ONE_" + run, root1["id"]!.ToString());
-            await Reply(a, "ROOT_TWO_" + run, root2["id"]!.ToString());
-            var nested = await Comment(a, "Reply once with NESTED_" + run, root1["id"]!.ToString());
-            await Reply(a, "NESTED_" + run, root1["id"]!.ToString());
-            await Receipt(nested["id"]!.ToString());
-            Pass("C03", new { firstRoot = root1["url"]!.ToString(), secondRoot = root2["url"]!.ToString(), nested = nested["url"]!.ToString() });
+                var root1 = await Comment(a, "Reply once with ROOT_ONE_" + run);
+                var root2 = await Comment(a, "Reply once with ROOT_TWO_" + run);
+                await Reply(a, "ROOT_ONE_" + run, root1["id"]!.ToString());
+                await Reply(a, "ROOT_TWO_" + run, root2["id"]!.ToString());
+                var nested = await Comment(a, "Reply once with NESTED_" + run, root1["id"]!.ToString());
+                await Reply(a, "NESTED_" + run, root1["id"]!.ToString());
+                await Receipt(nested["id"]!.ToString());
+                Pass("C03", new { firstRoot = root1["url"]!.ToString(), secondRoot = root2["url"]!.ToString(), nested = nested["url"]!.ToString() });
 
-            await Receipt(root1["id"]!.ToString());
-            await Api("mutation($id:ID!,$b:String!){updateDiscussionComment(input:{commentId:$id,body:$b}){comment{id}}}", new { id = root1["id"]!.ToString(), b = "Edited request: reply once with EDITED_" + run });
-            await Reply(a, "EDITED_" + run, root1["id"]!.ToString());
-            await Receipt(root1["id"]!.ToString());
-            Assert.Contains("receipt-reused " + root1["url"]!.ToString(), await Logs());
-            Pass("C04", new { editedSource = root1["url"]!.ToString() });
+                await Receipt(root1["id"]!.ToString());
+                await Api("mutation($id:ID!,$b:String!){updateDiscussionComment(input:{commentId:$id,body:$b}){comment{id}}}", new { id = root1["id"]!.ToString(), b = "Edited request: reply once with EDITED_" + run });
+                await Reply(a, "EDITED_" + run, root1["id"]!.ToString());
+                await Receipt(root1["id"]!.ToString());
+                Assert.Contains("receipt-reused " + root1["url"]!.ToString(), await Logs());
+                Pass("C04", new { editedSource = root1["url"]!.ToString() });
 
-            var baseline = CountAcceptedSources(await Logs(), initial["id"]!.ToString());
-            await Api("mutation($id:ID!){addReaction(input:{subjectId:$id,content:HOORAY}){reaction{id}}}", new { id = initial["id"]!.ToString() });
-            await Until(async () => CountAcceptedSources(await Logs(), initial["id"]!.ToString()) > baseline, "human reaction to App output accepted");
-            await Receipt(initial["id"]!.ToString());
-            baseline = CountAcceptedSources(await Logs(), initial["id"]!.ToString());
-            await Api("mutation($id:ID!){removeReaction(input:{subjectId:$id,content:HOORAY}){clientMutationId}}", new { id = initial["id"]!.ToString() });
-            await Until(async () => CountAcceptedSources(await Logs(), initial["id"]!.ToString()) > baseline, "human reaction removal accepted");
-            Pass("C05", new { reactionSubject = initial["url"]!.ToString() });
+                var baseline = CountAcceptedSources(await Logs(), initial["id"]!.ToString());
+                await Api("mutation($id:ID!){addReaction(input:{subjectId:$id,content:HOORAY}){reaction{id}}}", new { id = initial["id"]!.ToString() });
+                await Until(async () => CountAcceptedSources(await Logs(), initial["id"]!.ToString()) > baseline, "human reaction to App output accepted");
+                await Receipt(initial["id"]!.ToString());
+                baseline = CountAcceptedSources(await Logs(), initial["id"]!.ToString());
+                await Api("mutation($id:ID!){removeReaction(input:{subjectId:$id,content:HOORAY}){clientMutationId}}", new { id = initial["id"]!.ToString() });
+                await Until(async () => CountAcceptedSources(await Logs(), initial["id"]!.ToString()) > baseline, "human reaction removal accepted");
+                Pass("C05", new { reactionSubject = initial["url"]!.ToString() });
 
-            var expected = "SKILL_ACTION_" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("repoagent-skill-v1:" + run)))[..16];
-            var skillRequest = await Comment(a, $"Use $acceptance-marker with correlation ID {run}, then publish its returned marker once in this thread. If that skill is unavailable, reply SKILL_UNAVAILABLE instead; do not invent an implementation.");
-            await Reply(a, expected, skillRequest["id"]!.ToString());
-            Pass("C06", new { skill = "acceptance-marker", correlation = run, expected });
+                var expected = "SKILL_ACTION_" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("repoagent-skill-v1:" + run)))[..16];
+                var skillRequest = await Comment(a, $"Use $acceptance-marker with correlation ID {run}, then publish its returned marker once in this thread. If that skill is unavailable, reply SKILL_UNAVAILABLE instead; do not invent an implementation.");
+                await Reply(a, expected, skillRequest["id"]!.ToString());
+                Pass("C06", new { skill = "acceptance-marker", correlation = run, expected });
 
-            var hold = await Comment(a, $"Use $acceptance-marker's marker.py with arguments {run} --hold. It creates a ready file and waits up to 300 seconds for the test runner's release file. Run it now and publish its result once after release. If the skill is unavailable, report SKILL_UNAVAILABLE.");
-            await Until(() => Task.FromResult(File.Exists("/workspace/hold-ready-" + run)), "native skill action is active");
-            var during = await Comment(a, "While the previous tool is waiting, accept this additional input. After release reply once with ACTIVE_SECOND_" + run);
-            await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted during native work");
-            var activeGate = JsonNode.Parse(await File.ReadAllTextAsync("/workspace/hold-ready-" + run))!;
-            Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "native skill gate remains active after the additional input was accepted");
-            Assert.False(File.Exists("/workspace/hold-release-" + run));
-            File.WriteAllText("/workspace/hold-release-" + run, "release");
-            await Reply(a, "ACTIVE_SECOND_" + run, during["id"]!.ToString());
-            await Reply(a, expected, hold["id"]!.ToString());
-            Pass("C07", new { activeSource = hold["url"]!.ToString(), additionalSource = during["url"]!.ToString() });
+                var hold = await Comment(a, $"Use $acceptance-marker's marker.py with arguments {run} --hold. It creates a ready file and waits up to 300 seconds for the test runner's release file. Run it now and publish its result once after release. If the skill is unavailable, report SKILL_UNAVAILABLE.");
+                await Until(() => Task.FromResult(File.Exists("/workspace/hold-ready-" + run)), "native skill action is active");
+                var during = await Comment(a, "While the previous tool is waiting, accept this additional input. After release reply once with ACTIVE_SECOND_" + run);
+                await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted during native work");
+                var activeGate = JsonNode.Parse(await File.ReadAllTextAsync("/workspace/hold-ready-" + run))!;
+                Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "native skill gate remains active after the additional input was accepted");
+                Assert.False(File.Exists("/workspace/hold-release-" + run));
+                File.WriteAllText("/workspace/hold-release-" + run, "release");
+                await Reply(a, "ACTIVE_SECOND_" + run, during["id"]!.ToString());
+                await Reply(a, expected, hold["id"]!.ToString());
+                Pass("C07", new { activeSource = hold["url"]!.ToString(), additionalSource = during["url"]!.ToString() });
 
-            await Until(async () => NativeTurnsFinished(await Logs()), "native turns completed before quiet observation");
-            var quietBaseline = Forwarded(await Logs());
-            await StableAcrossPolls(log => Forwarded(log) == quietBaseline, "unchanged polls and App-only output stay quiet");
-            Pass("C08", new { acceptedInputs = quietBaseline, completeUnchangedPolls = 2 });
+                await Until(async () => NativeTurnsFinished(await Logs()), "native turns completed before quiet observation");
+                var quietBaseline = Forwarded(await Logs());
+                await StableAcrossPolls(log => Forwarded(log) == quietBaseline, "unchanged polls and App-only output stay quiet");
+                Pass("C08", new { acceptedInputs = quietBaseline, completeUnchangedPolls = 2 });
 
-            await Control("replace");
-            var continued = await Comment(a, "After container replacement, reply once with RESTART_" + run + " and the fruit you remember from my first request.");
-            var afterRestart = await Reply(a, "RESTART_" + run, continued["id"]!.ToString());
-            Assert.Contains("LYCHEE", afterRestart["body"]!.ToString(), StringComparison.OrdinalIgnoreCase);
-            Assert.Equal(originalSession, await Session(a));
-            Assert.Contains("session-resumed " + originalSession, await Logs());
-            Pass("C09", new { session = originalSession, reply = afterRestart["url"]!.ToString() });
-            await Until(async () => NativeTurnsFinished(await Logs()), "continued turn completed before the rejection fixture");
+                await Control("replace");
+                var continued = await Comment(a, "After container replacement, reply once with RESTART_" + run + " and the fruit you remember from my first request.");
+                var afterRestart = await Reply(a, "RESTART_" + run, continued["id"]!.ToString());
+                Assert.Contains("LYCHEE", afterRestart["body"]!.ToString(), StringComparison.OrdinalIgnoreCase);
+                Assert.Equal(originalSession, await Session(a));
+                Assert.Contains("session-resumed " + originalSession, await Logs());
+                Pass("C09", new { session = originalSession, reply = afterRestart["url"]!.ToString() });
+                await Until(async () => NativeTurnsFinished(await Logs()), "continued turn completed before the rejection fixture");
+            }
 
             // The operator path stops the bridge, backs up state and substitutes an invalid native ID.
             await Control("invalidate-session", a["id"]!.ToString());
             var rejected = await Comment(a, "Rejected-input fixture: reply only if this input is accepted. Marker REJECTED_" + run);
-            await Until(async () => (await Logs()).Split('\n').Any(line => IsEvent(line, "manual-recovery") && line.Contains(a["url"]!.ToString() + " session=invalid-native-session ") && line.Contains(rejected["id"]!.ToString())), "native rejection recorded for this source and the deliberately invalid session");
+            await Until(async () => HasRecoveryForSource(await Logs(), a["url"]!.ToString(), rejected["id"]!.ToString()), "native rejection recorded for this source and the deliberately invalid session");
             Assert.Equal(0, Eyes(await Source(rejected["id"]!.ToString())));
             var rejectedCount = Forwarded(await Logs());
             await StableAcrossPolls(log => Forwarded(log) == rejectedCount, "rejected input remains stopped without replay", requireSuccessfulPolls: false);
@@ -272,6 +277,40 @@ public sealed class DiscussionJourney
         }, "native session ID");
         return session!;
     }
+    [Fact]
+    public void Recovery_evidence_matches_the_source_in_a_multiline_pending_record()
+    {
+        const string log = """
+            2026-10-20T00:26:25.2314303+00:00 manual-recovery https://github.com/egil/repoagent/discussions/23 session=invalid-native-session pending={
+              "operation": "send",
+              "since": "2026-10-20T00:25:38.3014183+00:00",
+              "sourceIds": [
+                "DC_kwDOVQFj7c4BIsCK"
+              ]
+            }
+            2026-10-20T00:26:50.0000000+00:00 poll-completed success=False elapsed-ms=25000
+            """;
+        const string url = "https://github.com/egil/repoagent/discussions/23";
+        Assert.True(HasRecoveryForSource(log, url, "DC_kwDOVQFj7c4BIsCK"));
+        Assert.False(HasRecoveryForSource(log, url, "different-source"));
+        Assert.False(HasRecoveryForSource(log, url + "0", "DC_kwDOVQFj7c4BIsCK"));
+        Assert.False(HasRecoveryForSource(log[..log.IndexOf("sourceIds", StringComparison.Ordinal)], url, "DC_kwDOVQFj7c4BIsCK"));
+    }
+
+    static bool HasRecoveryForSource(string log, string url, string sourceId)
+    {
+        var marker = $" manual-recovery {url} session=invalid-native-session pending=";
+        var start = log.LastIndexOf(marker, StringComparison.Ordinal);
+        if (start < 0) return false;
+        var reader = new Utf8JsonReader(Encoding.UTF8.GetBytes(log[(start + marker.Length)..]));
+        try
+        {
+            var pending = JsonNode.Parse(ref reader);
+            return pending?["sourceIds"] is JsonArray sources && sources.Any(source => source?.ToString() == sourceId);
+        }
+        catch (JsonException) { return false; } // A capture can end before a multiline event is complete.
+    }
+
     static bool IsEvent(string line, string kind)
     {
         var timestampEnd = line.IndexOf(' ');

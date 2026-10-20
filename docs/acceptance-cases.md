@@ -27,6 +27,8 @@ For focused skill validation, use `REPOAGENT_LIVE=1 REPOAGENT_LIVE_CASE=skill ./
 
 `REPOAGENT_LIVE_CASE=explicit-journey` explicitly enrolls the first fixture too. This permits isolated diagnostic work while another bridge is running a nonoverlapping explicitly enrolled test in the same repository. It reports `SETUP_EXPLICIT` rather than claiming C01; the default journey is still required to verify mention enrollment.
 
+`REPOAGENT_LIVE_CASE=recovery` creates one fresh explicitly enrolled fixture and runs C10–C12. Use it after diagnosing and fixing a recovery observer failure to preserve already passed cases without retrying the whole journey. Record the original failure and both runs; clean diagnosed fixtures before a new run. The default journey still covers every automated case. The multiline recovery-log parser also has a deterministic regression check in the same test project.
+
 Canonical App mentions are used in this suite. Empty `--mention-user ''` avoids triggering unrelated historical `@repoagent` conversations. Existing canonical App mentions can still enroll: choose the target repository deliberately. Use the same instance across a diagnostic rerun so previously accepted fixture inputs stay checkpointed.
 
 ## Cases
