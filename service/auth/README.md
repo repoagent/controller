@@ -1,5 +1,9 @@
 # Authentication service: enrollment, accounted issuance and self-revocation
 
+[ADR 0006](../../docs/adr/0006-use-repository-agent-variables-for-approval.md) selects direct repository Agent variables for the new MVP. The source and API/marker examples below still implement the **legacy GitHub Environment provider** merged in #52. Agent-variable [provider #68](https://github.com/repoagent/controller/issues/68) and [host #53](https://github.com/repoagent/controller/issues/53) remain pending; draft PR #67 is an unmerged Environment prototype. No new setup/marker wire version has been selected. Never reinterpret existing Environment markers as Agent-variable approval. The frozen v1 controller file and runtime profiles remain unchanged.
+
+The pending provider will read only direct `/repos/{owner}/{repo}/agents/variables/{name}` coordinates with broker-only `agent_variables:read`; organization/inherited fallback and Environment creation/identity are excluded. The host needs GitHub-authorized Agent-variable write access; controller tokens get no approval access. Published App permissions and a successful host GET do not prove installation-token scope or private-plan availability. Preserve all existing quotas, possession, private-file-before-ack, durable closure, known/unknown accounting and restore/replacement gates during adaptation; see [the current design contract](../../docs/auth-repository-approval.md).
+
 This partial credential broker implements `DELETE /v1/devices/{deviceId}`. A valid enrolled device secret closes its grant and records a durable receipt without deleting outstanding-token evidence. `204` means future broker issuance is closed; it does not invalidate already issued GitHub tokens. The empty-body `POST /v1/devices/{deviceId}/installation-token` implements the frozen v1 token contract for acknowledged active grants. The enrollment routes below create those grants after independently verifying repository-held approval. `/health/live` reports process liveness; `/health/ready` always returns `503` until the full provider exists.
 
 ## Configuration
@@ -74,7 +78,7 @@ Every repository authority change conditions the common gate, device and relevan
 
 This source slice deliberately does not reclaim capacity, including settled/expired rows. The independent cleanup/reconciliation slice #54 must prove durable settlement and cessation of the matching worker before reclaiming slots; fixed-window charges are never refunded. An unresolved mint, lost commit response or orphan global slot does not age out. At saturation the service denies; explicit operator reconciliation may be required. Neither JWT expiry nor changing the restore epoch settles a previously unknown token. Public enrollment remains a source-level integration surface; sustained hosted availability requires cleanup and live provider acceptance.
 
-## Approval marker encoding
+## Legacy Environment approval marker encoding
 
 `ApprovalMarker.Create` defines the compact canonical JSON v1 marker, in this property order:
 
@@ -93,7 +97,7 @@ Tests use real pinned Azurite HTTP/Table transactions and real Data Protection e
 The test project pins ASP.NET hosting, `System.Security.Cryptography.Pkcs` and `System.Security.Cryptography.Xml` to 10.0.13 with NuGet auditing enabled. Azure Data Protection introduced transitive 10.0.10 cryptography packages flagged by [PKCS advisory](https://github.com/advisories/GHSA-846f-f764-76mx) and [XML advisory](https://github.com/advisories/GHSA-r955-8q5j-3h83); 10.0.13 is their documented patched .NET 10 version. Production shared-framework servicing remains an image/release responsibility.
 
 
-## Repository-held enrollment API
+## Legacy Environment repository-held enrollment API
 
 Enrollment is registered only with issuance configured and an explicit `Broker__BrokerOrigin`, a canonical HTTPS DNS origin without path, credentials, query or fragment. This origin is written into the frozen v1 enrollment file; request Host and forwarded headers never select a secret destination. Missing origin leaves enrollment unavailable. Readiness remains 503. The installer integration and live provider acceptance remain separately owned.
 

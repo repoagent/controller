@@ -1,0 +1,5 @@
+# Use repository Agent variables for approval
+
+Accepted on 2026-10-20. Supersedes only the GitHub Environment storage choice in [ADR 0003](0003-use-repository-held-approval-for-a-ui-free-broker.md): use a direct repository Agent variable to avoid creating or configuring deployment environments. Preserve UI-free repository-held approval, GitHub-authorized writer authority without named-human/admin attestation, separate private possession, durable observed closure and the existing token/recovery barriers.
+
+The host writes through its own GitHub authority; the broker verifies with broker-only Agent variables read access, and runtime tokens receive no approval access. [Provider #68](https://github.com/repoagent/controller/issues/68) and [host #53](https://github.com/repoagent/controller/issues/53) are pending: the merged Environment provider remains a legacy implementation, and its markers must never be silently reinterpreted. The new setup/marker protocol discriminator and live installation-permission/availability proof remain gates; the frozen v1 controller file and runtime profiles are unchanged. See [the approval contract](../auth-repository-approval.md).

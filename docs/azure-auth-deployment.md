@@ -68,6 +68,12 @@ az role assignment list --subscription <subscription-id> --assignee-object-id <p
 
 Use the IDs and resource-group name in the tables above. Updating a repository variable alone does not move Azure resources or change the identity's trust or RBAC scope.
 
+## Repository approval boundary
+
+[ADR 0006](adr/0006-use-repository-agent-variables-for-approval.md) selects direct repository Agent variables for controller approval. [Provider #68](https://github.com/repoagent/controller/issues/68) and [host #53](https://github.com/repoagent/controller/issues/53) remain pending; merged #52 supports legacy GitHub Environment approval. The new flow requires no GitHub Environment creation, name, numeric identity or deployment settings. Azure Container Apps environments remain a separate infrastructure concept. Actions repository variables in the configuration table above are also separate from repository Agent variables.
+
+The host needs GitHub-authorized Agent-variable write access; only the broker's internal verifier receives Agent variables read, subject to live installation-scope proof. Runtime controller profiles stay frozen without approval-variable access. No deployment resources, workflow, OIDC trust or live variable is changed by this decision; hosted acceptance remains required. See [the approval contract](auth-repository-approval.md).
+
 ## Completing service deployment
 
 The guarded Bicep foundation, runtime gates, operator-only permission template and local verification commands are documented in [authentication infrastructure](auth-infrastructure.md). They are source artifacts; no foundation or runtime apply has been performed.
