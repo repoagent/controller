@@ -11,7 +11,7 @@
 | `${AUTH_APP_NAME}-runtime` | Separate user-assigned identity, no deployment authority |
 | `${AUTH_APP_NAME}-logs` | 30-day retention and 1 GB/day Log Analytics ingestion quota |
 | `${AUTH_APP_NAME}-environment` | Container Apps Consumption profile |
-| Deterministic `ra…dp` StorageV 2 account | Standard_LRS, HTTPS/TLS 1.2, no shared-key access or anonymous Blob access; Azure identity authentication |
+| Deterministic `ra…dp` StorageV2 account | Standard_LRS, HTTPS/TLS 1.2, no shared-key access or anonymous Blob access; Azure identity authentication |
 | `data-protection` Blob container | Separate durable key ring at `keyring.xml`; no lifecycle expiration |
 | `${AUTH_TABLE_NAME}` under default Table service | Dedicated broker state; default `brokerstate`; application does not create tables |
 | Deterministic `ra-…-kv` Key Vault | Empty, RBAC-enabled, 90-day soft delete and purge protection |
@@ -27,7 +27,7 @@ Use Bash, Python 3.10+ and standalone Bicep on PATH, `BICEP_BIN`, or `$HOME/.azu
 
 ```sh
 infra/auth/validate.sh
-python 3 -m unittest discover -s infra/auth/tests -v
+python3 -m unittest discover -s infra/auth/tests -v
 export AZURE_SUBSCRIPTION_ID=46f7e5d6-05f3-435b-8089-6c63a203dbfa
 export AZURE_RESOURCE_GROUP=rg-repoagent-controller-auth
 export AZURE_LOCATION=swedencentral
