@@ -6,7 +6,7 @@ using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed class PayloadRedactionTests(ITestOutputHelper output)
+public sealed partial class PayloadRedactionTests(ITestOutputHelper output)
 {
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
