@@ -54,6 +54,9 @@ class EnrollmentJourney:
                         '-out', str(cert), '-days', '1', '-subj', '/CN=localhost',
                         '-addext', 'subjectAltName=DNS:localhost'], check=True, capture_output=True, timeout=30)
         if os.name == 'nt':
+            if os.environ.get('REPOAGENT_TEST_WINDOWS_ROOT') != 'LocalMachine':
+                raise RuntimeError('Windows TLS tests require explicit REPOAGENT_TEST_WINDOWS_ROOT=LocalMachine '
+                                   'and an already administrative shell; production enrollment needs no elevation')
             der = ssl.PEM_cert_to_DER_cert(cert.read_text(encoding='ascii'))
             thumbprint = hashlib.sha1(der).hexdigest()
             der_path = self.directory / 'public-certificate.der'
@@ -65,8 +68,8 @@ class EnrollmentJourney:
                 failure = None
                 with diagnostic.open('wb') as output:
                     try:
-                        result = subprocess.run([sys.executable,
-                            str(Path(__file__).with_name('windows_certificate_fixture.py')),
+                        result = subprocess.run(['pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+                            str(Path(__file__).with_name('windows-certificate-fixture.ps1')),
                             operation, str(der_path), thumbprint], stdin=subprocess.DEVNULL,
                             stdout=output, stderr=output, timeout=15,
                             creationflags=subprocess.CREATE_NO_WINDOW)
@@ -82,7 +85,7 @@ class EnrollmentJourney:
                     phases = output.read(8192).decode('utf-8', errors='replace')
                 print('WINDOWS_TRUST ' + operation + '\n' + phases, flush=True)
                 if failure:
-                    raise RuntimeError('Temporary CurrentUser Root ' + operation + ' ' + failure +
+                    raise RuntimeError('Temporary opted-in LocalMachine Root ' + operation + ' ' + failure +
                                        '; bounded API phases:\n' + phases) from None
             # An interrupted add may already have succeeded. Remove only this
             # unique fixture certificate even when installation fails or times out.
