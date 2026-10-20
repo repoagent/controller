@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 
-namespace DiscussionBridge;
+namespace RepoAgentController;
 
 internal readonly record struct InstallationLease(string Token, DateTimeOffset ExpiresAt);
 

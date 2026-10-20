@@ -1,6 +1,6 @@
 # RepoAgent
 
-RepoAgent connects GitHub conversations to native coding-agent sessions. Its CLI, `bridge`, forwards observed activity; the agent replies through normal tools under a GitHub App installation identity. Discussions are the first supported interface; the name leaves room for issues and pull requests.
+RepoAgent connects GitHub conversations to native coding-agent sessions. Its CLI, `RepoAgentController`, forwards observed activity; the agent replies through normal tools under a GitHub App installation identity. Discussions are the first supported interface; the name leaves room for issues and pull requests.
 
 ## Start here
 
@@ -22,7 +22,7 @@ Run the bridge in a Linux container containing `gh` and `codex`. The packaged br
 Pass these arguments to the bridge **inside the configured container**:
 
 ```text
-bridge --repo repoagent/controller --app-id APP_ID_OR_CLIENT_ID --mention-user repoagent \
+RepoAgentController --repo repoagent/controller --app-id APP_ID_OR_CLIENT_ID --mention-user repoagent \
 --private-key /run/secrets/github-app.pem --workspace /workspace \
 --state /data/bridge-state.json
 ```
@@ -50,8 +50,8 @@ See [manual verification](docs/manual-verification.md) for the acceptance gate.
 ## Containerized authentication checks
 
 ```sh
-docker build -f tests/Containerfile -t discussion-bridge-tests .
-docker run --rm discussion-bridge-tests
+docker build -f tests/Containerfile -t repoagent-controller-tests .
+docker run --rm repoagent-controller-tests
 ```
 
 These focused xUnit tests exercise real RSA signing, private credential files and child-command dispatch with controlled HTTP responses/time. They verify renewal, expiry and failure isolation; they do not prove real App permissions or native Codex compatibility. The separate live checks in the [App guide](docs/github-app-auth.md) provide that evidence.

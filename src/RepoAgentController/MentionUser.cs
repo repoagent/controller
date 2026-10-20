@@ -1,6 +1,6 @@
 using AngleSharp.Html.Parser;
 
-namespace DiscussionBridge;
+namespace RepoAgentController;
 
 /// <summary>A real GitHub user used as a mention target, independently of the publishing App.</summary>
 public sealed record MentionUser(string Login)

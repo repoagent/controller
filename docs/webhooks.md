@@ -27,7 +27,7 @@ The local Docker wrapper publishes the selected listener port on **127.0.0.1 onl
 The native invocation inside an already configured container is:
 
 ```text
-bridge --repo OWNER/REPO --app-id APP_ID \
+RepoAgentController --repo OWNER/REPO --app-id APP_ID \
   --private-key /run/secrets/github-app.pem --workspace /workspace \
   --state /data/state/bridge.json --webhook-url https://agent.example.com \
   --listen-port 8080 --reconcile-interval 300

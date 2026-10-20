@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 
-namespace DiscussionBridge;
+namespace RepoAgentController;
 
 sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> enroll)
 {

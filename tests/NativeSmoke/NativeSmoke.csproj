@@ -6,6 +6,6 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../src/DiscussionBridge/DiscussionBridge.csproj" />
+    <ProjectReference Include="../../src/RepoAgentController/RepoAgentController.csproj" />
   </ItemGroup>
 </Project>

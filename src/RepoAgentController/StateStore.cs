@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 
-namespace DiscussionBridge;
+namespace RepoAgentController;
 
 sealed class StateStore : IDisposable
 {

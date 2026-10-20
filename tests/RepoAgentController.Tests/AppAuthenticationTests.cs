@@ -4,7 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using DiscussionBridge;
+using RepoAgentController;
 using Microsoft.Extensions.Time.Testing;
 using Xunit;
 

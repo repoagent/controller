@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
 
-namespace DiscussionBridge;
+namespace RepoAgentController;
 
 /// <summary>Dispatches gh with current App credentials, including from an already-running agent.</summary>
 public static class AppGitHubCommand
@@ -36,9 +36,9 @@ public static class AppGitHubCommand
         GitHubAppCredentials.SecureDirectory(directory);
         var path = Path.Combine(directory, "gh");
         static string Quote(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
-        var apphost = Path.Combine(AppContext.BaseDirectory, "bridge");
+        var apphost = Path.Combine(AppContext.BaseDirectory, "RepoAgentController");
         var launcher = File.Exists(apphost) ? new[] { apphost } :
-            new[] { FindExecutable("dotnet"), Path.Combine(AppContext.BaseDirectory, "bridge.dll") };
+            new[] { FindExecutable("dotnet"), Path.Combine(AppContext.BaseDirectory, "RepoAgentController.dll") };
         var command = string.Join(' ', launcher.Concat(new[] {
             "github-command", "--gh-path", executable, "--token-file", tokenFile }).Select(Quote));
         File.WriteAllText(path, "#!/bin/sh\nexec " + command + " -- \"$@\"\n");

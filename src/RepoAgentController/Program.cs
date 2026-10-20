@@ -1,9 +1,9 @@
 using System.Text.Json.Nodes;
-using DiscussionBridge;
+using RepoAgentController;
 
 return await BridgeCommand.Run(args);
 
-namespace DiscussionBridge
+namespace RepoAgentController
 {
     static class Log
     {

@@ -5,7 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 
-namespace DiscussionBridge;
+namespace RepoAgentController;
 
 sealed record WebhookConfiguration(Uri PublicUrl, int Port, TimeSpan ReconcileInterval)
 {

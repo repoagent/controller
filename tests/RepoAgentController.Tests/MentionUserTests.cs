@@ -1,4 +1,4 @@
-using DiscussionBridge;
+using RepoAgentController;
 using Xunit;
 
 public sealed class MentionUserTests

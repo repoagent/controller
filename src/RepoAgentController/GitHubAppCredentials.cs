@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 
-namespace DiscussionBridge;
+namespace RepoAgentController;
 
 /// <summary>Owns the App identity and a renewable, repository-scoped installation credential.</summary>
 public sealed class GitHubAppCredentials : IDisposable

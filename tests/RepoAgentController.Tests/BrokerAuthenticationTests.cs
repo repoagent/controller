@@ -2,10 +2,10 @@ using System.Diagnostics;
 using System.Net;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Time.Testing;
-using DiscussionBridge;
+using RepoAgentController;
 using Xunit;
 
-namespace DiscussionBridge.Tests;
+namespace RepoAgentController.Tests;
 
 public sealed class BrokerAuthenticationTests
 {

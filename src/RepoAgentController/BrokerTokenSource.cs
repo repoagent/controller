@@ -3,7 +3,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace DiscussionBridge;
+namespace RepoAgentController;
 
 /// <summary>Consumes only leases bound to the operator's protected v1 enrollment.</summary>
 internal sealed class BrokerTokenSource : IInstallationTokenSource

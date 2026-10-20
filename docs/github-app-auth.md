@@ -20,7 +20,7 @@ Webhook mode additionally requires owner-approved **Webhooks: read and write** a
 **Broker consumption is implemented; enrollment and the hosted broker are pending.** An operator with a trusted provider and a protected [v1 enrollment file](broker-protocol.md) can start the Linux/macOS controller without an App PEM:
 
 ```sh
-bridge --repo OWNER/REPO --app-id NUMERIC_APP_ID \
+RepoAgentController --repo OWNER/REPO --app-id NUMERIC_APP_ID \
   --broker-url https://credentials.example.org \
   --enrollment-file /run/secrets/controller-enrollment.json \
   --state /data/bridge-state.json --check-auth
@@ -62,7 +62,7 @@ A checkpoint is bound to its repository and authenticated actor. Renaming an App
 
 ## Dedicated mention account
 
-RepoAgent uses `@repoagent` as its operator-controlled mention identity; the GitHub App remains the authenticated publisher. Configure `bridge ... --mention-user repoagent` (omit `@`). This optional setting supports another existing dedicated user too. Startup resolves the real GitHub user through the App-authenticated API and rejects malformed, missing or organization accounts. The mention identity is reported separately from the actual App actor and does not change checkpoint ownership or existing native sessions.
+RepoAgent uses `@repoagent` as its operator-controlled mention identity; the GitHub App remains the authenticated publisher. Configure `RepoAgentController ... --mention-user repoagent` (omit `@`). This optional setting supports another existing dedicated user too. Startup resolves the real GitHub user through the App-authenticated API and rejects malformed, missing or organization accounts. The mention identity is reported separately from the actual App actor and does not change checkpoint ownership or existing native sessions.
 
 The bridge reads GitHub's rendered `bodyHTML` and recognizes `a.user-mention` links to that account. Emphasized mentions work; plain profile links, inline code, fenced code and email addresses are not mention links. Rendering metadata stays out of checkpoints and forwarded context, so render-only changes do not replay accepted content. The actual App bot mention and explicit URL enrollment remain available.
 
@@ -83,8 +83,8 @@ The documented agent-app runtime uses Copilot cloud agent, with partner function
 The containerized xUnit suite tests the project-owned authentication/dispatch behavior: valid RSA-signed JWTs, installation/permission validation, repository-scoped tokens, renewal before expiry, unchanged wrapper paths reading renewed tokens, expired/missing cache rejection and no ambient human fallback. It uses controlled HTTP responses and time; this is local adapter evidence, not proof that the real App is installed or has working GitHub permissions.
 
 ```sh
-docker build -f tests/Containerfile -t discussion-bridge-tests .
-docker run --rm discussion-bridge-tests
+docker build -f tests/Containerfile -t repoagent-controller-tests .
+docker run --rm repoagent-controller-tests
 ```
 
 For real compatibility, use the operator's App credentials in a configured container and a distinct human participant. Record the App/bot/installation identity, repository, tool versions, Discussion/source/reply URLs, native session IDs and short redacted log excerpts:
