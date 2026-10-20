@@ -28,7 +28,7 @@ def digest(value):
 
 
 def responses(value=VALUE):
-    return [{'body': {'id': 123}}, {'body': {'id': 456}},
+    return [{'body': {'id': 123, 'full_name': 'example/project'}}, {'body': {'id': 456}},
             {'body': {'name': VARIABLE, 'value': value}}, {'status': 204}]
 
 
@@ -86,6 +86,10 @@ class ApprovalRevokeTests(unittest.TestCase):
                          expected_gh.resolve(), 'Executable fixture must take precedence over host gh')
         command = ['pwsh', '-NoLogo', '-NoProfile', '-File', str(script_root / 'install.ps1'),
                    '-Action', 'Revoke']
+        # These retained cases explicitly exercise legacy teardown. Agent variables
+        # are the new default; do not infer an Environment from omitted inputs.
+        if '-GitHubEnvironment' not in arguments:
+            command += ['-GitHubEnvironment', 'repoagent']
         if interactive_input is None:
             command.append('-NonInteractive')
         if repository is not None:
