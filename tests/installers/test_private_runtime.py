@@ -62,14 +62,23 @@ class PrivateRuntimeTests(unittest.TestCase):
             docker = self.directory / 'docker'
             shutil.copyfile(Path(__file__).with_name('docker_fixture.py'), docker)
             docker.chmod(0o755)
-        self.private = self.directory / 'private α'
-        self.private.mkdir(mode=0o700)
+        if os.name == 'nt':
+            local = Path(os.environ['LOCALAPPDATA']).resolve()
+            self.assertTrue(local.is_absolute() and local.is_dir())
+            self.private = Path(self.enterContext(tempfile.TemporaryDirectory(
+                prefix='repoagent private α ', dir=local)))
+            self.assertFalse(self.private.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve()),
+                             'Private Windows source fixture must be outside TEMP')
+        else:
+            self.private = self.directory / 'private α'
+            self.private.mkdir(mode=0o700)
         self.enrollment = self.private / 'controller enrollment.json'
         self.enrollment.write_bytes(json.dumps(frozen_enrollment()).encode('utf-8'))
         self.enrollment.chmod(0o600)
         if os.name == 'nt':
             self.set_windows_private_acl(self.private, directory=True)
             self.set_windows_private_acl(self.enrollment)
+            self.assert_private_source_readable(self.enrollment)
         self.state_path = self.directory / 'docker-state.json'
         self.environment = dict(os.environ,
             PATH=str(self.directory) + os.pathsep + os.environ['PATH'],
@@ -82,10 +91,10 @@ class PrivateRuntimeTests(unittest.TestCase):
         executable = self.directory / ('docker.exe' if os.name == 'nt' else 'docker')
         self.assertEqual(Path(shutil.which('docker', path=self.environment['PATH'])).resolve(), executable.resolve())
 
-    def set_windows_private_acl(self, path, *, directory=False, broad=False, inherited=False):
+    def set_windows_private_acl(self, path, *, directory=False, broad=False, inherited=False, dangerous=False):
         # Real current-SID protected DACLs, not mocked Get-Acl output.
         script = """
-param($Path, $Kind, $Broad, $Inherited)
+param($Path, $Kind, $Broad, $Inherited, $Dangerous)
 $ErrorActionPreference = 'Stop'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
 $acl = if ($Kind -eq 'directory') { [Security.AccessControl.DirectorySecurity]::new() } else { [Security.AccessControl.FileSecurity]::new() }
@@ -93,13 +102,30 @@ $acl.SetOwner($sid)
 $acl.SetAccessRuleProtection($Inherited -ne 'true', $false)
 $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
 if ($Broad -eq 'true') { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'), 'Read', 'Allow')) }
+if ($Dangerous -eq 'true') { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-1-0'), 'DeleteSubdirectoriesAndFiles', 'Allow')) }
 Set-Acl -LiteralPath $Path -AclObject $acl
 """
         script_path = self.directory / 'set-fixture-acl.ps1'
         script_path.write_text(script, encoding='utf-8')
         result = subprocess.run(['pwsh', '-NoProfile', '-File', str(script_path), str(path),
-            'directory' if directory else 'file', str(broad).lower(), str(inherited).lower()],
+            'directory' if directory else 'file', str(broad).lower(), str(inherited).lower(), str(dangerous).lower()],
             capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def assert_private_source_readable(self, source):
+        # Exercise the exported reader: LOCALAPPDATA is a selector, not proof
+        # that the actual source ancestry satisfies the production boundary.
+        script = self.directory / 'read-private-fixture.ps1'
+        script.write_text("""
+param($ModulePath, $Source)
+$ErrorActionPreference = 'Stop'
+Import-Module -Name $ModulePath
+$bytes = Read-PrivateFileBytes $Source
+if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
+""", encoding='utf-8')
+        result = subprocess.run(['pwsh', '-NoProfile', '-File', str(script),
+            str(ROOT / 'scripts/private-file.psm1'), str(source)],
+            capture_output=True, text=True, encoding='utf-8', cwd=self.directory, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def invoke(self, *arguments, success=True):
@@ -123,33 +149,8 @@ Set-Acl -LiteralPath $Path -AclObject $acl
         return self.invoke('configure', '--repository', 'owner/repository', '--app-id', '123',
             '--broker-url', BROKER, '--enrollment-file', str(self.enrollment), *additional, success=success)
 
-    def with_windows_failure_probe(self, kind, action):
-        # Temporary issue73 Windows diagnosis. Preserve the public failure and
-        # collect only the handoff's tagged observations from synthetic inputs.
-        try:
-            return action()
-        except AssertionError as original:
-            if os.name != 'nt':
-                raise
-            try:
-                probe = self.directory / 'issue73-windows-probe.ps1'
-                probe.write_text(Path(__file__).with_name('private_runtime_windows_probe.ps1').read_text(
-                    encoding='utf-8'), encoding='utf-8')
-                result = subprocess.run(['pwsh', '-NoProfile', '-File', str(probe),
-                    '-Kind', kind, '-ModulePath', str(ROOT / 'scripts/private-file.psm1'),
-                    '-Source', str(self.enrollment), '-StatePath', str(self.state_path),
-                    '-ContainerName', NAME], capture_output=True, text=True, encoding='utf-8',
-                    env=self.environment, cwd=self.directory, timeout=30)
-                diagnostics = [line for line in result.stdout.splitlines()
-                               if line.startswith('[DEBUG-issue73-win] ')]
-                if result.returncode:
-                    diagnostics.append('[DEBUG-issue73-win] probeExitCode=' + str(result.returncode))
-            except Exception as failure:
-                diagnostics = ['[DEBUG-issue73-win] probeHostFailureType=' + type(failure).__name__]
-            raise self.failureException(str(original) + '\n' + '\n'.join(diagnostics)) from original
-
     def test_powershell_configures_supplied_broker_enrollment_without_pem(self):
-        self.with_windows_failure_probe('private', self.configure)
+        self.configure()
         state = self.state()
         self.assertEqual(state['settings']['brokerUrl'], BROKER)
         self.assertFalse(state['settings'].get('keyPath'))
@@ -258,6 +259,28 @@ Set-Acl -LiteralPath $Path -AclObject $acl
                     self.enrollment.chmod(0o600)
                     self.enrollment.write_bytes(original)
 
+    @unittest.skipUnless(os.name == 'nt', 'Native Windows effective ancestor DACL case')
+    def test_private_source_with_effective_unsafe_ancestor_is_rejected_before_docker(self):
+        ancestor = self.private / 'controlled unsafe ancestor'
+        ancestor.mkdir()
+        parent = ancestor / 'private parent'
+        parent.mkdir()
+        source = parent / 'synthetic enrollment.json'
+        source.write_bytes(self.enrollment.read_bytes())
+        self.set_windows_private_acl(ancestor, directory=True)
+        self.set_windows_private_acl(parent, directory=True)
+        self.set_windows_private_acl(source)
+        self.assert_private_source_readable(source)
+        try:
+            # Effective Everyone DeleteChild on an owned ancestor; file and its
+            # immediate parent keep their protected current-SID-only DACLs.
+            self.set_windows_private_acl(ancestor, directory=True, dangerous=True)
+            self.invoke('configure', '--repository', 'owner/repository', '--app-id', '123',
+                '--broker-url', BROKER, '--enrollment-file', str(source), success=False)
+            self.assertFalse(self.state(), 'Unsafe ancestry must fail before any Docker command')
+        finally:
+            self.set_windows_private_acl(ancestor, directory=True)
+
     def test_legacy_direct_lifecycle_preserves_volumes_and_rejects_extra_host_mount(self):
         key = self.directory / 'legacy key.pem'
         key.write_text('not-a-real-app-key')
@@ -265,7 +288,7 @@ Set-Acl -LiteralPath $Path -AclObject $acl
         self.invoke('check')
         self.invoke('start')
         before = self.state()['volumes']
-        self.with_windows_failure_probe('mount', lambda: self.invoke('stop'))
+        self.invoke('stop')
         self.invoke('start')
         self.assertEqual(self.state()['volumes'], before)
         state = self.state()
