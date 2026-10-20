@@ -6,7 +6,8 @@ Build, configure, verify and start RepoAgent with Docker Desktop Linux container
 .DESCRIPTION
 Prompts for missing values and explains each step. Reuses saved instance settings
 as defaults. Imports an existing CODEX_HOME/auth.json (or ~/.codex/auth.json) when
-available, otherwise offers container device sign-in. Install needs no host gh.
+available, otherwise offers container device sign-in. Direct-App Install needs no host gh. Enroll uses host gh authentication and
+PowerShell 7.4 or later to save a shared-App enrollment before runtime setup.
 Revoke uses the host's existing gh authentication to inspect or withdraw one
 repository approval; it needs no Docker, PEM or controller credential.
 Use -NonInteractive to disable all prompts and browser opening; valid Codex
@@ -22,9 +23,14 @@ credentials must then be supplied or already present in the container.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Install', 'Revoke')][string]$Action = 'Install',
-    [string]$GitHubEnvironment = 'repoagent',
-    [string]$ApprovalVariable = 'APPROVED_CONTROLLER',
+    [ValidateSet('Install', 'Enroll', 'Revoke')][string]$Action = 'Install',
+    [string]$BrokerOrigin,
+    [string]$StateDirectory,
+    [ValidateSet('polling', 'webhook')][string]$EnrollmentProfile,
+    [string]$ApprovalStatePath,
+    [string]$EnrollmentFile,
+    [string]$GitHubEnvironment,
+    [string]$ApprovalVariable,
     [string]$ExpectedValueSha256,
     [string]$ExpectedRepositoryId,
     [string]$ExpectedEnvironmentId,
@@ -54,11 +60,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+if ($Action -eq 'Enroll') {
+    $enrollOptions = @{}
+    if ($EnrollmentProfile) { $enrollOptions.Profile = $EnrollmentProfile }
+    & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions -Repository $Repository -BrokerOrigin $BrokerOrigin `
+        -StateDirectory $StateDirectory -GitHubEnvironment $GitHubEnvironment -ApprovalVariable $ApprovalVariable `
+        -Apply:$Apply -NonInteractive:$NonInteractive
+    exit $LASTEXITCODE
+}
 if ($Action -eq 'Revoke') {
     & "$PSScriptRoot/scripts/revoke-approval.ps1" -Repository $Repository `
         -GitHubEnvironment $GitHubEnvironment -ApprovalVariable $ApprovalVariable `
         -ExpectedValueSha256 $ExpectedValueSha256 -ExpectedRepositoryId $ExpectedRepositoryId `
-        -ExpectedEnvironmentId $ExpectedEnvironmentId -Apply:$Apply -NonInteractive:$NonInteractive
+        -ExpectedEnvironmentId $ExpectedEnvironmentId -ApprovalStatePath $ApprovalStatePath `
+        -EnrollmentFile $EnrollmentFile -Apply:$Apply -NonInteractive:$NonInteractive
     exit $LASTEXITCODE
 }
 $provided = $PSBoundParameters

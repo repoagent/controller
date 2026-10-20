@@ -9,8 +9,10 @@ GitHub has no atomic compare-and-delete: concurrent writes may need manual repai
 [CmdletBinding()]
 param(
     [string]$Repository,
-    [string]$GitHubEnvironment = 'repoagent',
-    [string]$ApprovalVariable = 'APPROVED_CONTROLLER',
+    [string]$ApprovalStatePath,
+    [string]$EnrollmentFile,
+    [string]$GitHubEnvironment,
+    [string]$ApprovalVariable,
     [string]$ExpectedValueSha256,
     [string]$ExpectedRepositoryId,
     [string]$ExpectedEnvironmentId,
@@ -24,6 +26,7 @@ $script:CallCount = 0
 $script:RemoteClock = [Diagnostics.Stopwatch]::new()
 $repositoryId = $null
 $environmentId = $null
+$script:BrokerClosure = 'unconfirmed'
 
 function Stop-Revoke([string]$Message) {
     $script:SafeDiagnostic = $Message
@@ -40,7 +43,7 @@ function Write-Outcome([string]$Marker, [string]$Fingerprint, [string]$Recovery)
         observedValueSha256 = $Fingerprint
         expectedValueSha256 = $ExpectedValueSha256
         githubMarker = $Marker
-        brokerClosure = 'unconfirmed'
+        brokerClosure = $script:BrokerClosure
         outstandingTokens = 'unsettled'
         recovery = $Recovery
     } | ConvertTo-Json -Compress
@@ -133,6 +136,21 @@ function Read-Identity([string]$Endpoint, [string]$Expected, [string]$Kind) {
 }
 
 try {
+    if ($ApprovalStatePath -or $EnrollmentFile) {
+        Import-Module "$PSScriptRoot/host-enrollment.psm1" -Force -DisableNameChecking
+    }
+    if ($ApprovalStatePath) {
+        if ([IO.FileInfo]::new([IO.Path]::GetFullPath($ApprovalStatePath)).Length -gt 65536) { Stop-Revoke 'Saved approval exceeds 64 KiB.' }
+        $saved = Read-HostJson ([IO.File]::ReadAllText([IO.Path]::GetFullPath($ApprovalStatePath)))
+        Assert-Fields $saved @('version','repository','repositoryId','brokerOrigin','repoEnvironment','environmentId','approvalVariable','profile','pendingId','deadline','marker','expectedValueSha256','approvalWriteAttempted','approvalObserved')
+        foreach ($pair in @(@('Repository','repository'),@('GitHubEnvironment','repoEnvironment'),@('ApprovalVariable','approvalVariable'),@('ExpectedRepositoryId','repositoryId'),@('ExpectedEnvironmentId','environmentId'),@('ExpectedValueSha256','expectedValueSha256'))) {
+            $supplied = Get-Variable -Name $pair[0] -ValueOnly
+            if ($supplied -and [string]$supplied -cne [string]$saved[$pair[1]]) { Stop-Revoke 'Arguments conflict with saved approval coordinates.' }
+            Set-Variable -Name $pair[0] -Value ([string]$saved[$pair[1]])
+        }
+    }
+    if (-not $GitHubEnvironment) { $GitHubEnvironment = 'repoagent' }
+    if (-not $ApprovalVariable) { $ApprovalVariable = 'APPROVED_CONTROLLER' }
     if (-not $Repository -and -not $NonInteractive) { $Repository = Read-Host 'Repository (OWNER/REPO)' }
     if ($Repository -cnotmatch '\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z' `
         -or @($Repository.Split('/') | Where-Object { $_ -in @('.', '..') }).Count) {
@@ -210,6 +228,20 @@ try {
     # accepts an independent-writer availability race and manual recovery.
     $removed = Invoke-GitHub DELETE $variableEndpoint
     if ($removed.Status -ne 204) { Stop-Revoke "Approval removal is unconfirmed (HTTP $($removed.Status)); inspect GitHub before retrying." }
+    if ($EnrollmentFile) {
+        try {
+            $enrollment = Read-PrivateJson ([IO.Path]::GetFullPath($EnrollmentFile))
+            Assert-Fields $enrollment @('protocolVersion','brokerOrigin','githubHost','deviceId','deviceSecret','appId','appSlug','installationId','repositoryId','repository','permissions')
+            Assert-Text $enrollment.deviceId '\A[A-Za-z0-9_-]{1,128}\z'
+            if ($enrollment.protocolVersion -ne 1 -or $enrollment.githubHost -cne 'github.com' -or $enrollment.repositoryId -ne $repositoryId -or $enrollment.repository -ine $Repository) { throw 'Private enrollment differs.' }
+            # Only a trusted saved setup origin may receive the optional credential.
+            if (-not $ApprovalStatePath -or (Get-BrokerOrigin $enrollment.brokerOrigin) -cne (Get-BrokerOrigin $saved.brokerOrigin)) { throw 'Trusted broker origin is required.' }
+            $marker = Read-HostJson $saved.marker
+            if ($marker.deviceId -cne $enrollment.deviceId -or $marker.repositoryId -ne $repositoryId -or $marker.environmentId -ne $environmentId -or $marker.variable -cne $ApprovalVariable -or $marker.appId -ne $enrollment.appId -or $marker.installationId -ne $enrollment.installationId) { throw 'Private enrollment differs from selected approval.' }
+            $closed = Invoke-EnrollmentBroker $saved.brokerOrigin DELETE ('/v1/devices/' + $enrollment.deviceId) $enrollment.deviceSecret
+            if ($closed.Status -eq 204) { $script:BrokerClosure = 'confirmed' }
+        } catch { $script:BrokerClosure = 'unconfirmed' }
+    }
     Write-Outcome 'removed' $fingerprint 'GitHub acknowledged deletion at this coordinate; concurrent value and persistent absence are not proven. Check broker closure and outstanding tokens separately. Resolve the old enrollment before manually reapproving.'
     exit 0
 } catch {
