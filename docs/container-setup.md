@@ -110,3 +110,5 @@ To intentionally remove this instance's stored credentials, selected skills, wor
 ```
 
 This does not revoke upstream OAuth authorizations or uninstall the GitHub App. Live-test evidence volumes and retained failed Discussions have separate cleanup described in the [acceptance catalog](acceptance-cases.md).
+
+For a temporary local HTTPS endpoint without a Cloudflare account/domain or host tools, choose `--mode quick-tunnel`; see [Quick Tunnel setup and lifecycle](quick-tunnel.md). It publishes no host port and owns cloudflared inside the agent container. Fixed-URL and polling modes do not start a tunnel.

@@ -56,7 +56,7 @@ start() {
     fi
     local output
     output=$(docker logs "$name" 2>&1)
-    if [[ "$output" == *' ready '* ]]; then
+    if [[ "$output" == *' ready repository='* ]]; then
       printf '%s\n' "$output"
       return 0
     fi
@@ -125,7 +125,7 @@ Usage: ./repoagent COMMAND
   setup                           Guided App configuration and Codex browser sign-in
   configure --repository OWNER/REPO --app-id ID --key-path /absolute/key.pem
             [--installation-id ID] [--mention-user LOGIN] [--model MODEL] [--tool-updates latest|pinned]
-            [--mode polling|fixed-url] [--public-url https://HOST] [--listen-port 8080] [--reconcile-interval 300]
+            [--mode polling|fixed-url|quick-tunnel] [--public-url https://HOST] [--listen-port 8080] [--reconcile-interval 300]
   login                           Container-owned Codex device sign-in (reuses valid login)
   import-codex-auth /path/auth.json Explicitly copy an existing Codex auth cache
   skills install /path/skills.json [/path/private-source-token]

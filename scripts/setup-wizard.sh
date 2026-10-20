@@ -216,11 +216,15 @@ ask KEY_PATH "Absolute host path to its PEM private key (mounted read-only):"
 ask INSTALLATION_ID "Expected installation ID (optional):"
 ask MENTION_USER "Dedicated mention login without @ (optional):"
 ask MODEL "Codex model (Enter defaults to gpt-6.1-sol):"
-ask MODE "Deployment mode: polling or fixed-url (Enter defaults to polling):"
-if [[ "${MODE:-polling}" == fixed-url ]]; then
+ask MODE "Deployment mode: polling, fixed-url or quick-tunnel (Enter defaults to polling):"
+if [[ "${MODE:-polling}" != polling ]]; then
   say "Enable repository Webhooks: read and write in the App, then approve updated installation permissions."
-  say "Provide an external HTTPS proxy/ingress. It forwards /github/webhook to the selected container port."
-  ask PUBLIC_URL "Public HTTPS origin (for example https://agent.example.com):"
+  if [[ "$MODE" == fixed-url ]]; then
+    say "Provide an external HTTPS proxy/ingress. It forwards /github/webhook to the selected container port."
+    ask PUBLIC_URL "Public HTTPS origin (for example https://agent.example.com):"
+  else
+    say "Quick Tunnel needs no Cloudflare account/domain/credentials; its temporary hostname has no uptime guarantee. Use it for development/testing."
+  fi
   ask LISTEN_PORT "Listener port (Enter defaults to 8080):"
   ask RECONCILE_INTERVAL "Reconciliation seconds (Enter defaults to 300):"
 fi
@@ -230,9 +234,10 @@ args=(configure --repository "$REPOSITORY" --app-id "$APP_ID" --key-path "$KEY_P
   --mention-user "$MENTION_USER" --model "${MODEL:-gpt-6.1-sol}"
   --tool-updates "${tool_updates:-latest}" --web-search "${web_search:-live}"
   --mode "${MODE:-polling}")
-if [[ "${MODE:-polling}" == fixed-url ]]; then
-  args+=(--public-url "$PUBLIC_URL" --listen-port "${LISTEN_PORT:-8080}" --reconcile-interval "${RECONCILE_INTERVAL:-300}")
+if [[ "${MODE:-polling}" != polling ]]; then
+  args+=(--listen-port "${LISTEN_PORT:-8080}" --reconcile-interval "${RECONCILE_INTERVAL:-300}")
 fi
+if [[ "${MODE:-polling}" == fixed-url ]]; then args+=(--public-url "$PUBLIC_URL"); fi
 [[ -z "$INSTALLATION_ID" ]] || args+=(--installation-id "$INSTALLATION_ID")
 "$cli" "${args[@]}"
 stage "Sign in to Codex inside the container"

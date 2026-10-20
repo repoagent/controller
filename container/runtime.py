@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 import urllib.parse
 import update_tools
+import quick_tunnel
 import yaml
 
 CONFIG = Path('/data/config/settings.json')
@@ -47,9 +48,11 @@ def bridge_args(config):
         args += ['--installation-id', str(config['installationId'])]
     if config.get('mentionUser'):
         args += ['--mention-user', config['mentionUser']]
-    if config.get('mode', 'polling') == 'fixed-url':
-        args += ['--webhook-url', config['publicUrl'], '--listen-port', str(config.get('listenPort', 8080)),
+    if config.get('mode', 'polling') in ('fixed-url', 'quick-tunnel'):
+        args += ['--listen-port', str(config.get('listenPort', 8080)),
                  '--reconcile-interval', str(config.get('reconcileInterval', 300))]
+        if config['mode'] == 'fixed-url':
+            args += ['--webhook-url', config['publicUrl']]
     for url in config.get('enroll', []):
         args += ['--enroll', url]
     return args
@@ -176,7 +179,7 @@ def main():
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
     configure_parser.add_argument('--web-search', choices=['live', 'cached', 'disabled'], default='live')
     configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='latest')
-    configure_parser.add_argument('--mode', choices=['polling', 'fixed-url'], default='polling')
+    configure_parser.add_argument('--mode', choices=['polling', 'fixed-url', 'quick-tunnel'], default='polling')
     configure_parser.add_argument('--public-url', default='')
     configure_parser.add_argument('--listen-port', type=int, default=8080)
     configure_parser.add_argument('--reconcile-interval', type=int, default=300)
@@ -192,7 +195,7 @@ def main():
     elif args.command == 'versions':
         print('RepoAgent container; uid=' + str(os.getuid()), flush=True)
         print('bridge: Native AOT, built with .NET SDK 11.0.100-rc.2', flush=True)
-        for command in [['gh', '--version'], ['codex', '--version'], ['python3', '--version'], ['rg', '--version']]: run(command)
+        for command in [['gh', '--version'], ['codex', '--version'], ['python3', '--version'], ['rg', '--version'], ['cloudflared', '--version']]: run(command)
     elif args.command == 'install-skills': install_skills(args.selection, args.token_file)
     elif args.command == 'skills': print((CONFIG.parent / 'skills.json').read_text() if (CONFIG.parent / 'skills.json').exists() else '[]')
     elif args.command == 'login':
@@ -217,8 +220,14 @@ def main():
         if args.command == 'start' and config.get('toolUpdates', 'latest') == 'latest':
             update_tools.update()
         run(['codex', 'login', 'status'])
-        if args.command == 'check': run(BRIDGE + bridge_args(config) + ['--check-auth'])
-        else: os.execv(BRIDGE[0], BRIDGE + bridge_args(config))
+        if args.command == 'check':
+            # Check the webhook grant without creating a tunnel or registering a hook.
+            endpoint = ['--webhook-url', 'https://quick-tunnel.invalid'] if config.get('mode') == 'quick-tunnel' else []
+            run(BRIDGE + bridge_args(config) + endpoint + ['--check-auth'])
+        elif config.get('mode') == 'quick-tunnel':
+            sys.exit(quick_tunnel.run(BRIDGE + bridge_args(config), config.get('listenPort', 8080)))
+        else:
+            os.execv(BRIDGE[0], BRIDGE + bridge_args(config))
 
 
 if __name__ == '__main__':
