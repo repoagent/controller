@@ -85,8 +85,9 @@ function Invoke-Discovery([string[]]$Arguments, [string]$ResourceId = '', [switc
             if ($AllowMissing -and $errorText -match '(?m)^ERROR: \((ResourceNotFound|ResourceGroupNotFound)\)') { return $null }
             Fail 'Azure discovery failed; check subscription, permissions, network and installed containerapp support. Resource absence is unverified.'
         }
-        try { $result = ConvertFrom-Json -InputObject $text -AsHashtable -ErrorAction Stop } catch { Fail 'Malformed Azure JSON response; resource absence is unverified.' }
+        try { $result = ConvertFrom-Json -InputObject $text -AsHashtable -NoEnumerate -ErrorAction Stop } catch { Fail 'Malformed Azure JSON response; resource absence is unverified.' }
         if ($result -isnot [Collections.IDictionary]) { Fail 'Malformed Azure resource response.' }
+        if ($ResourceId -and $result.id -isnot [string]) { Fail 'Malformed Azure resource identity.' }
         if ($ResourceId -and $result.id -ine $ResourceId) { Fail 'Azure returned a wrong-subscription or unexpected resource identity.' }
         return $result
     } finally {
@@ -115,8 +116,10 @@ try {
     $appId = "$groupId/providers/Microsoft.App/containerApps/$AppName"
     $registryId = "$groupId/providers/Microsoft.ContainerRegistry/registries/$RegistryName"
     $account = Invoke-Discovery @('account','show')
+    if ($account.id -isnot [string] -or $account.state -isnot [string]) { Fail 'Malformed Azure subscription response.' }
     if ($account.id -ine $SubscriptionId -or $account.state -ne 'Enabled') { Fail 'Selected Azure subscription is wrong or disabled.' }
     $provider = Invoke-Discovery @('provider','show','--namespace','Microsoft.App')
+    if ($provider.registrationState -isnot [string]) { Fail 'Malformed Azure provider response.' }
     if ($provider.registrationState -ne 'Registered') { Fail 'Microsoft.App provider is not registered. Registration requires a separate operator action.' }
     $group = Invoke-Discovery @('group','show','--name',$ResourceGroup) $groupId -AllowMissing
     $env = $null; $app = $null; $registry = $null
@@ -125,8 +128,36 @@ try {
         $app = Invoke-Discovery @('containerapp','show','--name',$AppName,'--resource-group',$ResourceGroup) $appId -AllowMissing
         $registry = Invoke-Discovery @('acr','show','--name',$RegistryName,'--resource-group',$ResourceGroup) $registryId -AllowMissing
     }
-    if ($env -and ($env.location -isnot [string] -or $env.properties.provisioningState -isnot [string])) { Fail 'Malformed Azure environment response.' }
-    if ($app -and ($app.location -isnot [string] -or $app.properties.managedEnvironmentId -isnot [string])) { Fail 'Malformed Azure app response.' }
+    # Validate every object/scalar used as compatibility or ownership evidence
+    # before comparisons: PowerShell equality filters collections and coerces
+    # booleans/numbers, neither of which proves a scalar Azure identity.
+    if ($env) {
+        if ($env.location -isnot [string] -or $env.properties -isnot [Collections.IDictionary] -or $env.properties.provisioningState -isnot [string]) { Fail 'Malformed Azure environment response.' }
+        if ($null -ne $env.properties.vnetConfiguration) {
+            if ($env.properties.vnetConfiguration -isnot [Collections.IDictionary]) { Fail 'Malformed Azure environment network response.' }
+            if ($env.properties.vnetConfiguration.Contains('internal') -and $env.properties.vnetConfiguration.internal -isnot [bool]) { Fail 'Malformed Azure environment network visibility.' }
+        }
+    }
+    if ($app) {
+        if ($app.location -isnot [string] -or $app.properties -isnot [Collections.IDictionary] -or $app.properties.managedEnvironmentId -isnot [string]) { Fail 'Malformed Azure app response.' }
+        # Azure may omit tags or return null when no tags are set. A supplied
+        # object must contain only string values, including unrelated tags.
+        if ($null -ne $app.tags) {
+            if ($app.tags -isnot [Collections.IDictionary]) { Fail 'Malformed Azure app ownership tags.' }
+            foreach ($tag in $app.tags.GetEnumerator()) {
+                if ($tag.Value -isnot [string]) { Fail 'Malformed Azure app ownership tag value.' }
+            }
+        }
+        if ($null -ne $app.properties.configuration) {
+            if ($app.properties.configuration -isnot [Collections.IDictionary]) { Fail 'Malformed Azure app configuration.' }
+            $ingress = $app.properties.configuration.ingress
+            if ($null -ne $ingress) {
+                if ($ingress -isnot [Collections.IDictionary]) { Fail 'Malformed Azure app ingress.' }
+                if ($ingress.Contains('external') -and $ingress.external -isnot [bool]) { Fail 'Malformed Azure app ingress visibility.' }
+                if ($null -ne $ingress.fqdn -and $ingress.fqdn -isnot [string]) { Fail 'Malformed Azure app origin.' }
+            }
+        }
+    }
     if ($registry -and $registry.loginServer -isnot [string]) { Fail 'Malformed Azure registry response.' }
     if ($env -and ($env.location -ine $Location -or $env.properties.provisioningState -ne 'Succeeded' -or $env.properties.vnetConfiguration.internal -eq $true)) { Fail 'Incompatible Container Apps environment: require the selected region, successful provisioning and external access.' }
     if ($registry -and ($registry.loginServer -isnot [string] -or $Image.Split('/')[0] -ine $registry.loginServer)) { Fail 'Image registry does not match the discovered registry login server.' }
