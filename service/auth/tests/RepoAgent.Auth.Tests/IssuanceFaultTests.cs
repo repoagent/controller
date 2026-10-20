@@ -8,6 +8,76 @@ public sealed class IssuanceFaultTests
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Competing_global_reservation_retries_before_observation_without_duplicate_charges(bool existingQuota)
+    {
+        await using var f = await IssuanceFixture.CreateAsync();
+        var competingGrant = await SeedCompetingRepository(f);
+        if (existingQuota)
+        {
+            Assert.Equal(200, (await f.IssueAsync(Token)).Status);
+            f.Clock.Advance(TimeSpan.FromMinutes(1));
+        }
+        var reservedAt = f.Clock.GetUtcNow();
+        var priorAttempts = (await f.AttemptsAsync()).Select(a => a.RowKey).ToHashSet();
+        TableEntity? competingAttempt = null;
+        var injected = false;
+        var conflictStatus = 0;
+        var firstBatch = false;
+        var transport = new ObservedTransport
+        {
+            Before = async message =>
+            {
+                if (!ObservedTransport.IsBatch(message) || injected) return;
+                injected = firstBatch = true;
+                // A real admission in another repository wins the shared global quota/slot.
+                using var work = new IssuanceWork(f.Clock);
+                (_, competingAttempt) = await f.Store().ReserveAsync(competingGrant, "verification", work);
+                f.Clock.Advance(TimeSpan.FromSeconds(2));
+            },
+            After = async message =>
+            {
+                if (!ObservedTransport.IsBatch(message) || !firstBatch) return;
+                firstBatch = false;
+                // Table batches return202 with the definite transaction failure inside the body.
+                var buffered = new MemoryStream();
+                await message.Response.ContentStream!.CopyToAsync(buffered, Token);
+                var body = System.Text.Encoding.UTF8.GetString(buffered.ToArray());
+                buffered.Position = 0;
+                message.Response.ContentStream = buffered;
+                conflictStatus = body.Contains("HTTP/1.1 409", StringComparison.Ordinal) ? 409
+                    : body.Contains("HTTP/1.1 412", StringComparison.Ordinal) ? 412 : 0;
+            }
+        };
+        var result = await f.IssueAsync(Token, transport);
+        Assert.True(injected);
+        Assert.Equal(existingQuota ? 412 : 409, conflictStatus);
+        Assert.Equal("reserved", competingAttempt!.GetString("State"));
+        Assert.Equal(200, result.Status);
+        var slots = existingQuota ? 4 : 3;
+        var global = await GlobalQuota(f);
+        Assert.Equal(slots, global.GetInt64("Slots"));
+        Assert.Equal(existingQuota ? 2 : 3, global.GetInt64("Admissions"));
+        var rows = await GlobalRows(f);
+        Assert.Equal(slots, rows.Count(e => e.RowKey.StartsWith("slot:", StringComparison.Ordinal)));
+        Assert.Single(rows, e => e.TryGetValue("OperationId", out var id) && (string)id == competingAttempt.GetString("OperationId"));
+        var attempts = await f.AttemptsAsync();
+        var admitted = attempts.Where(a => !priorAttempts.Contains(a.RowKey)).ToList();
+        Assert.Equal(existingQuota ? 1 : 2, admitted.Count);
+        foreach (var attempt in admitted)
+            Assert.Single(rows, e => e.TryGetValue("OperationId", out var id) && (string)id == attempt.GetString("OperationId"));
+        var retried = Assert.Single(admitted, a => a.GetString("Purpose") == (existingQuota ? "runtime" : "verification"));
+        Assert.Equal(reservedAt, retried.GetDateTimeOffset("ReservedAt"));
+        Assert.Equal(reservedAt.AddSeconds(-60), retried.GetDateTimeOffset("JwtIssuedAt"));
+        Assert.Equal(reservedAt.AddSeconds(120), retried.GetDateTimeOffset("JwtExpiresAt"));
+        Assert.Equal(existingQuota ? 3 : 2, f.Signing.Calls);
+        Assert.Equal(existingQuota ? 3 : 2, f.GitHub.Mints);
+        Assert.Equal(existingQuota ? 16 : 8, f.GitHub.Reads);
+        Assert.Equal(1, f.GitHub.VerifierMints);
+    }
+
+    [Theory]
     [InlineData("gate")]
     [InlineData("device")]
     public async Task Transient_admission_conflict_rereads_authority_before_first_approval_observation(string changed)
@@ -282,5 +352,28 @@ public sealed class IssuanceFaultTests
         var rows = new List<TableEntity>();
         await foreach (var row in f.Storage.Table.QueryAsync<TableEntity>(e => e.PartitionKey == "global:issuance-v1", cancellationToken: Token)) rows.Add(row);
         return rows;
+    }
+
+    private static async Task<GrantSnapshot> SeedCompetingRepository(IssuanceFixture f)
+    {
+        const string repository = "654321", partition = "repository:" + repository;
+        static TableEntity Copy(TableEntity source, string partition)
+        {
+            var copy = new TableEntity(partition, source.RowKey);
+            foreach (var (key, value) in source)
+                if (key is not ("PartitionKey" or "RowKey" or "Timestamp" or "odata.etag")) copy[key] = value;
+            copy["RepositoryId"] = repository;
+            return copy;
+        }
+        var gate = Copy(await f.GateAsync(), partition);
+        var device = Copy(await f.DeviceAsync(), partition);
+        device["Repository"] = "owner/competing";
+        device["Marker"] = ApprovalMarker.Create(new(gate, device));
+        await f.Storage.Table.SubmitTransactionAsync(new[]
+        {
+            new TableTransactionAction(TableTransactionActionType.Add, gate),
+            new TableTransactionAction(TableTransactionActionType.Add, device)
+        }, Token);
+        return await f.Store().SnapshotAsync(partition, f.Device.DeviceId, Token);
     }
 }
