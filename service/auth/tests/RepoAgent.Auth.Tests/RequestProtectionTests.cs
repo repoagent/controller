@@ -115,6 +115,7 @@ public sealed class RequestProtectionTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.BadRequest, body.StatusCode);
         Assert.Equal(0, transport.Calls);
         using var mint = await client.PostAsync("/v1/devices/" + device.DeviceId + "/installation-token", null, Token);
-        Assert.Equal(HttpStatusCode.NotFound, mint.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, mint.StatusCode);
+        Assert.Equal(0, transport.Calls);
     }
 }
