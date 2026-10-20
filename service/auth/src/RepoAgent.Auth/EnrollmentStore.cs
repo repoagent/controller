@@ -106,6 +106,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
             || Text(pending, "Epoch") != options.DeploymentEpoch) throw new IssuanceDenied(401);
         if (recoveryHash is not null && (pending.GetString("RecoveryHash") is not { } hash || !DeviceSecret.Matches(Convert.FromHexString(recoveryHash), hash))) throw new IssuanceDenied(401);
         var snapshot = new EnrollmentSnapshot(gate, pending);
+        if (!snapshot.Approval.Allows(Text(pending, "Profile"))) throw new IssuanceDenied();
         if (snapshot.Approval.SetupVersion != setupVersion) throw new IssuanceDenied(409);
         if (snapshot.Approval == ApprovalContract.Legacy)
         {

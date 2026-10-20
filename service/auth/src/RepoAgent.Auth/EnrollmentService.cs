@@ -118,13 +118,19 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
             device["Acknowledged"] = false; device["State"] = "unacknowledged";
             device["ExpiresAt"] = Date(s.Pending, "Deadline"); device["OutstandingTokenCount"] = 0L;
             device["CompletionId"] = completion; device["PendingId"] = s.Id;
-            var envelope = JsonSerializer.Serialize(new
+            var envelopeFields = new Dictionary<string, object>
             {
-                protocolVersion = 1, brokerOrigin = options.BrokerOrigin!.GetLeftPart(UriPartial.Authority), githubHost = "github.com",
-                deviceId = s.DeviceId, deviceSecret, appId = AppId, appSlug = AppSlug,
-                installationId = Number(s.Pending, "InstallationId"), repositoryId = Id(s.RepositoryId),
-                repository = Text(s.Pending, "Repository"), permissions = Permissions(Text(s.Pending, "Profile"))
-            });
+                ["protocolVersion"] = s.Approval.RuntimeVersion, ["brokerOrigin"] = options.BrokerOrigin!.GetLeftPart(UriPartial.Authority), ["githubHost"] = "github.com",
+                ["deviceId"] = s.DeviceId, ["deviceSecret"] = deviceSecret, ["appId"] = AppId, ["appSlug"] = AppSlug,
+                ["installationId"] = Number(s.Pending, "InstallationId"), ["repositoryId"] = Id(s.RepositoryId),
+                ["repository"] = Text(s.Pending, "Repository"), ["permissions"] = Permissions(Text(s.Pending, "Profile"))
+            };
+            if (s.Approval == ApprovalContract.AgentClone)
+            {
+                envelopeFields["profile"] = Text(s.Pending, "Profile");
+                envelopeFields["policyVersion"] = s.Approval.Policy;
+            }
+            var envelope = JsonSerializer.Serialize(envelopeFields);
             s.Pending["ProtectedCompletion"] = store.CompletionProtector(s).Protect(envelope);
             s.Pending["CompletionId"] = completion!;
             s.Pending["State"] = "completed";

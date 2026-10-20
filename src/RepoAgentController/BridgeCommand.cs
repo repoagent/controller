@@ -8,11 +8,13 @@ public static class BridgeCommand
 {
     public static async Task<int> Run(string[] args, HttpClient? transport = null, string? ghExecutable = null)
     {
+        if (args.Length > 0 && args[0] is "git-helper" or "git-clone-child" or "git-fetch")
+            return await AppGitCredential.Run(args, CancellationToken.None);
         var repository = new Option<string>("--repo") { Required = true, Description = "GitHub owner/repository" };
         var appId = new Option<string>("--app-id") { Required = true, Description = "GitHub App ID or client ID" };
         var privateKey = new Option<FileInfo>("--private-key") { Description = "GitHub App PEM private-key file" };
         var brokerUrl = new Option<string>("--broker-url") { Description = "Enrolled HTTPS credential broker origin" };
-        var enrollmentFile = new Option<FileInfo>("--enrollment-file") { Description = "Protected v1 broker enrollment file" };
+        var enrollmentFile = new Option<FileInfo>("--enrollment-file") { Description = "Protected broker enrollment file (v1 or explicit clone v2)" };
         var installationId = new Option<long?>("--installation-id") { Description = "Expected installation ID (otherwise discover it for --repo)" };
         var mentionUser = new Option<string>("--mention-user") { Description = "Existing dedicated GitHub user to mention (without @); publication still uses the App" };
         var workspace = new Option<DirectoryInfo>("--workspace") { DefaultValueFactory = _ => new(Environment.CurrentDirectory) };
@@ -23,8 +25,9 @@ public static class BridgeCommand
         var listenPort = new Option<int>("--listen-port") { DefaultValueFactory = _ => 8080, Description = "Container HTTP listener port in webhook mode" };
         var reconcileInterval = new Option<int>("--reconcile-interval") { DefaultValueFactory = _ => 300, Description = "Seconds between full reconciliations in webhook mode" };
         var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (native work may still be running)" };
+        var clone = new Option<bool>("--clone") { Description = "Use explicitly approved clone-capable credentials" };
         var checkAuth = new Option<bool>("--check-auth") { Description = "Verify App installation identity and prepare authenticated gh, then exit without starting Codex" };
-        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, once, checkAuth };
+        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, once, checkAuth, clone };
         var tokenFile = new Option<FileInfo>("--token-file") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
@@ -81,14 +84,15 @@ public static class BridgeCommand
                     using var ownedHttp = transport is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(60) } : null;
                     var http = transport ?? ownedHttp!;
                     using var credentials = broker is null
-                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, repositoryWebhooks: publicUrl is not null)
-                        : GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, repositoryWebhooks: publicUrl is not null);
+                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone))
+                        : GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone));
                     await credentials.Initialize(result.GetValue(installationId), cancellationToken);
                     var executable = ghExecutable ?? AppGitHubCommand.FindExecutable("gh");
                     var github = new GitHub(repo, credentials, executable);
                     await github.VerifyIdentity(cancellationToken);
                     await github.ConfigureMentionUser(result.GetValue(mentionUser), cancellationToken);
                     store.VerifyIdentity(credentials.AgentLogin);
+                    if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentials.TokenFile);
                     var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentials.TokenFile);
                     if (result.GetValue(checkAuth)) return 0;
                     using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

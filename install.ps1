@@ -26,7 +26,8 @@ param(
     [ValidateSet('Install', 'Enroll', 'Revoke')][string]$Action = 'Install',
     [string]$BrokerOrigin,
     [string]$StateDirectory,
-    [ValidateSet('polling', 'webhook')][string]$EnrollmentProfile,
+    [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone')][string]$EnrollmentProfile,
+    [switch]$Clone,
     [string]$ApprovalStatePath,
     [string]$EnrollmentFile,
     [string]$GitHubEnvironment,
@@ -154,6 +155,7 @@ $KeyPath = (Resolve-Path -LiteralPath $KeyPath).ProviderPath
 if ($KeyPath -match '[,\r\n]') { throw 'Private-key paths cannot contain commas or newlines.' }
 $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, '--key-path', $KeyPath,
     "--mention-user=$MentionUser", '--model', $Model, '--mode', $Mode, '--tool-updates', $ToolUpdates, '--web-search', $WebSearch)
+if ($Clone) { $configuration += '--clone'; Write-Host 'Clone mode requests Contents read in addition to the selected Discussion profile.' }
 if ($Mode -ne 'polling') {
     Write-Host 'Webhook modes also require repository Webhooks: read and write; approve the installation permissions.'
     $ListenPort = Get-Setting ListenPort listenPort '8080' 'Listener port'

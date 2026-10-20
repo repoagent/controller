@@ -29,21 +29,24 @@ app.UseRateLimiter();
 app.UseRequestTimeouts();
 app.MapGet("/health/live", () => Results.Ok()).DisableRateLimiting().DisableRequestTimeout();
 app.MapGet("/health/ready", () => Results.StatusCode(503)).DisableRateLimiting().DisableRequestTimeout();
-app.MapDelete("/v1/devices/{deviceId}", async (string deviceId, HttpContext context, DeviceRevocation revocation) =>
+foreach (var runtimeVersion in new[] { 1, 2 })
+{
+app.MapDelete($"/v{runtimeVersion}/devices/{{deviceId}}", async (string deviceId, HttpContext context, DeviceRevocation revocation) =>
 {
     var (rejection, secret) = ReadDeviceCredential(context);
     if (rejection != 0) return Results.StatusCode(rejection);
-    return Results.StatusCode(await revocation.RevokeAsync(deviceId, secret, context.RequestAborted));
+    return Results.StatusCode(await revocation.RevokeAsync(deviceId, secret, context.RequestAborted, runtimeVersion));
 });
-app.MapPost("/v1/devices/{deviceId}/installation-token", async (string deviceId, HttpContext context) =>
+app.MapPost($"/v{runtimeVersion}/devices/{{deviceId}}/installation-token", async (string deviceId, HttpContext context) =>
 {
     var (rejection, secret) = ReadDeviceCredential(context);
     if (rejection != 0) return Results.StatusCode(rejection);
     var issuer = context.RequestServices.GetService<InstallationTokenIssuer>();
     if (issuer is null) return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-    var result = await issuer.IssueAsync(deviceId, secret, context.RequestAborted);
+    var result = await issuer.IssueAsync(deviceId, secret, context.RequestAborted, runtimeVersion);
     return result.Status == 200 ? Results.Json(result.Body) : Results.StatusCode(result.Status);
 });
+}
 EnrollmentEndpoints.Map(app);
 app.Run();
 
