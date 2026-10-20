@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Azure.Core.Pipeline;
+using Azure.Data.Tables;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -95,20 +96,25 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
     public IDataProtectionProvider Protection => DataProtectionProvider.Create(keys);
     private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> host = null!;
     private HttpClient client = null!;
-    public static async Task<EnrollmentFixture> CreateAsync(HttpPipelineTransport? transport = null)
+    private readonly Dictionary<string, string?> settings = new() { ["Broker:BrokerOrigin"] = "https://broker.example" };
+    public static async Task<EnrollmentFixture> CreateAsync(HttpPipelineTransport? transport = null, Dictionary<string, string?>? settings = null)
     {
         var f = new EnrollmentFixture();
         await f.Storage.InitializeAsync();
+        // Offline provisioning: InitializeAsync must successfully create this dedicated table first.
+        await f.InitializeRetentionAsync();
         f.GitHub.Before = request => Task.FromResult<HttpResponseMessage?>(request.RequestUri!.AbsolutePath.EndsWith("/variables", StringComparison.Ordinal)
             ? GitHubTransport.Json(new { total_count = f.GitHub.Marker.Length == 0 ? 0 : 1, variables = f.GitHub.Marker.Length == 0 ? Array.Empty<object>() : [new { name = "APPROVAL", value = f.GitHub.Marker }] }) : null);
-        await f.RestartAsync(transport);
+        await f.RestartAsync(transport, settings: settings);
         return f;
     }
-    public async Task RestartAsync(HttpPipelineTransport? transport = null, string? epoch = null)
+    public async Task RestartAsync(HttpPipelineTransport? transport = null, string? epoch = null, Dictionary<string, string?>? settings = null)
     {
         client?.Dispose();
         if (host is not null) await host.DisposeAsync();
-        host = Storage.CreateHost(transport, settings: new() { ["Broker:BrokerOrigin"] = "https://broker.example" }).WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
+        if (settings is not null)
+            foreach (var setting in settings) this.settings[setting.Key] = setting.Value;
+        host = Storage.CreateHost(transport, settings: this.settings).WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
         {
             if (epoch is not null) configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Broker:DeploymentEpoch"] = epoch });
         }).ConfigureServices(services =>
@@ -122,6 +128,21 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
             services.AddSingleton<EnrollmentStore>(); services.AddSingleton<EnrollmentService>();
         }));
         client = host.CreateClient();
+    }
+    private async Task InitializeRetentionAsync()
+    {
+        // Add, never upsert: existing or partially initialized accounting must not be blessed.
+        await Storage.Table.AddEntityAsync(new TableEntity("global:enrollment-v1", "quota")
+        {
+            ["RetentionSchemaVersion"] = 1L, ["CandidateCount"] = 0L,
+            ["RetainedEnrollmentCount"] = 0L, ["Count"] = 0L
+        });
+        await Storage.Table.AddEntityAsync(new TableEntity("global:issuance-v1", "quota")
+        {
+            ["RetentionSchemaVersion"] = 1L, ["RetainedIssuanceCount"] = 0L,
+            ["Window"] = 0L, ["Admissions"] = 0L, ["Reads"] = 0L,
+            ["Signs"] = 0L, ["Mints"] = 0L, ["Slots"] = 0L
+        });
     }
     public EnrollmentRequest Request() => new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "approval/environment", "APPROVAL", "polling");
     public async Task<HttpResponseMessage> Send(string path, object? body = null, string? secret = null, HttpMethod? method = null)
