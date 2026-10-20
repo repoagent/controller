@@ -8,6 +8,7 @@ on:
       - 'repoagent'
       - 'repoagent.ps1'
       - 'scripts/build-image.*'
+      - 'scripts/publish-image.ps1'
       - 'scripts/revoke-approval.ps1'
       - 'scripts/plan-azure.ps1'
       - 'scripts/azure/**'
@@ -21,6 +22,7 @@ on:
       - 'repoagent'
       - 'repoagent.ps1'
       - 'scripts/build-image.*'
+      - 'scripts/publish-image.ps1'
       - 'scripts/revoke-approval.ps1'
       - 'scripts/plan-azure.ps1'
       - 'scripts/azure/**'
@@ -75,6 +77,8 @@ jobs:
             python -m unittest discover -s tests/installers -p test_approval_revoke.py -v
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             python -m unittest discover -s tests/installers -p test_azure_plan.py -v
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            python -m unittest discover -s tests/installers -p test_image_publication.py -v
           } else {
             python -m unittest discover -s tests/installers -v
           }

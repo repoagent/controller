@@ -83,6 +83,10 @@ Paths and argument values are passed as process arguments, without shell evaluat
 
 Credential exclusion guarantees concern the context and overlay controlled here. An explicitly supplied base or Dockerfile is trusted user content: existing secrets in its layers cannot be removed by adding this overlay. Keep those inputs credential-free as well. No host home, PEM, enrollment secret, auth cache or token is automatically copied; symlinks in allowlisted source paths are rejected.
 
+## Publish the built image
+
+Use the emitted immutable image ID with the separate [PowerShell 7 image publisher](image-publication.md) to plan local-only use or explicitly publish to Docker Hub, GHCR or ACR. Publication requires `-Apply`; runtime pull authorization remains a separate hosting gate.
+
 ## Verification limits
 
 Process tests use actual Bash and Linux PowerShell with a Docker executable substitute for argument/error behavior. Real local Docker builds, inventory/layer inspection, compiled-controller execution and a credential-free Codex app-server handshake provide assembled-image evidence. Native Windows Docker Desktop, private registries, registry publication, live enrollment, Azure, authenticated Codex turns and unsupported base families require separate acceptance. See the PR verification evidence for the exact candidate tested.
