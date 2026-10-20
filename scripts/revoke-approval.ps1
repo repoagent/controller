@@ -116,10 +116,20 @@ function Invoke-GitHub([string]$Method, [string]$Endpoint) {
 function Read-Identity([string]$Endpoint, [string]$Expected, [string]$Kind) {
     $response = Invoke-GitHub GET $Endpoint
     if ($response.Status -ne 200) { Stop-Revoke "$Kind could not be verified (HTTP $($response.Status)); absence is not confirmed." }
-    $data = ConvertFrom-Json -InputObject $response.Body -AsHashtable -ErrorAction Stop
-    if (($data.id -isnot [long] -and $data.id -isnot [int]) -or $data.id -le 0) { Stop-Revoke "$Kind returned an invalid immutable identity." }
-    if ($Expected -and [long]$Expected -ne $data.id) { Stop-Revoke "$Kind identity differs from the expected ID; nothing was deleted." }
-    return $data.id
+    $document = [Text.Json.JsonDocument]::Parse($response.Body)
+    try {
+        $root = $document.RootElement
+        $identity = [Text.Json.JsonElement]::new()
+        $id = 0L
+        if ($root.ValueKind -ne [Text.Json.JsonValueKind]::Object `
+            -or -not $root.TryGetProperty('id', [ref]$identity) `
+            -or $identity.ValueKind -ne [Text.Json.JsonValueKind]::Number `
+            -or -not $identity.TryGetInt64([ref]$id) -or $id -le 0) {
+            Stop-Revoke "$Kind returned an invalid immutable identity."
+        }
+        if ($Expected -and [long]$Expected -ne $id) { Stop-Revoke "$Kind identity differs from the expected ID; nothing was deleted." }
+        return $id
+    } finally { $document.Dispose() }
 }
 
 try {
@@ -166,14 +176,26 @@ try {
     $environmentId = Read-Identity $environmentEndpoint $ExpectedEnvironmentId 'GitHub environment'
     $response = Invoke-GitHub GET $variableEndpoint
     if ($response.Status -ne 200) { Stop-Revoke "Approval could not be verified (HTTP $($response.Status)); absence or removal is not confirmed." }
-    $value = ConvertFrom-Json -InputObject $response.Body -AsHashtable -ErrorAction Stop
-    if ($value.name -isnot [string] -or $value.value -isnot [string] `
-        -or -not [string]::Equals($value.name, $ApprovalVariable, [StringComparison]::OrdinalIgnoreCase)) {
-        Stop-Revoke 'GitHub returned an unexpected approval name or value.'
-    }
+    # JsonDocument preserves root shape and exact strings, including ISO dates;
+    # PowerShell's conversion can unwrap arrays and coerce date-looking values.
+    $document = [Text.Json.JsonDocument]::Parse($response.Body)
+    try {
+        $root = $document.RootElement
+        $name = [Text.Json.JsonElement]::new()
+        $value = [Text.Json.JsonElement]::new()
+        if ($root.ValueKind -ne [Text.Json.JsonValueKind]::Object `
+            -or -not $root.TryGetProperty('name', [ref]$name) `
+            -or $name.ValueKind -ne [Text.Json.JsonValueKind]::String `
+            -or -not $root.TryGetProperty('value', [ref]$value) `
+            -or $value.ValueKind -ne [Text.Json.JsonValueKind]::String `
+            -or -not [string]::Equals($name.GetString(), $ApprovalVariable, [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Revoke 'GitHub returned an unexpected approval name or value.'
+        }
+        $approvalValue = $value.GetString()
+    } finally { $document.Dispose() }
     $sha256 = [Security.Cryptography.SHA256]::Create()
     try {
-        $digest = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($value.value))
+        $digest = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($approvalValue))
         $fingerprint = [BitConverter]::ToString($digest).Replace('-', '').ToLowerInvariant()
     } finally { $sha256.Dispose() }
     if ($ExpectedValueSha256 -and $ExpectedValueSha256 -ine $fingerprint) {
