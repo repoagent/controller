@@ -92,7 +92,7 @@ Run configuration, skill installation and lifecycle commands sequentially for ea
 
 The runtime user is UID 1000. The explicitly selected PEM must be readable by that UID; setup does not change its host permissions. The key is mounted read-only separately from the agent workspace. Container replacement and image rebuild retain the volumes; `restart` replaces the container, updates tools when enabled, and checks authentication before native work.
 
-The runtime publishes no ports and receives no Docker socket, privileged mode, host networking or host home directory. Normal tool permissions apply inside the container (`approval_policy=never`, full container filesystem/network access), because this bridge has no interactive approval channel. Skills and participant instructions run with that container user's authority.
+Polling mode publishes no ports. Explicit [fixed-URL webhook mode](webhooks.md) adds an HTTP listener and a loopback-only local port mapping for external HTTPS ingress. Neither mode receives a Docker socket, privileged mode, host networking or host home directory. Normal tool permissions apply inside the container (`approval_policy=never`, full container filesystem/network access), because this bridge has no interactive approval channel. Skills and participant instructions run with that container user's authority.
 
 ```sh
 ./repoagent stop

@@ -11,6 +11,7 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
+import urllib.parse
 import update_tools
 import yaml
 
@@ -46,6 +47,9 @@ def bridge_args(config):
         args += ['--installation-id', str(config['installationId'])]
     if config.get('mentionUser'):
         args += ['--mention-user', config['mentionUser']]
+    if config.get('mode', 'polling') == 'fixed-url':
+        args += ['--webhook-url', config['publicUrl'], '--listen-port', str(config.get('listenPort', 8080)),
+                 '--reconcile-interval', str(config.get('reconcileInterval', 300))]
     for url in config.get('enroll', []):
         args += ['--enroll', url]
     return args
@@ -72,9 +76,16 @@ def configure(args):
         raise ValueError('Changing repository/App requires a new REPOAGENT_INSTANCE to preserve existing conversations.')
     if args.installation_id is not None and args.installation_id <= 0:
         raise ValueError('Expected installation ID must be positive.')
+    if not 1 <= args.listen_port <= 65535 or args.reconcile_interval < 1:
+        raise ValueError('Listener port must be 1..65535 and reconciliation seconds must be positive.')
+    if args.mode == 'fixed-url':
+        url = urllib.parse.urlsplit(args.public_url)
+        if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment:
+            raise ValueError('Fixed URL needs a public HTTPS origin without credentials, path, query or fragment.')
     config.update(repository=args.repository, appId=args.app_id, keyPath=args.key_path,
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
-                  toolUpdates=args.tool_updates)
+                  toolUpdates=args.tool_updates, mode=args.mode, publicUrl=args.public_url,
+                  listenPort=args.listen_port, reconcileInterval=args.reconcile_interval)
     save(config)
     CODEX.mkdir(parents=True, exist_ok=True)
     # The container is the operator-selected execution boundary. The bridge has no approval UI.
@@ -165,6 +176,10 @@ def main():
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
     configure_parser.add_argument('--web-search', choices=['live', 'cached', 'disabled'], default='live')
     configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='latest')
+    configure_parser.add_argument('--mode', choices=['polling', 'fixed-url'], default='polling')
+    configure_parser.add_argument('--public-url', default='')
+    configure_parser.add_argument('--listen-port', type=int, default=8080)
+    configure_parser.add_argument('--reconcile-interval', type=int, default=300)
     get = sub.add_parser('get'); get.add_argument('key')
     for name in ['versions', 'check', 'start', 'login', 'participant-login', 'participant-identity', 'state', 'skills']:
         sub.add_parser(name)

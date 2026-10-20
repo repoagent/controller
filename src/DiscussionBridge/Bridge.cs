@@ -15,6 +15,27 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
             Log.Write("poll-error", error.Message);
             return false;
         }
+        return await Observe(discussions, ct);
+    }
+
+    public async Task<bool> Observe(int number, CancellationToken ct)
+    {
+        try
+        {
+            var discussion = await github.Discussion(number, ct);
+            if (discussion is not null) return await Observe([discussion], ct);
+            Log.Write("discussion-unavailable", $"{github.Repository} discussion={number}");
+            return true;
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            Log.Write("observation-error", $"discussion={number}: {error.Message}");
+            return false;
+        }
+    }
+
+    async Task<bool> Observe(List<JsonNode> discussions, CancellationToken ct)
+    {
         var succeeded = true;
         foreach (var discussion in discussions)
         {

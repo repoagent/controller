@@ -13,6 +13,8 @@ The bridge authenticates the App, discovers the installation for the selected re
 
 `--check-auth` performs this validation and creates the authenticated `gh` wrapper, then exits without launching Codex or enrolling/forwarding Discussions. It is useful before the first conversation run. Runtime sign-in, permission and networking failures must be fixed in the configured container; the bridge does not fall back to a personal GitHub login.
 
+Webhook mode additionally requires owner-approved **Webhooks: read and write** and includes `repository_hooks: write` in renewed installation tokens. Polling-only tokens remain Discussions-only. See [repository webhook setup](webhooks.md).
+
 ## Renewal and native commands
 
 GitHub [installation tokens expire after one hour](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation). The bridge checks the credential every minute independently of polling, as well as before every GitHub operation, and renews it when five minutes or less remain. This continues during long polls and while native work is active. The returned expiry is authoritative. A signed short-lived JWT authenticates App and token-issuance requests; the signing key is not passed as a native process environment variable.

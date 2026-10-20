@@ -12,9 +12,12 @@ var workspace = new Option<DirectoryInfo>("--workspace") { DefaultValueFactory =
 var state = new Option<FileInfo>("--state") { DefaultValueFactory = _ => new(".bridge-state.json") };
 var enroll = new Option<string[]>("--enroll") { Description = "Discussion URL to enroll (repeatable)", AllowMultipleArgumentsPerToken = true };
 var interval = new Option<int>("--interval") { DefaultValueFactory = _ => 10, Description = "Seconds between polls" };
+var webhookUrl = new Option<string?>("--webhook-url") { Description = "Public HTTPS origin; enables repository webhooks at /github/webhook" };
+var listenPort = new Option<int>("--listen-port") { DefaultValueFactory = _ => 8080, Description = "Container HTTP listener port in webhook mode" };
+var reconcileInterval = new Option<int>("--reconcile-interval") { DefaultValueFactory = _ => 300, Description = "Seconds between full reconciliations in webhook mode" };
 var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (native work may still be running)" };
 var checkAuth = new Option<bool>("--check-auth") { Description = "Verify App installation identity and prepare authenticated gh, then exit without starting Codex" };
-var root = new RootCommand("RepoAgent bridge: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, installationId, mentionUser, workspace, state, enroll, interval, once, checkAuth };
+var root = new RootCommand("RepoAgent bridge: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, installationId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, once, checkAuth };
 var tokenFile = new Option<FileInfo>("--token-file") { Required = true };
 var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
 var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
@@ -34,6 +37,14 @@ root.SetAction(async (result, cancellationToken) =>
         if (result.GetValue(interval) < 1) throw new ArgumentException("--interval must be positive");
         if (string.IsNullOrWhiteSpace(result.GetValue(appId))) throw new ArgumentException("--app-id must not be empty");
         if (result.GetValue(installationId) is <= 0) throw new ArgumentException("--installation-id must be positive");
+        var urlText = result.GetValue(webhookUrl);
+        Uri? publicUrl = null;
+        if (result.GetValue(listenPort) is < 1 or > 65535) throw new ArgumentException("--listen-port must be between 1 and 65535");
+        if (result.GetValue(reconcileInterval) < 1) throw new ArgumentException("--reconcile-interval must be positive");
+        if (urlText is not null && (!Uri.TryCreate(urlText, UriKind.Absolute, out publicUrl) || publicUrl.Scheme != "https" || publicUrl.UserInfo.Length != 0 ||
+            publicUrl.Query.Length != 0 || publicUrl.Fragment.Length != 0 || publicUrl.AbsolutePath != "/"))
+            throw new ArgumentException("--webhook-url must be a public HTTPS origin without a path, credentials, query or fragment; /github/webhook is added");
+        if (publicUrl is not null && result.GetValue(once)) throw new ArgumentException("--once applies to polling mode only");
         var cwd = result.GetValue(workspace)!.FullName;
         if (!Directory.Exists(cwd)) throw new ArgumentException("--workspace must exist");
         var numbers = (result.GetValue(enroll) ?? []).Select(url =>
@@ -49,7 +60,7 @@ root.SetAction(async (result, cancellationToken) =>
         using var store = new StateStore(statePath, repo);
         var credentialDirectory = statePath + ".github-app";
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        using var credentials = new GitHubAppCredentials(http, result.GetValue(appId)!, result.GetValue(privateKey)!.FullName, repo, credentialDirectory);
+        using var credentials = new GitHubAppCredentials(http, result.GetValue(appId)!, result.GetValue(privateKey)!.FullName, repo, credentialDirectory, repositoryWebhooks: publicUrl is not null);
         await credentials.Initialize(result.GetValue(installationId), cancellationToken);
         var executable = AppGitHubCommand.FindExecutable("gh");
         var github = new GitHub(repo, credentials, executable);
@@ -64,8 +75,15 @@ root.SetAction(async (result, cancellationToken) =>
         {
             await using var codex = new Codex(cwd, wrapper, Path.Combine(credentialDirectory, "gh-config"));
             await codex.Initialize(cancellationToken);
-            Log.Write("ready", $"repository={repo} actor={credentials.AgentLogin}");
             var bridge = new Bridge(github, codex, store, numbers);
+            if (publicUrl is not null)
+            {
+                await new DiscussionWebhooks(github, bridge, statePath,
+                    new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval)))).Run(cancellationToken);
+                return 0;
+            }
+            Log.Write("mode", $"polling interval-seconds={result.GetValue(interval)}");
+            Log.Write("ready", $"repository={repo} actor={credentials.AgentLogin} mode=polling");
             do
             {
                 var pollStarted = Stopwatch.GetTimestamp();

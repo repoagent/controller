@@ -13,6 +13,7 @@ public sealed class GitHubAppCredentials : IDisposable
     readonly RSA key;
     readonly string repository;
     readonly TimeProvider clock;
+    readonly bool repositoryWebhooks;
     readonly SemaphoreSlim refreshLock = new(1);
     string? token;
     DateTimeOffset expiresAt;
@@ -23,12 +24,13 @@ public sealed class GitHubAppCredentials : IDisposable
     public string TokenFile { get; }
 
     public GitHubAppCredentials(HttpClient http, string appId, string privateKeyPath, string repository,
-        string credentialDirectory, TimeProvider? clock = null)
+        string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false)
     {
         this.http = http;
         this.appId = appId;
         this.repository = repository;
         this.clock = clock ?? TimeProvider.System;
+        this.repositoryWebhooks = repositoryWebhooks;
         SecureDirectory(credentialDirectory);
         TokenFile = Path.Combine(credentialDirectory, "installation-token.json");
         // Never trust a previous process's credential before authenticating this configuration.
@@ -53,6 +55,8 @@ public sealed class GitHubAppCredentials : IDisposable
             throw new InvalidOperationException("Configured installation ID does not match the repository's App installation");
         if (installation["permissions"]?.Text("discussions") != "write")
             throw new InvalidOperationException("Install the GitHub App on this repository with Discussions read/write permission");
+        if (repositoryWebhooks && installation["permissions"]?.Text("repository_hooks") != "write")
+            throw new InvalidOperationException("Webhook mode requires Webhooks: read and write; approve the updated App installation permissions");
         await GetToken(ct);
         Log.Write("app-installation", $"app={slug} installation={installationId} repository={repository} actor={AgentLogin}");
     }
@@ -74,9 +78,11 @@ public sealed class GitHubAppCredentials : IDisposable
             if (token is not null && expiresAt > clock.GetUtcNow().AddMinutes(5)) return token;
             try
             {
+                var permissions = Json.Object(("discussions", "write"));
+                if (repositoryWebhooks) permissions["repository_hooks"] = "write";
                 var result = await Send(HttpMethod.Post, $"app/installations/{installationId}/access_tokens", CreateJwt(),
                     Json.Object(("repositories", new JsonArray(repository.Split('/')[1])),
-                        ("permissions", Json.Object(("discussions", "write")))), ct);
+                        ("permissions", permissions)), ct);
                 var freshToken = result.Text("token");
                 if (string.IsNullOrWhiteSpace(freshToken) ||
                     !DateTimeOffset.TryParse(result.Text("expires_at"), out var expiry) || expiry <= clock.GetUtcNow().AddMinutes(5))

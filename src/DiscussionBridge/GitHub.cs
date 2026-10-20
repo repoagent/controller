@@ -11,27 +11,45 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     public MentionUser? MentionUser { get; private set; }
     public bool IsAgentActor(JsonNode? actor) => credentials.IsAgentActor(actor);
     const string MessageFields = "id url body bodyHTML createdAt updatedAt author { __typename login } reactionGroups { content viewerHasReacted }";
+    const string DiscussionFields = MessageFields + " number title closed locked answer { id } category { id name }";
     const string PageInfo = "pageInfo { hasNextPage endCursor }";
 
     public async Task<JsonNode> Query(string query, JsonObject variables, CancellationToken ct)
     {
+        var response = JsonNode.Parse(await Api("POST", "graphql", Json.Object(("query", query), ("variables", variables)), ct)) ?? throw new IOException("Empty GraphQL response");
+        if (response["errors"] is { } errors) throw new IOException($"GraphQL errors: {errors}");
+        return response["data"] ?? throw new IOException("No GraphQL data");
+    }
+
+    public async Task<JsonNode?> Rest(string method, string resource, JsonNode? input, CancellationToken ct)
+    {
+        var text = await Api(method, $"repos/{Repository}/{resource}", input, ct);
+        return string.IsNullOrWhiteSpace(text) ? null : JsonNode.Parse(text);
+    }
+
+    async Task<string> Api(string method, string resource, JsonNode? input, CancellationToken ct)
+    {
         await credentials.GetToken(ct);
-        var start = AppGitHubCommand.Create(executable, credentials.TokenFile, ["api", "graphql", "--method", "POST", "--input", "-"]);
-        start.RedirectStandardInput = true;
+        var arguments = new List<string> { "api", resource, "--hostname", "github.com", "--method", method,
+            "--header", "X-GitHub-Api-Version: 2026-03-10" };
+        if (input is not null) arguments.AddRange(["--input", "-"]);
+        var start = AppGitHubCommand.Create(executable, credentials.TokenFile, arguments);
+        start.RedirectStandardInput = input is not null;
         start.RedirectStandardOutput = true;
         start.RedirectStandardError = true;
         using var process = Process.Start(start) ?? throw new IOException("Could not start gh");
         var output = process.StandardOutput.ReadToEndAsync(ct);
         var error = process.StandardError.ReadToEndAsync(ct);
-        await process.StandardInput.WriteAsync(Json.Encode(Json.Object(("query", query), ("variables", variables))));
-        process.StandardInput.Close();
+        if (input is not null)
+        {
+            await process.StandardInput.WriteAsync(Json.Encode(input));
+            process.StandardInput.Close();
+        }
         try { await process.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromSeconds(60), ct); }
-        catch { process.Kill(true); throw; }
+        catch { if (!process.HasExited) process.Kill(true); throw; }
         var text = await output;
         if (process.ExitCode != 0) throw new IOException($"gh failed: {await error}");
-        var response = JsonNode.Parse(text) ?? throw new IOException("Empty GraphQL response");
-        if (response["errors"] is { } errors) throw new IOException($"GraphQL errors: {errors}");
-        return response["data"] ?? throw new IOException("No GraphQL data");
+        return text;
     }
 
     public async Task VerifyIdentity(CancellationToken ct)
@@ -64,12 +82,20 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         string? cursor = null;
         do
         {
-            var data = await Query("query($owner:String!,$name:String!,$cursor:String) { repository(owner:$owner,name:$name) { discussions(first:100,after:$cursor) { nodes { " + MessageFields + " number title closed locked answer { id } category { id name } } " + PageInfo + " } } }", Json.Object(("owner", parts[0]), ("name", parts[1]), ("cursor", cursor)), ct);
+            var data = await Query("query($owner:String!,$name:String!,$cursor:String) { repository(owner:$owner,name:$name) { discussions(first:100,after:$cursor) { nodes { " + DiscussionFields + " } " + PageInfo + " } } }", Json.Object(("owner", parts[0]), ("name", parts[1]), ("cursor", cursor)), ct);
             var connection = data["repository"]?["discussions"] ?? throw new IOException("Repository not found or Discussions inaccessible");
             discussions.AddRange(connection["nodes"]!.AsArray().Select(n => n!.Copy()));
             cursor = Next(connection);
         } while (cursor is not null);
         return discussions;
+    }
+
+    public async Task<JsonNode?> Discussion(int number, CancellationToken ct)
+    {
+        var parts = Repository.Split('/');
+        var data = await Query("query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { discussion(number:$number) { " + DiscussionFields + " } } }",
+            Json.Object(("owner", parts[0]), ("name", parts[1]), ("number", number)), ct);
+        return data["repository"]?["discussion"]?.Copy();
     }
 
     public async Task<List<JsonNode>> Sources(JsonNode discussion, CancellationToken ct)

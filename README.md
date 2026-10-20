@@ -8,13 +8,13 @@ RepoAgent connects GitHub conversations to native coding-agent sessions. Its CLI
 - [Full specification — issue #1](https://github.com/egil/repoagent/issues/1): broader design reference. The PoC's smaller scope takes precedence for the initial build.
 - [Flows, payloads and session instructions](https://github.com/egil/repoagent/issues/2#issuecomment-6276915447).
 
-The PoC uses one native Codex session per Discussion, a small JSON mapping/checkpoint, GraphQL polling, an ordinary skill plus `gh` for replies, and timestamped stdout logging. After the native harness accepts input, the bridge adds 👀 to the forwarded source Discussion, comment or reply.
+The PoC uses one native Codex session per Discussion, a small JSON mapping/checkpoint, GraphQL observation, an ordinary skill plus `gh` for replies, and timestamped stdout logging. After the native harness accepts input, the bridge adds 👀 to the forwarded source Discussion, comment or reply.
 
 Each bridge process monitors one configured repository. Specifications and tickets live in this repository's GitHub Issues.
 
 ## Run RepoAgent
 
-For the packaged Docker setup, use `./repoagent build`, `./repoagent setup`, then `./repoagent start`. See [container setup, skills and storage](docs/container-setup.md) and the [executable acceptance catalog](docs/acceptance-cases.md).
+For the packaged Docker setup, use `./repoagent build`, `./repoagent setup`, then `./repoagent start`. See [container setup, skills and storage](docs/container-setup.md) and the [executable acceptance catalog](docs/acceptance-cases.md). For event-triggered operation behind your own HTTPS ingress, see [fixed-URL webhooks](docs/webhooks.md).
 
 Run the bridge in a Linux container containing `gh` and `codex`. The packaged bridge is Native AOT compiled and needs no installed .NET runtime. Native Codex uses its normal sign-in. GitHub access uses an installed GitHub App with **Discussions: read/write** and a read-only mounted PEM signing key. An agent GitHub-user login is unnecessary. Container bootstrap and live verification are tracked in [#5](https://github.com/egil/repoagent/issues/5).
 

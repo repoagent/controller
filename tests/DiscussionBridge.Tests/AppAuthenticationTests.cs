@@ -50,6 +50,40 @@ public sealed class AppAuthenticationTests
     }
 
     [Fact]
+    public async Task Webhook_mode_preserves_approved_hook_permission_and_repository_scope_across_renewal()
+    {
+        using var fixture = new AppFixture();
+        fixture.Provider.WebhookPermission = "write";
+        using var credentials = fixture.Credentials(repositoryWebhooks: true);
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        await credentials.GetToken(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, fixture.Provider.TokenRequests.Count);
+        Assert.All(fixture.Provider.TokenRequests, request =>
+        {
+            Assert.Equal("gh-discussion-agent-bridge", Assert.Single(request["repositories"]!.AsArray())!.GetValue<string>());
+            Assert.Equal("write", request["permissions"]!["discussions"]!.GetValue<string>());
+            Assert.Equal("write", request["permissions"]!["repository_hooks"]!.GetValue<string>());
+            Assert.Equal(2, request["permissions"]!.AsObject().Count);
+        });
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("read")]
+    public async Task Webhook_mode_rejects_an_unapproved_hook_grant_before_minting_a_token(string? permission)
+    {
+        using var fixture = new AppFixture();
+        fixture.Provider.WebhookPermission = permission;
+        using var credentials = fixture.Credentials(repositoryWebhooks: true);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.Initialize(null, TestContext.Current.CancellationToken));
+        Assert.Contains("Webhooks: read and write", error.Message);
+        Assert.Empty(fixture.Provider.TokenRequests);
+        Assert.False(File.Exists(credentials.TokenFile));
+    }
+
+    [Fact]
     public async Task The_same_native_command_wrapper_uses_a_refreshed_token_after_the_old_one_expires()
     {
         using var fixture = new AppFixture();
@@ -235,7 +269,7 @@ public sealed class AppAuthenticationTests
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(Gh, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
 
-        public GitHubAppCredentials Credentials() => new(http, "Iv-test-client", privateKey, "egil/gh-discussion-agent-bridge", Path.Combine(Directory, "credentials"), Clock);
+        public GitHubAppCredentials Credentials(bool repositoryWebhooks = false) => new(http, "Iv-test-client", privateKey, "egil/gh-discussion-agent-bridge", Path.Combine(Directory, "credentials"), Clock, repositoryWebhooks);
         public void Dispose() { http.Dispose(); key.Dispose(); System.IO.Directory.Delete(Directory, true); }
     }
 
@@ -266,6 +300,7 @@ public sealed class AppAuthenticationTests
         public List<JsonNode> TokenRequests { get; } = [];
         public bool RejectRefresh { get; set; }
         public string DiscussionPermission { get; set; } = "write";
+        public string? WebhookPermission { get; set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -282,7 +317,7 @@ public sealed class AppAuthenticationTests
             {
                 case "/app": result = new { id = 5387625, slug = "discussion-agent-bridge" }; break;
                 case "/repos/egil/gh-discussion-agent-bridge/installation":
-                    result = new { id = 42, app_id = 5387625, permissions = new { discussions = DiscussionPermission } }; break;
+                    result = new { id = 42, app_id = 5387625, permissions = new { discussions = DiscussionPermission, repository_hooks = WebhookPermission } }; break;
                 case "/app/installations/42/access_tokens":
                     TokenRequests.Add(JsonNode.Parse(await request.Content!.ReadAsStringAsync(ct))!);
                     if (RejectRefresh) return new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("DO-NOT-LOG bearer-body") };
