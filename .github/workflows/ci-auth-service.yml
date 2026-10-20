@@ -30,6 +30,8 @@ concurrency:
   group: auth-service-${{ github.event_name == 'pull_request' && github.ref || 'delivery' }}
   cancel-in-progress: false
 env:
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
   AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
   AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
   AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
@@ -145,8 +147,6 @@ jobs:
       id-token: write
     env:
       AZURE_CORE_OUTPUT: none
-      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AUTH_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AUTH_IMAGE: ${{ needs.publish.outputs.image }}
     steps:
@@ -157,7 +157,6 @@ jobs:
       - name: Verify anonymous immutable auth image before any infrastructure write
         run: |
           python3 scripts/delivery/deploy-auth.py preflight
-          python3 scripts/delivery/auth-pipeline.py attest
           bash infra/auth/deploy.sh check
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:

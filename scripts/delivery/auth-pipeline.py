@@ -36,6 +36,10 @@ def repository():
 
 def check_publication():
     source()
+    uuid = r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}'
+    for name in ('AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID'):
+        if not re.fullmatch(uuid, os.environ.get(name, '')):
+            raise ValueError(f'{name} is missing or invalid')
     repository()
     if os.environ.get('AUTH_DEPLOYMENT_READY') != 'true':
         raise ValueError('AUTH_DEPLOYMENT_READY must be true after service and infrastructure acceptance')

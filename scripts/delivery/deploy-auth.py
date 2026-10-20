@@ -2,6 +2,7 @@
 """Deploy only a labelled, immutable auth image to one preconfigured existing app."""
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -36,13 +37,12 @@ def read_json(args):
     return json.loads(result.stdout)
 
 
-def inspect_image(config):
-    image = read_json(['skopeo', 'inspect', '--override-os', 'linux', '--override-arch', 'amd64',
-                       'docker://' + config['AUTH_IMAGE']])
-    if image.get('Labels', {}).get('io.repoagent.role') != 'auth-service':
-        raise ValueError('Image must declare io.repoagent.role=auth-service')
-    if image.get('Os') != 'linux' or image.get('Architecture') != 'amd64':
-        raise ValueError('Image must support Linux amd64')
+def inspect_image():
+    # Both manual rollback and automatic delivery use the same anonymous OCI contract.
+    result = subprocess.run([sys.executable, str(Path(__file__).with_name('auth-pipeline.py')), 'attest'],
+                            capture_output=True, text=True)
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or 'Auth image attestation failed')
 
 
 def deploy(config):
@@ -76,9 +76,9 @@ def deploy(config):
 def main():
     config = configuration()
     if sys.argv[1:] == ['preflight']:
-        inspect_image(config)
+        inspect_image()
     elif sys.argv[1:] == ['deploy']:
-        inspect_image(config)
+        inspect_image()
         deploy(config)
     else:
         raise ValueError('Expected preflight or deploy')
