@@ -13,7 +13,6 @@ on:
       - 'tests/installers/**'
       - '.github/workflows/verify-installers.yml'
   push:
-    branches: [main]
     paths:
       - 'install.ps1'
       - 'install.sh'
