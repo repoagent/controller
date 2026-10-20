@@ -100,11 +100,11 @@ try {
     foreach ($item in @($SubscriptionId,$ResourceGroup,$Location,$EnvironmentName,$RegistryName,$Image,$RepositoryId,$ControllerId)) {
         if ([string]::IsNullOrWhiteSpace($item)) { Fail 'Required: SubscriptionId, ResourceGroup, Location, EnvironmentName, RegistryName, Image, RepositoryId and ControllerId.' }
     }
-    if ($SubscriptionId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or $ControllerId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or $RepositoryId -notmatch '^[1-9][0-9]{0,19}$') { Fail 'Use a subscription UUID, controller UUID and immutable numeric GitHub repository ID.' }
-    if ($ResourceGroup -notmatch '^[a-zA-Z0-9_.()-]{1,90}$' -or $ResourceGroup.EndsWith('.') -or $Location -notmatch '^[a-z0-9]+$' -or $EnvironmentName -notmatch '^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]$' -or $RegistryName -notmatch '^[a-zA-Z0-9]{5,50}$') { Fail 'Invalid Azure resource group, region, environment or registry name.' }
+    if ($SubscriptionId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\z' -or $ControllerId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\z' -or $RepositoryId -notmatch '^[1-9][0-9]{0,19}\z') { Fail 'Use a subscription UUID, controller UUID and immutable numeric GitHub repository ID.' }
+    if ($ResourceGroup -notmatch '^[a-zA-Z0-9_.()-]{1,90}\z' -or $ResourceGroup.EndsWith('.') -or $Location -notmatch '^[a-z0-9]+\z' -or $EnvironmentName -notmatch '^[a-zA-Z0-9][a-zA-Z0-9-]{0,58}[a-zA-Z0-9]\z' -or $RegistryName -notmatch '^[a-zA-Z0-9]{5,50}\z') { Fail 'Invalid Azure resource group, region, environment or registry name.' }
     if (-not $AppName) { $AppName = "repoagent-$RepositoryId" }
-    if ($AppName.Length -gt 32 -or $AppName -cnotmatch '^[a-z][a-z0-9-]*[a-z0-9]$' -or $AppName.Contains('--')) { Fail 'AppName must be 2-32 lowercase letters/digits/hyphens, start with a letter, end alphanumeric and omit consecutive hyphens.' }
-    if ($Image -cnotmatch '^[a-z0-9][a-z0-9.-]+(?::[0-9]+)?/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$') { Fail 'Image must be the final published controller registry/repository@sha256 digest, not a tag or local/base digest.' }
+    if ($AppName.Length -gt 32 -or $AppName -cnotmatch '^[a-z][a-z0-9-]*[a-z0-9]\z' -or $AppName.Contains('--')) { Fail 'AppName must be 2-32 lowercase letters/digits/hyphens, start with a letter, end alphanumeric and omit consecutive hyphens.' }
+    if ($Image -cnotmatch '^[a-z0-9][a-z0-9.-]+(?::[0-9]+)?/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}\z') { Fail 'Image must be the final published controller registry/repository@sha256 digest, not a tag or local/base digest.' }
     . (Join-Path $PSScriptRoot 'azure/image-input.ps1')
     $software = Read-ImageInput $ImageManifest
     $cli = Get-Command az -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -168,7 +168,7 @@ try {
         $ownership = 'unproven'; $action = 'explicit-adoption-required'
         if ($app.tags.'repoagent-controller-id' -ceq $ControllerId -and $app.tags.'repoagent-repository-id' -ceq $RepositoryId) { $ownership = 'matching-controller-and-repository-tags'; $action = 'verified-update' }
         $fqdn = $app.properties.configuration.ingress.fqdn
-        if ($fqdn -is [string] -and $fqdn -cmatch '^[a-z0-9][a-z0-9.-]+\.azurecontainerapps\.io$' -and $app.properties.configuration.ingress.external -eq $true) { $origin = "https://$fqdn" }
+        if ($fqdn -is [string] -and $fqdn -cmatch '^[a-z0-9][a-z0-9.-]+\.azurecontainerapps\.io\z' -and $app.properties.configuration.ingress.external -eq $true) { $origin = "https://$fqdn" }
     }
     $environmentAction = 'create'; if ($env) { $environmentAction = 'compatible-reuse' }
     $groupAction = 'create'; if ($group) { $groupAction = 'reuse' }

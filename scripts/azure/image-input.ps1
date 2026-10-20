@@ -22,7 +22,7 @@ function Read-ImageInput([string]$Path) {
     if ($value.schemaVersion -ne 1 -or $value.platform -isnot [string] -or $value.platform -cne 'linux/amd64') { throw 'Expected image manifest v1 linux/amd64.' }
     Assert-Keys $value.controller @('source') @('sha256')
     if ($value.controller.source -isnot [string] -or $value.controller.source -cne 'checkout') { throw 'Expected checkout controller source.' }
-    if ($value.controller.Contains('sha256') -and ($value.controller.sha256 -isnot [string] -or $value.controller.sha256 -cnotmatch '^[0-9a-f]{64}$')) { throw 'Invalid controller source digest.' }
+    if ($value.controller.Contains('sha256') -and ($value.controller.sha256 -isnot [string] -or $value.controller.sha256 -cnotmatch '^[0-9a-f]{64}\z')) { throw 'Invalid controller source digest.' }
     Assert-Keys $value.agent @('profile','version')
     Assert-Keys $value.githubCli @('version')
     Assert-Keys $value.tools @() @('cloudflared','developerUtilities')
@@ -38,7 +38,7 @@ function Read-ImageInput([string]$Path) {
     }
     if ($value.Contains('baseImage')) {
         Assert-Keys $value.baseImage @('reference')
-        if ($value.baseImage.reference -isnot [string] -or $value.baseImage.reference -cnotmatch '^(?:[a-z0-9][a-z0-9._:/-]*@)?sha256:[0-9a-f]{64}$') { throw 'Invalid immutable base image.' }
+        if ($value.baseImage.reference -isnot [string] -or $value.baseImage.reference -cnotmatch '^(?:[a-z0-9][a-z0-9._:/-]*@)?sha256:[0-9a-f]{64}\z') { throw 'Invalid immutable base image.' }
     }
     return $value
 }
