@@ -44,6 +44,7 @@ app.MapPost("/v1/devices/{deviceId}/installation-token", async (string deviceId,
     var result = await issuer.IssueAsync(deviceId, secret, context.RequestAborted);
     return result.Status == 200 ? Results.Json(result.Body) : Results.StatusCode(result.Status);
 });
+EnrollmentEndpoints.Map(app);
 app.Run();
 
 static (int Rejection, string? Secret) ReadDeviceCredential(HttpContext context)

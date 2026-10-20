@@ -45,6 +45,11 @@ public static class IssuanceServices
         builder.Services.AddSingleton<IssuanceStore>();
         builder.Services.AddSingleton<AppJwtSigner>();
         builder.Services.AddSingleton<InstallationTokenIssuer>();
+        if (options.BrokerOrigin is not null)
+        {
+            builder.Services.AddSingleton<EnrollmentStore>();
+            builder.Services.AddSingleton<EnrollmentService>();
+        }
     }
     private static Uri HttpsUri(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri)
         && uri.Scheme == "https" && string.IsNullOrEmpty(uri.UserInfo) && uri.Query.Length == 0 && uri.Fragment.Length == 0

@@ -1,7 +1,7 @@
 namespace RepoAgent.Auth;
 
 public sealed record BrokerOptions(Uri TableEndpoint, string TableName, string DeploymentEpoch,
-    string? ManagedIdentityClientId, int RequestLimitPerMinute, int ConcurrentRequestLimit, int RequestTimeoutSeconds)
+    string? ManagedIdentityClientId, int RequestLimitPerMinute, int ConcurrentRequestLimit, int RequestTimeoutSeconds, Uri? BrokerOrigin = null)
 {
     public static BrokerOptions Read(IConfiguration configuration)
     {
@@ -21,10 +21,16 @@ public sealed record BrokerOptions(Uri TableEndpoint, string TableName, string D
         var clientId = section["ManagedIdentityClientId"];
         if (clientId is not null && !Guid.TryParse(clientId, out _))
             throw new InvalidOperationException("Broker:ManagedIdentityClientId must be a client ID.");
+        Uri? origin = null;
+        if (section["BrokerOrigin"] is { } configuredOrigin
+            && (!Uri.TryCreate(configuredOrigin, UriKind.Absolute, out origin) || origin.Scheme != "https"
+                || origin.HostNameType != UriHostNameType.Dns || origin.UserInfo.Length != 0
+                || origin.AbsolutePath != "/" || origin.Query.Length != 0 || origin.Fragment.Length != 0))
+            throw new InvalidOperationException("Broker:BrokerOrigin must be a canonical HTTPS origin.");
         return new(endpoint, table, epoch, clientId,
             Limit(section, "RequestLimitPerMinute", 120, 10_000),
             Limit(section, "ConcurrentRequestLimit", 8, 128),
-            Limit(section, "RequestTimeoutSeconds", 15, 60));
+            Limit(section, "RequestTimeoutSeconds", 15, 60), origin);
     }
 
     private static int Limit(IConfiguration section, string name, int fallback, int maximum)

@@ -18,6 +18,17 @@ public sealed class RequestProtectionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Enrollment_requires_recovery_possession_before_storage()
+    {
+        var transport = new ObservedTransport();
+        await using var host = fixture.CreateHost(transport);
+        using var client = host.CreateClient();
+        using var response = await client.PostAsync("/v1/enrollments", null, Token);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(0, transport.Calls);
+    }
+
+    [Fact]
     public async Task Exhausted_request_budget_rejects_before_storage_and_keeps_probes_available()
     {
         var device = await fixture.EnrollAsync();
