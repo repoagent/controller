@@ -9,12 +9,11 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: auth-production
+  group: auth-service-deployment
   cancel-in-progress: false
 jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
-    environment: auth-production
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -22,10 +21,10 @@ jobs:
       id-token: write
     env:
       AZURE_CORE_OUTPUT: none
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      AUTH_RESOURCE_GROUP: ${{ vars.AUTH_RESOURCE_GROUP }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AUTH_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AUTH_APP_NAME: ${{ vars.AUTH_APP_NAME }}
       AUTH_IMAGE_REPOSITORY: ${{ vars.AUTH_IMAGE_REPOSITORY }}
       AUTH_DEPLOYMENT_READY: ${{ vars.AUTH_DEPLOYMENT_READY }}
@@ -39,8 +38,8 @@ jobs:
         run: python3 scripts/delivery/deploy-auth.py preflight
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Update intended existing app and verify ready revision
         run: python3 scripts/delivery/deploy-auth.py deploy
