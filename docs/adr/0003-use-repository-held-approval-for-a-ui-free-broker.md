@@ -1,5 +1,7 @@
 # Use repository-held approval for a UI-free broker
 
+Environment storage choice superseded on 2026-10-20 by [ADR 0006](0006-use-repository-agent-variables-for-approval.md). The UI-free repository-held approval and authority model below remain accepted; Environment-specific text records the earlier storage choice.
+
 Accepted on 2026-10-20. Supersedes [ADR 0002](0002-bind-enrollment-renewal-to-the-approving-administrator.md).
 
 Use a user-selected GitHub Environment and environment variable in the target repository as the approval and revocation surface for controller enrollment. The PowerShell 7 MVP installer creates or safely reuse the environment and write the exact nonsecret enrollment marker through the operator's host GitHub identity; the broker independently reads that marker before authorizing enrollment and token issuance. Repository-held approval replaces the requirement that a particular approving person remain an administrator and removes the broker-hosted browser/login/admin UI.
