@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.4
 <#
 .SYNOPSIS
 Inspect or withdraw one repository approval using the host's gh authentication.
@@ -9,8 +9,10 @@ GitHub has no atomic compare-and-delete: concurrent writes may need manual repai
 [CmdletBinding()]
 param(
     [string]$Repository,
-    [string]$GitHubEnvironment = 'repoagent',
-    [string]$ApprovalVariable = 'APPROVED_CONTROLLER',
+    [string]$ApprovalStatePath,
+    [string]$EnrollmentFile,
+    [string]$GitHubEnvironment,
+    [string]$ApprovalVariable,
     [string]$ExpectedValueSha256,
     [string]$ExpectedRepositoryId,
     [string]$ExpectedEnvironmentId,
@@ -24,6 +26,8 @@ $script:CallCount = 0
 $script:RemoteClock = [Diagnostics.Stopwatch]::new()
 $repositoryId = $null
 $environmentId = $null
+$script:BrokerClosure = 'unconfirmed'
+$script:Legacy = $false
 
 function Stop-Revoke([string]$Message) {
     $script:SafeDiagnostic = $Message
@@ -31,19 +35,20 @@ function Stop-Revoke([string]$Message) {
 }
 
 function Write-Outcome([string]$Marker, [string]$Fingerprint, [string]$Recovery) {
-    [ordered]@{
+    $outcome = [ordered]@{
+        approvalKind = $(if ($script:Legacy) { 'environment-variable' } else { 'repository-agent-variable' })
         repository = $Repository
         repositoryId = $repositoryId
-        githubEnvironment = $GitHubEnvironment
-        environmentId = $environmentId
         approvalVariable = $ApprovalVariable
         observedValueSha256 = $Fingerprint
         expectedValueSha256 = $ExpectedValueSha256
         githubMarker = $Marker
-        brokerClosure = 'unconfirmed'
+        brokerClosure = $script:BrokerClosure
         outstandingTokens = 'unsettled'
         recovery = $Recovery
-    } | ConvertTo-Json -Compress
+    }
+    if ($script:Legacy) { $outcome.githubEnvironment = $GitHubEnvironment; $outcome.environmentId = $environmentId }
+    $outcome | ConvertTo-Json -Compress
 }
 
 function Invoke-GitHub([string]$Method, [string]$Endpoint) {
@@ -116,36 +121,48 @@ function Invoke-GitHub([string]$Method, [string]$Endpoint) {
 function Read-Identity([string]$Endpoint, [string]$Expected, [string]$Kind) {
     $response = Invoke-GitHub GET $Endpoint
     if ($response.Status -ne 200) { Stop-Revoke "$Kind could not be verified (HTTP $($response.Status)); absence is not confirmed." }
-    $document = [Text.Json.JsonDocument]::Parse($response.Body)
-    try {
-        $root = $document.RootElement
-        $identity = [Text.Json.JsonElement]::new()
-        $id = 0L
-        if ($root.ValueKind -ne [Text.Json.JsonValueKind]::Object `
-            -or -not $root.TryGetProperty('id', [ref]$identity) `
-            -or $identity.ValueKind -ne [Text.Json.JsonValueKind]::Number `
-            -or -not $identity.TryGetInt64([ref]$id) -or $id -le 0) {
-            Stop-Revoke "$Kind returned an invalid immutable identity."
-        }
-        if ($Expected -and [long]$Expected -ne $id) { Stop-Revoke "$Kind identity differs from the expected ID; nothing was deleted." }
-        return $id
-    } finally { $document.Dispose() }
+    $value = Read-HostJson $response.Body
+    Assert-Id $value.id
+    $id = $value.id
+    if ($Kind -eq 'Repository' -and -not $script:Legacy -and ($value.full_name -isnot [string] -or $value.full_name -ine $Repository)) { Stop-Revoke 'Repository name differs from the selected target.' }
+    if ($Expected -and [long]$Expected -ne $id) { Stop-Revoke "$Kind identity differs from the expected ID; nothing was deleted." }
+    return $id
 }
 
 try {
+    Import-Module "$PSScriptRoot/host-enrollment.psm1" -Force -DisableNameChecking
+    if ($ApprovalVariable) { $ApprovalVariable = $ApprovalVariable.ToUpperInvariant() }
+    $script:Legacy = -not [string]::IsNullOrEmpty($GitHubEnvironment)
+    if ($ExpectedEnvironmentId -and -not $GitHubEnvironment -and -not $ApprovalStatePath) { Stop-Revoke 'Legacy Environment ID requires an explicit GitHub Environment or matching saved legacy state.' }
+    if ($ApprovalStatePath) {
+        if ([IO.FileInfo]::new([IO.Path]::GetFullPath($ApprovalStatePath)).Length -gt 65536) { Stop-Revoke 'Saved approval exceeds 64 KiB.' }
+        $saved = Read-HostJson ([IO.File]::ReadAllText([IO.Path]::GetFullPath($ApprovalStatePath)))
+        $kind = Get-ApprovalStateKind $saved
+        if ($kind -eq 'repository-agent-variable' -and ($GitHubEnvironment -or $ExpectedEnvironmentId)) { Stop-Revoke 'Agent-variable state cannot be combined with Environment arguments.' }
+        $script:Legacy = $kind -eq 'environment-variable'
+        $pairs = @(@('Repository','repository'),@('ApprovalVariable','approvalVariable'),@('ExpectedRepositoryId','repositoryId'),@('ExpectedValueSha256','expectedValueSha256'))
+        if ($script:Legacy) { $pairs += @(@('GitHubEnvironment','repoEnvironment'),@('ExpectedEnvironmentId','environmentId')) }
+        foreach ($pair in $pairs) {
+            $supplied = Get-Variable -Name $pair[0] -ValueOnly
+            if ($supplied -and [string]$supplied -cne [string]$saved[$pair[1]]) { Stop-Revoke 'Arguments conflict with saved approval coordinates.' }
+            Set-Variable -Name $pair[0] -Value ([string]$saved[$pair[1]])
+        }
+    }
+    if (-not $ApprovalVariable) { $ApprovalVariable = 'APPROVED_CONTROLLER' }
     if (-not $Repository -and -not $NonInteractive) { $Repository = Read-Host 'Repository (OWNER/REPO)' }
     if ($Repository -cnotmatch '\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z' `
         -or @($Repository.Split('/') | Where-Object { $_ -in @('.', '..') }).Count) {
         Stop-Revoke 'Supply -Repository OWNER/REPO.'
     }
-    if ([string]::IsNullOrWhiteSpace($GitHubEnvironment) -or $GitHubEnvironment.Length -gt 255 `
-        -or $GitHubEnvironment.ToCharArray().Where({ [char]::IsControl($_) }).Count) {
+    if ($script:Legacy -and ([string]::IsNullOrWhiteSpace($GitHubEnvironment) -or $GitHubEnvironment.Length -gt 255 `
+        -or $GitHubEnvironment.ToCharArray().Where({ [char]::IsControl($_) }).Count)) {
         Stop-Revoke 'GitHub environment must contain 1-255 non-control characters.'
     }
     if ($ApprovalVariable -cnotmatch '\A[A-Za-z_][A-Za-z0-9_]{0,254}\z' `
         -or $ApprovalVariable.StartsWith('GITHUB_', [StringComparison]::OrdinalIgnoreCase)) {
         Stop-Revoke 'Approval variable must be a valid GitHub configuration-variable name.'
     }
+    if (-not $script:Legacy -and $ApprovalVariable.Length -gt 100) { Stop-Revoke 'Agent approval variable is limited to 100 characters.' }
     $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
     # Prompt before any GitHub calls, so the selected variable GET remains the
     # final remote observation before the single DELETE. Apply is explicit consent.
@@ -166,33 +183,24 @@ try {
     $script:GitHubCli = (Get-Command gh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $parts = $Repository.Split('/')
     $repoEndpoint = 'repos/' + [Uri]::EscapeDataString($parts[0]) + '/' + [Uri]::EscapeDataString($parts[1])
-    $environmentEndpoint = $repoEndpoint + '/environments/' + [Uri]::EscapeDataString($GitHubEnvironment)
-    $variableEndpoint = $environmentEndpoint + '/variables/' + [Uri]::EscapeDataString($ApprovalVariable)
-    Write-Host 'Inspecting the selected repository, environment and approval using host gh. No host credentials are exported.'
+    if ($script:Legacy) {
+        $environmentEndpoint = $repoEndpoint + '/environments/' + [Uri]::EscapeDataString($GitHubEnvironment)
+        $variableEndpoint = $environmentEndpoint + '/variables/' + [Uri]::EscapeDataString($ApprovalVariable)
+        Write-Host 'Inspecting explicitly selected legacy Environment approval using host gh.'
+    } else {
+        $variableEndpoint = $repoEndpoint + '/agents/variables/' + [Uri]::EscapeDataString($ApprovalVariable)
+        Write-Host 'Inspecting repository Agent-variable approval using host gh.'
+    }
     Write-Host 'Approval means GitHub-authorized variable management; it does not attest a particular human administrator.'
     Write-Host 'A concurrent writer can lose a newer approval between GET and DELETE. Inspect and reapprove manually if needed.'
     $script:RemoteClock.Start()
     $repositoryId = Read-Identity $repoEndpoint $ExpectedRepositoryId 'Repository'
-    $environmentId = Read-Identity $environmentEndpoint $ExpectedEnvironmentId 'GitHub environment'
+    if ($script:Legacy) { $environmentId = Read-Identity $environmentEndpoint $ExpectedEnvironmentId 'GitHub environment' }
     $response = Invoke-GitHub GET $variableEndpoint
     if ($response.Status -ne 200) { Stop-Revoke "Approval could not be verified (HTTP $($response.Status)); absence or removal is not confirmed." }
-    # JsonDocument preserves root shape and exact strings, including ISO dates;
-    # PowerShell's conversion can unwrap arrays and coerce date-looking values.
-    $document = [Text.Json.JsonDocument]::Parse($response.Body)
-    try {
-        $root = $document.RootElement
-        $name = [Text.Json.JsonElement]::new()
-        $value = [Text.Json.JsonElement]::new()
-        if ($root.ValueKind -ne [Text.Json.JsonValueKind]::Object `
-            -or -not $root.TryGetProperty('name', [ref]$name) `
-            -or $name.ValueKind -ne [Text.Json.JsonValueKind]::String `
-            -or -not $root.TryGetProperty('value', [ref]$value) `
-            -or $value.ValueKind -ne [Text.Json.JsonValueKind]::String `
-            -or -not [string]::Equals($name.GetString(), $ApprovalVariable, [StringComparison]::OrdinalIgnoreCase)) {
-            Stop-Revoke 'GitHub returned an unexpected approval name or value.'
-        }
-        $approvalValue = $value.GetString()
-    } finally { $document.Dispose() }
+    $variable = Read-HostJson $response.Body
+    if ($variable.name -isnot [string] -or $variable.name -ine $ApprovalVariable -or $variable.value -isnot [string]) { Stop-Revoke 'GitHub returned an unexpected approval name or value.' }
+    $approvalValue = $variable.value
     $sha256 = [Security.Cryptography.SHA256]::Create()
     try {
         $digest = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($approvalValue))
@@ -210,6 +218,23 @@ try {
     # accepts an independent-writer availability race and manual recovery.
     $removed = Invoke-GitHub DELETE $variableEndpoint
     if ($removed.Status -ne 204) { Stop-Revoke "Approval removal is unconfirmed (HTTP $($removed.Status)); inspect GitHub before retrying." }
+    if ($EnrollmentFile) {
+        try {
+            $enrollment = Read-PrivateJson ([IO.Path]::GetFullPath($EnrollmentFile))
+            Assert-Fields $enrollment @('protocolVersion','brokerOrigin','githubHost','deviceId','deviceSecret','appId','appSlug','installationId','repositoryId','repository','permissions')
+            Assert-Text $enrollment.deviceId '\A[A-Za-z0-9_-]{1,128}\z'
+            if ($enrollment.protocolVersion -ne 1 -or $enrollment.githubHost -cne 'github.com' -or $enrollment.repositoryId -ne $repositoryId -or $enrollment.repository -ine $Repository) { throw 'Private enrollment differs.' }
+            # Only a trusted saved setup origin may receive the optional credential.
+            if (-not $ApprovalStatePath -or (Get-BrokerOrigin $enrollment.brokerOrigin) -cne (Get-BrokerOrigin $saved.brokerOrigin)) { throw 'Trusted broker origin is required.' }
+            $marker = Read-HostJson $saved.marker
+            if ($marker.deviceId -cne $enrollment.deviceId -or $marker.repositoryId -ne $repositoryId -or $marker.variable -cne $ApprovalVariable -or $marker.appId -ne $enrollment.appId -or $marker.installationId -ne $enrollment.installationId) { throw 'Private enrollment differs from selected approval.' }
+            if ($script:Legacy) {
+                if ($marker.version -ne 1 -or $marker.environmentId -ne $environmentId -or $marker.environment -cne $GitHubEnvironment -or $marker.policyVersion -cne 'repository-approval-v1') { throw 'Legacy marker differs.' }
+            } elseif ($marker.version -ne 2 -or $marker.approvalKind -cne 'repository-agent-variable' -or $marker.policyVersion -cne 'repository-agent-approval-v2') { throw 'Agent marker differs.' }
+            $closed = Invoke-EnrollmentBroker $saved.brokerOrigin DELETE ('/v1/devices/' + $enrollment.deviceId) $enrollment.deviceSecret
+            if ($closed.Status -eq 204) { $script:BrokerClosure = 'confirmed' }
+        } catch { $script:BrokerClosure = 'unconfirmed' }
+    }
     Write-Outcome 'removed' $fingerprint 'GitHub acknowledged deletion at this coordinate; concurrent value and persistent absence are not proven. Check broker closure and outstanding tokens separately. Resolve the old enrollment before manually reapproving.'
     exit 0
 } catch {

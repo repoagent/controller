@@ -6,6 +6,53 @@ from pathlib import Path
 import sys
 import time
 
+if os.environ.get('HOST_ENROLLMENT_NATIVE_CONSUMER') == '1':
+    # Actual consumer gh process boundary; never accept the operator credential.
+    if os.environ.get('GH_TOKEN') != 'assembled-runtime-token' or sys.argv[1] != 'api':
+        sys.exit(91)
+    payload = json.load(sys.stdin)
+    if 'viewer' not in payload.get('query', ''):
+        sys.exit(92)
+    with Path(os.environ['REVOKE_GH_LOG']).open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps({'argv': sys.argv[1:], 'runtimeCredentialObserved': True}) + '\n')
+    print(json.dumps({'data': {'viewer': {'login': 'repo-agent-connector[bot]'}}}))
+    sys.exit(0)
+
+if 'HOST_ENROLLMENT_GH_MODEL' in os.environ:
+    # Stateful external GitHub API only. No broker or enrollment policy lives here.
+    model_path = Path(os.environ['HOST_ENROLLMENT_GH_MODEL'])
+    model = json.loads(model_path.read_text(encoding='utf-8'))
+    argv = sys.argv[1:]
+    method = argv[argv.index('--method') + 1]
+    endpoint = next(arg for arg in argv if arg.startswith('repos/'))
+    body = json.load(sys.stdin) if '--input' in argv else None
+    with Path(os.environ['REVOKE_GH_LOG']).open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps({'argv': argv, 'body': body}) + '\n')
+    status, value = 500, {}
+    if endpoint == 'repos/example/project' and method == 'GET':
+        status, value = 200, {'id': 123, 'full_name': 'example/project'}
+    elif endpoint.startswith('repos/example/project/agents/variables?') and method == 'GET':
+        entries = [{'name': name, 'value': value} for name, value in model['variables'].items()]
+        status = model.get('listing_status', 200)
+        value = model.get('listing', {'total_count': len(entries), 'variables': entries})
+    elif endpoint == 'repos/example/project/agents/variables' and method == 'POST':
+        model['variables'][body['name']] = body['value']
+        model_path.write_text(json.dumps(model), encoding='utf-8')
+        status = model.get('write_status', 201)
+    elif endpoint.startswith('repos/example/project/agents/variables/'):
+        name = endpoint.rsplit('/', 1)[1]
+        if method == 'GET':
+            status = 200 if name in model['variables'] else 404
+            value = {'name': name, 'value': model['variables'].get(name, '')}
+        elif method == 'DELETE':
+            model['variables'].pop(name, None)
+            model_path.write_text(json.dumps(model), encoding='utf-8')
+            status = 204
+    wire = f'HTTP/2.0 {status} Fixture\r\nContent-Type: application/json\r\n\r\n' + json.dumps(value) + '\n'
+    sys.stdout.buffer.write(wire.encode('utf-8'))
+    sys.stdout.buffer.flush()
+    sys.exit(0 if status < 400 else 1)
+
 scenario = json.loads(Path(os.environ['REVOKE_GH_SCENARIO']).read_text(encoding='utf-8'))
 log = Path(os.environ['REVOKE_GH_LOG'])
 events = log.read_text(encoding='utf-8').splitlines() if log.exists() else []
