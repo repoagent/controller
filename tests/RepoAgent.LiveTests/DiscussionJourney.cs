@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace RepoAgent.LiveTests;
@@ -293,16 +294,17 @@ public sealed class DiscussionJourney
         const string url = "https://github.com/egil/repoagent/discussions/23";
         Assert.True(HasRecoveryForSource(log, url, "DC_kwDOVQFj7c4BIsCK"));
         Assert.False(HasRecoveryForSource(log, url, "different-source"));
+        Assert.False(HasRecoveryForSource(log.Replace(" manual-recovery ", " observation-error quoted: manual-recovery "), url, "DC_kwDOVQFj7c4BIsCK"));
         Assert.False(HasRecoveryForSource(log, url + "0", "DC_kwDOVQFj7c4BIsCK"));
         Assert.False(HasRecoveryForSource(log[..log.IndexOf("sourceIds", StringComparison.Ordinal)], url, "DC_kwDOVQFj7c4BIsCK"));
     }
 
     static bool HasRecoveryForSource(string log, string url, string sourceId)
     {
-        var marker = $" manual-recovery {url} session=invalid-native-session pending=";
-        var start = log.LastIndexOf(marker, StringComparison.Ordinal);
-        if (start < 0) return false;
-        var reader = new Utf8JsonReader(Encoding.UTF8.GetBytes(log[(start + marker.Length)..]));
+        var events = Regex.Matches(log, @"^\S+ manual-recovery " + Regex.Escape(url) + " session=invalid-native-session pending=", RegexOptions.Multiline);
+        if (events.Count == 0) return false;
+        var entry = events[^1];
+        var reader = new Utf8JsonReader(Encoding.UTF8.GetBytes(log[(entry.Index + entry.Length)..]));
         try
         {
             var pending = JsonNode.Parse(ref reader);
