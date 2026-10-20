@@ -112,6 +112,26 @@ if operation[0] == 'get':
         finish(1)
     finish(output=str(state['settings'].get(operation[1], '')))
 if operation[0] == 'configure':
+    if runtime_source := os.environ.get('INSTALLER_DOCKER_REAL_CONFIGURE'):
+        # Exercise the real public runtime CLI while mapping container-owned files
+        # into this process fixture's isolated directory. Docker itself remains
+        # a controlled process boundary, not a compatibility claim.
+        runtime_files = path.parent / 'runtime-files'
+        bootstrap = (
+            "import sys; from pathlib import Path; "
+            "sys.path.insert(0, sys.argv.pop(1)); import runtime; "
+            "root = Path(sys.argv.pop(1)); "
+            "runtime.CONFIG = root / 'config/settings.json'; "
+            "runtime.CODEX = root / 'codex'; runtime.main()"
+        )
+        result = subprocess.run([sys.executable, '-c', bootstrap, runtime_source,
+                                 str(runtime_files), *operation], capture_output=True, text=True)
+        configured = runtime_files / 'config/settings.json'
+        if configured.exists():
+            state['settings'] = json.loads(configured.read_text())
+        if result.stderr:
+            print(result.stderr, end='', file=sys.stderr)
+        finish(result.returncode, result.stdout)
     fields = {'repository': 'repository', 'app-id': 'appId', 'key-path': 'keyPath',
               'mention-user': 'mentionUser', 'model': 'model', 'mode': 'mode',
               'installation-id': 'installationId', 'tool-updates': 'toolUpdates',
