@@ -49,6 +49,7 @@ public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
     public string Epoch => IssuancePolicy.Text(Gate, "Epoch");
     public void RequireActive(DateTimeOffset now)
     {
+        PayloadClock.RequirePayload(Device);
         if (IssuancePolicy.Text(Gate, "State") != "active" || IssuancePolicy.Text(Device, "State") != "active"
             || !Device.TryGetValue("Acknowledged", out var ack) || ack is not true
             || IssuancePolicy.Date(Device, "ExpiresAt") <= now) throw new IssuanceDenied(401);
