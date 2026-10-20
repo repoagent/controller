@@ -22,7 +22,7 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
             || root.GetProperty("app_slug").GetString() != AppSlug
             || root.GetProperty("suspended_at").ValueKind != JsonValueKind.Null) throw new IssuanceDenied();
         var permissions = root.GetProperty("permissions");
-        foreach (var required in Permissions(grant.Profile).Concat(Permissions("verification")))
+        foreach (var required in Permissions(grant.Profile).Concat(Permissions(grant.Approval.VerifierProfile)))
             if (!permissions.TryGetProperty(required.Key, out var level)
                 || level.GetString() is not { } actual || actual != required.Value && !(actual == "write" && required.Value == "read"))
                 throw new IssuanceDenied();
@@ -30,6 +30,12 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         var repos = repositories.RootElement;
         if (repos.GetProperty("total_count").GetInt32() != 1) throw new IssuanceDenied();
         ValidateRepository(repos.GetProperty("repositories"), grant);
+        if (grant.Approval == ApprovalContract.Agent)
+        {
+            if (!await ObserveAgentVariableAsync(grant.Repository, grant.Variable, grant.Marker, verifier, work)) throw new ApprovalChanged();
+            work.Fresh(started);
+            return started;
+        }
         var environmentPath = $"repos/{repositoryPath}/environments/{Uri.EscapeDataString(grant.Environment)}";
         using var environment = await ReadAsync(environmentPath, verifier, work);
         if (environment.RootElement.GetProperty("id").GetInt64() != grant.EnvironmentId
@@ -39,6 +45,40 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
             || marker.RootElement.GetProperty("value").GetString() != grant.Marker) throw new ApprovalChanged();
         work.Fresh(started);
         return started;
+    }
+
+    internal async Task<bool> ObserveAgentVariableAsync(string repository, string selected, string marker, string token, IssuanceWork work)
+    {
+        var path = string.Join('/', repository.Split('/').Select(Uri.EscapeDataString));
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        int? total = null;
+        bool? approved = null;
+        for (var page = 1; page <= 2; page++)
+        {
+            using var response = await ReadAsync($"repos/{path}/agents/variables?per_page=30&page={page}", token, work);
+            var root = response.RootElement;
+            var count = root.GetProperty("total_count").GetInt32();
+            if (count < 0 || count > 60 || total is not null && total != count) throw new IssuanceDenied();
+            total = count;
+            var variables = root.GetProperty("variables");
+            if (variables.GetArrayLength() > 30) throw new IssuanceDenied();
+            foreach (var variable in variables.EnumerateArray())
+            {
+                var name = variable.GetProperty("name").GetString();
+                var value = variable.GetProperty("value").GetString();
+                if (string.IsNullOrEmpty(name) || value is null || !seen.Add(name)) throw new IssuanceDenied();
+                if (name == selected) approved = value == marker;
+            }
+            if (seen.Count == total)
+            {
+                // Offset pages are not a snapshot: an unchanged marker can shift to an
+                // already-read page. Only one complete response can prove absence.
+                if (approved is null && page != 1) throw new IssuanceDenied();
+                return approved ?? false;
+            }
+            if (variables.GetArrayLength() < 30 || seen.Count > total) throw new IssuanceDenied();
+        }
+        throw new IssuanceDenied();
     }
 
     public Task<IssuedToken> MintAsync(GrantSnapshot grant, string profile, string jwt, CancellationToken ct) =>

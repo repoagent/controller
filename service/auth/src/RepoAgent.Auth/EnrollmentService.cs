@@ -13,9 +13,16 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
 {
     private readonly EnrollmentGitHub provider = new(github, clock);
 
-    public Task<IssuanceResult> StartAsync(EnrollmentRequest request, string? secret, CancellationToken caller) => Run(async work =>
+    public Task<IssuanceResult> StartAsync(EnrollmentRequest request, string? secret, CancellationToken caller) =>
+        StartAsync(() => EnrollmentInput.From(request), secret, caller);
+
+    public Task<IssuanceResult> StartAgentAsync(AgentEnrollmentRequest request, string? secret, CancellationToken caller) =>
+        StartAsync(() => EnrollmentInput.From(request), secret, caller);
+
+    private Task<IssuanceResult> StartAsync(Func<EnrollmentInput> input, string? secret, CancellationToken caller) => Run(async work =>
     {
         caller.ThrowIfCancellationRequested();
+        var request = input();
         if (options.BrokerOrigin is null) throw new IssuanceDenied();
         var hash = DeviceSecret.Hash(secret) ?? throw new IssuanceDenied(401);
         var s = await store.AdmitAsync(request, Convert.ToHexString(hash), work.Cancellation);
@@ -41,7 +48,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
             IssuedToken? known = null;
             try
             {
-                known = await github.MintAsync(s.RepositoryId, Text(s.Pending, "RequestedRepository"), installation, "verification", jwt, work.Cancellation);
+                known = await github.MintAsync(s.RepositoryId, Text(s.Pending, "RequestedRepository"), installation, s.Approval.VerifierProfile, jwt, work.Cancellation);
                 reservation["ProtectedToken"] = store.TokenProtector(s, reservation).Protect(known.Token);
                 reservation["ExpiresAt"] = known.ExpiresAt;
                 reservation["ScopeValid"] = known.ScopeValid;
@@ -60,8 +67,11 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         var started = clock.GetUtcNow();
         var binding = await provider.BindAsync(s, token, work);
         s.Pending["Repository"] = binding.Repository;
-        s.Pending["Environment"] = binding.Environment;
-        s.Pending["EnvironmentId"] = binding.EnvironmentId;
+        if (s.Approval == ApprovalContract.Legacy)
+        {
+            s.Pending["Environment"] = binding.Environment!;
+            s.Pending["EnvironmentId"] = binding.EnvironmentId!.Value;
+        }
         s.Pending["Marker"] = ApprovalMarker.Create(new(s.Gate, s.Pending));
         s.Pending["State"] = "pending";
         store.RequireLive(s.Pending);
@@ -70,17 +80,17 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         return Status(s);
     });
 
-    public Task<IssuanceResult> StatusAsync(string id, string? secret, CancellationToken caller) => Run(async work =>
+    public Task<IssuanceResult> StatusAsync(string id, string? secret, CancellationToken caller, int setupVersion = 1) => Run(async work =>
     {
         caller.ThrowIfCancellationRequested();
-        var s = await store.SnapshotAsync(id, Convert.ToHexString(DeviceSecret.Hash(secret) ?? throw new IssuanceDenied(401)), work.Cancellation);
+        var s = await store.SnapshotAsync(id, Convert.ToHexString(DeviceSecret.Hash(secret) ?? throw new IssuanceDenied(401)), work.Cancellation, setupVersion);
         return Status(s);
     });
 
-    public Task<IssuanceResult> CompleteAsync(string id, string? secret, CancellationToken caller) => Run(async work =>
+    public Task<IssuanceResult> CompleteAsync(string id, string? secret, CancellationToken caller, int setupVersion = 1) => Run(async work =>
     {
         caller.ThrowIfCancellationRequested();
-        var s = await store.SnapshotAsync(id, Convert.ToHexString(DeviceSecret.Hash(secret) ?? throw new IssuanceDenied(401)), work.Cancellation);
+        var s = await store.SnapshotAsync(id, Convert.ToHexString(DeviceSecret.Hash(secret) ?? throw new IssuanceDenied(401)), work.Cancellation, setupVersion);
         store.RequireLive(s.Pending);
         if (!s.Pending.ContainsKey("Marker")) throw new IssuanceDenied(409);
         var attempt = await store.AttemptAsync(s, work.Cancellation);
@@ -95,8 +105,14 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
             completion = Guid.NewGuid().ToString("N");
             var deviceSecret = EnrollmentSecrets.Generate();
             device = new(s.Partition, "device:" + s.DeviceId);
-            foreach (var key in new[] { "RepositoryId", "Repository", "DeviceId", "Epoch", "InstallationId", "Environment", "EnvironmentId", "Variable", "Profile", "Challenge", "Marker" }) device[key] = s.Pending[key];
-            device["AppId"] = AppId; device["AppSlug"] = AppSlug; device["GitHubHost"] = "github.com"; device["PolicyVersion"] = IssuancePolicy.Version;
+            foreach (var key in new[] { "RepositoryId", "Repository", "DeviceId", "Epoch", "InstallationId", "Variable", "Profile", "Challenge", "Marker" }) device[key] = s.Pending[key];
+            if (s.Approval == ApprovalContract.Legacy)
+            {
+                device["Environment"] = s.Pending["Environment"];
+                device["EnvironmentId"] = s.Pending["EnvironmentId"];
+            }
+            s.Approval.Write(device);
+            device["AppId"] = AppId; device["AppSlug"] = AppSlug; device["GitHubHost"] = "github.com";
             device["SecretHash"] = Convert.ToHexString(DeviceSecret.Hash(deviceSecret)!);
             device["Acknowledged"] = false; device["State"] = "unacknowledged";
             device["ExpiresAt"] = Date(s.Pending, "Deadline"); device["OutstandingTokenCount"] = 0L;
@@ -125,14 +141,14 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         return new(200, new { completionId = completion, enrollment = result });
     });
 
-    public Task<IssuanceResult> AcknowledgeAsync(string deviceId, string completionId, string? secret, CancellationToken caller) => Run(async work =>
+    public Task<IssuanceResult> AcknowledgeAsync(string deviceId, string completionId, string? secret, CancellationToken caller, int setupVersion = 1) => Run(async work =>
     {
         caller.ThrowIfCancellationRequested();
         var hash = DeviceSecret.Hash(secret) ?? throw new IssuanceDenied(401);
         if (!DeviceSecret.IsDeviceId(deviceId) || !Guid.TryParseExact(completionId, "N", out _)) throw new IssuanceDenied(401);
         var locator = await store.ReadAsync("locator:" + deviceId, "locator", work.Cancellation) ?? throw new IssuanceDenied(401);
         if (Text(locator, "DeviceId") != deviceId) throw new IssuanceDenied(401);
-        var s = await store.SnapshotAsync(Text(locator, "PendingId"), null, work.Cancellation);
+        var s = await store.SnapshotAsync(Text(locator, "PendingId"), null, work.Cancellation, setupVersion);
         if (s.DeviceId != deviceId || s.RepositoryId != Text(locator, "RepositoryId")) throw new IssuanceDenied(401);
         var device = await DeviceAsync(s, work.Cancellation);
         if (!DeviceSecret.Matches(hash, Text(device, "SecretHash")) || Text(device, "CompletionId") != completionId
@@ -201,6 +217,10 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         var device = await store.ReadAsync(s.Partition, "device:" + s.DeviceId, ct) ?? throw new IssuanceDenied(401);
         if (Text(device, "PendingId") != s.Id || Text(device, "DeviceId") != s.DeviceId || Text(device, "RepositoryId") != s.RepositoryId
             || Text(device, "Epoch") != options.DeploymentEpoch) throw new IssuanceDenied(401);
+        s.Approval.Require(device);
+        if (Text(device, "Marker") != Text(s.Pending, "Marker") || Text(device, "Profile") != Text(s.Pending, "Profile")
+            || Number(device, "InstallationId") != Number(s.Pending, "InstallationId")) throw new IssuanceDenied();
+        new GrantSnapshot(s.Gate, device).RequireBinding(options);
         return device;
     }
     private void Barrier(EnrollmentSnapshot s, TableEntity attempt, bool completed)

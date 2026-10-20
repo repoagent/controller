@@ -76,7 +76,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
             var jwt = await signer.SignAsync(attempt, work.Cancellation);
             work.Check();
             attempt = await store.ClaimSendAsync(grant, attempt, work.Cancellation);
-            token = await github.MintAsync(grant, "verification", jwt, work.Cancellation);
+            token = await github.MintAsync(grant, grant.Approval.VerifierProfile, jwt, work.Cancellation);
             attempt = await store.RecordKnownAsync(grant, attempt, token, work.Cancellation);
             if (!token.ScopeValid) throw new IssuanceDenied();
             return attempt;

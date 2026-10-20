@@ -8,7 +8,12 @@ internal static class EnrollmentEndpoints
 {
     public static void Map(WebApplication app)
     {
-        app.MapPost("/v1/enrollments", async (HttpContext context) =>
+        MapVersion(app, 1);
+        MapVersion(app, 2);
+    }
+    private static void MapVersion(WebApplication app, int version)
+    {
+        app.MapPost($"/v{version}/enrollments", async (HttpContext context) =>
         {
             var secret = Credential(context);
             if (secret is null) return Results.StatusCode(401);
@@ -17,28 +22,30 @@ internal static class EnrollmentEndpoints
             try
             {
                 using var body = await BodyAsync(context);
-                var request = body.RootElement.Deserialize<EnrollmentRequest>(new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? throw new JsonException();
-                return Result(await service.StartAsync(request, secret, context.RequestAborted));
+                var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+                return version == 1
+                    ? Result(await service.StartAsync(body.RootElement.Deserialize<EnrollmentRequest>(json) ?? throw new JsonException(), secret, context.RequestAborted))
+                    : Result(await service.StartAgentAsync(body.RootElement.Deserialize<AgentEnrollmentRequest>(json) ?? throw new JsonException(), secret, context.RequestAborted));
             }
             catch (Exception ex) when (ex is JsonException or InvalidDataException or BadHttpRequestException) { return Results.StatusCode(400); }
         });
-        app.MapGet("/v1/enrollments/{id}", async (string id, HttpContext context) =>
+        app.MapGet($"/v{version}/enrollments/{{id}}", async (string id, HttpContext context) =>
         {
             var secret = Credential(context);
             if (secret is null) return Results.StatusCode(401);
             if (HasBody(context)) return Results.StatusCode(400);
             var service = context.RequestServices.GetService<EnrollmentService>();
-            return service is null ? Results.StatusCode(503) : Result(await service.StatusAsync(id, secret, context.RequestAborted));
+            return service is null ? Results.StatusCode(503) : Result(await service.StatusAsync(id, secret, context.RequestAborted, version));
         });
-        app.MapPost("/v1/enrollments/{id}/completion", async (string id, HttpContext context) =>
+        app.MapPost($"/v{version}/enrollments/{{id}}/completion", async (string id, HttpContext context) =>
         {
             var secret = Credential(context);
             if (secret is null) return Results.StatusCode(401);
             if (HasBody(context)) return Results.StatusCode(400);
             var service = context.RequestServices.GetService<EnrollmentService>();
-            return service is null ? Results.StatusCode(503) : Result(await service.CompleteAsync(id, secret, context.RequestAborted));
+            return service is null ? Results.StatusCode(503) : Result(await service.CompleteAsync(id, secret, context.RequestAborted, version));
         });
-        app.MapPost("/v1/devices/{id}/acknowledgment", async (string id, HttpContext context) =>
+        app.MapPost($"/v{version}/devices/{{id}}/acknowledgment", async (string id, HttpContext context) =>
         {
             var secret = Credential(context);
             if (secret is null) return Results.StatusCode(401);
@@ -49,7 +56,7 @@ internal static class EnrollmentEndpoints
                 using var body = await BodyAsync(context);
                 var properties = body.RootElement.EnumerateObject().ToArray();
                 if (properties.Length != 1 || properties[0].Name != "completionId" || properties[0].Value.ValueKind != JsonValueKind.String) return Results.StatusCode(400);
-                return Result(await service.AcknowledgeAsync(id, properties[0].Value.GetString()!, secret, context.RequestAborted));
+                return Result(await service.AcknowledgeAsync(id, properties[0].Value.GetString()!, secret, context.RequestAborted, version));
             }
             catch (Exception ex) when (ex is JsonException or InvalidDataException or BadHttpRequestException or InvalidOperationException) { return Results.StatusCode(400); }
         });

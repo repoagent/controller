@@ -62,7 +62,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
     {
         if (purpose is not ("verification" or "runtime")) throw new IssuanceDenied();
         var ct = work.Cancellation;
-        var profile = purpose == "verification" ? "verification" : grant.Profile;
+        var profile = purpose == "verification" ? grant.Approval.VerifierProfile : grant.Profile;
         var binding = grant.Marker;
         var secretHash = Text(grant.Device, "SecretHash");
         var gateState = Text(grant.Gate, "State");
@@ -108,7 +108,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
                 // Definite global conflicts have no committed charge; reevaluate with the same operation.
                 // Once charged, reuse that reservation across known repository conflicts.
                 // A timeout or unknown response never reaches this retry loop.
-                slot ??= await ChargeGlobalAsync(operation, grant.RepositoryId, purpose, reads, now, ct);
+                slot ??= await ChargeGlobalAsync(operation, grant.RepositoryId, purpose, reads, now, grant.Approval, ct);
                 var quota = await ReadAsync(grant.Partition, "quota", ct);
                 var freshQuota = quota is null;
                 quota ??= NewQuota(grant.Partition);
@@ -125,6 +125,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
                     ["State"] = "reserved", ["ReservedAt"] = now,
                     ["JwtIssuedAt"] = now.AddSeconds(-60), ["JwtExpiresAt"] = now.AddSeconds(120), ["GlobalSlot"] = slot.Value
                 };
+                grant.Approval.Write(attempt);
                 var extra = new List<TableTransactionAction>
                 {
                     new(freshQuota ? TableTransactionActionType.Add : TableTransactionActionType.UpdateReplace, quota, quota.ETag),
@@ -142,7 +143,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
         }
     }
 
-    private async Task<long> ChargeGlobalAsync(string operation, string repository, string purpose, int reads, DateTimeOffset now, CancellationToken ct)
+    private async Task<long> ChargeGlobalAsync(string operation, string repository, string purpose, int reads, DateTimeOffset now, ApprovalContract approval, CancellationToken ct)
     {
         const string partition = "global:issuance-v1";
         var quota = await ReadAsync(partition, "quota", ct);
@@ -158,6 +159,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
             ["OperationId"] = operation, ["RepositoryId"] = repository, ["Purpose"] = purpose,
             ["Epoch"] = options.DeploymentEpoch, ["ReservedAt"] = now
         };
+        approval.Write(reservation);
         await table.SubmitTransactionAsync([
             new(fresh ? TableTransactionActionType.Add : TableTransactionActionType.UpdateReplace, quota, quota.ETag),
             new(TableTransactionActionType.Add, reservation)
@@ -252,14 +254,15 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
         await table.SubmitTransactionAsync(actions, ct);
         // Post-observation conflicts invalidate the decision and deny; only admission owns a bounded reevaluation loop.
     }
-    private IDataProtector Protector(GrantSnapshot grant, TableEntity attempt) => protection.CreateProtector(
-        "repoagent.issuer.v1", grant.RepositoryId, grant.Epoch, Text(attempt, "OperationId"), Text(attempt, "Purpose"));
+    private IDataProtector Protector(GrantSnapshot grant, TableEntity attempt) => grant.Approval.TokenProtector(
+        protection, grant.RepositoryId, grant.Epoch, Text(attempt, "OperationId"), Text(attempt, "Purpose"));
     private static void BindAttempt(GrantSnapshot grant, TableEntity attempt, string purpose)
     {
+        grant.Approval.Require(attempt);
         if (Text(attempt, "RepositoryId") != grant.RepositoryId || Text(attempt, "Epoch") != grant.Epoch
             || Text(attempt, "DeviceId") != grant.DeviceId || Text(attempt, "Purpose") != purpose
             || Number(attempt, "InstallationId") != grant.InstallationId
-            || Text(attempt, "Profile") != (purpose == "verification" ? "verification" : grant.Profile)) throw new IssuanceDenied();
+            || Text(attempt, "Profile") != (purpose == "verification" ? grant.Approval.VerifierProfile : grant.Profile)) throw new IssuanceDenied();
     }
     private static TableEntity NewQuota(string partition) => new(partition, "quota")
     {

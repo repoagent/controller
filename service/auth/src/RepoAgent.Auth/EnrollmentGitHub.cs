@@ -12,7 +12,7 @@ internal sealed class EnrollmentGitHub(GitHubIssuance github, TimeProvider clock
         var root = response.RootElement;
         if (root.GetProperty("app_id").GetInt64() != AppId || root.GetProperty("app_slug").GetString() != AppSlug
             || root.GetProperty("suspended_at").ValueKind != System.Text.Json.JsonValueKind.Null) throw new IssuanceDenied();
-        foreach (var required in Permissions(Text(p, "Profile")).Concat(Permissions("verification")))
+        foreach (var required in Permissions(Text(p, "Profile")).Concat(Permissions(snapshot.Approval.VerifierProfile)))
             if (!root.GetProperty("permissions").TryGetProperty(required.Key, out var level)
                 || level.GetString() is not { } actual || actual != required.Value && !(actual == "write" && required.Value == "read")) throw new IssuanceDenied();
         var id = root.GetProperty("id").GetInt64();
@@ -21,7 +21,7 @@ internal sealed class EnrollmentGitHub(GitHubIssuance github, TimeProvider clock
         return id;
     }
 
-    public async Task<(string Repository, string Environment, long EnvironmentId)> BindAsync(EnrollmentSnapshot snapshot, string token, IssuanceWork work)
+    public async Task<(string Repository, string? Environment, long? EnvironmentId)> BindAsync(EnrollmentSnapshot snapshot, string token, IssuanceWork work)
     {
         var p = snapshot.Pending;
         using var repositories = await github.ReadAsync("installation/repositories?per_page=2", token, work);
@@ -30,6 +30,7 @@ internal sealed class EnrollmentGitHub(GitHubIssuance github, TimeProvider clock
         try { GitHubIssuance.ValidateRepository(root.GetProperty("repositories"), snapshot.RepositoryId, Text(p, "RequestedRepository")); }
         catch (IssuanceDenied) when (p.ContainsKey("Marker")) { throw new ApprovalChanged(); }
         var canonical = root.GetProperty("repositories")[0].GetProperty("full_name").GetString()!;
+        if (snapshot.Approval == ApprovalContract.Agent) return (canonical, null, null);
         using var environment = await github.ReadAsync($"repos/{RepositoryPath(canonical)}/environments/{Uri.EscapeDataString(Text(p, "Environment"))}", token, work);
         var id = environment.RootElement.GetProperty("id").GetInt64();
         var name = environment.RootElement.GetProperty("name").GetString();
@@ -44,6 +45,12 @@ internal sealed class EnrollmentGitHub(GitHubIssuance github, TimeProvider clock
         await DiscoverAsync(snapshot, jwt, work);
         await BindAsync(snapshot, token, work);
         var p = snapshot.Pending;
+        if (snapshot.Approval == ApprovalContract.Agent)
+        {
+            var agentApproved = await github.ObserveAgentVariableAsync(Text(p, "Repository"), Text(p, "Variable"), Text(p, "Marker"), token, work);
+            work.Fresh(started);
+            return (agentApproved, started);
+        }
         var path = $"repos/{RepositoryPath(Text(p, "Repository"))}/environments/{Uri.EscapeDataString(Text(p, "Environment"))}/variables";
         // Complete listing supplies positive absence evidence; a lone 404 never does.
         var seen = new HashSet<string>(StringComparer.Ordinal);

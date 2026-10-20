@@ -22,6 +22,7 @@ public static class IssuancePolicy
     {
         "polling" => new Dictionary<string, string> { ["discussions"] = "write" },
         "webhook" => new Dictionary<string, string> { ["discussions"] = "write", ["repository_hooks"] = "write" },
+        "agent-variable-verification" => new Dictionary<string, string> { ["agent_variables"] = "read" },
         "verification" => new Dictionary<string, string> { ["environments"] = "read", ["actions"] = "read" },
         _ => throw new IssuanceDenied()
     };
@@ -39,6 +40,7 @@ public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
     public string Repository => IssuancePolicy.Text(Device, "Repository");
     public string Profile => IssuancePolicy.Text(Device, "Profile");
     public long InstallationId => IssuancePolicy.Number(Device, "InstallationId");
+    internal ApprovalContract Approval => ApprovalContract.Read(Device);
     public string Environment => IssuancePolicy.Text(Device, "Environment");
     public long EnvironmentId => IssuancePolicy.Number(Device, "EnvironmentId");
     public string Variable => IssuancePolicy.Text(Device, "Variable");
@@ -60,11 +62,12 @@ public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
             || IssuancePolicy.Number(Device, "AppId") != IssuancePolicy.AppId
             || IssuancePolicy.Text(Device, "AppSlug") != IssuancePolicy.AppSlug
             || IssuancePolicy.Text(Device, "GitHubHost") != "github.com"
-            || IssuancePolicy.Text(Device, "PolicyVersion") != IssuancePolicy.Version
-            || InstallationId <= 0 || EnvironmentId <= 0 || Profile is not ("polling" or "webhook")
+            || IssuancePolicy.Text(Device, "PolicyVersion") != Approval.Policy
+            || InstallationId <= 0 || Profile is not ("polling" or "webhook")
             || Repository.Split('/') is not [var owner, var name] || !Segment(owner) || !Segment(name)
-            || Environment.Length > 255 || Environment.Any(char.IsControl)
             || Variable.Length > 100 || !Variable.All(c => char.IsAsciiLetterOrDigit(c) || c == '_'))
+            throw new IssuanceDenied();
+        if (Approval == ApprovalContract.Legacy && (EnvironmentId <= 0 || Environment.Length > 255 || Environment.Any(char.IsControl)))
             throw new IssuanceDenied();
         _ = IssuancePolicy.Number(Gate, "Sequence");
         if (Marker != ApprovalMarker.Create(this)) throw new IssuanceDenied();
