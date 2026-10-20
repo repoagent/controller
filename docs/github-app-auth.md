@@ -15,6 +15,23 @@ The bridge authenticates the App, discovers the installation for the selected re
 
 Webhook mode additionally requires owner-approved **Webhooks: read and write** and includes `repository_hooks: write` in renewed installation tokens. Polling-only tokens remain Discussions-only. See [repository webhook setup](webhooks.md).
 
+## Broker credentials (consumer integration)
+
+**Broker consumption is implemented; enrollment and the hosted broker are pending.** An operator with a trusted provider and a protected [v1 enrollment file](broker-protocol.md) can start the Linux/macOS controller without an App PEM:
+
+```sh
+bridge --repo OWNER/REPO --app-id NUMERIC_APP_ID \
+  --broker-url https://credentials.example.org \
+  --enrollment-file /run/secrets/controller-enrollment.json \
+  --state /data/bridge-state.json --check-auth
+```
+
+Windows hosts use the Linux container through Docker Desktop; native Windows broker execution is unsupported. The example origin is a placeholder, not a deployed service. Keep the enrollment outside the workspace and image, readable/writable only by its owner (`chmod 600`). The origin must match enrollment exactly by HTTPS scheme, DNS host and effective port. The numeric App ID, repository and optional `--installation-id` must match enrollment. Both broker options are required together and cannot be combined with `--private-key`. Direct mode continues accepting an App ID or client ID and an operator-owned PEM.
+
+Polling enrollment permits only Discussions write, with optional implicit metadata read. Webhook enrollment additionally requires repository hooks write; select it with `--webhook-url`. Every initial and renewed lease is validated against enrollment before cache publication. The real GitHub viewer must match the enrolled App bot before startup completes. Failed authentication or renewal removes local launch credentials; another process failing to acquire the state lock leaves the active owner's cache intact. Both credential sources share the same cache, refresh scheduler and native wrapper.
+
+These checks trust the enrolled broker's claims. They do not prove the token's actual GitHub repository scope, implement enrollment approval, or fence tokens already copied into a child. Hosted broker acceptance, administrator approval and outstanding-token fencing remain separate release gates.
+
 ## App ownership
 
 **Repo Agent Connector** is owned by the `repoagent` account. The controller repository is `repoagent/controller`; App registration ownership and repository ownership are managed separately.
@@ -23,7 +40,7 @@ On 20 October 2026, GitHub blocked this App's transfer from `egil` while the App
 
 ## Renewal and native commands
 
-The current PEM-based setup is for an operator who owns the App registration and trusts the controller machine. Do not distribute the shared Repo Agent Connector App's PEM to other users: a private key grants authentication across the App's installations, even though this controller normally narrows its issued tokens to one repository. A read-only Docker mount prevents modification of the host file; processes that can read the mount can still use its contents. GitHub explicitly advises against shipping an App private key to user devices. See [GitHub's credential guidance](https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/best-practices-for-creating-a-github-app#private-keys).
+The direct PEM-based setup is for an operator who owns the App registration and trusts the controller machine. Do not distribute the shared Repo Agent Connector App's PEM to other users: a private key grants authentication across the App's installations, even though this controller normally narrows its issued tokens to one repository. A read-only Docker mount prevents modification of the host file; processes that can read the mount can still use its contents. GitHub explicitly advises against shipping an App private key to user devices. See [GitHub's credential guidance](https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/best-practices-for-creating-a-github-app#private-keys).
 
 GitHub [installation tokens expire after one hour](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation). The bridge checks the credential every minute independently of polling, as well as before every GitHub operation, and renews it when five minutes or less remain. This continues during long polls and while native work is active. The returned expiry is authoritative. A signed short-lived JWT authenticates App and token-issuance requests; the signing key is not passed as a native process environment variable.
 

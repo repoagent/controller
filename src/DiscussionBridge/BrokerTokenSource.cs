@@ -1,0 +1,158 @@
+using System.Globalization;
+using System.Net.Http.Headers;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace DiscussionBridge;
+
+/// <summary>Consumes only leases bound to the operator's protected v1 enrollment.</summary>
+internal sealed class BrokerTokenSource : IInstallationTokenSource
+{
+    const int MaximumBytes = 64 * 1024;
+    static readonly string[] BindingFields = ["protocolVersion", "appId", "appSlug", "installationId", "repositoryId", "repository", "permissions"];
+    readonly HttpClient http;
+    readonly Uri origin;
+    readonly JsonDocument enrollment;
+    readonly TimeProvider clock;
+    readonly bool repositoryWebhooks;
+    readonly string deviceId;
+    readonly string secret;
+    public string AppSlug => enrollment.RootElement.GetProperty("appSlug").GetString()!;
+
+    public BrokerTokenSource(HttpClient http, string brokerOrigin, string enrollmentFile, string appId, string repository,
+        TimeProvider clock, bool repositoryWebhooks)
+    {
+        this.http = http;
+        this.clock = clock;
+        this.repositoryWebhooks = repositoryWebhooks;
+        origin = ParseOrigin(brokerOrigin);
+        if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Broker credentials require the Linux or macOS controller runtime");
+        if ( (File.GetUnixFileMode(enrollmentFile) & ~(UnixFileMode.UserRead | UnixFileMode.UserWrite)) != 0)
+            throw Invalid("enrollment file must have owner-only read/write permissions (0600)");
+        using var file = File.OpenRead(enrollmentFile);
+        if (file.Length > MaximumBytes) throw Invalid("enrollment exceeds 64 KiB");
+        var bytes = new byte[MaximumBytes + 1];
+        var length = 0;
+        while (length < bytes.Length)
+        {
+            var read = file.Read(bytes, length, bytes.Length - length);
+            if (read == 0) break;
+            length += read;
+        }
+        enrollment = Parse(bytes.AsMemory(0, length));
+        try
+        {
+            var root = enrollment.RootElement;
+            CheckFields(root, [.. BindingFields, "brokerOrigin", "githubHost", "deviceId", "deviceSecret"]);
+            CheckBinding(root);
+            if (Text(root, "githubHost") != "github.com") throw Invalid("only github.com is supported");
+            if (ParseOrigin(Text(root, "brokerOrigin")) != origin) throw Invalid("broker origin differs from enrollment");
+            if (!long.TryParse(appId, NumberStyles.None, CultureInfo.InvariantCulture, out var id) || id != Id(root, "appId") ||
+                !string.Equals(repository, Text(root, "repository"), StringComparison.OrdinalIgnoreCase))
+                throw Invalid("CLI App/repository differs from enrollment");
+            deviceId = Text(root, "deviceId");
+            secret = Text(root, "deviceSecret");
+            if (!Regex.IsMatch(deviceId, @"\A[A-Za-z0-9_-]{1,128}\z") || !Regex.IsMatch(secret, @"\A[A-Za-z0-9_-]{43,128}\z"))
+                throw Invalid("invalid device credential format");
+            Log.Protect(secret);
+        }
+        catch { enrollment.Dispose(); throw; }
+    }
+
+    public static Uri ParseOrigin(string value)
+    {
+        if (!Regex.IsMatch(value, @"\Ahttps://[A-Za-z0-9.-]+(?::[0-9]+)?/?\z", RegexOptions.IgnoreCase) ||
+            !Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.HostNameType != UriHostNameType.Dns ||
+            uri.UserInfo.Length != 0 || uri.AbsolutePath != "/" || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            throw Invalid("broker URL must be an HTTPS origin without credentials, path, query or fragment");
+        return uri;
+    }
+
+    public Task Initialize(long? expectedInstallation, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (expectedInstallation is not null && expectedInstallation != Id(enrollment.RootElement, "installationId"))
+            throw Invalid("CLI installation differs from enrollment");
+        return Task.CompletedTask;
+    }
+
+    public async Task<InstallationLease> Acquire(CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, $"/v1/devices/{deviceId}/installation-token"));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        HttpResponseMessage response;
+        try { response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct); }
+        catch (HttpRequestException) { throw Invalid("broker transport failed"); }
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode) throw Invalid($"broker request failed (HTTP {(int)response.StatusCode})");
+            if (response.Content.Headers.ContentLength > MaximumBytes) throw Invalid("response exceeds 64 KiB");
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            var bytes = new byte[MaximumBytes + 1];
+            var length = 0;
+            while (length < bytes.Length)
+            {
+                var read = await stream.ReadAsync(bytes.AsMemory(length), ct);
+                if (read == 0) break;
+                length += read;
+            }
+            using var document = Parse(bytes.AsMemory(0, length));
+            var result = document.RootElement;
+            CheckFields(result, [.. BindingFields, "token", "expiresAt"]);
+            CheckBinding(result);
+            var approved = enrollment.RootElement;
+            foreach (var field in new[] { "appId", "installationId", "repositoryId" })
+                if (Id(result, field) != Id(approved, field)) throw Invalid("lease immutable identity differs from enrollment");
+            foreach (var field in new[] { "appSlug", "repository" })
+                if (!string.Equals(Text(result, field), Text(approved, field), StringComparison.OrdinalIgnoreCase))
+                    throw Invalid("lease App/repository differs from enrollment");
+            var token = Text(result, "token");
+            var expiryText = Text(result, "expiresAt");
+            if (token.Length == 0 || token.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)) ||
+                !Regex.IsMatch(expiryText, @"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z") ||
+                !DateTimeOffset.TryParse(expiryText, CultureInfo.InvariantCulture, DateTimeStyles.None, out var expiry) ||
+                expiry <= clock.GetUtcNow().AddMinutes(5) || expiry > clock.GetUtcNow().AddMinutes(65))
+                throw Invalid("unusable installation token or expiry");
+            return new(token, expiry);
+        }
+    }
+
+    void CheckBinding(JsonElement value)
+    {
+        if (Id(value, "protocolVersion") != 1) throw Invalid("unsupported protocol version");
+        foreach (var field in new[] { "appId", "installationId", "repositoryId" }) _ = Id(value, field);
+        if (!Name(Text(value, "appSlug"))) throw Invalid("invalid App slug");
+        var parts = Text(value, "repository").Split('/');
+        if (parts.Length != 2 || !parts.All(Name)) throw Invalid("invalid repository name");
+        var permissions = value.GetProperty("permissions");
+        CheckFields(permissions, repositoryWebhooks ? ["discussions", "repository_hooks"] : ["discussions"], ["metadata"]);
+        if (Text(permissions, "discussions") != "write" ||
+            (repositoryWebhooks && Text(permissions, "repository_hooks") != "write") ||
+            (permissions.TryGetProperty("metadata", out var metadata) && (metadata.ValueKind != JsonValueKind.String || metadata.GetString() != "read")))
+            throw Invalid("permission profile differs from runtime");
+    }
+
+    static bool Name(string value) => value is not "." and not ".." && Regex.IsMatch(value, @"\A[A-Za-z0-9_.-]+\z");
+    static string Text(JsonElement value, string name) => value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String
+        ? property.GetString()! : throw Invalid("missing or invalid string field");
+    static long Id(JsonElement value, string name) => value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out var id) && id > 0
+        ? id : throw Invalid("missing or invalid integer field");
+    static void CheckFields(JsonElement value, string[] required, string[]? optional = null)
+    {
+        if (value.ValueKind != JsonValueKind.Object) throw Invalid("expected JSON object");
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var property in value.EnumerateObject())
+            if (!names.Add(property.Name) || (!required.Contains(property.Name) && !(optional?.Contains(property.Name) ?? false)))
+                throw Invalid("unknown or duplicate field");
+        if (required.Any(name => !names.Contains(name))) throw Invalid("missing required field");
+    }
+    static JsonDocument Parse(ReadOnlyMemory<byte> bytes)
+    {
+        if (bytes.Length > MaximumBytes) throw Invalid("document exceeds 64 KiB");
+        try { return JsonDocument.Parse(bytes); }
+        catch (JsonException) { throw Invalid("malformed JSON document"); }
+    }
+    static InvalidOperationException Invalid(string reason) => new($"Broker authentication failed: {reason}");
+    public void Dispose() => enrollment.Dispose();
+}
