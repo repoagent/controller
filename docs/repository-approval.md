@@ -1,6 +1,6 @@
 # Inspect or withdraw repository approval
 
-This tool requires PowerShell 7 and host `gh` already signed in with authority to inspect the repository and Environment and manage its selected variable. It needs no Docker, PEM or controller credential. It does not create approval or implement broker enrollment/issuance; those remain in [#31](https://github.com/repoagent/controller/issues/31).
+This tool requires PowerShell 7 and host `gh` already signed in with authority to inspect the repository and Environment and manage its selected variable. It needs no Docker, PEM or controller credential. It does not create approval or implement broker enrollment/issuance; those remain under the [provider contract](auth-repository-approval.md) and [#31](https://github.com/repoagent/controller/issues/31).
 
 Run a read-only preview:
 
