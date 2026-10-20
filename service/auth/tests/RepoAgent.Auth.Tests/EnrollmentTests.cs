@@ -95,20 +95,23 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
     public IDataProtectionProvider Protection => DataProtectionProvider.Create(keys);
     private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> host = null!;
     private HttpClient client = null!;
-    public static async Task<EnrollmentFixture> CreateAsync(HttpPipelineTransport? transport = null)
+    private readonly Dictionary<string, string?> settings = new() { ["Broker:BrokerOrigin"] = "https://broker.example" };
+    public static async Task<EnrollmentFixture> CreateAsync(HttpPipelineTransport? transport = null, Dictionary<string, string?>? settings = null)
     {
         var f = new EnrollmentFixture();
         await f.Storage.InitializeAsync();
         f.GitHub.Before = request => Task.FromResult<HttpResponseMessage?>(request.RequestUri!.AbsolutePath.EndsWith("/variables", StringComparison.Ordinal)
             ? GitHubTransport.Json(new { total_count = f.GitHub.Marker.Length == 0 ? 0 : 1, variables = f.GitHub.Marker.Length == 0 ? Array.Empty<object>() : [new { name = "APPROVAL", value = f.GitHub.Marker }] }) : null);
-        await f.RestartAsync(transport);
+        await f.RestartAsync(transport, settings: settings);
         return f;
     }
-    public async Task RestartAsync(HttpPipelineTransport? transport = null, string? epoch = null)
+    public async Task RestartAsync(HttpPipelineTransport? transport = null, string? epoch = null, Dictionary<string, string?>? settings = null)
     {
         client?.Dispose();
         if (host is not null) await host.DisposeAsync();
-        host = Storage.CreateHost(transport, settings: new() { ["Broker:BrokerOrigin"] = "https://broker.example" }).WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
+        if (settings is not null)
+            foreach (var setting in settings) this.settings[setting.Key] = setting.Value;
+        host = Storage.CreateHost(transport, settings: this.settings).WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, configuration) =>
         {
             if (epoch is not null) configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["Broker:DeploymentEpoch"] = epoch });
         }).ConfigureServices(services =>

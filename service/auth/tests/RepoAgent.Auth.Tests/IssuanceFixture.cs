@@ -55,7 +55,8 @@ internal sealed class IssuanceFixture : IAsyncDisposable
     {
         var rows = new List<TableEntity>();
         await foreach (var row in Storage.Table.QueryAsync<TableEntity>(e => e.PartitionKey == RevocationFixture.Partition && e.RowKey.CompareTo("attempt:") >= 0 && e.RowKey.CompareTo("attempt;") < 0))
-            if (row.ContainsKey("Purpose")) rows.Add(row);
+            // Return attempts produced by the tested issuer; the offline unknown attempt remains charged separately.
+            if (row.RowKey != "attempt:one") rows.Add(row);
         return rows;
     }
     public async ValueTask DisposeAsync()

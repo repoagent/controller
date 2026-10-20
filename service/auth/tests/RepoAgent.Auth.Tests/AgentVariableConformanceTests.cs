@@ -331,13 +331,18 @@ public sealed class AgentVariableConformanceTests
     public async Task Setup_version_requires_its_own_body_without_provider_work()
     {
         await using var f = await AgentFixture();
+        var before = await Rows(f);
         using var legacyBody = await f.Send("/v2/enrollments", f.Request());
         using var agentBody = await f.Send("/v1/enrollments", Request());
         Assert.Equal(HttpStatusCode.BadRequest, legacyBody.StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, agentBody.StatusCode);
         Assert.Equal(0, f.GitHub.Reads);
         Assert.Equal(0, f.GitHub.Mints);
-        Assert.Empty(await Rows(f));
+        var after = await Rows(f);
+        Assert.Equal(2, after.Count); // Only the offline schema quotas, with no request writes.
+        foreach (var row in before)
+            Assert.Equal(row.ETag, Assert.Single(after, current => current.PartitionKey == row.PartitionKey
+                && current.RowKey == row.RowKey).ETag);
     }
 
     [Theory]
