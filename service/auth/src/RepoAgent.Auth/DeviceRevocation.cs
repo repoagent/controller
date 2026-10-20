@@ -99,7 +99,9 @@ public sealed class DeviceRevocation(TableClient table, BrokerOptions options, T
         {
             var entity = (await table.GetEntityAsync<TableEntity>(partition, row, cancellationToken: cancellationToken)).Value;
             // Each of the three batch entities stays far below Table's entity and transaction payload limits.
-            if (entity.Count > 128 || JsonSerializer.SerializeToUtf8Bytes(entity).Length > 64 * 1024
+            if (entity.Count > 128
+                || entity.Any(property => property.Value is double number && !double.IsFinite(number))
+                || JsonSerializer.SerializeToUtf8Bytes(entity).Length > 64 * 1024
                 || string.IsNullOrEmpty(entity.ETag.ToString()) || entity.ETag == ETag.All)
                 throw new InvalidDataException("Invalid durable entity.");
             return entity;
