@@ -78,6 +78,10 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
 
     public async Task<InstallationLease> Acquire(CancellationToken ct)
     {
+        // ResponseHeadersRead ends HttpClient.Timeout at the headers; bound body consumption too.
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60), clock);
+        using var acquisition = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+        ct = acquisition.Token;
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, $"/v1/devices/{deviceId}/installation-token"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));

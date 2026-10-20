@@ -135,6 +135,48 @@ public sealed class BrokerAuthenticationTests
         Assert.DoesNotContain("gh-invoked", result.Output);
     }
 
+    [Fact]
+    public async Task Stalled_broker_body_times_out_clears_credentials_and_allows_retry()
+    {
+        using var fixture = new Fixture();
+        using var credentials = fixture.Credentials();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        await credentials.Initialize(null, cancellation.Token);
+        Assert.Contains("opaque-token-1", (await fixture.InvokeWrapper()).Output);
+        File.WriteAllText(fixture.TokenFile + ".tmp", "prior-temporary-token");
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        using var stalledBody = new StalledBody();
+        fixture.Transport.Body = stalledBody;
+        var renewal = credentials.GetToken(cancellation.Token);
+        try
+        {
+            await stalledBody.Reading.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            fixture.Clock.Advance(TimeSpan.FromSeconds(60));
+            // Real time is only a failure watchdog; the acquisition deadline uses the fixture clock.
+            var error = await Record.ExceptionAsync(() => renewal.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+            Assert.IsAssignableFrom<OperationCanceledException>(error);
+            Assert.False(cancellation.IsCancellationRequested);
+            Assert.False(File.Exists(fixture.TokenFile));
+            Assert.False(File.Exists(fixture.TokenFile + ".tmp"));
+            var failed = await fixture.InvokeWrapper();
+            Assert.NotEqual(0, failed.Exit);
+            Assert.DoesNotContain("gh-invoked", failed.Output);
+            Assert.DoesNotContain("human-token", failed.Output);
+
+            fixture.Transport.Body = null;
+            await credentials.GetToken(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            var recovered = await fixture.InvokeWrapper();
+            Assert.Equal(0, recovered.Exit);
+            Assert.Contains("opaque-token-3", recovered.Output);
+            Assert.DoesNotContain("human-token", recovered.Output);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await Record.ExceptionAsync(() => renewal.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None));
+        }
+    }
+
     [Theory]
     [InlineData("githubHost", "other.example")]
     [InlineData("brokerOrigin", "https://other.example")]
@@ -284,6 +326,7 @@ public sealed class BrokerAuthenticationTests
         public List<Uri> Requests { get; } = [];
         public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
         public string? Defect { get; set; }
+        public Stream? Body { get; set; }
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Requests.Add(request.RequestUri!);
@@ -318,7 +361,29 @@ public sealed class BrokerAuthenticationTests
             if (Defect == "malformed") body = "{DO-NOT-LOG";
             if (Defect == "oversized") body = new string('x', 65537);
             var status = Defect == "redirect" ? HttpStatusCode.TemporaryRedirect : Status;
-            return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(status == HttpStatusCode.OK ? body : "DO-NOT-LOG") });
+            return Task.FromResult(new HttpResponseMessage(status) { Content = Body is not null ? new StreamContent(Body) : new StringContent(status == HttpStatusCode.OK ? body : "DO-NOT-LOG") });
         }
+    }
+
+    sealed class StalledBody : Stream
+    {
+        public TaskCompletionSource Reading { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var pending = Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            Reading.TrySetResult();
+            await pending;
+            return 0;
+        }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }
