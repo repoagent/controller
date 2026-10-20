@@ -171,8 +171,11 @@ try {
         -or -not [string]::Equals($value.name, $ApprovalVariable, [StringComparison]::OrdinalIgnoreCase)) {
         Stop-Revoke 'GitHub returned an unexpected approval name or value.'
     }
-    $fingerprint = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
-        [Text.Encoding]::UTF8.GetBytes($value.value))).ToLowerInvariant()
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($value.value))
+        $fingerprint = [BitConverter]::ToString($digest).Replace('-', '').ToLowerInvariant()
+    } finally { $sha256.Dispose() }
     if ($ExpectedValueSha256 -and $ExpectedValueSha256 -ine $fingerprint) {
         Write-Outcome 'conflict' $fingerprint 'The observed value differs from the expected value; nothing was deleted. Inspect the selected approval before retrying.'
         exit 1

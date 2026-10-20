@@ -2,11 +2,11 @@ For versioned software choices, a repository-owned base image, and shared Bash/P
 
 # Container setup
 
-Use Docker Engine/Desktop with Linux containers and either Bash or Windows PowerShell 5.1+. Run every command below from the checkout. The host runs a small launcher; the bridge, Codex, GitHub CLI and setup helpers execute inside containers. No host .NET, Node.js or GitHub CLI installation is required.
+Use Docker Engine/Desktop with Linux containers and either Bash or PowerShell 7. Run every command below from the checkout. The host runs a small launcher; the bridge, Codex, GitHub CLI and setup helpers execute inside containers. The direct-App installation below needs no host .NET, Node.js or GitHub CLI installation. The separate [PowerShell approval-revocation tool](repository-approval.md) uses authenticated host `gh` and needs no Docker. New broker installer work targets PowerShell first; Bash enrollment parity is deferred.
 
 ## Install on Windows
 
-With Docker Desktop running in Linux container mode, clone or download this repository, then open PowerShell in the checkout:
+With Docker Desktop running in Linux container mode, clone or download this repository, then open PowerShell 7 (`pwsh`) in the checkout:
 
 ```powershell
 git clone https://github.com/repoagent/controller.git
