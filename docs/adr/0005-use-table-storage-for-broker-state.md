@@ -1,0 +1,3 @@
+# Use Table Storage for broker state
+
+The maintainer selected Azure Table Storage for the credential broker to keep storage simple and inexpensive and reuse the storage account planned for authentication-service infrastructure. This supersedes the earlier Cosmos proposal: use the first-party `Azure.Data.Tables` SDK, a dedicated broker table separate from Blob Data Protection keys, and same-repository-partition transactions that condition the common gate and each independently read authorization entity on its observed ETag. Table Storage requires explicit bounded cleanup and a deliberate backup/restore procedure; cleanup must preserve unsettled authority evidence, and local Azurite verification does not replace production managed-identity acceptance.
