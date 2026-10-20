@@ -15,7 +15,7 @@ Production requires these environment variables:
 
 The service uses `ManagedIdentityCredential` only. It never creates the table or loads account keys, developer credentials, or emulator connection strings. Provision the table in the storage account planned for auth infrastructure and grant the runtime identity **Storage Table Data Contributor** at that table's scope. Deployment Contributor and Blob key-ring access do not grant Table data access. Actual Azure managed-identity acceptance remains required before hosted release. Production ingress must require TLS; the container listens on internal HTTP port 8080 behind that ingress.
 
-Keep the deployment epoch outside the restored table backup. Recovery must fence old workers/access and establish a new epoch; restoring both data and its old epoch must never resurrect grants. Explicit cleanup and backup/restore are separate delivery work. See [the storage decision](../../docs/adr/0003-use-table-storage-for-broker-state.md).
+Keep the deployment epoch outside the restored table backup. Recovery must fence old workers/access and establish a new epoch; restoring both data and its old epoch must never resurrect grants. Explicit cleanup and backup/restore are separate delivery work. See [the storage decision](../../docs/adr/0005-use-table-storage-for-broker-state.md).
 
 ## HTTP behavior and limits
 
