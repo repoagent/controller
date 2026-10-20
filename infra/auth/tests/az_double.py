@@ -31,6 +31,9 @@ if response is None:
     elif command == 'deployment group what-if':
         response = {'body': scenario['plan']}
     elif command == 'deployment group create':
+        if 'postCreateResources' in scenario:
+            scenario['resources'].update(scenario['postCreateResources'])
+            Path(os.environ['AZ_DOUBLE_SCENARIO']).write_text(json.dumps(scenario))
         response = {'body': {'properties': {'provisioningState': 'Succeeded'}}}
     else:
         response = {'error': 'Unsupported Azure command: ' + command, 'code': 99}

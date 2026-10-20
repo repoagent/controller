@@ -19,6 +19,9 @@ SCOPE = f'/subscriptions/{SUBSCRIPTION}/resourceGroups/{GROUP}'
 # Fixed fixture names calculated independently for the approved target/auth-test.
 VAULT = 'ra-0d59e18d5f921c41-kv'
 STORAGE = 'ra0d59e18d5f921c41dp'
+TABLE_ID = f'{SCOPE}/providers/Microsoft.Storage/storageAccounts/{STORAGE}/tableServices/default/tables/brokerstate'
+CLIENT_ID = '11111111-2222-3333-4444-555555555555'
+PRINCIPAL_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 MANIFEST = [
     ('Microsoft.ManagedIdentity/userAssignedIdentities', 'auth-test-runtime', 'auth-runtime'),
     ('Microsoft.OperationalInsights/workspaces', 'auth-test-logs', 'auth-logs'),
@@ -26,6 +29,7 @@ MANIFEST = [
     ('Microsoft.Storage/storageAccounts', STORAGE, 'auth-data-protection'),
     ('Microsoft.Storage/storageAccounts/blobServices/containers', STORAGE + '/default/data-protection', 'auth-data-protection'),
     ('Microsoft.KeyVault/vaults', VAULT, 'auth-security'),
+    ('Microsoft.Storage/storageAccounts/tableServices/tables', STORAGE + '/default/brokerstate', 'auth-broker-state'),
     ('Microsoft.App/containerApps', 'auth-test', 'auth-service'),
 ]
 
@@ -33,6 +37,9 @@ MANIFEST = [
 def owned_resources():
     result = {}
     for kind, name, role in MANIFEST:
+        if kind.endswith('/tables'):
+            result[TABLE_ID] = {'id': TABLE_ID, 'type': kind, 'properties': {}}
+            continue
         if kind.endswith('/containers'):
             resource_id = f'{SCOPE}/providers/Microsoft.Storage/storageAccounts/{STORAGE}/blobServices/default/containers/data-protection'
         else:
@@ -40,6 +47,8 @@ def owned_resources():
         ownership = {'repositoryId': '1426154477', 'ownerId': '345029828', 'managedBy': 'repoagent-auth', 'role': role}
         result[resource_id] = {'id': resource_id, 'type': kind, 'location': 'swedencentral',
                                'tags': ownership, 'properties': {'metadata': ownership}}
+    result[f'{SCOPE}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-runtime']['properties'] = {
+        'clientId': CLIENT_ID, 'principalId': PRINCIPAL_ID}
     return result
 
 
@@ -61,8 +70,7 @@ class DeploymentProcessTests(unittest.TestCase):
             'AUTH_CLEANUP_READY': 'true', 'AUTH_RUNTIME_ACCESS_READY': 'true',
             'AUTH_SIGNING_KEY_URI': f'https://{VAULT}.vault.azure.net/keys/signing/' + 'a' * 32,
             'AUTH_DATA_PROTECTION_KEY_URI': f'https://{VAULT}.vault.azure.net/keys/protection/' + 'b' * 32,
-            'AUTH_OAUTH_CLIENT_SECRET_URI': f'https://{VAULT}.vault.azure.net/secrets/oauth/' + 'c' * 32,
-            'AUTH_STORE_RESOURCE_ID': f'{SCOPE}/providers/Microsoft.Storage/storageAccounts/authstore',
+            'AUTH_DEPLOYMENT_EPOCH': 'restore_2026-10-20',
             'AUTH_IMAGE': 'ghcr.io/repoagent/auth-service@sha256:' + 'd' * 64,
             'AUTH_IMAGE_ROLE': 'auth-service', 'AUTH_IMAGE_NON_ROOT': 'true', 'AUTH_IMAGE_PUBLIC': 'true',
         })
@@ -80,6 +88,10 @@ class DeploymentProcessTests(unittest.TestCase):
             args = call['args']
             self.assertIn('--subscription', args)
             self.assertEqual(args[args.index('--subscription') + 1], SUBSCRIPTION)
+            command = tuple(args[:3] if args[0] == 'deployment' else args[:2])
+            self.assertIn(command, {('group', 'show'), ('resource', 'show'),
+                ('deployment', 'group', 'validate'), ('deployment', 'group', 'what-if'),
+                ('deployment', 'group', 'create')}, 'Ordinary deployment must never assign roles, read keys or apply budgets')
         return result
 
     def creates(self):
@@ -143,10 +155,15 @@ class DeploymentProcessTests(unittest.TestCase):
 
     def test_foundation_can_create_missing_resources_incrementally(self):
         self.scenario['resources'] = {}
+        self.scenario['postCreateResources'] = {resource_id: value for resource_id, value in owned_resources().items()
+                                                if value['type'] != 'Microsoft.App/containerApps'}
         self.scenario['plan']['changes'] = [{'changeType': 'Create', 'resourceId': resource_id} for resource_id in list(owned_resources())[:-1]]
         result = self.run_deploy('foundation-apply')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(json.loads(result.stdout)['applied'])
+        output = json.loads(result.stdout)
+        self.assertTrue(output['applied'])
+        self.assertEqual(output['runtimeIdentityClientId'], CLIENT_ID)
+        self.assertEqual(output['runtimeIdentityPrincipalId'], PRINCIPAL_ID)
         self.assertEqual(len(self.creates()), 1)
         self.assert_incremental_commands(deploy_app=False)
 
@@ -186,6 +203,8 @@ class DeploymentProcessTests(unittest.TestCase):
     def test_conflicting_ownership_including_container_metadata_refuses_adoption(self):
         baseline = copy.deepcopy(self.scenario)
         for resource_id, resource in baseline['resources'].items():
+            if resource['type'].endswith('/tables'):
+                continue  # Tables have no Azure-supported ownership metadata.
             with self.subTest(resource=resource_id):
                 self.scenario = copy.deepcopy(baseline)
                 target = self.scenario['resources'][resource_id]
@@ -231,6 +250,205 @@ class DeploymentProcessTests(unittest.TestCase):
                 self.assertEqual(len(self.creates()), 1)
                 self.assertEqual(result.stdout, '')
                 self.assertNotIn('sensitive-server-body', result.stderr)
+
+    def test_check_emits_frozen_table_configuration_without_legacy_oauth_or_store(self):
+        result = self.run_deploy('check')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output['tableResourceId'], TABLE_ID)
+        self.assertEqual(output['runtimeConfiguration'], {
+            'Broker__TableEndpoint': f'https://{STORAGE}.table.core.windows.net/',
+            'Broker__TableName': 'brokerstate', 'Broker__ManagedIdentityClientId': None,
+            'Broker__DeploymentEpoch': 'restore_2026-10-20',
+            'Broker__RequestLimitPerMinute': 120, 'Broker__ConcurrentRequestLimit': 8,
+            'Broker__RequestTimeoutSeconds': 15})
+        self.assertIsNone(output['runtimeIdentityPrincipalId'])
+        self.assertEqual(self.calls, [])
+
+    def test_plan_carries_operator_values_and_platform_issued_identity(self):
+        self.env.update({'AUTH_TABLE_NAME': 'PilotState42', 'AUTH_DEPLOYMENT_EPOCH': 'new_epoch-42',
+                         'AUTH_REQUEST_LIMIT_PER_MINUTE': '234', 'AUTH_CONCURRENT_REQUEST_LIMIT': '17',
+                         'AUTH_REQUEST_TIMEOUT_SECONDS': '29'})
+        table = self.scenario['resources'].pop(TABLE_ID)
+        table_id = TABLE_ID.rsplit('/', 1)[0] + '/PilotState42'
+        table['id'] = table_id
+        self.scenario['resources'][table_id] = table
+        # Unrelated tables are outside the reserved child boundary.
+        unrelated = TABLE_ID.rsplit('/', 1)[0] + '/Unrelated'
+        self.scenario['resources'][unrelated] = {'id': unrelated, 'type': table['type']}
+        self.scenario['plan']['changes'] = [{'changeType': 'Ignore', 'resourceId': unrelated}]
+        result = self.run_deploy('plan')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output['tableResourceId'], table_id)
+        self.assertEqual(output['runtimeIdentityClientId'], CLIENT_ID)
+        self.assertEqual(output['runtimeIdentityPrincipalId'], PRINCIPAL_ID)
+        self.assertEqual(output['runtimeConfiguration'], {
+            'Broker__TableEndpoint': f'https://{STORAGE}.table.core.windows.net/',
+            'Broker__TableName': 'PilotState42', 'Broker__ManagedIdentityClientId': CLIENT_ID,
+            'Broker__DeploymentEpoch': 'new_epoch-42', 'Broker__RequestLimitPerMinute': 234,
+            'Broker__ConcurrentRequestLimit': 17, 'Broker__RequestTimeoutSeconds': 29})
+        for call in self.calls:
+            if 'parameters' in call:
+                parameters = {key: value['value'] for key, value in call['parameters']['parameters'].items()}
+                self.assertEqual(parameters['tableName'], 'PilotState42')
+                self.assertEqual(parameters['deploymentEpoch'], 'new_epoch-42')
+                self.assertEqual(parameters['requestLimitPerMinute'], 234)
+                self.assertEqual(parameters['concurrentRequestLimit'], 17)
+                self.assertEqual(parameters['requestTimeoutSeconds'], 29)
+                self.assertNotIn('storeResourceId', parameters)
+                self.assertNotIn('oauthClientSecretUri', parameters)
+            self.assertNotIn(unrelated, call['args'])
+        self.assertEqual(self.creates(), [])
+
+    def test_invalid_table_epoch_and_http_bounds_refuse_before_azure(self):
+        cases = {
+            'AUTH_TABLE_NAME': ('', 'ab', '1broker', 'broker-state', 'éclair', 'a' * 64),
+            'AUTH_DEPLOYMENT_EPOCH': ('', 'has space', 'a/b', 'é', 'x' * 129),
+            'AUTH_REQUEST_LIMIT_PER_MINUTE': ('0', '10001', '-1', '1.5', 'true'),
+            'AUTH_CONCURRENT_REQUEST_LIMIT': ('0', '129', '-1', ' 8'),
+            'AUTH_REQUEST_TIMEOUT_SECONDS': ('0', '61', '', '1e1'),
+        }
+        original = self.env.copy()
+        for name, values in cases.items():
+            for value in values:
+                with self.subTest(name=name, value=value):
+                    self.env = {**original, name: value}
+                    self.assert_refused(self.run_deploy('check'), name)
+                    self.assertEqual(self.calls, [])
+        self.env = original.copy()
+        del self.env['AUTH_DEPLOYMENT_EPOCH']
+        self.assert_refused(self.run_deploy('check'), 'AUTH_DEPLOYMENT_EPOCH')
+
+    def test_table_epoch_and_http_boundary_values_are_accepted(self):
+        for table, epoch, rate, concurrent, timeout in (
+            ('abc', 'x', '1', '1', '1'), ('a' * 63, 'x' * 128, '10000', '128', '60')):
+            with self.subTest(table=table):
+                self.env.update({'AUTH_TABLE_NAME': table, 'AUTH_DEPLOYMENT_EPOCH': epoch,
+                                 'AUTH_REQUEST_LIMIT_PER_MINUTE': rate,
+                                 'AUTH_CONCURRENT_REQUEST_LIMIT': concurrent,
+                                 'AUTH_REQUEST_TIMEOUT_SECONDS': timeout})
+                result = self.run_deploy('check')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config = json.loads(result.stdout)['runtimeConfiguration']
+                self.assertEqual(config['Broker__TableName'], table)
+                self.assertEqual(config['Broker__DeploymentEpoch'], epoch)
+                self.assertEqual(config['Broker__RequestLimitPerMinute'], int(rate))
+                self.assertEqual(config['Broker__ConcurrentRequestLimit'], int(concurrent))
+                self.assertEqual(config['Broker__RequestTimeoutSeconds'], int(timeout))
+                self.assertEqual(self.calls, [])
+
+    def test_runtime_requires_existing_exact_table_identity(self):
+        baseline = copy.deepcopy(self.scenario)
+        for replacement in (None, {'id': TABLE_ID + 'other', 'type': MANIFEST[-2][0]},
+                            {'id': TABLE_ID, 'type': 'Microsoft.Storage/storageAccounts'}):
+            with self.subTest(table=replacement):
+                self.scenario = copy.deepcopy(baseline)
+                if replacement is None:
+                    del self.scenario['resources'][TABLE_ID]
+                    message = 'Runtime requires existing foundation'
+                else:
+                    self.scenario['resources'][TABLE_ID] = replacement
+                    message = 'malformed resource identity'
+                self.assert_refused(self.run_deploy('plan'), message)
+
+    def test_malformed_identity_cannot_be_used_as_client_or_principal(self):
+        identity_id = f'{SCOPE}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-runtime'
+        for properties in ([], {}, {'clientId': PRINCIPAL_ID},
+                           {'clientId': identity_id, 'principalId': PRINCIPAL_ID},
+                           {'clientId': CLIENT_ID, 'principalId': 'not-a-uuid'}):
+            with self.subTest(properties=properties):
+                self.scenario['resources'][identity_id]['properties'] = properties
+                self.assert_refused(self.run_deploy('plan'), 'malformed runtime identity')
+
+    def budget_file(self, inputs):
+        filename = self.directory / 'budget.json'
+        filename.write_text(json.dumps(inputs))
+        self.env['AUTH_BUDGET_PLAN_FILE'] = str(filename)
+
+    def test_cost_plan_lists_missing_choices_without_runtime_gates_or_azure(self):
+        self.env = {key: value for key, value in self.env.items()
+                    if not key.startswith('AUTH_') or key == 'AUTH_APP_NAME'}
+        result = self.run_deploy('cost-plan')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        budget = output['budgetPlan']
+        for field in ('amount', 'timeGrain', 'startDate', 'endDate', 'thresholds'):
+            self.assertIn(field, budget['missingInputs'])
+        self.assertTrue(any('contactEmails' in field and 'contactGroups' in field for field in budget['missingInputs']))
+        self.assertEqual(budget['inputs'], {})
+        self.assertEqual(budget['scope'], SCOPE)
+        self.assertEqual(budget['billingEligibility'], 'unknown')
+        self.assertFalse(budget['readyToApply'])
+        self.assertFalse(budget['hardSpendingCap'])
+        self.assertTrue(any('billing' in gate for gate in budget['preApplyGates']))
+        self.assertEqual(output['runtimeConfiguration']['Broker__RequestLimitPerMinute'], 120)
+        self.assertEqual(output['runtimeConfiguration']['Broker__ConcurrentRequestLimit'], 8)
+        self.assertEqual(output['runtimeConfiguration']['Broker__RequestTimeoutSeconds'], 15)
+        self.assertEqual(output['capacityPlan'], {
+            'minReplicas': 0, 'maxReplicas': 1, 'cpu': 0.25, 'memory': '0.5Gi',
+            'logRetentionDays': 30, 'logDailyQuotaGb': 1, 'hardSpendingCap': False,
+            'requestLimitsAreProcessLocal': True})
+        self.assertEqual(self.calls, [])
+        self.env['AUTH_REQUEST_LIMIT_PER_MINUTE'] = '10001'
+        self.assert_refused(self.run_deploy('cost-plan'), 'AUTH_REQUEST_LIMIT_PER_MINUTE')
+        self.assertEqual(self.calls, [])
+
+    def test_cost_plan_preserves_explicit_alert_choices_but_keeps_eligibility_gate(self):
+        for period, notifications in (
+            ('Monthly', {'contactEmails': ['operator@example.org']}),
+            ('Quarterly', {'contactGroups': [SCOPE + '/providers/Microsoft.Insights/actionGroups/operator-alert']}),
+            ('Annually', {'contactEmails': ['operator@example.org'],
+                          'contactGroups': [SCOPE + '/providers/Microsoft.Insights/actionGroups/operator-alert']})):
+            with self.subTest(period=period):
+                inputs = {'scope': SCOPE, 'amount': 42, 'timeGrain': period,
+                          'startDate': '2026-10-01', 'endDate': '2027-10-01',
+                          'thresholds': [1, 50, 100, 200, 1000], **notifications}
+                self.budget_file(inputs)
+                self.env.update({'AUTH_REQUEST_LIMIT_PER_MINUTE': '321',
+                                 'AUTH_CONCURRENT_REQUEST_LIMIT': '13', 'AUTH_REQUEST_TIMEOUT_SECONDS': '31'})
+                result = self.run_deploy('cost-plan')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout)
+                budget = output['budgetPlan']
+                self.assertEqual(output['runtimeConfiguration']['Broker__RequestLimitPerMinute'], 321)
+                self.assertEqual(output['runtimeConfiguration']['Broker__ConcurrentRequestLimit'], 13)
+                self.assertEqual(output['runtimeConfiguration']['Broker__RequestTimeoutSeconds'], 31)
+                self.assertEqual(budget['inputs'], inputs)
+                self.assertEqual(budget['missingInputs'], [])
+                self.assertEqual(budget['schema'], 'Microsoft.Consumption/budgets@2024-08-01')
+                self.assertEqual(budget['notification'], {'thresholdType': 'Actual', 'operator': 'GreaterThanOrEqualTo'})
+                self.assertEqual(budget['billingEligibility'], 'unknown')
+                self.assertFalse(budget['readyToApply'])
+                self.assertTrue(budget['preApplyGates'])
+                self.assertEqual(self.calls, [])
+
+    def test_cost_plan_rejects_invalid_operator_choices_before_azure(self):
+        cases = {
+            'amount': (0, -1, True, 1.5, '42'),
+            'timeGrain': ('Daily', '', None),
+            'startDate': ('2017-05-01', '2026-10-02', '2026-02-30', '20261001', 20261001),
+            'endDate': ('2026-09-01', '2026-10-01', 'not-a-date'),
+            'thresholds': ([], [0], [1001], [50, 50], [True], [1.5], [1, 2, 3, 4, 5, 6]),
+            'contactEmails': ('operator@example.org', ['not-an-email']),
+            'contactGroups': ([SCOPE + '/providers/Microsoft.Insights/actionGroups/other/group'],
+                              ['/subscriptions/other/resourceGroups/other/providers/Microsoft.Insights/actionGroups/alert']),
+            'scope': (SCOPE + '-other', 123),
+            'billingEligibility': ('verified',),  # Operator input cannot bypass the eligibility gate.
+        }
+        baseline = {'amount': 42, 'timeGrain': 'Monthly', 'startDate': '2026-10-01',
+                    'endDate': '2027-10-01', 'thresholds': [80], 'contactEmails': ['operator@example.org']}
+        for name, values in cases.items():
+            for value in values:
+                with self.subTest(name=name, value=value):
+                    self.budget_file({**baseline, name: value})
+                    self.assert_refused(self.run_deploy('cost-plan'), 'Budget')
+                    self.assertEqual(self.calls, [])
+        for inputs in ([], None):
+            with self.subTest(inputs=inputs):
+                self.budget_file(inputs)
+                self.assert_refused(self.run_deploy('cost-plan'), 'Budget')
+                self.assertEqual(self.calls, [])
 
 
 if __name__ == '__main__':
