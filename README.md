@@ -17,6 +17,8 @@ Each bridge process monitors one configured repository. Specifications and ticke
 
 For the packaged Docker setup, run `./install.sh` in Bash or `.\install.ps1` in PowerShell 7 from the checkout. Both explain their steps, prompt for missing values, accept command-line options, reuse an existing Codex sign-in when available, verify the GitHub App and start the agent. Windows uses Docker Desktop Linux containers directly; WSL is optional. See [installation, skills and storage](docs/container-setup.md) and the [executable acceptance catalog](docs/acceptance-cases.md). For event-triggered operation behind your own HTTPS ingress, see [fixed-URL webhooks](docs/webhooks.md).
 
+For an already-issued frozen broker enrollment, use the [PowerShell 7 local runtime](docs/local-runtime.md). It imports the private file into owned Linux storage and pins the selected image without requiring an App PEM.
+
 PowerShell also supports [inspecting or withdrawing legacy Environment approval](docs/repository-approval.md) using host `gh`, without Docker or a controller credential. The approved [repository Agent-variable flow](docs/auth-repository-approval.md) remains in development under [provider #68](https://github.com/repoagent/controller/issues/68) and [host #53](https://github.com/repoagent/controller/issues/53); this command does not create an enrollment or manage Agent variables.
 For local development without a public hostname, select [Quick Tunnel mode](docs/quick-tunnel.md).
 
