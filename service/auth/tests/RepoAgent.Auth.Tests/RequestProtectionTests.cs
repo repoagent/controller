@@ -78,7 +78,7 @@ public sealed class RequestProtectionTests : IAsyncLifetime
             try { await release.Task.WaitAsync(message.CancellationToken); }
             catch (OperationCanceledException) { cancelled.TrySetResult(); throw; }
         }};
-        await using var host = fixture.CreateHost(transport, new() { ["Broker:RequestTimeoutSeconds"] = "1" });
+        await using var host = fixture.CreateHost(transport, new() { ["Broker:RequestTimeoutSeconds"] = "1", ["Broker:ConcurrentRequestLimit"] = "1" });
         using var client = host.CreateClient();
         var pending = Send(client, device);
         try
@@ -95,6 +95,8 @@ public sealed class RequestProtectionTests : IAsyncLifetime
         var gate = (await fixture.Table.GetEntityAsync<Azure.Data.Tables.TableEntity>(RevocationFixture.Partition,
             "gate", cancellationToken: Token)).Value;
         Assert.Equal("active", gate.GetString("State"));
+        using var retry = await Send(client, device);
+        Assert.Equal(HttpStatusCode.NoContent, retry.StatusCode);
     }
 
     [Fact]
@@ -112,7 +114,7 @@ public sealed class RequestProtectionTests : IAsyncLifetime
         using var body = await client.SendAsync(request, Token);
         Assert.Equal(HttpStatusCode.BadRequest, body.StatusCode);
         Assert.Equal(0, transport.Calls);
-        using var mint = await client.PostAsync("/v1/installation-token", null, Token);
+        using var mint = await client.PostAsync("/v1/devices/" + device.DeviceId + "/installation-token", null, Token);
         Assert.Equal(HttpStatusCode.NotFound, mint.StatusCode);
     }
 }
