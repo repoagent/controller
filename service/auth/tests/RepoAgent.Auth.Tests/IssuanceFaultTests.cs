@@ -13,6 +13,9 @@ public sealed class IssuanceFaultTests
     public async Task Competing_global_reservation_retries_before_observation_without_duplicate_charges(bool existingQuota)
     {
         await using var f = await IssuanceFixture.CreateAsync();
+        // Keep the two-second contention delay inside one fixed UTC quota window.
+        var midMinute = DateTimeOffset.FromUnixTimeSeconds(f.Clock.GetUtcNow().ToUnixTimeSeconds() / 60 * 60 + 90);
+        f.Clock.Advance(midMinute - f.Clock.GetUtcNow());
         var competingGrant = await SeedCompetingRepository(f);
         if (existingQuota)
         {
