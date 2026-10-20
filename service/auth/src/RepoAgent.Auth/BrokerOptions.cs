@@ -3,6 +3,10 @@ namespace RepoAgent.Auth;
 public sealed record BrokerOptions(Uri TableEndpoint, string TableName, string DeploymentEpoch,
     string? ManagedIdentityClientId, int RequestLimitPerMinute, int ConcurrentRequestLimit, int RequestTimeoutSeconds, Uri? BrokerOrigin = null)
 {
+    public int CandidateRepositoryLimit { get; init; } = 128;
+    public int RetainedEnrollmentLimit { get; init; } = 256;
+    public int RetainedIssuanceLimit { get; init; } = 4096;
+
     public static BrokerOptions Read(IConfiguration configuration)
     {
         var section = configuration.GetSection("Broker");
@@ -30,7 +34,12 @@ public sealed record BrokerOptions(Uri TableEndpoint, string TableName, string D
         return new(endpoint, table, epoch, clientId,
             Limit(section, "RequestLimitPerMinute", 120, 10_000),
             Limit(section, "ConcurrentRequestLimit", 8, 128),
-            Limit(section, "RequestTimeoutSeconds", 15, 60), origin);
+            Limit(section, "RequestTimeoutSeconds", 15, 60), origin)
+        {
+            CandidateRepositoryLimit = Limit(section, nameof(CandidateRepositoryLimit), 128, 128),
+            RetainedEnrollmentLimit = Limit(section, nameof(RetainedEnrollmentLimit), 256, 256),
+            RetainedIssuanceLimit = Limit(section, nameof(RetainedIssuanceLimit), 4096, 4096)
+        };
     }
 
     private static int Limit(IConfiguration section, string name, int fallback, int maximum)
