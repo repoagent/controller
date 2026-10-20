@@ -119,7 +119,8 @@ function Assert-CompatibleContainer {
         @($existing.Cmd).Count -ne 1 -or $existing.Cmd[0] -ne 'start') {
         throw 'Existing container differs from the selected controller image/start configuration. Resolve it manually.'
     }
-    $expected = @{}
+    # Container destinations and Docker volume names use Linux identity on every host.
+    $expected = [Collections.Hashtable]::new([StringComparer]::Ordinal)
     foreach ($storage in $storageNames) {
         $destination = if ($storage -eq 'workspace') { '/workspace' } else { "/data/$storage" }
         $expected[$destination] = @{ Type = 'volume'; Name = "$containerName-$storage"; RW = ($storage -ne 'config') }
@@ -134,11 +135,12 @@ function Assert-CompatibleContainer {
         $expected['/run/secrets/github-app.pem'] = @{ Type = 'bind'; Source = $resolvedKey; RW = $false }
     }
     if (@($existing.Mounts).Count -ne $expected.Count) { throw 'Existing container has unexpected mounts; resolve manually.' }
+    $hostPathComparer = if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
     foreach ($mount in $existing.Mounts) {
         $wanted = $expected[$mount.Destination]
         if (-not $wanted -or $mount.Type -ne $wanted.Type -or $mount.RW -ne $wanted.RW -or
-            ($wanted.Type -eq 'volume' -and $mount.Name -ne $wanted.Name) -or
-            ($wanted.Type -eq 'bind' -and $mount.Source -ne $wanted.Source)) {
+            ($wanted.Type -eq 'volume' -and -not [StringComparer]::Ordinal.Equals($mount.Name, $wanted.Name)) -or
+            ($wanted.Type -eq 'bind' -and -not $hostPathComparer.Equals($mount.Source, $wanted.Source))) {
             throw 'Existing container has incompatible mounts; resolve manually.'
         }
         $expected.Remove($mount.Destination)
