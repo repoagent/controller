@@ -130,6 +130,7 @@ public sealed class RevocationBehaviorTests : IAsyncLifetime
 
     [Theory]
     [InlineData("sequence")]
+    [InlineData("nonfinite-sequence")]
     [InlineData("secret-hash")]
     [InlineData("missing-field")]
     [InlineData("inconsistent-state")]
@@ -137,13 +138,18 @@ public sealed class RevocationBehaviorTests : IAsyncLifetime
     {
         var device = await fixture.EnrollAsync();
         if (scenario == "sequence") await Change("gate", e => e["Sequence"] = "7");
+        if (scenario == "nonfinite-sequence") await Change("gate", e => e["Sequence"] = double.NaN);
         if (scenario == "secret-hash") await Change("device:" + device.DeviceId, e => e["SecretHash"] = "invalid");
         if (scenario == "missing-field") await Change("device:" + device.DeviceId, e => e.Remove("ExpiresAt"));
         if (scenario == "inconsistent-state") await Change("gate", e => e["State"] = "unknown");
+        var gateBefore = await Read("gate");
+        var deviceBefore = await Read("device:" + device.DeviceId);
         await using var host = fixture.CreateHost();
         using var client = host.CreateClient();
         using var response = await Revoke(client, device);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(gateBefore.ETag, (await Read("gate")).ETag);
+        Assert.Equal(deviceBefore.ETag, (await Read("device:" + device.DeviceId)).ETag);
         Assert.False((await fixture.Table.GetEntityIfExistsAsync<TableEntity>(RevocationFixture.Partition,
             "revocation:" + device.DeviceId, cancellationToken: Token)).HasValue);
     }
