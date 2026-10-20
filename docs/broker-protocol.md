@@ -2,9 +2,11 @@
 
 This is the consumer contract for [deployment plan #28](https://github.com/repoagent/controller/issues/28). It does not establish that an enrollment service or hosted broker exists. Direct App authentication remains available for an operator's own App.
 
+The approved provider/installer design is now [repository-held approval with a UI-free auth service](auth-repository-approval.md). It supersedes the earlier browser/personal-administrator ceremony below without changing the frozen v1 consumer fields, runtime permission profiles or cache lifecycle.
+
 ## Enrollment file
 
-The installer will eventually write this file atomically after administrator approval. Until that provider is implemented, it is an operator-supplied integration input. Treat it as a secret: owner-only access (0600 on Unix, a private user ACL on Windows), never an image build input or command-line argument value. The CLI receives its path through `--enrollment-file` and separately requires `--broker-url`.
+The installer will eventually write this file atomically after the broker verifies repository-held approval. The installer creates or safely reuses a user-named GitHub Environment and writes its user-named approval variable through the operator's host authority. Until that provider is implemented, this file is an operator-supplied integration input. Treat it as a secret: owner-only access (0600 on Unix, a private user ACL on Windows), never an image build input or command-line argument value. The CLI receives its path through `--enrollment-file` and separately requires `--broker-url`. Marker coordinates belong in broker state and separate nonsecret installer configuration, preserving this v1 schema.
 
 ```json
 {
@@ -60,8 +62,12 @@ Only validated leases may be atomically published into the owner-only token cach
 
 ## Provider and hosted release gates
 
-The future broker validates actual GitHub grants and token scope; repeating client metadata is not authorization. Human credentials and the App key remain in a separate trusted service with durable transactional storage.
+The future broker validates actual GitHub installation grants, repository-held approval and returned token scope; repeating client metadata is not authorization. Shared App signing authority and durable grant/attempt accounting remain in the trusted service. Human GitHub setup credentials stay with the installer host; the broker has no human login or admin UI. The [approved provider policy](broker-policy.md) retains HTTP scale-to-zero and configurable expiry/retention defaults; it does not claim the provider exists.
 
-Device flow proves login, not approval of a particular enrollment. Final approval requires a trusted broker-origin browser surface authenticated as the repository administrator, protected against CSRF and bound to the exact pending device, repository ID, installation and permissions. Possession of the installer poll secret cannot approve enrollment. Unacknowledged completion expiry must revoke the unclaimed device. Narrow human device tokens with GitHub's documented `repository_id` where applicable and verify actual scope and refresh behavior; GitHub can ignore an inaccessible selector.
+Approval is a nonsecret, enrollment-specific marker in the selected GitHub Environment variable, independently read by the broker. Bind the fresh pending/device challenge, immutable repository/App/installation/profile and marker location; require separate controller-credential possession. Setup authority can create/remove the marker, but controller tokens cannot modify it. The installer poll secret or a copied public marker alone cannot approve enrollment. Unacknowledged completion expiry revokes the unclaimed device. A particular person's continuing administrator role or OAuth consent is no longer a grant condition. Marker removal/change closes the observed enrollment permanently; restoration cannot reactivate it, and fresh enrollment is required. Failed GitHub reads deny issuance. Detailed freshness, concurrent change and delete/recreate observation semantics remain provider-review gates; this is not instantaneous token revocation.
+
+Approval authority is a principal GitHub permits to write the selected variable, not a named human attestation. Internal approval-verification tokens are separate, exact-repository read-only capabilities that never reach controllers; preapproval and polling must have finite durable admission, mint, signing, read and outstanding-attempt budgets under the [provider policy](broker-policy.md).
+
+The [host revocation tool](repository-approval.md) checks the exact decoded value and makes one DELETE, accepting an independent-writer availability race and manual recovery. GitHub removal acknowledgment, durable broker closure and outstanding-token settlement are separate results. No continuous-history guarantee is made for identical delete/recreate between observations, and terminal enrollments never reopen.
 
 A lease alone does not fence outstanding GitHub bearer tokens. Before hosted ownership transfer, account for every issued token, including mint/response-loss races: confirm revocation or wait for expiry plus documented uncertainty before admitting another owner. Compliant owners must stop work, disable local launches and drain/terminate native children on ownership loss. Partition, suspend/resume and retained-token takeover evidence is a release gate. These guarantees are outside the first consumer slice.

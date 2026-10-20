@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "02a91d6e-ee2e-467f-8b46-4ecce0cf1242",
+  "status": "current",
+  "command": "deliver",
+  "type": "sequence",
+  "input": "D:\\egil\\controller\\.archify\\architecture-controller-guide-20261020-120003\\renewal\\candidate.json",
+  "output": "D:\\egil\\controller\\.archify\\architecture-controller-guide-20261020-120003\\renewal\\renewal.html",
+  "specification": {
+    "sha256": "8c343898506c0ca7de8286b0cfd2c3be16a38c3c4e271a32eb59d609c0395ce3",
+    "bytes": 6076
+  },
+  "artifact": {
+    "sha256": "b2617155a18bb492d4187976caf0e02c5b7e4cb2ceb49e831a349229e35bf179",
+    "bytes": 817649
+  }
+}

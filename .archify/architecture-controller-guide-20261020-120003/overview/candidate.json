@@ -1,0 +1,256 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "RepoAgent: the system at a glance",
+    "output": ".archify/architecture-controller-guide-20261020-120003/overview/overview.html",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/repoagent/controller.git",
+      "revision": "d26680680bcbb94c2e3de36317bb61ca6af5b585"
+    }
+  },
+  "components": [
+    {
+      "id": "participant",
+      "type": "external",
+      "label": "Participant",
+      "sublabel": "A person in a Discussion",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        150,
+        76
+      ],
+      "sources": [
+        {
+          "path": "GLOSSARY.md",
+          "line": 1,
+          "end_line": 3
+        }
+      ],
+      "tag": "EXISTS"
+    },
+    {
+      "id": "github",
+      "type": "cloud",
+      "label": "GitHub",
+      "sublabel": "Discussions + App bot identity",
+      "pos": [
+        350,
+        40
+      ],
+      "size": [
+        180,
+        76
+      ],
+      "sources": [
+        {
+          "path": "src/RepoAgentController/GitHub.cs",
+          "line": 55,
+          "end_line": 76
+        },
+        {
+          "path": "src/RepoAgentController/GitHub.cs",
+          "line": 131,
+          "end_line": 140
+        },
+        {
+          "path": "docs/github-app-auth.md",
+          "line": 8,
+          "end_line": 12
+        }
+      ],
+      "tag": "EXISTS"
+    },
+    {
+      "id": "controller",
+      "type": "backend",
+      "label": "Controller",
+      "sublabel": "Observes and forwards changes",
+      "pos": [
+        700,
+        40
+      ],
+      "size": [
+        180,
+        76
+      ],
+      "sources": [
+        {
+          "path": "src/RepoAgentController/BridgeCommand.cs",
+          "line": 83,
+          "end_line": 115
+        },
+        {
+          "path": "src/RepoAgentController/Bridge.cs",
+          "line": 110,
+          "end_line": 139
+        }
+      ],
+      "tag": "ON MAIN"
+    },
+    {
+      "id": "broker",
+      "type": "security",
+      "label": "Auth service",
+      "sublabel": "API-only credential broker",
+      "pos": [
+        1040,
+        40
+      ],
+      "size": [
+        180,
+        76
+      ],
+      "sources": [
+        {
+          "path": "GLOSSARY.md",
+          "line": 7,
+          "end_line": 11
+        },
+        {
+          "path": "docs/azure-auth-deployment.md",
+          "line": 3,
+          "end_line": 9
+        }
+      ],
+      "tag": "PLANNED PROVIDER"
+    },
+    {
+      "id": "agent",
+      "type": "backend",
+      "label": "Native Codex",
+      "sublabel": "One session per Discussion",
+      "pos": [
+        700,
+        280
+      ],
+      "size": [
+        180,
+        76
+      ],
+      "sources": [
+        {
+          "path": "src/RepoAgentController/Codex.cs",
+          "line": 17,
+          "end_line": 27
+        },
+        {
+          "path": "src/RepoAgentController/Codex.cs",
+          "line": 38,
+          "end_line": 61
+        }
+      ],
+      "tag": "ON MAIN"
+    },
+    {
+      "id": "approval",
+      "type": "cloud",
+      "label": "GitHub approval",
+      "sublabel": "User-named env + variable",
+      "pos": [
+        1040,
+        280
+      ],
+      "size": [
+        180,
+        76
+      ],
+      "tag": "APPROVED PLAN #31"
+    }
+  ],
+  "connections": [
+    {
+      "id": "participate",
+      "from": "participant",
+      "to": "github",
+      "label": "post / react",
+      "variant": "emphasis"
+    },
+    {
+      "id": "observe",
+      "from": "github",
+      "to": "controller",
+      "label": "observe versions",
+      "variant": "emphasis"
+    },
+    {
+      "id": "deliver",
+      "from": "controller",
+      "to": "agent",
+      "label": "native input",
+      "variant": "emphasis"
+    },
+    {
+      "id": "renew",
+      "from": "controller",
+      "to": "broker",
+      "label": "token request",
+      "variant": "security"
+    },
+    {
+      "id": "approvalcheck",
+      "from": "broker",
+      "to": "approval",
+      "label": "check marker",
+      "variant": "security"
+    },
+    {
+      "id": "reply",
+      "from": "agent",
+      "to": "github",
+      "label": "reply via App gh",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          790,
+          430
+        ],
+        [
+          440,
+          430
+        ]
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Start with the user journey",
+      "items": [
+        "A participant writes in GitHub; the controller sends observed changes to native Codex.",
+        "Codex uses the response skill and authenticated gh wrapper to reply directly to GitHub."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "What main already contains",
+      "items": [
+        "Polling, signed Discussion webhooks, native sessions, checkpoints and renewable App credentials.",
+        "Direct-App and broker consumer modes exist. The packaged launcher still supplies a PEM."
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "What is proposed",
+      "items": [
+        "A UI-free Azure auth service supplies repository-bound tokens after reading approval directly from GitHub.",
+        "Repository-held approval replaces personal-admin continuity and broker-hosted browser approval. Provider and new installer flow remain unimplemented on this main snapshot."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Installer-owned setup and recovery",
+      "items": [
+        "Install scripts create/reuse the GitHub Environment and write the approval variable under host GitHub authority; users choose both names.",
+        "Revoke removes the selected approval without the old device secret. Uninstall revokes then removes only the selected managed runtime, preserving data by default. Plan evidence: issue #31/#39; code links are the pinned main baseline."
+      ]
+    }
+  ]
+}

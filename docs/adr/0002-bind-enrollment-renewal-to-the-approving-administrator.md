@@ -1,0 +1,7 @@
+# Bind enrollment renewal to the approving administrator
+
+Superseded on 2026-10-20 by [ADR 0003: repository-held approval for a UI-free broker](0003-use-repository-held-approval-for-a-ui-free-broker.md). The text below records the earlier decision; continuing authority of its approving person is no longer a renewal condition.
+
+An enrollment is a separate administrator-approved grant: every token renewal requires its approving user to remain a repository administrator, along with the enrolled App installation, repository and permission binding remaining valid. Discard personal GitHub OAuth credentials after enrollment instead of retaining and rotating human refresh credentials; withdrawing personal OAuth consent alone does not cancel this separate grant. The maintainer selected this policy to reduce retained secrets and routine maintenance while keeping an accountable administrator; App uninstall, explicit enrollment revocation and inactivity expiry still deny future renewal.
+
+This refines the original retained-human-credential proposal in [plan #28](https://github.com/repoagent/controller/issues/28), [issuer #30](https://github.com/repoagent/controller/issues/30) and [ADR 0001](0001-keep-the-shared-app-key-out-of-controller-installations.md). A departing administrator requires fresh enrollment approval rather than silently assigning another approver. These checks stop future issuance; an already-issued GitHub bearer token remains a capability until revoked or expired, so ownership handover retains its separate safety gate.

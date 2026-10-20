@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "ebb567e2-2693-4431-b41b-98e63a262ae7",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "D:\\egil\\controller\\.archify\\architecture-controller-guide-20261020-120003\\overview\\candidate.json",
+  "output": "D:\\egil\\controller\\.archify\\architecture-controller-guide-20261020-120003\\overview\\overview.html",
+  "specification": {
+    "sha256": "0edd00c80e2b3207897fb6b6a20a8ce0a112eedcff3c9d58c5d2f82664c6be71",
+    "bytes": 5946
+  },
+  "artifact": {
+    "sha256": "1b9535e50c72901471f14fa4a430678d0ac9b870d3c799af39645fd7045e5f8f",
+    "bytes": 819521
+  }
+}

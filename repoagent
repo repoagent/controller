@@ -69,8 +69,7 @@ start() {
 }
 case "${1:-help}" in
   build)
-    docker build --target "${REPOAGENT_TARGET:-runtime}" -f "$root/container/Containerfile" -t "$image" "$root"
-    docker run --rm "$image" versions ;;
+    shift; exec bash "$root/scripts/build-image.sh" "$@" ;;
   setup) stopped; shift; exec bash "$root/scripts/setup-wizard.sh" --skip-build --no-start "$@" ;;
   configure) stopped; shift; config configure "$@" ;;
   get) shift; config get "$@" ;;
@@ -78,7 +77,7 @@ case "${1:-help}" in
   import-codex-auth)
     stopped
     [[ ${2:-} = /* && -f "$2" ]] || { echo 'Supply an explicit absolute auth.json file path.' >&2; exit 1; }
-    "${base[@]}" --mount "type=bind,src=$2,dst=/run/secrets/codex-auth.json,readonly" --entrypoint python3 "$image" -c \
+    "${base[@]}" --mount "type=bind,src=$2,dst=/run/secrets/codex-auth.json,readonly" --entrypoint /usr/bin/python3 "$image" -c \
       'import json,pathlib; p=pathlib.Path("/run/secrets/codex-auth.json"); json.loads(p.read_text()); d=pathlib.Path("/data/credentials/codex/auth.json"); d.write_bytes(p.read_bytes()); d.chmod(0o600)' ;;
   skills)
     if [[ ${2:-} == install ]]; then
