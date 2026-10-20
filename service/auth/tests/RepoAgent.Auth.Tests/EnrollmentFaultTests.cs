@@ -336,6 +336,71 @@ public sealed class EnrollmentFaultTests
         Assert.Single(await Rows(f), r => r.RowKey.StartsWith("device:", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(60)]
+    [InlineData(120)]
+    public async Task Resumed_unsent_verifier_uses_original_JWT_claims_and_cannot_refresh_original_expiry(int delaySeconds)
+    {
+        var batches = 0;
+        var interrupted = false;
+        var transport = new ObservedTransport { After = message =>
+        {
+            // Admission, repository state, work claim, global work, then the persisted mint attempt.
+            // Lose that last response before signing/discovery/send claim can run.
+            if (ObservedTransport.IsBatch(message) && ++batches == 5)
+            {
+                interrupted = true;
+                throw new HttpRequestException("Lost reserved verifier response before signing");
+            }
+            return Task.CompletedTask;
+        }};
+        await using var f = await EnrollmentFixture.CreateAsync(transport);
+        var request = f.Request();
+        using var initial = await f.Send("/v1/enrollments", request);
+        Assert.True(interrupted);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, initial.StatusCode);
+        var original = Assert.Single(await Rows(f), row => row.RowKey.StartsWith("attempt:", StringComparison.Ordinal));
+        Assert.Equal("reserved", original.GetString("State"));
+        Assert.Equal(0, f.GitHub.Reads);
+        Assert.Equal(0, f.GitHub.Mints);
+        var expectedClaims = (Iat: original.GetDateTimeOffset("JwtIssuedAt")!.Value.ToUnixTimeSeconds(),
+            Exp: original.GetDateTimeOffset("JwtExpiresAt")!.Value.ToUnixTimeSeconds());
+        (long Iat, long Exp)? sentClaims = null;
+        var normal = f.GitHub.Before;
+        f.GitHub.Before = message =>
+        {
+            if (message.Method == HttpMethod.Post)
+            {
+                var payload = message.Headers.Authorization!.Parameter!.Split('.')[1].Replace('-', '+').Replace('_', '/');
+                using var claims = JsonDocument.Parse(Convert.FromBase64String(payload.PadRight((payload.Length + 3) / 4 * 4, '=')));
+                sentClaims = (claims.RootElement.GetProperty("iat").GetInt64(), claims.RootElement.GetProperty("exp").GetInt64());
+            }
+            return normal!(message);
+        };
+        await f.RestartAsync();
+        f.Clock.Advance(TimeSpan.FromSeconds(delaySeconds));
+        using var resumed = await f.Send("/v1/enrollments", request);
+        var persisted = Assert.Single(await Rows(f), row => row.RowKey.StartsWith("attempt:", StringComparison.Ordinal));
+        Assert.Equal(original.GetDateTimeOffset("ReservedAt"), persisted.GetDateTimeOffset("ReservedAt"));
+        Assert.Equal(original.GetDateTimeOffset("JwtIssuedAt"), persisted.GetDateTimeOffset("JwtIssuedAt"));
+        Assert.Equal(original.GetDateTimeOffset("JwtExpiresAt"), persisted.GetDateTimeOffset("JwtExpiresAt"));
+        if (delaySeconds == 120)
+        {
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, resumed.StatusCode);
+            Assert.Null(sentClaims);
+            Assert.Equal(0, f.GitHub.Reads);
+            Assert.Equal(0, f.GitHub.Mints);
+            Assert.Equal("reserved", persisted.GetString("State"));
+        }
+        else
+        {
+            Assert.Equal(HttpStatusCode.OK, resumed.StatusCode);
+            Assert.Equal(1, f.GitHub.Mints);
+            Assert.NotNull(sentClaims);
+            Assert.Equal(expectedClaims, sentClaims.Value);
+        }
+    }
+
     private static async Task<string> Start(EnrollmentFixture f, bool approve = true)
     {
         using var start = await f.Send("/v1/enrollments", f.Request());
