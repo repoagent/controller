@@ -123,8 +123,33 @@ Set-Acl -LiteralPath $Path -AclObject $acl
         return self.invoke('configure', '--repository', 'owner/repository', '--app-id', '123',
             '--broker-url', BROKER, '--enrollment-file', str(self.enrollment), *additional, success=success)
 
+    def with_windows_failure_probe(self, kind, action):
+        # Temporary issue73 Windows diagnosis. Preserve the public failure and
+        # collect only the handoff's tagged observations from synthetic inputs.
+        try:
+            return action()
+        except AssertionError as original:
+            if os.name != 'nt':
+                raise
+            try:
+                probe = self.directory / 'issue73-windows-probe.ps1'
+                probe.write_text(Path(__file__).with_name('private_runtime_windows_probe.ps1').read_text(
+                    encoding='utf-8'), encoding='utf-8')
+                result = subprocess.run(['pwsh', '-NoProfile', '-File', str(probe),
+                    '-Kind', kind, '-ModulePath', str(ROOT / 'scripts/private-file.psm1'),
+                    '-Source', str(self.enrollment), '-StatePath', str(self.state_path),
+                    '-ContainerName', NAME], capture_output=True, text=True, encoding='utf-8',
+                    env=self.environment, cwd=self.directory, timeout=30)
+                diagnostics = [line for line in result.stdout.splitlines()
+                               if line.startswith('[DEBUG-issue73-win] ')]
+                if result.returncode:
+                    diagnostics.append('[DEBUG-issue73-win] probeExitCode=' + str(result.returncode))
+            except Exception as failure:
+                diagnostics = ['[DEBUG-issue73-win] probeHostFailureType=' + type(failure).__name__]
+            raise self.failureException(str(original) + '\n' + '\n'.join(diagnostics)) from original
+
     def test_powershell_configures_supplied_broker_enrollment_without_pem(self):
-        self.configure()
+        self.with_windows_failure_probe('private', self.configure)
         state = self.state()
         self.assertEqual(state['settings']['brokerUrl'], BROKER)
         self.assertFalse(state['settings'].get('keyPath'))
@@ -240,7 +265,7 @@ Set-Acl -LiteralPath $Path -AclObject $acl
         self.invoke('check')
         self.invoke('start')
         before = self.state()['volumes']
-        self.invoke('stop')
+        self.with_windows_failure_probe('mount', lambda: self.invoke('stop'))
         self.invoke('start')
         self.assertEqual(self.state()['volumes'], before)
         state = self.state()
