@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+#Requires -Version 7.0
 
 <#
 .SYNOPSIS
@@ -6,7 +6,9 @@ Build, configure, verify and start RepoAgent with Docker Desktop Linux container
 .DESCRIPTION
 Prompts for missing values and explains each step. Reuses saved instance settings
 as defaults. Imports an existing CODEX_HOME/auth.json (or ~/.codex/auth.json) when
-available, otherwise offers container device sign-in. No WSL or host gh is needed.
+available, otherwise offers container device sign-in. Install needs no host gh.
+Revoke uses the host's existing gh authentication to inspect or withdraw one
+repository approval; it needs no Docker, PEM or controller credential.
 Use -NonInteractive to disable all prompts and browser opening; valid Codex
 credentials must then be supplied or already present in the container.
 .EXAMPLE
@@ -15,9 +17,18 @@ credentials must then be supplied or already present in the container.
 .\install.ps1 -Repository my-org/my-repo -AppId 123456 -KeyPath C:\keys\app.pem -NonInteractive
 .EXAMPLE
 .\install.ps1 -Repository my-org/my-repo -AppId 123456 -KeyPath C:\keys\app.pem -CodexAuthPath C:\Users\me\.codex\auth.json -Instance my-repo -NoStart
+.EXAMPLE
+.\install.ps1 -Action Revoke -Repository my-org/my-repo
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet('Install', 'Revoke')][string]$Action = 'Install',
+    [string]$GitHubEnvironment = 'repoagent',
+    [string]$ApprovalVariable = 'APPROVED_CONTROLLER',
+    [string]$ExpectedValueSha256,
+    [string]$ExpectedRepositoryId,
+    [string]$ExpectedEnvironmentId,
+    [switch]$Apply,
     [string]$ImageManifest,
     [string]$DerivedDockerfile,
     [string[]]$BuildArg = @(),
@@ -43,6 +54,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+if ($Action -eq 'Revoke') {
+    & "$PSScriptRoot/scripts/revoke-approval.ps1" -Repository $Repository `
+        -GitHubEnvironment $GitHubEnvironment -ApprovalVariable $ApprovalVariable `
+        -ExpectedValueSha256 $ExpectedValueSha256 -ExpectedRepositoryId $ExpectedRepositoryId `
+        -ExpectedEnvironmentId $ExpectedEnvironmentId -Apply:$Apply -NonInteractive:$NonInteractive
+    exit $LASTEXITCODE
+}
 $provided = $PSBoundParameters
 $cli = Join-Path $PSScriptRoot 'repoagent.ps1'
 $stageIndex = 0
