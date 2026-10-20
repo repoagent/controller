@@ -11,9 +11,8 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
     TimeProvider clock, IssuanceLimits limits, IssuanceStore reads)
 {
     private const string Global = "global:enrollment-v1";
-    internal async Task<EnrollmentSnapshot> AdmitAsync(EnrollmentRequest request, string hash, CancellationToken ct)
+    internal async Task<EnrollmentSnapshot> AdmitAsync(EnrollmentInput request, string hash, CancellationToken ct)
     {
-        request.Validate();
         var repository = request.RepositoryId.ToString(CultureInfo.InvariantCulture);
         var key = "pending:" + request.IdempotencyId;
         TableEntity? reservation = null;
@@ -33,22 +32,24 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
             reservation = new(Global, key)
             {
                 ["RepositoryId"] = repository, ["PendingId"] = repository + "_" + request.IdempotencyId,
-                ["RecoveryHash"] = hash, ["BodyHash"] = request.Digest(), ["Epoch"] = options.DeploymentEpoch,
+                ["RecoveryHash"] = hash, ["BodyHash"] = request.BodyHash, ["Epoch"] = options.DeploymentEpoch,
                 ["CreatedAt"] = now, ["Deadline"] = now.Add(PendingLifetime),
                 ["DeviceId"] = Guid.NewGuid().ToString("N"), ["Challenge"] = EnrollmentSecrets.Generate()
             };
+            request.Approval.Write(reservation);
             try { await table.SubmitTransactionAsync([Action(quota, fresh), Action(reservation, true)], ct); break; }
             catch (TableTransactionFailedException ex) when (ex.Status is 409 or 412) { reservation = null; }
         }
         if (reservation is null) throw new IssuanceDenied();
-        if (Text(reservation, "RecoveryHash") != hash || Text(reservation, "BodyHash") != request.Digest()
+        if (Text(reservation, "RecoveryHash") != hash || Text(reservation, "BodyHash") != request.BodyHash
             || Text(reservation, "RepositoryId") != repository) throw new IssuanceDenied(409);
+        request.Approval.Require(reservation);
         RequireLive(reservation);
         var partition = "repository:" + repository;
         for (var retry = 0; retry < 4; retry++)
         {
             var pending = await reads.ReadAsync(partition, key, ct);
-            if (pending is not null) return await SnapshotAsync(Text(reservation, "PendingId"), hash, ct);
+            if (pending is not null) return await SnapshotAsync(Text(reservation, "PendingId"), hash, ct, request.Approval.SetupVersion);
             var gate = await reads.ReadAsync(partition, "gate", ct);
             var fresh = gate is null;
             gate ??= new(partition, "gate")
@@ -63,9 +64,10 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
             gate["Sequence"] = Number(gate, "Sequence") + 1;
             pending = new(partition, key);
             foreach (var pair in reservation.Where(p => p.Key is not ("PartitionKey" or "RowKey" or "Timestamp" or "odata.etag"))) pending[pair.Key] = pair.Value;
+            request.Approval.Write(pending);
             pending["RequestedRepository"] = request.Repository;
             pending["Repository"] = request.Repository;
-            pending["Environment"] = request.Environment;
+            if (request.Approval == ApprovalContract.Legacy) pending["Environment"] = request.Environment!;
             pending["Variable"] = request.Variable.ToUpperInvariant();
             pending["Profile"] = request.Profile;
             pending["State"] = "discovering";
@@ -74,14 +76,14 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
             try
             {
                 await table.SubmitTransactionAsync([Action(gate, fresh), Action(pending, true)], ct);
-                return await SnapshotAsync(Text(reservation, "PendingId"), hash, ct);
+                return await SnapshotAsync(Text(reservation, "PendingId"), hash, ct, request.Approval.SetupVersion);
             }
             catch (TableTransactionFailedException ex) when (ex.Status is 409 or 412) { }
         }
         throw new IssuanceDenied();
     }
 
-    internal async Task<EnrollmentSnapshot> SnapshotAsync(string id, string? recoveryHash, CancellationToken ct)
+    internal async Task<EnrollmentSnapshot> SnapshotAsync(string id, string? recoveryHash, CancellationToken ct, long setupVersion)
     {
         var parts = id.Split('_');
         if (parts.Length != 2 || !Guid.TryParseExact(parts[1], "N", out _)) throw new IssuanceDenied(401);
@@ -93,7 +95,16 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
             || Text(gate, "RepositoryId") != parts[0] || Text(gate, "Epoch") != options.DeploymentEpoch
             || Text(pending, "Epoch") != options.DeploymentEpoch) throw new IssuanceDenied(401);
         if (recoveryHash is not null && (pending.GetString("RecoveryHash") is not { } hash || !DeviceSecret.Matches(Convert.FromHexString(recoveryHash), hash))) throw new IssuanceDenied(401);
-        return new(gate, pending);
+        var snapshot = new EnrollmentSnapshot(gate, pending);
+        if (snapshot.Approval.SetupVersion != setupVersion) throw new IssuanceDenied(409);
+        if (snapshot.Approval == ApprovalContract.Legacy)
+        {
+            var environment = Text(pending, "Environment");
+            if (environment.Length > 255 || environment.Any(char.IsControl)) throw new IssuanceDenied();
+            if (pending.ContainsKey("Marker") && Number(pending, "EnvironmentId") <= 0) throw new IssuanceDenied();
+        }
+        if (pending.ContainsKey("Marker") && Text(pending, "Marker") != ApprovalMarker.Create(new(gate, pending))) throw new IssuanceDenied();
+        return snapshot;
     }
 
     internal void RequireLive(TableEntity pending)
@@ -124,11 +135,13 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
             slot = Number(global, "Slots");
             if (slot >= limits.GlobalAttempts) throw new IssuanceDenied(429);
             global["Slots"] = slot + 1;
-            actions.Add(Action(new("global:issuance-v1", "slot:" + slot.Value.ToString("D3", CultureInfo.InvariantCulture))
+            var slotReservation = new TableEntity("global:issuance-v1", "slot:" + slot.Value.ToString("D3", CultureInfo.InvariantCulture))
             {
                 ["OperationId"] = s.Id, ["RepositoryId"] = s.RepositoryId, ["Purpose"] = "verification",
                 ["Epoch"] = options.DeploymentEpoch, ["ReservedAt"] = now
-            }, true));
+            };
+            s.Approval.Write(slotReservation);
+            actions.Add(Action(slotReservation, true));
         }
         actions.Add(Action(global, freshGlobal));
         await table.SubmitTransactionAsync(actions, work.Cancellation);
@@ -140,9 +153,10 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
         var attempt = new TableEntity(s.Partition, mint ? "attempt:" + operation : "observation:" + s.Id)
         {
             ["OperationId"] = operation, ["RepositoryId"] = s.RepositoryId, ["DeviceId"] = s.DeviceId,
-            ["PendingId"] = s.Id, ["Epoch"] = options.DeploymentEpoch, ["Purpose"] = "verification", ["Profile"] = "verification",
+            ["PendingId"] = s.Id, ["Epoch"] = options.DeploymentEpoch, ["Purpose"] = "verification", ["Profile"] = s.Approval.VerifierProfile,
             ["State"] = "reserved", ["ReservedAt"] = now, ["JwtIssuedAt"] = now.AddSeconds(-60), ["JwtExpiresAt"] = now.AddSeconds(120)
         };
+        s.Approval.Write(attempt);
         var extra = new List<TableTransactionAction> { Action(quota, freshQuota) };
         if (mint)
         {
@@ -164,7 +178,8 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
     {
         var a = await reads.ReadAsync(s.Partition, "attempt:" + Text(s.Pending, "Attempt"), ct) ?? throw new IssuanceDenied();
         if (Text(a, "PendingId") != s.Id || Text(a, "RepositoryId") != s.RepositoryId || Text(a, "DeviceId") != s.DeviceId
-            || Text(a, "Epoch") != options.DeploymentEpoch || Text(a, "Purpose") != "verification" || Text(a, "Profile") != "verification") throw new IssuanceDenied();
+            || Text(a, "Epoch") != options.DeploymentEpoch || Text(a, "Purpose") != "verification" || Text(a, "Profile") != s.Approval.VerifierProfile) throw new IssuanceDenied();
+        s.Approval.Require(a);
         return a;
     }
     internal string Recover(EnrollmentSnapshot s, TableEntity attempt)
@@ -174,9 +189,9 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
             || Date(attempt, "ExpiresAt") <= clock.GetUtcNow().AddMinutes(5)) throw new IssuanceDenied();
         return TokenProtector(s, attempt).Unprotect(Text(attempt, "ProtectedToken"));
     }
-    internal IDataProtector TokenProtector(EnrollmentSnapshot s, TableEntity attempt) => protection.CreateProtector(
-        "repoagent.issuer.v1", s.RepositoryId, options.DeploymentEpoch, Text(attempt, "OperationId"), "verification");
-    internal IDataProtector CompletionProtector(EnrollmentSnapshot s) => protection.CreateProtector("repoagent.enrollment.v1", s.RepositoryId, options.DeploymentEpoch, s.Id);
+    internal IDataProtector TokenProtector(EnrollmentSnapshot s, TableEntity attempt) => s.Approval.TokenProtector(
+        protection, s.RepositoryId, options.DeploymentEpoch, Text(attempt, "OperationId"), "verification");
+    internal IDataProtector CompletionProtector(EnrollmentSnapshot s) => s.Approval.CompletionProtector(protection, s.RepositoryId, options.DeploymentEpoch, s.Id);
 
     internal async Task CommitAsync(EnrollmentSnapshot s, IEnumerable<TableTransactionAction> extra, CancellationToken ct)
     {
