@@ -13,14 +13,16 @@ import unittest
 
 
 SCRIPT = Path(__file__).with_name('deploy-auth.py')
-IMAGE = 'ghcr.io/example/auth@sha256:' + 'a' * 64
+REPOSITORY = 'ghcr.io/repoagent/controller-auth'
+IMAGE = REPOSITORY + '@sha256:' + 'a' * 64
 SUBSCRIPTION = '33333333-3333-3333-3333-333333333333'
 TARGET = ['--subscription', SUBSCRIPTION, '--resource-group', 'auth-rg', '--name', 'auth-service']
 # Provider request contract, intentionally independent of production helpers.
 APP_QUERY = ('{id:id,role:tags."repoagent-role",mode:properties.configuration.activeRevisionsMode,'
              'containers:properties.template.containers[].{name:name,image:image},'
              'latest:properties.latestRevisionName,ready:properties.latestReadyRevisionName}')
-INSPECT = ['skopeo', 'inspect', '--override-os', 'linux', '--override-arch', 'amd64', 'docker://' + IMAGE]
+INSPECT = ['skopeo', 'inspect', '--no-creds', '--config', '--override-os', 'linux',
+           '--override-arch', 'amd64', 'docker://' + IMAGE]
 SHOW = ['az', 'containerapp', 'show', *TARGET, '--query', APP_QUERY, '-o', 'json']
 UPDATE = ['az', 'containerapp', 'update', *TARGET, '--container-name', 'auth',
           '--image', IMAGE, '--output', 'none']
@@ -35,9 +37,14 @@ with ledger.open('a') as stream:
     stream.write(json.dumps(command) + '\\n')
 transcript = json.loads(pathlib.Path(os.environ['TEST_TRANSCRIPT']).read_text())
 index = len(previous)
-if index >= len(transcript) or command != transcript[index]['argv']:
+if index >= len(transcript):
     sys.exit('Unexpected provider command: ' + json.dumps(command))
-print(json.dumps(transcript[index]['response']))
+step = transcript[index]
+responses = [step, *step.get('alternatives', [])]
+match = next((entry for entry in responses if command == entry['argv']), None)
+if match is None:
+    sys.exit('Unexpected provider command: ' + json.dumps(command))
+print(json.dumps(match['response']))
 '''
 
 
@@ -49,7 +56,8 @@ def existing_app():
 
 
 def auth_image():
-    return dict(Labels={'io.repoagent.role': 'auth-service'}, Os='linux', Architecture='amd64')
+    return dict(config=dict(Labels={'io.repoagent.role': 'auth-service'}, User='10001:10001'),
+                os='linux', architecture='amd64')
 
 
 class DeploymentCliTests(unittest.TestCase):
@@ -61,7 +69,20 @@ class DeploymentCliTests(unittest.TestCase):
                 executable.write_text(f'#!{sys.executable}\n' + PROVIDER_DOUBLE)
                 executable.chmod(0o700)
             fixture = root / 'transcript.json'
-            fixture.write_text(json.dumps([dict(argv=argv, response=response) for argv, response in transcript]))
+            steps = []
+            for argv, response in transcript:
+                entry = dict(argv=argv, response=response)
+                if argv[0] == 'skopeo':
+                    # Both documented provider response shapes keep old code
+                    # runnable: rejection regressions must fail on an accepted
+                    # bad image, not an unexpected-command fixture error.
+                    config = response.get('config', {})
+                    entry['alternatives'] = [dict(
+                        argv=['skopeo', 'inspect', '--override-os', 'linux', '--override-arch', 'amd64', argv[-1]],
+                        response=dict(Labels=config.get('Labels', {}), Os=response.get('os'),
+                                      Architecture=response.get('architecture')))]
+                steps.append(entry)
+            fixture.write_text(json.dumps(steps))
             ledger = root / 'calls.jsonl'
             env = dict(PATH=str(root), HOME=str(root), LANG='C.UTF-8',
                        TEST_TRANSCRIPT=str(fixture), TEST_LEDGER=str(ledger),
@@ -69,7 +90,7 @@ class DeploymentCliTests(unittest.TestCase):
                        AZURE_TENANT_ID='22222222-2222-2222-2222-222222222222',
                        AZURE_SUBSCRIPTION_ID=SUBSCRIPTION,
                        AUTH_RESOURCE_GROUP='auth-rg', AUTH_APP_NAME='auth-service',
-                       AUTH_IMAGE_REPOSITORY='ghcr.io/example/auth', AUTH_IMAGE=IMAGE,
+                       AUTH_IMAGE_REPOSITORY=REPOSITORY, AUTH_IMAGE=IMAGE,
                        AUTH_DEPLOYMENT_READY='true')
             env.update(environment or {})
             result = subprocess.run([sys.executable, '-B', str(SCRIPT.resolve()), verb],
@@ -97,7 +118,7 @@ class DeploymentCliTests(unittest.TestCase):
         for labels in [{}, {'io.repoagent.role': 'controller'}]:
             for verb in ['preflight', 'deploy']:
                 with self.subTest(labels=labels, verb=verb):
-                    result, calls = self.invoke(verb, [(INSPECT, dict(auth_image(), Labels=labels))])
+                    result, calls = self.invoke(verb, [(INSPECT, dict(auth_image(), config=dict(Labels=labels, User='10001')))])
 
                     self.assertEqual(result.returncode, 1)
                     self.assertEqual(result.stderr.strip(), 'Image must declare io.repoagent.role=auth-service')
@@ -108,6 +129,41 @@ class DeploymentCliTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls, [INSPECT])
+
+    def test_manual_commands_reject_root_or_missing_user_before_azure(self):
+        ready = dict(existing_app(), containers=[dict(name='auth', image=IMAGE)],
+                     latest='auth-service--new', ready='auth-service--new')
+        for user in [None, '', '0', '0:10001', 'root']:
+            config = dict(Labels={'io.repoagent.role': 'auth-service'})
+            if user is not None:
+                config['User'] = user
+            for verb in ['preflight', 'deploy']:
+                with self.subTest(user=user, verb=verb):
+                    # A valid Azure path is available to expose accidental update,
+                    # while the intended command must stop at image inspection.
+                    result, calls = self.invoke(verb, [(INSPECT, dict(auth_image(), config=config)),
+                        (SHOW, existing_app()), (UPDATE, {}), (SHOW, ready)])
+
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn('explicit nonzero numeric USER', result.stderr)
+                    self.assertEqual(calls, [INSPECT])
+
+    def test_manual_commands_reject_a_wrong_configured_repository_before_providers(self):
+        wrong_repository = 'ghcr.io/repoagent/controller'
+        wrong_image = wrong_repository + '@sha256:' + 'a' * 64
+        inspect = [*INSPECT[:-1], 'docker://' + wrong_image]
+        update = [wrong_image if value == IMAGE else value for value in UPDATE]
+        ready = dict(existing_app(), containers=[dict(name='auth', image=wrong_image)],
+                     latest='auth-service--new', ready='auth-service--new')
+        for verb in ['preflight', 'deploy']:
+            with self.subTest(verb=verb):
+                result, calls = self.invoke(verb, [(inspect, auth_image()), (SHOW, existing_app()),
+                    (update, {}), (SHOW, ready)],
+                    {'AUTH_IMAGE_REPOSITORY': wrong_repository, 'AUTH_IMAGE': wrong_image})
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('must be the dedicated', result.stderr)
+                self.assertEqual(calls, [])
 
     def test_wrong_target_or_unsupported_app_shape_never_updates(self):
         for change, error in [

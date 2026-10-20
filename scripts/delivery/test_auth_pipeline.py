@@ -104,6 +104,9 @@ class AuthPipelineCliTests(unittest.TestCase):
                        TEST_LEDGER=str(ledger), TEST_TRANSCRIPT=str(fixture), GITHUB_OUTPUT=str(output),
                        AUTH_IMAGE_REPOSITORY=REPOSITORY, AUTH_IMAGE=IMAGE,
                        AUTH_DEPLOYMENT_READY='true', GITHUB_SHA=SHA,
+                       AZURE_CLIENT_ID='11111111-1111-1111-1111-111111111111',
+                       AZURE_TENANT_ID='22222222-2222-2222-2222-222222222222',
+                       AZURE_SUBSCRIPTION_ID='33333333-3333-3333-3333-333333333333',
                        REGISTRY_TOKEN=CANARY, REGISTRY_USER='fixture-bot')
             env.update(environment or {})
             command = [str(binaries / 'bash'), '-e', '-c', shell] if shell else [sys.executable, '-B', str(script), verb]
@@ -147,6 +150,19 @@ class AuthPipelineCliTests(unittest.TestCase):
                 self.assertIn(error, result.stderr)
                 self.assertEqual(([call['argv'] for call in calls], output), (expected, 'existing=value\n'))
                 self.assertNotIn(CANARY, result.stdout + result.stderr)
+
+    def test_missing_or_malformed_azure_identity_stops_before_any_provider(self):
+        for key in ['AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']:
+            for value in ['', 'not-a-uuid']:
+                for verb in ['check', 'publish']:
+                    with self.subTest(key=key, value=value, verb=verb):
+                        # Keep every later prerequisite valid to expose a real
+                        # check/publish continuation rather than a fixture error.
+                        result, calls, output, _ = self.invoke(verb, publication(), environment={key: value})
+
+                        self.assertEqual(result.returncode, 1)
+                        self.assertIn(key + ' is missing or invalid', result.stderr)
+                        self.assertEqual(([call['argv'] for call in calls], output), ([], 'existing=value\n'))
 
     def test_check_runs_infra_and_public_package_preflight_without_building(self):
         result, calls, output, _ = self.invoke('check', publication()[:2])
