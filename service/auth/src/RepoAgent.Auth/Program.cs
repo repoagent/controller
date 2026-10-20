@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using Azure.Data.Tables;
 using Azure.Identity;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Features;
 using RepoAgent.Auth;
 
@@ -22,13 +23,25 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<DeviceRevocation>();
 RequestProtection.Add(builder);
 IssuanceServices.Add(builder);
+builder.Services.AddHealthChecks().AddCheck<BrokerReadiness>("composition");
 var app = builder.Build();
 _ = app.Services.GetRequiredService<BrokerOptions>(); // Fail startup on invalid security/budget configuration.
 app.UseRouting();
 app.UseRateLimiter();
 app.UseRequestTimeouts();
-app.MapGet("/health/live", () => Results.Ok()).DisableRateLimiting().DisableRequestTimeout();
-app.MapGet("/health/ready", () => Results.StatusCode(503)).DisableRateLimiting().DisableRequestTimeout();
+app.MapGet("/health/live", (HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    return Results.Ok();
+}).DisableRateLimiting().DisableRequestTimeout();
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    ResponseWriter = (context, _) =>
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        return Task.CompletedTask;
+    }
+}).DisableRateLimiting().DisableRequestTimeout();
 app.MapDelete("/v1/devices/{deviceId}", async (string deviceId, HttpContext context, DeviceRevocation revocation) =>
 {
     var (rejection, secret) = ReadDeviceCredential(context);
