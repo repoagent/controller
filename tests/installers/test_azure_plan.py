@@ -241,6 +241,23 @@ class AzurePlanTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(calls, [])
 
+    def test_manifest_digest_terminal_line_feed_is_rejected_before_discovery(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        manifest = directory / 'image.json'
+        for section, field, value in (
+            ('controller', 'sha256', 'a' * 64 + '\n'),
+            ('baseImage', 'reference', 'regis.azurecr.io/base@sha256:' + 'b' * 64 + '\n'),
+        ):
+            with self.subTest(field=section + '.' + field):
+                data = json.loads((ROOT / 'image/default.json').read_text())
+                data.setdefault(section, {})[field] = value
+                manifest.write_text(json.dumps(data))
+                result, calls = self.run_plan(extra=['-ImageManifest', str(manifest)])
+                self.assertNotEqual(result.returncode, 0,
+                                    f'Terminal LF accepted with {len(calls)} Azure calls')
+                self.assertEqual(calls, [])
+                self.assertEqual(result.stdout, '')
+
     def test_unknown_or_duplicate_manifest_fields_fail_without_discovery(self):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         manifest = directory / 'image.json'
