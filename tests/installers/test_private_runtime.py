@@ -337,6 +337,33 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
                 self.assertEqual(observed['volumes'], state['volumes'])
                 self.assertEqual(observed['settings'], state['settings'])
 
+    def test_case_distinct_linux_start_identity_refuses_legacy_replacement(self):
+        key = self.directory / 'legacy key.pem'
+        key.write_text('not-a-real-app-key')
+        self.invoke('configure', '--repository', 'owner/repository', '--app-id', '123', '--key-path', str(key))
+        self.invoke('start')
+        compatible = self.state()
+        for identity in ('command', 'entrypoint'):
+            with self.subTest(identity=identity):
+                state = json.loads(json.dumps(compatible))
+                container = state['containers'][NAME]
+                if identity == 'command':
+                    container['Cmd'] = ['START']
+                else:
+                    container['Entrypoint'][0] = '/USR/bin/python3'
+                container['Running'] = state['running'] = False
+                state['events'] = []
+                self.state_path.write_text(json.dumps(state))
+
+                result = self.invoke('start', success=None)
+                observed = self.state()
+                destructive = [event for event in observed['events'] if event[0] in ('stop', 'rm')]
+                self.assertFalse(destructive, f'{identity} mismatch allowed lifecycle mutation: {destructive}')
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(observed['containers'], state['containers'])
+                self.assertEqual(observed['volumes'], state['volumes'])
+                self.assertEqual(observed['settings'], state['settings'])
+
 
 @unittest.skipUnless(os.name == 'posix' and os.environ.get('REPOAGENT_TEST_NATIVE_CONTROLLER'),
                      'Opt-in: freshly compiled current native consumer required')
