@@ -6,6 +6,18 @@ from pathlib import Path
 import sys
 import time
 
+if os.environ.get('HOST_ENROLLMENT_NATIVE_CONSUMER') == '1':
+    # Actual consumer gh process boundary; never accept the operator credential.
+    if os.environ.get('GH_TOKEN') != 'assembled-runtime-token' or sys.argv[1] != 'api':
+        sys.exit(91)
+    payload = json.load(sys.stdin)
+    if 'viewer' not in payload.get('query', ''):
+        sys.exit(92)
+    with Path(os.environ['REVOKE_GH_LOG']).open('a', encoding='utf-8') as stream:
+        stream.write(json.dumps({'argv': sys.argv[1:], 'runtimeCredentialObserved': True}) + '\n')
+    print(json.dumps({'data': {'viewer': {'login': 'repo-agent-connector[bot]'}}}))
+    sys.exit(0)
+
 if 'HOST_ENROLLMENT_GH_MODEL' in os.environ:
     # Stateful external GitHub API only. No broker or enrollment policy lives here.
     model_path = Path(os.environ['HOST_ENROLLMENT_GH_MODEL'])
