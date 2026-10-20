@@ -92,6 +92,7 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
     public IssuanceClock Clock { get; } = new();
     public GitHubTransport GitHub { get; } = new();
     private readonly DirectoryInfo keys = new(Path.Combine(Path.GetTempPath(), "enrollment-keys-" + Guid.NewGuid().ToString("N")));
+    public IDataProtectionProvider Protection => DataProtectionProvider.Create(keys);
     private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> host = null!;
     private HttpClient client = null!;
     public static async Task<EnrollmentFixture> CreateAsync(HttpPipelineTransport? transport = null)
@@ -113,7 +114,7 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
         }).ConfigureServices(services =>
         {
             services.AddSingleton<TimeProvider>(Clock);
-            services.AddSingleton<IDataProtectionProvider>(DataProtectionProvider.Create(keys));
+            services.AddSingleton(Protection);
             services.AddSingleton(new IssuanceLimits());
             services.AddSingleton(new GitHubIssuance(new HttpClient(GitHub), Clock));
             services.AddSingleton(new AppJwtSigner(new SigningTransport(), Clock));

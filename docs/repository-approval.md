@@ -1,4 +1,6 @@
-# Inspect or withdraw repository approval
+# Inspect or withdraw legacy Environment approval
+
+[ADR 0006](adr/0006-use-repository-agent-variables-for-approval.md) selects direct repository Agent variables for the new MVP. [Provider #68](https://github.com/repoagent/controller/issues/68) owns the implemented [v2 setup/marker source contract](../service/auth/README.md#repository-agent-variable-enrollment-v2), with unchanged v1 controller files/runtime. Agent-variable host commands and guided installation remain [#53](https://github.com/repoagent/controller/issues/53) work, with native Windows and live acceptance required. The commands below describe the existing Environment tool only; they do not inspect or withdraw Agent variables. Draft PR #67 is an unmerged Environment prototype. No replacement CLI syntax is documented before implementation.
 
 This tool requires PowerShell 7 and host `gh` already signed in with authority to inspect the repository and Environment and manage its selected variable. It needs no Docker, PEM or controller credential. It does not create approval or implement broker enrollment/issuance; those remain under the [provider contract](auth-repository-approval.md) and [#31](https://github.com/repoagent/controller/issues/31).
 
