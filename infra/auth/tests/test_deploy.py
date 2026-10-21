@@ -4,6 +4,7 @@ Run: python3 -m unittest discover -s infra/auth/tests -v
 These prove deployment orchestration, not Azure provisioning or RBAC behavior.
 """
 import copy
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 AUTH = Path(__file__).resolve().parents[1]
 SUBSCRIPTION = '46f7e5d6-05f3-435b-8089-6c63a203dbfa'
@@ -57,6 +59,40 @@ def owned_resources():
     result[APP_ID]['properties'] = {'environmentId': ENVIRONMENT_ID, 'configuration': {
         'ingress': {'external': True, 'fqdn': ORIGIN.removeprefix('https://')}}}
     return result
+
+
+class DeploymentTimeoutTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('auth_deploy', AUTH / 'deploy.py')
+        self.deploy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.deploy)
+        configuration = {'AZURE_SUBSCRIPTION_ID': SUBSCRIPTION, 'AZURE_RESOURCE_GROUP': GROUP,
+                         'AZURE_LOCATION': 'swedencentral', 'AUTH_APP_NAME': 'auth-test'}
+        with patch.dict(os.environ, configuration, clear=True):
+            self.deployment = self.deploy.Deployment('foundation-apply')
+        self.process = subprocess.CompletedProcess(['az'], 0, stdout='{}', stderr='')
+
+    def test_deployment_create_allows_twenty_minutes(self):
+        with patch.object(self.deploy.subprocess, 'run', return_value=self.process) as run:
+            self.assertEqual(self.deployment.az(['deployment', 'group', 'create']), {})
+        self.assertEqual(run.call_args.kwargs['timeout'], 1200)
+
+    def test_queries_validation_and_what_if_keep_two_minute_timeout(self):
+        for command in (['group', 'show'], ['deployment', 'group', 'validate'],
+                        ['deployment', 'group', 'what-if']):
+            with self.subTest(command=command):
+                with patch.object(self.deploy.subprocess, 'run', return_value=self.process) as run:
+                    self.assertEqual(self.deployment.az(command), {})
+                self.assertEqual(run.call_args.kwargs['timeout'], 120)
+
+    def test_operation_deadline_takes_precedence_for_create_and_query(self):
+        self.deployment.deadline = 150
+        with patch.object(self.deploy.time, 'monotonic', return_value=100):
+            for command in (['deployment', 'group', 'create'], ['group', 'show']):
+                with self.subTest(command=command):
+                    with patch.object(self.deploy.subprocess, 'run', return_value=self.process) as run:
+                        self.assertEqual(self.deployment.az(command), {})
+                    self.assertEqual(run.call_args.kwargs['timeout'], 50)
 
 
 class DeploymentProcessTests(unittest.TestCase):
