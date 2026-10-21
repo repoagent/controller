@@ -29,6 +29,11 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         if (s.Pending.ContainsKey("Marker")) return Status(s);
         var existing = s.Pending.ContainsKey("Attempt") ? await store.AttemptAsync(s, work.Cancellation) : null;
         if (existing is not null) PayloadClock.RequireAttempt(existing);
+        if (existing is not null && Text(existing, "State") == "settled")
+        {
+            await store.ReleaseUnsentAttemptAsync(s, existing, work.Cancellation);
+            existing = null;
+        }
         if (existing is not null && Text(existing, "State") is not ("known" or "reserved")) throw new IssuanceDenied();
         // A definitely unsent reservation can resume. A sending/unknown outcome never retries POST.
         if (existing is not null && Text(existing, "State") == "reserved" && Date(existing, "JwtExpiresAt") <= clock.GetUtcNow()) throw new IssuanceDenied();
