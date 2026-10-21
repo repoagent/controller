@@ -202,7 +202,8 @@ class Deployment:
             raise DeploymentError("Azure malformed object response")
         return value
 
-    def inspect(self, verify_ingress=False):
+    def inspect(self, verify_ingress=False, require_resources=False):
+        self.current = None
         group = self.az(["group", "show", "--name", self.group])
         if str(group.get("id", "")).lower() != self.scope.lower() or group.get("location") != self.location:
             raise DeploymentError("Azure resource group identity/location mismatch")
@@ -210,6 +211,8 @@ class Deployment:
             resource_id = self.resource_id(kind, name)
             resource = self.az(["resource", "show", "--ids", resource_id, "--api-version", version], allow_missing=True)
             if resource is None:
+                if require_resources:
+                    raise DeploymentError("Deployed resource unavailable after apply; result unconfirmed")
                 if not self.foundation and (role != "auth-service" or verify_ingress or self.mode in ("promote-staged", "stage-stop", "stage-resume")):
                     raise DeploymentError("Runtime requires existing foundation and operator-granted access")
                 continue
@@ -423,7 +426,7 @@ class Deployment:
                 if not isinstance(result.get("properties"), dict) or result["properties"].get("provisioningState") != "Succeeded":
                     raise DeploymentError("Deployment did not report Succeeded; inspect Azure before retrying")
                 if not self.foundation:
-                    self.inspect(verify_ingress=not self.isolated)
+                    self.inspect(verify_ingress=not self.isolated, require_resources=True)
                     if self.isolated:
                         self.revision = self.current.get("properties", {}).get("latestRevisionName")
                         if not isinstance(self.revision, str) or not re.fullmatch(re.escape(self.app) + r"--[a-z0-9-]+", self.revision):
@@ -440,7 +443,7 @@ class Deployment:
                             raise DeploymentError("Same-digest public rollout/origin verification failed")
                 # Foundation creates the identity; read its platform-issued IDs.
                 if self.foundation:
-                    self.inspect()
+                    self.inspect(require_resources=True)
                     if not all(self.identity.values()):
                         raise DeploymentError("Deployment identity unavailable after apply; inspect Azure before retrying")
         return self.outputs(applied)

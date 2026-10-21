@@ -203,6 +203,67 @@ class ActivationProcessTests(unittest.TestCase):
                 self.assertTrue(parameters['staged']['value'])
                 self.assertEqual(parameters['image']['value'], IMAGE)
 
+    def test_stage_apply_requires_fresh_app_readback_after_first_or_repeated_creation(self):
+        baseline = copy.deepcopy(self.scenario)
+        for first in (False, True):
+            for missing in (False, True):
+                with self.subTest(first=first, missing=missing):
+                    self.scenario = copy.deepcopy(baseline)
+                    if first:
+                        self.scenario['resources'].pop(APP_ID)
+                    self.scenario['postCreateResources'] = {APP_ID: None if missing else self.app}
+                    result = self.invoke('stage-apply')
+                    self.assertEqual(len(self.creates()), 1)
+                    create = next(i for i, call in enumerate(self.calls)
+                                  if call['args'][:3] == ['deployment', 'group', 'create'])
+                    reads = [(i, call['responseCode']) for i, call in enumerate(self.calls)
+                             if call['args'][:2] == ['resource', 'show'] and APP_ID in call['args']]
+                    self.assertEqual([code for i, code in reads if i < create], [3, 3] if first else [0, 0])
+                    self.assertEqual([code for i, code in reads if i > create], [3 if missing else 0])
+                    if missing:
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        self.assertEqual(result.stdout, '')
+                        self.assertIn('unconfirmed', result.stderr)
+                        self.assertNotIn('AttributeError', result.stderr)
+                        self.assertFalse(any(call['args'][:3] == ['containerapp', 'revision', 'show']
+                                             for call in self.calls[create + 1:]))
+                        self.assertFalse(any(call['args'][:2] == ['containerapp', 'update'] for call in self.calls))
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        output = json.loads(result.stdout)
+                        self.assertTrue(output['applied'])
+                        self.assertTrue(output['isolated'])
+                        self.assertEqual(output['revision'], REVISION)
+
+    def test_foundation_apply_requires_every_manifest_resource_freshly_present(self):
+        baseline = copy.deepcopy(self.scenario)
+        resources = [resource_id for resource_id in baseline['resources'] if resource_id != APP_ID]
+        identity = SCOPE + '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-runtime'
+        self.assertIn(identity, resources)
+        for missing in (None, identity, *(resource_id for resource_id in resources if resource_id != identity)):
+            with self.subTest(missing=missing):
+                self.scenario = copy.deepcopy(baseline)
+                self.scenario['postCreateResources'] = {} if missing is None else {missing: None}
+                result = self.invoke('foundation-apply')
+                self.assertEqual(len(self.creates()), 1)
+                create = next(i for i, call in enumerate(self.calls)
+                              if call['args'][:3] == ['deployment', 'group', 'create'])
+                identity_reads = [call['responseCode'] for call in self.calls[:create]
+                                  if call['args'][:2] == ['resource', 'show'] and identity in call['args']]
+                self.assertEqual(identity_reads, [0, 0], 'Valid identity was observed before apply')
+                if missing is not None:
+                    self.assertTrue(any(call['args'][:2] == ['resource', 'show'] and missing in call['args']
+                                        and call['responseCode'] == 3 for call in self.calls[create + 1:]))
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertEqual(result.stdout, '')
+                    self.assertIn('unconfirmed', result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(json.loads(result.stdout)['applied'])
+                    after = [call for call in self.calls[create + 1:] if call['args'][:2] == ['resource', 'show']]
+                    self.assertEqual({call['args'][call['args'].index('--ids') + 1] for call in after}, set(resources))
+                    self.assertTrue(all(call['responseCode'] == 0 for call in after))
+
     def test_stage_readback_accepts_provider_null_dapr_and_null_rules_independently(self):
         baseline = copy.deepcopy(self.scenario)
         for field in ('dapr', 'rules'):

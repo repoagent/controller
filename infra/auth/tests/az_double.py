@@ -63,6 +63,7 @@ if response is None:
         resource_id = args[args.index('--ids') + 1]
         resource = scenario['resources'].get(resource_id)
         response = {'body': resource} if resource else {'error': '(ResourceNotFound) Resource absent', 'code': 3}
+        record['responseCode'] = response.get('code', 0)
     elif command == 'deployment group validate':
         response = {'body': {'properties': {'provisioningState': 'Succeeded'}}}
     elif command == 'deployment group what-if':
