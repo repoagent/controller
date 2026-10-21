@@ -160,7 +160,7 @@ sealed class Codex : IAsyncDisposable
     {
         process.StandardInput.Close();
         try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
-        catch (TimeoutException) { process.Kill(true); }
+        catch (TimeoutException) { process.Kill(true); await process.WaitForExitAsync(); }
         await reader;
         process.Dispose();
     }
