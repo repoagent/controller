@@ -84,6 +84,38 @@ class ManagedGitTests(unittest.TestCase):
             self.assertTrue(valid.stdout == 'username=x-access-token\npassword=lease-A\n\n',
                             'Helper must return only the current repository lease')
 
+    def test_helper_denies_malformed_or_different_repository_records(self):
+        with tempfile.TemporaryDirectory(prefix='managed-helper-denial-') as temporary:
+            cache = Path(temporary) / 'installation-token.json'
+            cache.write_text(json.dumps(dict(token='lease-A', repository='owner/project', profile='polling-clone',
+                expiresAt=(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).isoformat())))
+            cache.chmod(0o600)
+            authority = {'protocol': 'https', 'host': 'github.com', 'path': 'owner/project.git'}
+            records = {}
+            for field, values in {
+                'protocol': ['http', 'ssh'],
+                'host': ['other.example', 'github.com:443', 'sub.github.com'],
+                'path': ['other/project.git', 'owner/project-extra.git', 'owner/project.wiki.git',
+                         'owner/project.git/extra', 'owner%2fproject.git', 'owner/../owner/project.git',
+                         'owner/pro\rject.git', 'owner/pro\x00ject.git']
+            }.items():
+                for index, value in enumerate(values):
+                    fields = dict(authority, **{field: value})
+                    records[f'{field}-{index}'] = ''.join(f'{key}={item}\n' for key, item in fields.items()) + '\n'
+            normal = ''.join(f'{key}={value}\n' for key, value in authority.items())
+            for field in authority:
+                records[f'duplicate-{field}'] = normal + f'{field}={authority[field]}\n\n'
+            records['missing-path'] = 'protocol=https\nhost=github.com\n\n'
+            records['malformed-line'] = normal + 'malformed\n\n'
+            records['oversized'] = normal + 'extension=' + 'x' * 17000 + '\n\n'
+            for name, record in records.items():
+                with self.subTest(record=name):
+                    result = subprocess.run(['dotnet', str(CONTROLLER), 'git-helper', str(cache), 'get'],
+                                            input=record, capture_output=True, text=True, timeout=15)
+                    self.assertNotEqual(result.returncode, 0,
+                        'Malformed or mismatched authority must deny; credential emitted=' + str('password=' in result.stdout))
+                    self.assertEqual(result.stdout, 'quit=true\n\n')
+
     def run_ok(self, command, environment):
         result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=40)
         # Avoid disclosing Authorization values even when a subprocess fails.
