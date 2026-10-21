@@ -136,10 +136,15 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
         if (body is not null) request.Content = JsonContent.Create(body);
         return await client.SendAsync(request, TestContext.Current.CancellationToken);
     }
-    public async ValueTask DisposeAsync()
+    public async Task StopHttpAsync()
     {
         client?.Dispose();
         if (host is not null) await host.DisposeAsync();
+        host = null!;
+    }
+    public async ValueTask DisposeAsync()
+    {
+        await StopHttpAsync();
         await Storage.DisposeAsync();
         if (keys.Exists) keys.Delete(true);
     }
