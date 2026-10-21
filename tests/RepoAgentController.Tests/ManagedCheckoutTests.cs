@@ -54,7 +54,9 @@ public sealed class ManagedCheckoutTests
             a=sys.argv[1:]
             if a[:2]==['repo','clone']:
              assert a[2]=='https://github.com/owner/repository.git',a
-             subprocess.run([os.environ['CHECKOUT_REAL_GIT'],'clone',os.environ['CHECKOUT_ORIGIN'],a[3]],check=True)
+             assert os.environ['GIT_ALLOW_PROTOCOL']=='https'
+             local_environment=dict(os.environ,GIT_ALLOW_PROTOCOL='file')
+             subprocess.run([os.environ['CHECKOUT_REAL_GIT'],'clone',os.environ['CHECKOUT_ORIGIN'],a[3]],env=local_environment,check=True)
              subprocess.run([os.environ['CHECKOUT_REAL_GIT'],'-C',a[3],'remote','set-url','origin',a[2]],check=True)
             elif a[:2]==['api','graphql']:
              q=json.load(sys.stdin)['query']
@@ -77,16 +79,23 @@ public sealed class ManagedCheckoutTests
             foreach (var pair in environment) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
             if (clone && !checkAuth)
             {
-                // Prove this external transport survives a restrictive git prepended to PATH.
+                // Obtain the real lease and installed helpers through the no-native public entry.
+                Assert.Equal(0, await fixture.Start());
+                Assert.False(File.Exists(capture));
+                // Exercise actual PrepareClone isolation, including its HTTPS-only parent policy.
                 var hostileGit = Path.Combine(bin, "git");
                 File.WriteAllText(hostileGit, "#!/bin/sh\nexit 97\n");
                 Executable(hostileGit);
                 var adapterRoot = Path.Combine(fixture.Directory, "adapter-control");
-                try { await Run(fixture.Gh, "repo", "clone", "https://github.com/owner/repository.git", adapterRoot); }
+                var isolatedClone = AppGitHubCommand.Create(fixture.Gh, fixture.TokenFile,
+                    ["repo", "clone", "https://github.com/owner/repository.git", adapterRoot]);
+                Assert.Equal("https", isolatedClone.Environment["GIT_ALLOW_PROTOCOL"]);
+                try { await Run(isolatedClone); }
                 finally { File.Delete(hostileGit); }
                 Assert.Equal("approved repository\n", File.ReadAllText(Path.Combine(adapterRoot, "tracked-sentinel")));
                 Assert.Equal("https://github.com/owner/repository.git", await Git("-C", adapterRoot, "remote", "get-url", "origin"));
                 Assert.Equal(commit, await Git("-C", adapterRoot, "rev-parse", "HEAD"));
+                Console.WriteLine("adapter-proof actual-Create HTTPS-parent real-clone sentinel canonical-remote commit passed");
             }
             var args = new List<string> { "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
                 "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
@@ -114,10 +123,16 @@ public sealed class ManagedCheckoutTests
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
     static Task<string> Git(params string[] arguments) => Run("git", arguments);
-    static async Task<string> Run(string executable, params string[] arguments)
+    static Task<string> Run(string executable, params string[] arguments)
     {
-        var start = new ProcessStartInfo(executable) { RedirectStandardOutput = true, RedirectStandardError = true };
+        var start = new ProcessStartInfo(executable);
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        return Run(start);
+    }
+    static async Task<string> Run(ProcessStartInfo start)
+    {
+        start.RedirectStandardOutput = true;
+        start.RedirectStandardError = true;
         using var process = Process.Start(start)!;
         var output = process.StandardOutput.ReadToEndAsync();
         var error = process.StandardError.ReadToEndAsync();
