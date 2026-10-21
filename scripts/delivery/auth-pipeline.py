@@ -21,7 +21,7 @@ def command(args, *, capture=False, cwd=ROOT):
 
 def source(root=ROOT):
     for name in ('service/auth/global.json', 'service/auth/verify.sh', 'service/auth/Dockerfile',
-                 'infra/auth/validate.sh', 'infra/auth/deploy.sh', 'infra/auth/main.bicep'):
+                 'infra/auth/deploy.sh', 'infra/auth/main.bicep'):
         if not (root / name).is_file():
             raise ValueError(f'Missing {name}; deliver service #30/#31 and infrastructure #47 before auth CI can deploy')
     sdk = json.loads((root / 'service/auth/global.json').read_text()).get('sdk', {}).get('version', '')
@@ -33,6 +33,19 @@ def repository():
     if os.environ.get('AUTH_IMAGE_REPOSITORY') != REPOSITORY:
         raise ValueError(f'AUTH_IMAGE_REPOSITORY must be the dedicated {REPOSITORY}')
     return REPOSITORY
+
+
+def accepted_source():
+    sha = os.environ.get('AUTH_EXPECTED_SOURCE_SHA', '')
+    if not re.fullmatch(r'[0-9a-f]{40}', sha):
+        raise ValueError('Expected an accepted full main source SHA')
+    def git(*args):
+        return command(['git', *args], capture=True).strip()
+    remote = git('ls-remote', 'https://github.com/repoagent/controller.git', 'refs/heads/main').split()
+    if (os.environ.get('GITHUB_REF') != 'refs/heads/main' or os.environ.get('GITHUB_SHA') != sha
+            or git('rev-parse', 'HEAD') != sha or remote != [sha, 'refs/heads/main']):
+        raise ValueError('Accepted source differs from checkout or current main')
+    return sha
 
 
 def check_publication():
@@ -140,14 +153,10 @@ def bootstrap_publish(*, before_push=None):
 
 
 def bootstrap_publish_actions():
-    # Reuse only the source guard; bootstrap must not construct Azure configuration.
-    sys.path.insert(0, str(ROOT / 'infra/auth'))
-    from deploy import accepted_source, DeploymentError
-
     def guard():
         try:
             accepted_source()
-        except (DeploymentError, subprocess.SubprocessError):
+        except (ValueError, subprocess.SubprocessError):
             raise ValueError('Cannot verify accepted current main source; bootstrap refused') from None
 
     guard()
@@ -156,10 +165,10 @@ def bootstrap_publish_actions():
 
 if __name__ == '__main__':
     try:
-        verbs = {'source': source, 'check': check_publication, 'attest': attest, 'publish': publish,
+        verbs = {'source': source, 'source-check': accepted_source, 'check': check_publication, 'attest': attest, 'publish': publish,
                  'bootstrap-publish': bootstrap_publish, 'bootstrap-publish-actions': bootstrap_publish_actions}
         if len(sys.argv) != 2 or sys.argv[1] not in verbs:
-            raise ValueError('Expected source, check, attest, publish, bootstrap-publish or bootstrap-publish-actions')
+            raise ValueError('Expected source, source-check, check, attest, publish, bootstrap-publish or bootstrap-publish-actions')
         verbs[sys.argv[1]]()
     except (ValueError, OSError, KeyError, IndexError) as error:
         sys.exit(str(error))

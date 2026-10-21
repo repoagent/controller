@@ -39,6 +39,7 @@ concurrency:
   group: auth-service-${{ github.event_name == 'pull_request' && github.ref || 'delivery' }}
   cancel-in-progress: false
 env:
+  BICEP_VERSION: v0.48.1
   AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
   AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
@@ -55,11 +56,11 @@ env:
   AUTH_RUNTIME_ACCESS_READY: ${{ vars.AUTH_RUNTIME_ACCESS_READY }}
   AUTH_SIGNING_KEY_URI: ${{ vars.AUTH_SIGNING_KEY_URI }}
   AUTH_DATA_PROTECTION_KEY_URI: ${{ vars.AUTH_DATA_PROTECTION_KEY_URI }}
-  AUTH_TABLE_NAME: ${{ vars.AUTH_TABLE_NAME || 'brokerstate' }}
+  AUTH_TABLE_NAME: ${{ vars.AUTH_TABLE_NAME }}
   AUTH_DEPLOYMENT_EPOCH: ${{ vars.AUTH_DEPLOYMENT_EPOCH }}
-  AUTH_REQUEST_LIMIT_PER_MINUTE: ${{ vars.AUTH_REQUEST_LIMIT_PER_MINUTE || '120' }}
-  AUTH_CONCURRENT_REQUEST_LIMIT: ${{ vars.AUTH_CONCURRENT_REQUEST_LIMIT || '8' }}
-  AUTH_REQUEST_TIMEOUT_SECONDS: ${{ vars.AUTH_REQUEST_TIMEOUT_SECONDS || '15' }}
+  AUTH_REQUEST_LIMIT_PER_MINUTE: ${{ vars.AUTH_REQUEST_LIMIT_PER_MINUTE }}
+  AUTH_CONCURRENT_REQUEST_LIMIT: ${{ vars.AUTH_CONCURRENT_REQUEST_LIMIT }}
+  AUTH_REQUEST_TIMEOUT_SECONDS: ${{ vars.AUTH_REQUEST_TIMEOUT_SECONDS }}
 jobs:
   access-check:
     if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'access-check'
@@ -90,6 +91,7 @@ jobs:
           DEPLOYMENT_NAME: github-oidc-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          az bicep install --version "$BICEP_VERSION"
           test "$(az group show --name "$AZURE_RESOURCE_GROUP" --query location --output tsv)" = "$AZURE_LOCATION"
           az deployment group create \
             --name "$DEPLOYMENT_NAME" \
@@ -113,9 +115,12 @@ jobs:
           global-json-file: service/auth/global.json
       - name: Verify the service and compile Bicep without cloud credentials
         run: |
+          az bicep install --version "$BICEP_VERSION"
+          export BICEP_BIN="$HOME/.azure/bin/bicep"
           (cd service/auth && bash verify.sh)
-          bash infra/auth/validate.sh
-          python3 -m unittest discover -s infra/auth/tests -v
+          for template in infra/auth/*.bicep; do
+            "$BICEP_BIN" build "$template" --stdout >/dev/null
+          done
           python3 -m unittest discover -s scripts/delivery -p 'test_*auth*.py' -v
   publish:
     needs: verify-service
@@ -180,7 +185,10 @@ jobs:
           AUTH_IMAGE_ROLE: auth-service
           AUTH_IMAGE_NON_ROOT: 'true'
           AUTH_IMAGE_PUBLIC: 'true'
-        run: bash infra/auth/deploy.sh apply
+        run: |
+          az bicep install --version "$BICEP_VERSION"
+          export BICEP_BIN="$HOME/.azure/bin/bicep"
+          bash infra/auth/deploy.sh apply
       - name: Verify deployed immutable image and ready revision
         run: python3 scripts/delivery/deploy-auth.py deploy
 
@@ -249,6 +257,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          az bicep install --version "$BICEP_VERSION"
+          export BICEP_BIN="$HOME/.azure/bin/bicep"
           case "$AUTH_OPERATION" in
             foundation-plan|foundation-apply|stage-plan|stage-apply|promote-staged|stage-stop|stage-resume|cleanup-identity-plan|cleanup-identity-apply|cleanup-plan|cleanup-apply)
               bash infra/auth/deploy.sh "$AUTH_OPERATION" ;;

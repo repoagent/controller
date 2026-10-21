@@ -5,7 +5,6 @@ param appName string
 param storageName string
 param vaultName string
 param deployApp bool = false
-param monitoringConnectionString string = ''
 param staged bool = false
 param image string = ''
 param signingKeyUri string = ''
@@ -32,6 +31,8 @@ var ownership = {
 }
 
 var brokerOrigin = 'https://${appName}.${environment.properties.defaultDomain}'
+resource insights 'Microsoft.Insights/components@2020-02-02' existing = { name: '${appName}-insights' }
+var monitoringConnectionString = deployApp ? insights.properties.ConnectionString : ''
 
 resource runtime 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${appName}-runtime'
@@ -56,7 +57,9 @@ resource environment 'Microsoft.App/managedEnvironments@2025-01-01' = {
   tags: union(ownership, { role: 'auth-environment' })
   properties: {
     appLogsConfiguration: {
-      destination: 'none'
+      // Disabled log storage uses null in ARM; 'none' is the CLI option.
+      destination: null
+      logAnalyticsConfiguration: null
     }
     workloadProfiles: [{ name: 'Consumption', workloadProfileType: 'Consumption' }]
   }

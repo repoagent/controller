@@ -54,7 +54,6 @@ class BootstrapArchiveTests(unittest.TestCase):
             path.write_text('committed bytes\n')
         (self.root / 'service/auth/global.json').write_text('{"sdk":{"version":"10.0.100"}}')
         (self.root / 'service/auth/verify.sh').write_text('test "$(cat service/auth/Dockerfile)" = "committed bytes"\n')
-        shutil.copyfile(SCRIPT.parents[2] / 'infra/auth/deploy.py', self.root / 'infra/auth/deploy.py')
         self.git('init', '-qb', 'main')
         self.git('add', '.')
         self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-qm', 'accepted source')
