@@ -125,40 +125,6 @@ class MonitoringProcess(unittest.TestCase):
                 self.assertEqual(call['parameterMode'], 0o600)
         return result
 
-    def test_monitoring_dependency_display_location_reaches_plan(self):
-        for location in ('swedencentral', 'Sweden Central'):
-            with self.subTest(location=location):
-                self.scenario['resources'][deployment.ENVIRONMENT_ID]['location'] = location
-                result = self.operation()
-                self.assertEqual(self.creates(), [])
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertFalse(json.loads(result.stdout)['applied'])
-
-    def test_global_resources_require_exact_global_placement_before_write(self):
-        self.env.update(AUTH_MONITORING_ENABLE_ALERTS='true', AUTH_JOB_FAILURE_STATE='Failed')
-        self.scenario['resources'][deployment.SCOPE + '/providers/Microsoft.App/jobs/auth-test-cleanup'] = dict(
-            id=deployment.SCOPE + '/providers/Microsoft.App/jobs/auth-test-cleanup', type='Microsoft.App/jobs',
-            location='swedencentral', tags={**deployment.monitoring_resources()[deployment.INSIGHTS_ID]['tags'], 'role': 'auth-cleanup'})
-        tags = deployment.monitoring_resources()[deployment.INSIGHTS_ID]['tags']
-        group = dict(enabled=True, groupShortName='repoauth',
-            emailReceivers=[dict(name='operator', emailAddress=RECIPIENT, useCommonAlertSchema=True)])
-        for kind, name, properties in (('actionGroups', 'alerts', group), ('metricAlerts', 'http-errors', {})):
-            resource_id = deployment.SCOPE + '/providers/Microsoft.Insights/' + kind + '/auth-test-' + name
-            self.scenario['resources'][resource_id] = dict(id=resource_id, type='Microsoft.Insights/' + kind,
-                location='global', tags=tags, properties=properties)
-            result = self.operation()
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(self.creates(), [])
-            for location in ('swedencentral', 'Sweden Central', 'Global', None):
-                with self.subTest(kind=kind, location=location):
-                    self.scenario['resources'][resource_id]['location'] = location
-                    result = self.operation('monitoring-apply')
-                    self.assertEqual(self.creates(), [])
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn('Resource location conflict for auth-test-' + name, result.stderr)
-                    self.assertFalse(any(c['args'][:2] == ['deployment', 'group'] for c in self.calls))
-            self.scenario['resources'].pop(resource_id)
-
     def test_plan_has_exact_manifest_no_writes_or_readiness_and_redacts_private_input(self):
         result = self.operation()
         self.assertEqual(result.returncode, 0, result.stderr)

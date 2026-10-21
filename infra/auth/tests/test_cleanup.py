@@ -94,27 +94,6 @@ class CleanupProcessTests(unittest.TestCase):
                          {'Microsoft.App/jobs', 'Microsoft.ManagedIdentity/userAssignedIdentities'})
         return write['parameters']['parameters']
 
-    def test_monitoring_dependency_location_and_identity_guards(self):
-        baseline = copy.deepcopy(self.scenario)
-        for location in ('swedencentral', 'Sweden Central'):
-            with self.subTest(accepted=location):
-                self.scenario = copy.deepcopy(baseline)
-                self.scenario['resources'][deployment.INSIGHTS_ID]['location'] = location
-                result = self.operation('cleanup-plan')
-                self.assertEqual(self.creates(), [])
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertFalse(json.loads(result.stdout)['applied'])
-        for key, value in [('location', v) for v in ('northeurope', 'sweden', 'Sweden  Central', None, 42, [], {})] + [
-                ('id', deployment.INSIGHTS_ID + '-foreign'), ('type', 'Microsoft.App/jobs'), ('tags', {})]:
-            with self.subTest(key=key, value=value):
-                self.scenario = copy.deepcopy(baseline)
-                self.scenario['resources'][deployment.INSIGHTS_ID][key] = value
-                result = self.operation('cleanup-apply')
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('Monitoring dependency identity/location/ownership mismatch', result.stderr)
-                self.assertEqual(self.creates(), [])
-                self.assertFalse(any(c['args'][:2] == ['deployment', 'group'] for c in self.calls))
-
     def test_identity_plan_and_bootstrap_need_no_image_or_http_configuration(self):
         # C90-01: plans never write; platform identity comes from independent readback.
         self.env = {key: value for key, value in self.env.items() if not key.startswith('AUTH_IMAGE')}

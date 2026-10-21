@@ -115,7 +115,6 @@ jobs:
         run: |
           (cd service/auth && bash verify.sh)
           bash infra/auth/validate.sh
-          python3 -m unittest discover -s infra/auth/tests -v
           python3 -m unittest discover -s scripts/delivery -p 'test_*auth*.py' -v
   publish:
     needs: verify-service

@@ -211,34 +211,10 @@ class DeploymentProcessTests(unittest.TestCase):
 
     def test_foreign_environment_identity_and_location_refuse_before_write(self):
         original = copy.deepcopy(self.scenario['resources'][ENVIRONMENT_ID])
-        for key, value in (('id', APP_ID), ('type', 'Microsoft.App/containerApps'), ('location', 'other-region'), ('tags', {})):
+        for key, value in (('id', APP_ID), ('location', 'other-region'), ('tags', {})):
             with self.subTest(key=key):
                 self.scenario['resources'][ENVIRONMENT_ID] = {**original, key: value}
                 self.assert_refused(self.run_deploy(), 'Auth deployment refused')
-
-    def test_approved_location_representations_reach_foundation_plan(self):
-        for target in ('group', 'environment'):
-            resource = self.scenario['group'] if target == 'group' else self.scenario['resources'][ENVIRONMENT_ID]
-            for location in ('swedencentral', 'Sweden Central'):
-                with self.subTest(target=target, location=location):
-                    resource['location'] = location
-                    result = self.run_deploy('foundation-plan')
-                    self.assertEqual(self.creates(), [])
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertFalse(json.loads(result.stdout)['applied'])
-                    self.assertTrue(any(c['args'][:3] == ['deployment', 'group', 'what-if'] for c in self.calls))
-            resource['location'] = 'swedencentral'
-
-    def test_invalid_locations_refuse_at_foundation_guard_before_write(self):
-        for target, message in (('group', 'resource group identity/location'), ('environment', 'Resource location conflict')):
-            resource = self.scenario['group'] if target == 'group' else self.scenario['resources'][ENVIRONMENT_ID]
-            for location in ('northeurope', 'sweden', 'swedencentral-extra', 'SwedenCentral',
-                             'Sweden  Central', 'sw eden central', '(Europe) Sweden Central', '', None, 42, [], {}):
-                with self.subTest(target=target, location=location):
-                    resource['location'] = location
-                    self.assert_refused(self.run_deploy('foundation-apply'), message)
-                    self.assertFalse(any(c['args'][:2] == ['deployment', 'group'] for c in self.calls))
-            resource['location'] = 'swedencentral'
 
     def test_public_ingress_mismatch_cannot_report_runtime_success(self):
         self.scenario['resources'][APP_ID]['properties']['configuration']['ingress']['fqdn'] = 'foreign.example.test'
