@@ -80,7 +80,7 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
         if (ledger.GetBoolean("PendingCapacityReleased") == true)
         {
             if (gate.GetString("OwnerDeviceId") == Text(ledger, "DeviceId"))
-                await RecoverOwnerAsync(ledger, gate, ct);
+                await ReleaseSettledOwnerAsync(ledger, gate, ct);
             else await RetireAsync(ledger, gate, true, ct);
             return;
         }
@@ -127,7 +127,7 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
         await BrokerTable.SubmitAsync(table, [Action(quota), Action(directory), Action(ledger)], ct);
     }
 
-    private async Task RecoverOwnerAsync(TableEntity ledger, TableEntity gate, CancellationToken ct)
+    private async Task ReleaseSettledOwnerAsync(TableEntity ledger, TableEntity gate, CancellationToken ct)
     {
         var deadline = Date(ledger, "Deadline");
         if (Text(ledger, "Epoch") != options.DeploymentEpoch
