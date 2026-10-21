@@ -102,8 +102,10 @@ internal static class AppGitCredential
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         Isolate(start, Path.GetDirectoryName(file)!);
         var helper = Path.Combine(Path.GetDirectoryName(file)!, "clone-bin", "credential");
-        foreach (var setting in new[] { "credential.helper=", "credential.helper=" + Quote(helper),
-            "credential.https://github.com.helper=", "credential.https://github.com.helper=" + Quote(helper),
+        // Explicit shell form keeps quoted paths absolute; otherwise Git prefixes git credential-.
+        var helperCommand = "!" + Quote(helper);
+        foreach (var setting in new[] { "credential.helper=", "credential.helper=" + helperCommand,
+            "credential.https://github.com.helper=", "credential.https://github.com.helper=" + helperCommand,
             "credential.useHttpPath=true", "http.extraHeader=", "http.followRedirects=false", "http.sslVerify=true", "core.askPass=/bin/false" })
         {
             start.ArgumentList.Add("-c"); start.ArgumentList.Add(setting);
