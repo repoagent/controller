@@ -252,6 +252,8 @@ try {
     Write-Host "Instance: $Instance; repository: $Repository; authentication: $Authentication; mode: $Mode"
     Write-Host "Host launch/recovery state: $StateDirectory"
     Write-Host "Image: $(if ($runtimeImageId) { $runtimeImageId } else { 'pending build' }); base: $baseImage; platform: linux/amd64; maintained compatibility: Ubuntu 26.04."
+    Write-Host "Manifest: $ImageManifest; SHA256: $manifestHash; controller source: $($software.controller.source)."
+    if ($DerivedDockerfile) { Write-Host "Derived Dockerfile: $DerivedDockerfile; SHA256: $derivedHash." }
     Write-Host "Software: Codex $($software.agent.version), gh $($software.githubCli.version); tools: $($software.tools | ConvertTo-Json -Compress); model: $Model; updates: $ToolUpdates."
     Write-Host 'Download/build size and duration are unknown; depend on cache, selected base and tools. Full source/ABI build validation occurs on Apply.'
     Write-Host "Container: repoagent-$Instance. Retain config, credentials, workspace, history, state and tools volumes; broker enrollment volume is read-only at runtime."
