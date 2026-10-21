@@ -18,7 +18,7 @@ public sealed class ManagedCheckoutTests
     public async Task Startup_uses_the_owned_default_branch_only_with_explicit_clone_authority(bool clone, bool checkAuth)
     {
         if (OperatingSystem.IsWindows()) return; // This process fixture uses the Linux shipping tools.
-        // Git and durable files are real; only GitHub transport and native protocol are replaced.
+        // Git, durable files and native are real; only GitHub transport is replaced.
         using var fixture = new BrokerAuthenticationTests.Fixture(clone: clone);
         var origin = Path.Combine(fixture.Directory, "origin");
         var workspace = Path.Combine(fixture.Directory, "workspace");
@@ -31,19 +31,18 @@ public sealed class ManagedCheckoutTests
         var bin = Path.Combine(fixture.Directory, "tools");
         Directory.CreateDirectory(bin);
         var capture = Path.Combine(fixture.Directory, "native.jsonl");
+        var native = Environment.GetEnvironmentVariable("CHECKOUT_NATIVE") ?? Environment.GetEnvironmentVariable("PATH")!
+            .Split(Path.PathSeparator).Select(path => Path.Combine(path, "codex")).First(File.Exists);
+        var home = Path.Combine(fixture.Directory, "private-codex");
+        Directory.CreateDirectory(home);
+        File.SetUnixFileMode(home, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var script = Path.Combine(bin, "codex");
         File.WriteAllText(script, """
             #!/usr/bin/python3
             import json,os,sys
             with open(os.environ['CHECKOUT_CAPTURE'],'a') as out:
              out.write(json.dumps({'cwd':os.getcwd()})+'\n')
-            for line in sys.stdin:
-             request=json.loads(line)
-             if 'id' not in request:continue
-             method=request['method']
-             if method=='initialize':result={}
-             else:raise RuntimeError('Unexpected native request: '+method)
-             print(json.dumps({'id':request['id'],'result':result}),flush=True)
+            os.execv(os.environ['CHECKOUT_REAL_NATIVE'],[os.environ['CHECKOUT_REAL_NATIVE']]+sys.argv[1:])
             """);
         Executable(script);
         // Translate exactly one approved HTTPS remote. Git itself implements cloning.
@@ -67,7 +66,8 @@ public sealed class ManagedCheckoutTests
         var environment = new Dictionary<string, string?>
         {
             ["PATH"] = bin + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"),
-            ["CHECKOUT_CAPTURE"] = capture, ["CHECKOUT_ORIGIN"] = origin
+            ["CHECKOUT_CAPTURE"] = capture, ["CHECKOUT_ORIGIN"] = origin,
+            ["CHECKOUT_REAL_NATIVE"] = native, ["CODEX_HOME"] = home
         };
         var previous = environment.Keys.ToDictionary(k => k, Environment.GetEnvironmentVariable);
         try
