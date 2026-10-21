@@ -72,6 +72,21 @@ def select_tools(config):
     os.environ['PATH'] = os.pathsep.join(paths)
 
 
+def prepare_codex_home():
+    # Named volumes can retain the image's older 0755 home. Tighten only our
+    # genuine owned directory; never follow links or change credential contents.
+    if any(parent.is_symlink() for parent in CODEX.parents):
+        raise ValueError('Codex home cannot traverse links.')
+    CODEX.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(CODEX, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        if os.fstat(descriptor).st_uid != os.getuid():
+            raise ValueError('Codex home must be owned by the runtime user.')
+        os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
+
+
 def configure(args):
     config = settings() if CONFIG.exists() else {}
     if not re.fullmatch(r'[\w.-]+/[\w.-]+', args.repository):
@@ -113,8 +128,8 @@ def configure(args):
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
                   toolUpdates=args.tool_updates, mode=args.mode, publicUrl=args.public_url,
                   listenPort=args.listen_port, reconcileInterval=args.reconcile_interval)
+    prepare_codex_home()
     save(config)
-    CODEX.mkdir(parents=True, exist_ok=True)
     # The container is the operator-selected execution boundary. The bridge has no approval UI.
     (CODEX / 'config.toml').write_text('model = ' + json.dumps(args.model) + '\nweb_search = ' + json.dumps(args.web_search) + '\napproval_policy = "never"\nsandbox_mode = "danger-full-access"\ncli_auth_credentials_store = "file"\n')
     print(f"Configured {args.repository}; App {args.app_id}; model {args.model}.")

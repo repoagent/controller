@@ -15,6 +15,7 @@ public sealed class GitHubAppCredentials : IDisposable
 
     public string AgentLogin => appSlug.Length == 0 ? "" : appSlug + "[bot]";
     public string TokenFile { get; }
+    internal long? RepositoryId => source.RepositoryId;
 
     public GitHubAppCredentials(HttpClient http, string appId, string privateKeyPath, string repository,
         string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false)

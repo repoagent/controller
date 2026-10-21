@@ -172,7 +172,9 @@ if operation[0] == 'configure':
             "sys.path.insert(0, sys.argv.pop(1)); import runtime; "
             "root = Path(sys.argv.pop(1)); "
             "runtime.CONFIG = root / 'config/settings.json'; "
-            "runtime.CODEX = root / 'codex'; runtime.main()"
+            "runtime.CODEX = root / 'codex'; "
+            + ("runtime.prepare_codex_home = lambda: runtime.CODEX.mkdir(parents=True, exist_ok=True); " if os.name == 'nt' else "")
+            + "runtime.main()"
         )
         result = subprocess.run([sys.executable, '-c', bootstrap, runtime_source,
                                  str(runtime_files), *operation], capture_output=True, text=True)

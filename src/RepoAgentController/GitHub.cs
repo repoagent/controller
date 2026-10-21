@@ -27,6 +27,23 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return string.IsNullOrWhiteSpace(text) ? null : JsonNode.Parse(text);
     }
 
+    public async Task<RepositoryCheckout> CheckoutRepository(CancellationToken ct)
+    {
+        var value = JsonNode.Parse(await Api("GET", $"repos/{Repository}", null, ct)) ?? throw new IOException("Missing repository metadata");
+        var id = value["id"]?.GetValue<long>() ?? 0;
+        var name = value.Text("full_name");
+        var remote = value.Text("clone_url");
+        var branch = value.Text("default_branch");
+        if (id <= 0 || !Regex.IsMatch(name, @"\A[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\z") ||
+            name.Split('/').Any(part => part is "." or "..") || !string.Equals(name, Repository, StringComparison.OrdinalIgnoreCase) ||
+            remote != $"https://github.com/{name}.git" || string.IsNullOrWhiteSpace(branch) || branch.StartsWith('-') ||
+            branch.Any(c => char.IsControl(c) || char.IsWhiteSpace(c)) || branch.Contains("..", StringComparison.Ordinal) ||
+            branch.IndexOfAny(['~', '^', ':', '?', '*', '[', '\\']) >= 0 || branch.Contains("@{", StringComparison.Ordinal) ||
+            branch.Split('/').Any(part => part.Length == 0 || part.StartsWith('.') || part.EndsWith('.') || part.EndsWith(".lock", StringComparison.Ordinal)))
+            throw new IOException("Repository metadata does not match the approved checkout");
+        return new(id, name, remote, branch);
+    }
+
     async Task<string> Api(string method, string resource, JsonNode? input, CancellationToken ct)
     {
         await credentials.GetToken(ct);
