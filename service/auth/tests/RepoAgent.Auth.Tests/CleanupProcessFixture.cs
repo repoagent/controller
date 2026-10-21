@@ -51,7 +51,7 @@ internal static class CleanupProcessFixture
 // This proxy forwards real SDK requests to real Azurite. It never emulates Table decisions.
 internal sealed class CleanupTableProxy : IAsyncDisposable
 {
-    internal sealed record Exchange(string Method, string Path, string Query, string Body);
+    internal sealed record Exchange(string Method, string Path, string Query, string Body, string? ClientRequestId, string? UserAgent);
     private readonly HttpListener listener = new();
     private readonly HttpClient client = new(new HttpClientHandler { UseProxy = false });
     private readonly Uri destination;
@@ -106,7 +106,7 @@ internal sealed class CleanupTableProxy : IAsyncDisposable
         await request.InputStream.CopyToAsync(data);
         var bytes = data.ToArray();
         var exchange = new Exchange(request.HttpMethod, request.Url!.AbsolutePath,
-            request.Url.Query, System.Text.Encoding.UTF8.GetString(bytes));
+            request.Url.Query, System.Text.Encoding.UTF8.GetString(bytes), request.Headers["x-ms-client-request-id"], request.UserAgent);
         lock (Requests) Requests.Add(exchange);
         if (Before is not null && !await Before(exchange))
         {
@@ -162,5 +162,97 @@ internal sealed class CleanupTableProxy : IAsyncDisposable
         await serving;
         await Task.WhenAll(active);
         client.Dispose();
+    }
+}
+
+// HttpListener.Abort does not produce the required EOF on this stack. This narrow
+// shim forwards unchanged storage traffic through CleanupTableProxy, but sends ZERO
+// response bytes for its first bodyless GET after consuming the genuine response.
+internal sealed class CleanupGetEofShim : IAsyncDisposable
+{
+    private readonly TcpListener listener = new(IPAddress.Loopback, 0);
+    private readonly Uri upstream;
+    private readonly List<Task> connections = [];
+    private readonly Task serving;
+    private int drop = 1;
+    internal bool Dropped { get; private set; }
+    internal string Endpoint { get; }
+
+    internal CleanupGetEofShim(string upstreamEndpoint)
+    {
+        upstream = new Uri(upstreamEndpoint);
+        listener.Start();
+        Endpoint = "http://" + listener.LocalEndpoint + "/devstoreaccount1";
+        serving = ServeAsync();
+    }
+
+    private async Task ServeAsync()
+    {
+        try
+        {
+            while (true) connections.Add(ForwardAsync(await listener.AcceptTcpClientAsync()));
+        }
+        catch (SocketException) { }
+    }
+
+    private async Task ForwardAsync(TcpClient incoming)
+    {
+        using (incoming)
+        using (var backend = new TcpClient())
+        {
+            Task? uploading = null;
+            try
+            {
+                var source = incoming.GetStream();
+                using var headers = new MemoryStream();
+                var one = new byte[1];
+                while (headers.Length < 32768)
+                {
+                    if (await source.ReadAsync(one) == 0) return;
+                    headers.WriteByte(one[0]);
+                    if (headers.Length >= 4 && headers.GetBuffer().AsSpan((int)headers.Length - 4, 4).SequenceEqual("\r\n\r\n"u8)) break;
+                }
+                if (headers.Length >= 32768) throw new InvalidDataException("EOF fixture header bound exceeded.");
+                var lines = System.Text.Encoding.ASCII.GetString(headers.ToArray()).Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+                var firstGet = lines[0].StartsWith("GET ", StringComparison.Ordinal) && Interlocked.Exchange(ref drop, 0) == 1;
+                if (firstGet && lines.Any(l => l.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)
+                    && l["Content-Length:".Length..].Trim() != "0")) throw new InvalidDataException("Expected bodyless GET.");
+                // One request per backend connection keeps this a bounded header shim;
+                // body bytes and genuine responses are streamed without Table emulation.
+                var forwarded = lines.Where(l => !l.StartsWith("Host:", StringComparison.OrdinalIgnoreCase)
+                    && !l.StartsWith("Connection:", StringComparison.OrdinalIgnoreCase));
+                var bytes = System.Text.Encoding.ASCII.GetBytes(string.Join("\r\n", forwarded)
+                    + "\r\nHost: " + upstream.Authority + "\r\nConnection: close\r\n\r\n");
+                await backend.ConnectAsync(upstream.Host, upstream.Port);
+                var target = backend.GetStream();
+                await target.WriteAsync(bytes);
+                if (firstGet)
+                {
+                    using var response = new MemoryStream();
+                    await target.CopyToAsync(response);
+                    if (response.Length == 0) throw new InvalidDataException("Real storage response was not received.");
+                    Dropped = true;
+                    incoming.Client.Shutdown(SocketShutdown.Send);
+                    return;
+                }
+                uploading = source.CopyToAsync(target);
+                await target.CopyToAsync(source);
+            }
+            catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException) { }
+            finally
+            {
+                incoming.Close(); backend.Close();
+                if (uploading is not null)
+                    try { await uploading; }
+                    catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException) { }
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        listener.Stop();
+        await serving;
+        await Task.WhenAll(connections);
     }
 }

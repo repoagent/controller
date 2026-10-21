@@ -98,4 +98,96 @@ public sealed partial class CleanupProcessTests(ITestOutputHelper output)
             home.Delete(recursive: true);
         }
     }
+    [Fact]
+    public async Task Bodyless_Table_GET_replay_exposes_the_legacy_wire_count_claim()
+    {
+        await using var storage = new RevocationFixture();
+        await storage.InitializeAsync();
+        await using var proxy = new CleanupTableProxy(storage);
+        await using var eof = new CleanupGetEofShim(proxy.Endpoint);
+        var result = await CleanupProcessFixture.RunAsync(storage, eof.Endpoint);
+        var dropped = eof.Dropped;
+        var dispatches = result.Summary.GetProperty("tableRequests").GetInt32();
+        var repeated = proxy.Requests.Where(r => r.Method == "GET" && r.ClientRequestId is not null)
+            .GroupBy(r => r.ClientRequestId).Count(g => g.Count() > 1);
+        output.WriteLine("Forwarded bodyless GET response dropped: {0}; incoming sends={1}; legacy tableRequests={2}; repeated SDK request identities={3}; exit={4}.",
+            dropped, proxy.Requests.Count, dispatches, repeated, result.Exit);
+        Assert.True(dropped);
+        Assert.Contains(".NET 10.0.13", proxy.Requests[0].UserAgent ?? "");
+        Assert.True(repeated > 0, "The genuine bodyless-GET replay must be observed before evaluating the old count claim.");
+        Assert.True(proxy.Requests.Count > dispatches);
+        // Deliberately protects the OLD claimed exact-wire contract for causal red evidence.
+        // The accepted accounting amendment will migrate this oracle explicitly afterward.
+        Assert.Equal(proxy.Requests.Count, dispatches);
+    }
+
+    [Fact]
+    public async Task Deadline_cancelled_cycle_checkpoint_reports_unknown_selected_lane_ages()
+    {
+        await using var storage = new RevocationFixture();
+        await storage.InitializeAsync();
+        Assert.Equal(0, (await CleanupProcessFixture.RunAsync(storage)).Exit);
+        var old = DateTimeOffset.UtcNow.AddDays(-2);
+        foreach (var key in new[] { "cleanup:payload-v1", "cleanup:audit-v1" })
+        {
+            var row = await Read(storage, "global:enrollment-v1", key);
+            row["NextFamily"] = 0L;
+            if (key == "cleanup:payload-v1") row["NextLane"] = 0L;
+            foreach (var family in new[] { "Enrollment", "Issuance" })
+            {
+                row[family + "StartedAt"] = old;
+                row[family + "ProgressAt"] = old;
+            }
+            await storage.Table.UpdateEntityAsync(row, row.ETag, TableUpdateMode.Replace, Token);
+        }
+        var durableBefore = await Read(storage, "global:enrollment-v1", "cleanup:audit-v1");
+        var cycle = durableBefore.GetInt64("IssuanceCycle")!.Value;
+        await using var proxy = new CleanupTableProxy(storage);
+        var pace = new Stopwatch();
+        var held = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        double? checkpointArrivalSeconds = null;
+        CleanupTableProxy.Exchange? checkpoint = null;
+        proxy.Before = async request =>
+        {
+            if (!pace.IsRunning) pace.Start();
+            if (request.Path.EndsWith("/$batch", StringComparison.Ordinal)
+                && request.Body.Contains("cleanup:audit-v1", StringComparison.Ordinal)
+                && System.Text.RegularExpressions.Regex.IsMatch(request.Body,
+                    "\"IssuanceCycle\"\\s*:\\s*\"?" + (cycle + 1) + "\"?(?=\\s*[,}])"))
+            {
+                checkpointArrivalSeconds = pace.Elapsed.TotalSeconds;
+                checkpoint = request;
+                // Hold the actual terminal checkpoint without forwarding it. The child must
+                // cancel at its own60s deadline, before its3s individual request timeout.
+                return await held.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+            }
+            // An absolute schedule compensates for prior real response latency rather
+            // than accumulating it; each request is still delayed by at most2.3s.
+            var delay = proxy.Requests.Count * 2300L - pace.ElapsedMilliseconds;
+            if (delay > 0) await Task.Delay(TimeSpan.FromMilliseconds(delay), Token);
+            return true;
+        };
+        (int Exit, JsonElement Summary) result;
+        try { result = await CleanupProcessFixture.RunAsync(storage, proxy.Endpoint); }
+        finally { held.TrySetResult(false); }
+        var durableAfter = await Read(storage, "global:enrollment-v1", "cleanup:audit-v1");
+        output.WriteLine($"Selected audit/issuance cycle checkpoint arrived at {checkpointArrivalSeconds:F3}s; command reason={result.Summary.GetProperty("stopReason").GetString()}, elapsed={result.Summary.GetProperty("elapsedMilliseconds").GetInt64()}ms; durable cycle before={cycle}, after={durableAfter.GetInt64("IssuanceCycle")}.");
+        Assert.NotNull(checkpointArrivalSeconds);
+        Assert.Same(checkpoint, proxy.Requests.Last());
+        Assert.InRange(checkpointArrivalSeconds.Value, 57, 60);
+        Assert.Equal(0, result.Exit);
+        Assert.Equal("time-budget", result.Summary.GetProperty("stopReason").GetString());
+        Assert.Equal(0, result.Summary.GetProperty("failures").GetInt32());
+        Assert.Equal(cycle, durableAfter.GetInt64("IssuanceCycle"));
+        Assert.Equal(durableBefore.GetDateTimeOffset("IssuanceStartedAt"), durableAfter.GetDateTimeOffset("IssuanceStartedAt"));
+        Assert.Equal(durableBefore.GetDateTimeOffset("IssuanceProgressAt"), durableAfter.GetDateTimeOffset("IssuanceProgressAt"));
+        var selected = Assert.Single(result.Summary.GetProperty("cursorAndCycleAges").EnumerateArray(),
+            row => row.GetProperty("lane").GetString() == "audit" && row.GetProperty("family").GetString() == "issuance");
+        output.WriteLine("Unconfirmed selected cursor age={0}; cycle age={1}; durable age remains about2days.",
+            selected.GetProperty("cursorAgeSeconds"), selected.GetProperty("cycleAgeSeconds"));
+        Assert.Multiple(
+            () => Assert.Equal(JsonValueKind.Null, selected.GetProperty("cursorAgeSeconds").ValueKind),
+            () => Assert.Equal(JsonValueKind.Null, selected.GetProperty("cycleAgeSeconds").ValueKind));
+    }
+
 }
