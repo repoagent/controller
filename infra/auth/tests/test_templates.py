@@ -22,6 +22,18 @@ def resource(template, kind):
     return matches[0]
 
 
+def app_shape(template, staged=False):
+    """Resolve only the two fixed configuration/scale selections, not ARM generally."""
+    app = copy.deepcopy(resource(template, 'Microsoft.App/containerApps')['properties'])
+    for parent, field in ((app, 'configuration'), (app['template'], 'scale')):
+        expression = parent[field]
+        match = re.fullmatch(r"\[if\(parameters\('staged'\), variables\('([^']+)'\), variables\('([^']+)'\)\)\]", expression)
+        if not match:
+            raise AssertionError('Expected the bounded staged/release selection')
+        parent[field] = copy.deepcopy(template['variables'][match[1 if staged else 2]])
+    return app
+
+
 def owned_origin_expression(template, expression):
     """Normalize only the origin's variable, interpolation and concatenation spellings."""
     def expand(value):
@@ -120,7 +132,7 @@ class CompiledDeploymentContractTests(unittest.TestCase):
         self.assertIn('data-protection/keyring.xml', env['Auth__DataProtectionBlobUri'])
         self.assertNotIn('Auth__StoreResourceId', env)
         self.assertNotIn('Auth__OAuthClientSecret', env)
-        self.assertNotIn('secrets', app['properties']['configuration'])
+        self.assertNotIn('secrets', app_shape(template)['configuration'])
         self.assertNotIn('oauthClientSecretUri', template['parameters'])
         self.assertNotIn('storeResourceId', template['parameters'])
         for name, default, maximum in (('requestLimitPerMinute', 120, 10000),
@@ -131,7 +143,7 @@ class CompiledDeploymentContractTests(unittest.TestCase):
     def test_pilot_capacity_and_log_limits_remain_explicit(self):
         template = self.templates['main']
         app = resource(template, 'Microsoft.App/containerApps')
-        compute = app['properties']['template']
+        compute = app_shape(template)['template']
         self.assertEqual(compute['scale']['minReplicas'], 0)
         self.assertEqual(compute['scale']['maxReplicas'], 1)
         self.assertEqual(compute['containers'][0]['resources'], {'cpu': "[json('0.25')]", 'memory': '0.5Gi'})
@@ -146,7 +158,7 @@ class CompiledDeploymentContractTests(unittest.TestCase):
                 app = resource(template, 'Microsoft.App/containerApps')['properties']['template']
                 logs = resource(template, 'Microsoft.OperationalInsights/workspaces')['properties']
                 if field == 'replicas':
-                    app['scale']['maxReplicas'] = 2
+                    template['variables']['releaseScale']['maxReplicas'] = 2
                 elif field in ('cpu', 'memory'):
                     app['containers'][0]['resources'][field] = 1 if field == 'cpu' else '1Gi'
                 elif field == 'retention':
@@ -161,6 +173,28 @@ class CompiledDeploymentContractTests(unittest.TestCase):
                                         capture_output=True, text=True, timeout=10)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('shared-key' if field == 'sharedKey' else 'capacity/log envelope', result.stderr)
+
+    def test_staging_omits_all_ingress_and_uses_one_replica_while_release_keeps_https(self):
+        template = self.templates['main']
+        staged, release = app_shape(template, True), app_shape(template)
+        self.assertNotIn('ingress', staged['configuration'])
+        self.assertEqual(staged['template']['scale'], {'minReplicas': 1, 'maxReplicas': 1, 'rules': []})
+        self.assertEqual(release['configuration']['ingress'], {
+            'external': True, 'allowInsecure': False, 'targetPort': 8080, 'transport': 'http'})
+        self.assertEqual(release['template']['scale']['minReplicas'], 0)
+        self.assertEqual(staged['template']['containers'], release['template']['containers'])
+
+    def test_compiled_guard_rejects_staged_ingress_even_when_internal(self):
+        for external in (True, False):
+            with self.subTest(external=external):
+                template = copy.deepcopy(self.templates['main'])
+                template['variables']['stagedConfiguration']['ingress'] = {'external': external, 'targetPort': 8080}
+                output = self.directory / 'staging-ingress.json'
+                output.write_text(json.dumps(template))
+                result = subprocess.run(['python3', str(AUTH / 'validate_arm.py'), str(output)],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Staging must have no ingress', result.stderr)
 
     def test_operator_template_assigns_table_contributor_only_at_exact_table_scope(self):
         template = self.templates['runtime-rbac']

@@ -3,11 +3,20 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Verify existing access or run the full service delivery pipeline
+        description: Select normal delivery or a guarded first-activation operation
         type: choice
-        options: [access-check, deploy]
+        options: [access-check, deploy, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume]
         default: access-check
         required: true
+      expected-source-sha:
+        description: Exact accepted current main commit (required for activation operations)
+        type: string
+      image:
+        description: Accepted immutable GHCR digest (runtime operations only)
+        type: string
+      revision:
+        description: Exact accepted staging revision (stop/resume only)
+        type: string
   push:
     branches: [main]
     paths: &auth-paths
@@ -105,9 +114,10 @@ jobs:
           (cd service/auth && bash verify.sh)
           bash infra/auth/validate.sh
           python3 -m unittest discover -s infra/auth/tests -v
+          python3 -m unittest discover -s scripts/delivery -p 'test_*auth*.py' -v
   publish:
     needs: verify-service
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -139,7 +149,7 @@ jobs:
         run: docker logout ghcr.io
   deploy:
     needs: publish
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy'))
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -171,3 +181,38 @@ jobs:
         run: bash infra/auth/deploy.sh apply
       - name: Verify deployed immutable image and ready revision
         run: python3 scripts/delivery/deploy-auth.py deploy
+
+  activation:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && contains(fromJSON('["foundation-plan","foundation-apply","stage-plan","stage-apply","promote-staged","stage-stop","stage-resume"]'), inputs.operation)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AUTH_OPERATION: ${{ inputs.operation }}
+      AUTH_EXPECTED_SOURCE_SHA: ${{ inputs.expected-source-sha }}
+      AUTH_IMAGE: ${{ inputs.image }}
+      AUTH_STAGE_REVISION: ${{ inputs.revision }}
+      AUTH_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_CORE_OUTPUT: none
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - if: ${{ !startsWith(inputs.operation, 'foundation-') }}
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Run the accepted operation with existing guarded infrastructure
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$AUTH_OPERATION" in
+            foundation-plan|foundation-apply|stage-plan|stage-apply|promote-staged|stage-stop|stage-resume)
+              bash infra/auth/deploy.sh "$AUTH_OPERATION" ;;
+            *) exit 1 ;;
+          esac
