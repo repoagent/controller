@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 
 import test_host_enrollment as host
-import test_host_enrollment_assembled as enrollment
+from test_clone_assembled import selected_native_sha256
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = 'sha256:09132ca02e59183e84eeb164a2a33ca8afbaa7aa56787f7101820a8da0916e9d'
@@ -41,10 +41,7 @@ class AssembledGuidedInstallTests(unittest.TestCase):
 
     def test_public_install_reaches_native_readiness_then_restart_reuses_identity(self):
         native = Path(os.environ['REPOAGENT_TEST_NATIVE_CONTROLLER'])
-        self.assertEqual(hashlib.sha256(native.read_bytes()).hexdigest(), enrollment.EXPECTED_NATIVE)
-        source = subprocess.run(['git', 'diff', '--exit-code', 'dfd5617', '--', 'src/RepoAgentController',
-            'global.json', '.agents/skills/github-discussion'], cwd=ROOT, capture_output=True, text=True)
-        self.assertEqual(source.returncode, 0, source.stdout)
+        expected_native = selected_native_sha256()
         journey = host.EnrollmentJourney(self, variable='APPROVED_CONTROLLER')
         directory = journey.directory
         instance = 'guided-actual-' + uuid.uuid4().hex[:12]
@@ -214,7 +211,7 @@ USER 1000
                 self.assertFalse(secret in output, 'Private credential appeared in public installer output')
             print('GUIDED_ASSEMBLED_PROCESS ' + json.dumps({'command':arguments,
                 'returncode':result.returncode,'output':output,'imageId':image_id,
-                'nativeSha256':enrollment.EXPECTED_NATIVE}), flush=True)
+                'nativeSha256':expected_native}), flush=True)
             return result
 
         def events():
@@ -326,7 +323,7 @@ print(json.dumps(proof))
         proof = json.loads(docker('run', '--rm', '--mount',
             'type=volume,src=' + enrollment_volume + ',dst=/data/enrollment,readonly',
             '--entrypoint', '/usr/bin/python3', image_id, '-c', probe).stdout)
-        self.assertEqual(proof['nativeSha256'], enrollment.EXPECTED_NATIVE)
+        self.assertEqual(proof['nativeSha256'], expected_native)
         self.assertEqual(proof['runtimeSha256'], hashlib.sha256((ROOT / 'container/runtime.py').read_bytes()).hexdigest())
         self.assertEqual(proof['enrollmentSha256'], hashlib.sha256((journey.state / 'enrollment.json').read_bytes()).hexdigest())
         self.assertTrue(proof['readOnlyWriteRejected'])

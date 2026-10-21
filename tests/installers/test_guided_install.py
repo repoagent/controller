@@ -429,6 +429,60 @@ class GuidedInstallTests(unittest.TestCase):
         with self.subTest(selection='saved'):
             self.assert_preview_build_identity(result, manifest, derived)
 
+    def test_own_app_clone_choice_survives_saved_resume(self):
+        key = self.owned / 'own-app.pem'
+        key.write_text('FAKE-PEM-CONTENT-NEVER-LOG')
+        key.chmod(0o600)
+        options = {'Authentication': 'OwnApp', 'BrokerOrigin': False, 'AppId': '123456',
+                   'KeyPath': str(key), 'NoStart': None, 'Clone': None}
+        before = snapshot(self.owned)
+        result, _ = self.run_guided(apply=False, overrides=options)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Contents read', result.stdout)
+        self.assert_read_only(before)
+        result, state = self.run_guided(overrides=options)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(state['settings']['clone'])
+        self.assertEqual(self.journey.read('launch.json')['clone'], 'true')
+        result, state = self.run_guided(saved=True, overrides={'NoStart': None})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(state['settings']['clone'])
+        self.assertEqual(self.journey.read('launch.json')['clone'], 'true')
+        self.assertEqual(self.journey.events, [])
+        self.assertFalse(self.journey.log.exists())
+
+    def test_own_app_saved_ordinary_and_legacy_choices_cannot_upgrade_to_clone(self):
+        key = self.owned / 'own-app.pem'
+        key.write_text('FAKE-PEM-CONTENT-NEVER-LOG')
+        key.chmod(0o600)
+        result, state = self.run_guided(overrides={'Authentication': 'OwnApp',
+            'BrokerOrigin': False, 'AppId': '123456', 'KeyPath': str(key), 'NoStart': None})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse(state['settings']['clone'])
+        self.assertEqual(self.journey.read('launch.json')['clone'], 'false')
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                if legacy:
+                    # Model the previously shipped schema1 record by removing
+                    # only the newly optional nonsecret launch coordinate.
+                    launch = self.journey.read('launch.json')
+                    del launch['clone']
+                    (self.journey.state / 'launch.json').write_text(json.dumps(launch))
+                before = snapshot(self.owned)
+                event_count = len(state['events'])
+                result, state = self.run_guided(saved=True, apply=False)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('Read-only preview.', result.stdout)
+                self.assertNotIn('OwnApp clone mode:', result.stdout)
+                self.assertEqual(snapshot(self.owned), before)
+                result, state = self.run_guided(saved=True, overrides={'Clone': None})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('fresh instance', result.stdout + result.stderr)
+                self.assertEqual(snapshot(self.owned), before)
+                self.assertEqual(mutating_docker_commands(state['events'][event_count:]), [])
+                self.assertEqual(self.journey.events, [])
+                self.assertFalse(self.journey.log.exists())
+
     def test_only_enrollment_bytes_and_selected_auth_cross_runtime_boundary(self):
         history = self.owned / 'history-sentinel.jsonl'
         history.write_text('HOST-HISTORY-NEVER-COPY')
