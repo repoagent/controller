@@ -480,6 +480,10 @@ class GitProvider:
                         hook = json.loads(body); provider.hooks.append(hook)
                         return self.reply(dict(id=456, **hook))
                     if self.command == 'GET' and self.path == '/repos/' + repository:
+                        fault = getattr(provider, 'postfetch_failure', None)
+                        if fault and len(provider.git_tokens) > fault['git']:
+                            fault.update(git=len(provider.git_tokens), count=fault['count'] + 1)
+                            return self.reply({}, 503)
                         return self.reply(dict(id=provider.repository_id, full_name=repository, clone_url='https://github.com/' + repository + '.git', default_branch='main'))
                     if self.command == 'GET' and self.path == '/repos/' + repository + '/git/ref/heads/main':
                         if getattr(provider, 'ref_status', None):

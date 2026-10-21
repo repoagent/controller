@@ -326,6 +326,38 @@ class CheckoutRefreshTests(unittest.TestCase):
                 f.wait('observation-error')
                 self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Identity mismatch admitted native work')
 
+    def test_transient_final_metadata_failure_retains_pending_assistance_and_retries(self):
+        with self.fixture(protocol=True) as f, self.controller(f):
+            (f.checkout / '.git/info/exclude').write_text('local-cache\n')
+            (f.checkout / 'local-cache').write_bytes(b'user cache\n')
+            initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+            before = self.snapshot(f.checkout)
+            f.provider.postfetch_failure = dict(git=len(f.provider.git_tokens), count=0)
+            target = self.publish(f)
+            f.wait(' refresh-')
+            journal = json.loads(f.journal.read_text())
+            self.assertGreater(f.provider.postfetch_failure['count'], 0, 'Final metadata outage was not exercised')
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'FETCH_HEAD^{commit}'), target)
+            self.assertEqual(self.snapshot(f.checkout), before)
+            self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
+            self.assertNotIn('applying', journal)
+            self.assertGreater(journal['requested'], journal['completed'])
+            print('POSTFETCH_METADATA fetched=' + target + ' baseline=' + initial + ' blocked=' + str(journal['blocked'])
+                  + ' faults=' + str(f.provider.postfetch_failure['count']) + ' reason=' + journal.get('reason', ''), flush=True)
+            self.assertFalse(journal['blocked'], 'Ordinary final metadata outage must defer without blocking safe assistance')
+            f.provider.discussions = [self.discussion(1)]
+            request = self.rpc(f, 'thread/start')
+            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+            f.wait('poll-completed success=True')
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
+            f.provider.postfetch_failure = None
+            self.terminal(f, 'S1', 'T1')
+            f.wait('checkout-refreshed'); self.settled(f)
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+            self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
+            self.assertEqual((f.checkout / 'local-cache').read_bytes(), b'user cache\n')
+
     def discussion(self, number):
         return dict(id='D' + str(number), number=number, url='https://github.com/owner/project/discussions/' + str(number),
                     body='@test-app[bot] fixture ' + str(number), bodyHTML='fixture', title='fixture',
