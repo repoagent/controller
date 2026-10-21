@@ -168,7 +168,9 @@ internal sealed class ManagedCheckout : IDisposable
                 throw Deferred("default branch is not a fast-forward; manual recovery required");
         }
         catch (IOException error) { throw Deferred("fetch or ancestry check refused: " + error.Message); }
-        current = await github.CheckoutRepository(ct);
+        try { current = await github.CheckoutRepository(ct); }
+        catch (IOException error) when (error is not GitHub.CheckoutIdentityException)
+        { throw Deferred("authoritative repository lookup unavailable after fetch; retry pending"); }
         if (current.Id != repository.Id || current.Name != repository.Name || current.Remote != repository.Remote)
             throw Blocked("authoritative repository identity changed during fetch");
         if (current.Branch != repository.Branch) throw Deferred("default branch changed during fetch");
