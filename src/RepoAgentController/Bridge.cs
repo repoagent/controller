@@ -2,7 +2,7 @@ using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
 
-sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> enroll)
+sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> enroll, CheckoutRefresh? refresh = null)
 {
     readonly HashSet<string> blockedLogged = [];
 
@@ -113,19 +113,23 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
                     ["discussion"] = Public(discussion), ["changes"] = changes
                 };
                 if (bootstrap) envelope["context"] = new JsonObject { ["existingComments"] = Json.Array(sources.Skip(1).Select(Public)) };
+                using var admission = refresh is null ? null : await refresh.Admit(ct);
                 // A durable stop marker prevents automatic retry after a lost native acknowledgement.
                 record["pending"] = new JsonObject { ["operation"] = bootstrap ? "create-and-send" : "send", ["since"] = DateTimeOffset.UtcNow.ToString("O"), ["sourceIds"] = new JsonArray(receipts.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()) };
                 store.Save();
                 if (bootstrap)
                 {
                     record["sessionId"] = await codex.Start(ct);
+                    admission?.Bind(record.Text("sessionId"));
                     store.Save();
                     Log.Write("session-created", $"{discussion.Text("url")} session={record.Text("sessionId")}");
                 }
-                await codex.Accept(record.Text("sessionId"), envelope, ct);
+                admission?.Bind(record.Text("sessionId"));
+                await codex.Accept(record.Text("sessionId"), envelope, ct, admission);
                 record["sources"] = current;
                 record.Remove("pending");
                 store.Save();
+                admission?.Confirm();
                 Log.Write("forwarded", $"{discussion.Text("url")} session={record.Text("sessionId")} changes={changes.Count} sources={string.Join(',', receipts)}");
                 foreach (var source in sources.Where(s => receipts.Contains(s.Text("id"))))
                 {

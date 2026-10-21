@@ -44,6 +44,15 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return new(id, name, remote, branch);
     }
 
+    public async Task<string> CheckoutCommit(string branch, CancellationToken ct)
+    {
+        var reference = await Rest("GET", "git/ref/heads/" + Uri.EscapeDataString(branch), null, ct);
+        var sha = reference?["object"]?.Text("sha") ?? "";
+        if (reference?.Text("ref") != "refs/heads/" + branch || reference?["object"]?.Text("type") != "commit" ||
+            !Regex.IsMatch(sha, "\\A[0-9a-f]{40}\\z")) throw new IOException("Invalid authoritative default-branch commit");
+        return sha;
+    }
+
     async Task<string> Api(string method, string resource, JsonNode? input, CancellationToken ct)
     {
         await credentials.GetToken(ct);
