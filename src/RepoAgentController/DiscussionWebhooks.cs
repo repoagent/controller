@@ -13,7 +13,7 @@ sealed record WebhookConfiguration(Uri PublicUrl, int Port, TimeSpan ReconcileIn
 }
 
 /// <summary>Authenticates HTTP deliveries and serializes observations with reconciliation.</summary>
-sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, WebhookConfiguration configuration)
+sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, WebhookConfiguration configuration, CheckoutRefresh? refresh = null)
 {
     readonly Channel<int> work = Channel.CreateUnbounded<int>(new UnboundedChannelOptions { SingleReader = true });
     readonly HashSet<int> queued = [];
@@ -30,7 +30,7 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
         Task worker = Task.CompletedTask, reconcile = Task.CompletedTask;
         try
         {
-            await registration.Configure(configuration.Endpoint, ct);
+            await registration.Configure(configuration.Endpoint, refresh is not null, ct);
             if (receive.IsCompleted) await receive;
             Log.Write("mode", $"webhook-fixed public-url={configuration.Endpoint} port={configuration.Port} reconcile-seconds={configuration.ReconcileInterval.TotalSeconds:F0}");
             Log.Write("ready", $"repository={github.Repository} actor={github.AgentLogin} mode=webhook-fixed");
@@ -146,6 +146,18 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
         if (!Guid.TryParse(request.Headers["X-GitHub-Delivery"], out var delivery)) return 400;
         var eventName = request.Headers["X-GitHub-Event"];
         if (eventName == "ping") { Log.Write("webhook-ping", $"delivery={delivery}"); return 204; }
+        if (eventName == "push")
+        {
+            if (refresh is null) return 204;
+            if (payload["repository"]?["id"] is not JsonValue identity || !identity.TryGetValue<long>(out var repositoryId) ||
+                repositoryId != refresh.RepositoryId) return 403;
+            if (payload["ref"] is not JsonValue reference || !reference.TryGetValue<string>(out var pushedRef) ||
+                pushedRef.Length is 0 or > 1024 || pushedRef.Any(char.IsControl)) return 400;
+            if (pushedRef != refresh.DefaultRef) return 204;
+            refresh.Request(); // Persist the hint before acknowledging; only the worker touches Git/native.
+            Log.Write("webhook-delivery", $"delivery={delivery} event=push scheduled=True");
+            return 202;
+        }
         if (eventName is not ("discussion" or "discussion_comment")) return 204;
         var action = payload["action"]?.ToString() ?? "";
         if (action.Length is 0 or > 64 || action.Any(c => !char.IsAsciiLetterLower(c) && c != '_')) return 400;
@@ -187,11 +199,11 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             Save();
         }
 
-        public async Task Configure(Uri endpoint, CancellationToken ct)
+        public async Task Configure(Uri endpoint, bool clone, CancellationToken ct)
         {
             var hook = settings["hookId"]?.GetValue<long>();
             var input = Json.Object(("name", "web"), ("active", true),
-                ("events", new JsonArray("discussion", "discussion_comment")),
+                ("events", clone ? new JsonArray("discussion", "discussion_comment", "push") : new JsonArray("discussion", "discussion_comment")),
                 ("config", Json.Object(("url", endpoint.AbsoluteUri), ("content_type", "json"), ("insecure_ssl", "0"), ("secret", Secret))));
             JsonNode? result;
             try { result = await github.Rest(hook is null ? "POST" : "PATCH", hook is null ? "hooks" : $"hooks/{hook}", input, ct); }

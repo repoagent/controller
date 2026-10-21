@@ -11,6 +11,7 @@ src/RepoAgentController/DiscussionWebhooks.cs
 src/RepoAgentController/GitHub.cs
 src/RepoAgentController/GitHubAppCredentials.cs
 src/RepoAgentController/ManagedCheckout.cs
+src/RepoAgentController/CheckoutRefresh.cs
 src/RepoAgentController/MentionUser.cs
 src/RepoAgentController/Program.cs
 src/RepoAgentController/RepoAgentController.csproj
