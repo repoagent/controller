@@ -92,7 +92,7 @@ class AuthPipelineCliTests(unittest.TestCase):
                 (root / missing).unlink()
             binaries = root / 'bin'
             binaries.mkdir()
-            for name in ['gh', 'docker', 'skopeo']:
+            for name in ['gh', 'docker', 'skopeo', 'az']:
                 path = binaries / name
                 path.write_text(f'#!{sys.executable}\n' + DOUBLE)
                 path.chmod(0o700)
@@ -237,6 +237,30 @@ class AuthPipelineCliTests(unittest.TestCase):
 
                 self.assertEqual(result.returncode, 1)
                 self.assertEqual((calls, output), ([], 'existing=value\n'))
+
+    def test_attest_rejects_an_image_from_a_different_accepted_source(self):
+        image = remote_image(config=dict(Labels={
+            'io.repoagent.role': 'auth-service',
+            'org.opencontainers.image.revision': 'c' * 40}, User='10001:10001'))
+
+        result, calls, output, _ = self.invoke(
+            'attest', [step(ATTEST, image)], environment={'AUTH_EXPECTED_SOURCE_SHA': SHA})
+
+        self.assertEqual(([call['argv'] for call in calls], output), ([ATTEST], 'existing=value\n'))
+        self.assertNotIn(CANARY, result.stdout + result.stderr + output)
+        self.assertNotEqual(result.returncode, 0, 'Attestation accepted an image from a different source commit')
+
+    def test_attest_accepts_the_image_matching_the_accepted_source(self):
+        image = remote_image(config=dict(Labels={
+            'io.repoagent.role': 'auth-service',
+            'org.opencontainers.image.revision': SHA}, User='10001:10001'))
+
+        result, calls, output, _ = self.invoke(
+            'attest', [step(ATTEST, image)], environment={'AUTH_EXPECTED_SOURCE_SHA': SHA})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(([call['argv'] for call in calls], output), ([ATTEST], 'existing=value\n'))
+        self.assertNotIn(CANARY, result.stdout + result.stderr + output)
 
     def test_workflow_login_transports_token_only_through_stdin(self):
         # Execute the actual shell step; do not duplicate or assert workflow YAML.
