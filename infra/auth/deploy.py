@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import os
+import pty
 from pathlib import Path
 import re
 import shutil
@@ -325,7 +326,7 @@ class Deployment:
         self.deadline = time.monotonic() + 60
         while time.monotonic() < self.deadline:
             self.inspect()
-            revisions = self.az(["containerapp", "revision", "list", *target], lists=True)
+            revisions = self.az(["containerapp", "revision", "list", "--all", *target], lists=True)
             names, active, replicas = set(), [], []
             for revision in revisions:
                 name, properties = revision.get("name"), revision.get("properties", {})
@@ -356,10 +357,18 @@ class Deployment:
             "if command -v curl >/dev/null; then curl -fsS -o /dev/null http://127.0.0.1:8080/health/$p; "
             "elif command -v wget >/dev/null; then wget -q -O /dev/null http://127.0.0.1:8080/health/$p; "
             "else exit 1; fi || exit 1; done; printf AUTH_LOCAL_HEALTH_OK")
-        result = subprocess.run(["az", "containerapp", "exec", *target, "--subscription", self.subscription,
-                                 "--revision", self.revision, "--replica", self.replica, "--container", "auth-service",
-                                 "--command", "/bin/sh -c '" + shell + "'"], capture_output=True, text=True,
-                                timeout=max(1, self.deadline - time.monotonic()))
+        # Azure CLI's Unix exec requires terminal stdin even in a noninteractive workflow.
+        # Only stdin uses the PTY; provider output stays captured, with no private input.
+        master, slave = pty.openpty()
+        try:
+            result = subprocess.run(["az", "containerapp", "exec", *target, "--subscription", self.subscription,
+                                     "--revision", self.revision, "--replica", self.replica, "--container", "auth-service",
+                                     "--command", "/bin/sh -c '" + shell + "'"], stdin=slave, capture_output=True, text=True,
+                                    timeout=max(1, self.deadline - time.monotonic()))
+        finally:
+            # run() kills and waits for its child on timeout; always release both terminal FDs.
+            os.close(slave)
+            os.close(master)
         if result.returncode or "AUTH_LOCAL_HEALTH_OK" not in result.stdout.splitlines():
             raise DeploymentError("Local health/tools unavailable in selected runtime context; resume unconfirmed")
 
