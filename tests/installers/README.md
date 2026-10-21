@@ -54,7 +54,7 @@ operations cannot succeed through that fixture shortcut. Legacy direct Bash
 journeys explicitly supply Docker's rendered unlabeled-owner sentinel.
 
 Run `test_local_lifecycle_assembled.py` with
-`REPOAGENT_LOCAL_LIFECYCLE_IMAGE` set to an existing local immutable controller
+`REPOAGENT_LOCAL_LIFECYCLE_IMAGE` set to an existing tagged local immutable controller
 image whose runtime hash matches the source. It derives a minimal network-disabled
 fixture layer that replaces only start with credential-free readiness/wait; real
 configure/import/get and the unchanged host-carried helper use actual Docker and

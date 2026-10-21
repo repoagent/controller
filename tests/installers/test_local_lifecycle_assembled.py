@@ -51,6 +51,7 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='lifecycle97-')))
         parent = docker('image', 'inspect', '--format', '{{.Id}}', PARENT).stdout.strip()
         self.assertRegex(parent, r'^sha256:[a-f0-9]{64}$')
+        self.assertTrue(json.loads(docker('image', 'inspect', parent).stdout)[0]['RepoTags'], 'Parent must retain an independent existing tag')
         original = docker('run', '--rm', '--network', 'none', '--entrypoint', '/usr/bin/sha256sum',
                           parent, '/opt/repoagent/runtime.py').stdout.split()[0]
         self.assertEqual(original, hashlib.sha256((ROOT / 'container/runtime.py').read_bytes()).hexdigest())
@@ -88,7 +89,7 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
                '-c', 'printf retained > /sentinel/retained')
         self.docker, self.public, self.directory, self.environment = docker, public, directory, environment
         self.name, self.image, self.instance, self.parent = name, image, instance, parent
-        self.marker, self.mount, self.sentinel = marker, mount, sentinel
+        self.marker, self.mount, self.sentinel, self.unrelated = marker, mount, sentinel, unrelated
 
     def test_public_start_refuses_durable_disable(self):
         docker, public, mount, marker = self.docker, self.public, self.mount, self.marker
@@ -111,6 +112,7 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
 
     def files(self, code):
         mounts = [argument for storage in STORAGE for argument in ('--mount', 'type=volume,src=' + self.name + '-' + storage + ',dst=/data/' + storage)]
+        mounts += ['--mount', 'type=volume,src=' + self.unrelated + ',dst=/data/unrelated,readonly']
         return self.docker('run', '--rm', '--network', 'none', '--user', '1000', *mounts,
                            '--entrypoint', '/usr/bin/python3', self.image, '-E', '-c', code).stdout
 
@@ -128,7 +130,7 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         return result, outcomes[0]
 
     def test_remote_denial_still_disables_clears_and_preserves_retry(self):
-        log = self.deny_remote()
+        self.deny_remote()
         host = self.directory / 'host'
         host.mkdir(mode=0o700)
         for filename, data in [('enrollment.json', json.dumps(frozen_enrollment())), ('recovery.json', '{corrupt')]:
@@ -137,8 +139,8 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         targets = ['/data/enrollment/enrollment.json', '/data/credentials/codex/auth.json',
                    '/data/state/bridge.json.github-app/installation-token.json', '/data/state/bridge.json.github-app/installation-token.json.tmp']
         retained = ['/data/config/settings.json', '/data/state/bridge.json', '/data/workspace/retained',
-                    '/data/history/retained', '/data/tools/retained', '/data/credentials/codex/config.toml']
-        self.files("from pathlib import Path; paths=" + repr(targets[1:] + retained[1:-1]) +
+                    '/data/history/retained', '/data/tools/retained', '/data/credentials/codex/config.toml', '/data/unrelated/retained']
+        self.files("from pathlib import Path; paths=" + repr(targets[1:] + retained[1:5]) +
                    "; [(p.parent.mkdir(parents=True,exist_ok=True),p.write_text('retained-or-synthetic')) for p in map(Path,paths)]")
         before = json.loads(self.files("import json,hashlib; from pathlib import Path; print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in " + repr(retained) + "}))"))
         started = self.public('start')
@@ -154,8 +156,8 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         after = json.loads(self.files("import json,hashlib; from pathlib import Path; print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in " + repr(retained) + "}))"))
         self.assertEqual(before, after)
         self.assertEqual(json.loads(self.files("from pathlib import Path; print(Path('/data/enrollment/disabled.json').read_text())")), self.marker)
-        methods = [json.loads(line)['argv'][4] for line in log.read_text().splitlines()]
-        self.assertEqual((methods, json.loads(log.read_text().splitlines()[-1])['argv'][-1]), (['GET', 'GET', 'DELETE'], 'repos/owner/repository/agents/variables/APPROVED_CONTROLLER'))
+        methods = [json.loads(line)['argv'][4] for line in self.log.read_text().splitlines()]
+        self.assertEqual((methods, json.loads(self.log.read_text().splitlines()[-1])['argv'][-1]), (['GET', 'GET', 'DELETE'], 'repos/owner/repository/agents/variables/APPROVED_CONTROLLER'))
         for arguments in [('start',), ('restart',), ('import-codex-auth', str(self.directory / 'enrollment.json'))]:
             refused = self.public(*arguments)
             self.assertNotEqual(refused.returncode, 0)
@@ -172,12 +174,10 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
     def deny_remote(self):
         value = 'synthetic-approval'
         self.marker['binding']['expectedValueSha256'] = hashlib.sha256(value.encode()).hexdigest()
-        scenario, log = self.directory / 'scenario.json', self.directory / 'gh.jsonl'
+        scenario, self.log = self.directory / 'scenario.json', self.directory / 'gh.jsonl'
         scenario.write_text(json.dumps([{'body': {'id': 345, 'full_name': 'owner/repository'}},
                                        {'body': {'name': 'APPROVED_CONTROLLER', 'value': value}}, {'status': 403}]))
-        self.environment.update(PATH=str(self.directory) + os.pathsep + os.environ['PATH'],
-                                REVOKE_GH_SCENARIO=str(scenario), REVOKE_GH_LOG=str(log), GH_TOKEN='SYNTHETIC-ONLY')
-        return log
+        self.environment.update(REVOKE_GH_SCENARIO=str(scenario), REVOKE_GH_LOG=str(self.log), GH_TOKEN='SYNTHETIC-ONLY')
 
     def test_unsafe_clear_parents_and_hardlinks_preserve_external_bytes(self):
         self.deny_remote()
