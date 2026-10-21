@@ -130,7 +130,7 @@ internal sealed class Observation : IStartupFilter
                 var parts = pendingId.Split('_', 2);
                 var row = (await table.GetEntityAsync<TableEntity>("repository:"+parts[0], "pending:"+parts[1])).Value;
                 using var recovery = JsonDocument.Parse(File.ReadAllText(Path.Combine(state,"recovery.json")));
-                Entry.Record(new { floorObservation=true, arrivedAt,
+                Entry.Record(new { floorObservation=true, path, arrivedAt,
                     workStartedAt=row.GetDateTimeOffset("WorkStartedAt"), nextWorkAt=row.GetDateTimeOffset("NextWorkAt"),
                     clientLastWorkAt=recovery.RootElement.GetProperty("lastWorkAt").GetString() });
             }
