@@ -94,14 +94,18 @@ The existing workflow has one shared main-only activation route: `foundation-pla
    Foundation guards remain unchanged; no image/hosted flags are needed and no app is created. Capture owned environment domain, runtime resource/client/principal IDs and exact Table/Blob/vault IDs. Apply starts billed resources and purge-protected vault retention.
 3. With separate key-administration authority, securely import the real GitHub App signing key and create a distinct wrapping key. With separate role authority, review/apply `runtime-rbac.bicep` at the exact key, Blob-container and Table scopes in [the infrastructure contract](auth-infrastructure.md#operator-only-permissions). Record only pinned version URIs. Never place PEM/key material in Bicep, argv or logs. Deployment Contributor cannot perform this role setup; do not broaden it.
 4. Stop/fence every broker writer. Initialize only a genuinely fresh dedicated Table with the two complete **Int64** quota entities in [retained-state.md](../service/auth/retained-state.md), verifying actual stored types/values. Existing unaccounted data requires an offline charged inventory; never seed it as zero.
-5. With separately authorized registry credentials established using stdin/private credential storage, bootstrap the real reviewed commit:
+5. For an authorized first publication, dispatch the accepted current-main commit using the isolated Actions job token:
 
    ```sh
-   AUTH_IMAGE_REPOSITORY=ghcr.io/repoagent/controller-auth GITHUB_SHA="$accepted_source" \
-     python3 scripts/delivery/auth-pipeline.py bootstrap-publish
+   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+     -f operation=bootstrap-publish -f expected-source-sha="$accepted_source"
    ```
 
-   The helper archives the entire actual commit into temporary storage, runs source/service verification there and builds only its `service/auth` context. Dirty/untracked local source is excluded. It checks role/nonroot/Linux-amd64/revision, pushes only the fixed repository and records the actual source/digest. It never calls Azure. A private first push prints `publicationComplete=false` and fails anonymous attestation; retain that receipt. An operator must make that exact package public and grant repository Actions access. No helper changes registry visibility/permissions. Anonymous pull alone cannot establish Actions push access: bootstrap reports complete only when the operator has also supplied `AUTH_PACKAGE_ACTIONS_ACCESS_CONFIRMED=true` after verifying that access. This is an operator assertion, never set by the helper. Resume by anonymously attesting the recorded digest/source without rebuilding:
+   The job has only contents-read/packages-write permissions, no Azure login or deployment dependency, and works with readiness flags false. It binds the full source SHA to checkout/workflow/current upstream main before verification and immediately before push. A final main check and registry push are not atomic. Registry credentials use stdin and private temporary storage removed on exit. No personal token is needed.
+
+   The helper archives the entire actual commit into temporary storage, runs source/service verification there and builds only its `service/auth` context. Dirty/untracked local source is excluded. It checks role/nonroot/Linux-amd64/revision, pushes only the fixed repository and records the actual source/digest. It never calls Azure. Retain the Actions run URL/attempt and flushed `publicationComplete=false` receipt even when the job fails: a private first push is already a registry mutation, and an uncertain push/digest-resolution failure does not establish absence of a mutation.
+
+   Inspect the exact package's repository linkage, visibility and repository Actions access; configure public visibility/access with operator authority as needed. Do not infer public access from the source repository. No helper changes these settings. This first-publication job deliberately leaves `AUTH_PACKAGE_ACTIONS_ACCESS_CONFIRMED` empty and remains incomplete even after anonymous attestation succeeds. The local `bootstrap-publish` helper remains available with separately authorized registry credentials; it reports complete only with the operator's explicit access assertion. Resume by anonymously attesting the recorded digest/source without login, rebuilding or repushing:
 
    ```sh
    AUTH_IMAGE_REPOSITORY=ghcr.io/repoagent/controller-auth AUTH_IMAGE="$accepted_image" \

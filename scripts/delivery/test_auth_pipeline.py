@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import textwrap
 
 
 SCRIPT = Path(__file__).with_name('auth-pipeline.py')
@@ -37,7 +38,12 @@ argv = ['infra/auth/deploy.sh', *sys.argv[1:]] if name == 'infra-double.py' else
 ledger = pathlib.Path(os.environ['TEST_LEDGER'])
 previous = ledger.read_text().splitlines() if ledger.exists() else []
 entry = dict(argv=argv, stdin=sys.stdin.read() if argv[1:2] == ['login'] else '',
-             gh_token=os.environ.get('GH_TOKEN', ''))
+             gh_token=os.environ.get('GH_TOKEN', ''), registry_present='REGISTRY_TOKEN' in os.environ,
+             config=os.environ.get('DOCKER_CONFIG', ''))
+if entry['config']:
+    entry['mode'] = pathlib.Path(entry['config']).stat().st_mode & 0o777
+    if argv[1:2] == ['login']:
+        (pathlib.Path(entry['config']) / 'config.json').write_text(os.environ['REGISTRY_TOKEN'])
 with ledger.open('a') as stream:
     stream.write(json.dumps(entry) + '\\n')
 transcript = json.loads(pathlib.Path(os.environ['TEST_TRANSCRIPT']).read_text())
@@ -92,11 +98,12 @@ class AuthPipelineCliTests(unittest.TestCase):
                 (root / missing).unlink()
             binaries = root / 'bin'
             binaries.mkdir()
-            for name in ['gh', 'docker', 'skopeo', 'az']:
+            for name in ['gh', 'docker', 'skopeo', 'az', 'python3']:
                 path = binaries / name
                 path.write_text(f'#!{sys.executable}\n' + DOUBLE)
                 path.chmod(0o700)
-            (binaries / 'bash').symlink_to(shutil.which('bash'))
+            for name in ('bash', 'mktemp', 'rm'):
+                (binaries / name).symlink_to(shutil.which(name))
             ledger, fixture, output = root / 'calls.jsonl', root / 'transcript.json', root / 'output'
             fixture.write_text(json.dumps(transcript))
             output.write_text('existing=value\n')
@@ -107,11 +114,14 @@ class AuthPipelineCliTests(unittest.TestCase):
                        AZURE_CLIENT_ID='11111111-1111-1111-1111-111111111111',
                        AZURE_TENANT_ID='22222222-2222-2222-2222-222222222222',
                        AZURE_SUBSCRIPTION_ID='33333333-3333-3333-3333-333333333333',
-                       REGISTRY_TOKEN=CANARY, REGISTRY_USER='fixture-bot')
+                       REGISTRY_TOKEN=CANARY, REGISTRY_USER='fixture-bot', RUNNER_TEMP=str(root),
+                       BOOTSTRAP_RUN_URL='https://example.test/actions/runs/1', BOOTSTRAP_RUN_ATTEMPT='2')
             env.update(environment or {})
             command = [str(binaries / 'bash'), '-e', '-c', shell] if shell else [sys.executable, '-B', str(script), verb]
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=5)
             calls = [json.loads(line) for line in ledger.read_text().splitlines()] if ledger.exists() else []
+            if shell:
+                self.assertEqual(list(root.glob('auth-bootstrap-docker.*')), [], 'Credentials must be removed before fixture teardown')
             return result, calls, output.read_text(), (root / 'token-was-executed').exists()
 
     def test_missing_or_unsupported_service_source_fails_without_provider_calls(self):
@@ -273,6 +283,41 @@ class AuthPipelineCliTests(unittest.TestCase):
                     'attest', [step(ATTEST, image)], environment={'AUTH_EXPECTED_SOURCE_SHA': expected})
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(([call['argv'] for call in calls], output), ([ATTEST], 'existing=value\n'))
+
+    def test_bootstrap_job_is_manual_isolated_and_keeps_inputs_as_data(self):
+        workflow = WORKFLOW.read_text()
+        job = workflow.split('\n  bootstrap-publish:\n', 1)[1].split('\n  activation:', 1)[0]
+        self.assertIn("if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'bootstrap-publish'", job)
+        self.assertIn('permissions:\n      contents: read\n      packages: write\n    env:', job)
+        for forbidden in ('needs:', 'environment:', 'id-token:', 'azure/', 'AUTH_DEPLOYMENT_READY:'):
+            self.assertNotIn(forbidden, job)
+        self.assertIn('AUTH_EXPECTED_SOURCE_SHA: ${{ inputs.expected-source-sha }}', job)
+        self.assertIn("AUTH_PACKAGE_ACTIONS_ACCESS_CONFIRMED: ''", job)
+        self.assertIn('AUTH_IMAGE_REPOSITORY: ' + REPOSITORY, job)
+        self.assertIn('persist-credentials: false', job)
+
+    def test_bootstrap_shell_unsets_token_and_removes_private_config_on_every_exit(self):
+        job = WORKFLOW.read_text().split('\n  bootstrap-publish:\n', 1)[1].split('\n  activation:', 1)[0]
+        shell = textwrap.dedent(job.split('        run: |\n', 1)[1])
+        self.assertNotIn('${{', shell)
+        self.assertIn('REGISTRY_TOKEN: ${{ github.token }}', job)
+        login = ['docker', 'login', 'ghcr.io', '-u', 'fixture-bot', '--password-stdin']
+        helper = ['python3', 'scripts/delivery/auth-pipeline.py', 'bootstrap-publish-actions']
+        for login_error, helper_error in ((None, None), ('login failed', None), (None, 'helper failed')):
+            with self.subTest(login_error=login_error, helper_error=helper_error):
+                transcript = [step(login, error=login_error)]
+                if not login_error:
+                    transcript.append(step(helper, error=helper_error))
+                result, calls, output, injected = self.invoke('', transcript, shell=shell, environment={'GH_TOKEN': ''})
+                self.assertEqual(result.returncode == 0, not (login_error or helper_error), result.stderr)
+                self.assertEqual([call['argv'] for call in calls], [item['argv'] for item in transcript])
+                self.assertEqual(calls[0]['stdin'], CANARY)
+                self.assertTrue(all(call['mode'] == 0o700 for call in calls))
+                if not login_error:
+                    self.assertFalse(calls[-1]['registry_present'], 'Helper must not inherit registry token')
+                    self.assertEqual(calls[-1]['gh_token'], '')
+                self.assertNotIn(CANARY, result.stdout + result.stderr + output + json.dumps([call['argv'] for call in calls]))
+                self.assertFalse(injected)
 
     def test_workflow_login_transports_token_only_through_stdin(self):
         # Execute the actual shell step; do not duplicate or assert workflow YAML.
