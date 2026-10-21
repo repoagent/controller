@@ -272,8 +272,11 @@ class Deployment:
         if self.source and (args[:3] == ["deployment", "group", "create"]
                             or args[:3] in (["containerapp", "revision", "activate"], ["containerapp", "revision", "deactivate"])):
             accepted_source()
+        timeout = 1200 if args[:3] == ["deployment", "group", "create"] else 120
+        if self.deadline is not None:
+            timeout = max(1, self.deadline - time.monotonic())
         result = subprocess.run(["az", *args, "--subscription", self.subscription, "--output", "json", "--only-show-errors"],
-                                text=True, capture_output=True, check=False, timeout=max(1, self.deadline - time.monotonic()) if self.deadline else 120)
+                                text=True, capture_output=True, check=False, timeout=timeout)
         if result.returncode:
             # Azure CLI's documented ARM errors include '(Code)'. Only explicit
             # resource absence may create; authorization, transport and other

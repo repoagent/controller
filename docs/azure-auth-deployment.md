@@ -80,6 +80,8 @@ These are source mechanics, not hosted evidence. Source merge authorizes none of
 
 The existing workflow has one shared main-only activation route: `foundation-plan`, `foundation-apply`, `stage-plan`, `stage-apply`, `promote-staged`, `stage-stop`, `stage-resume`. These choices exclude normal build/publication/deploy jobs. Every choice requires `expected-source-sha`: the exact full SHA must match the dispatched main checkout, `GITHUB_SHA` and actual remote main, rechecked before writes. A moving-main mismatch fails; deliberately accept the new artifact instead of bypassing the check. Runtime choices additionally require anonymous fixed-GHCR image attestation, including the source revision label. Existing branch OIDC, Contributor scope, concurrency and no-environment trust remain unchanged.
 
+The deployment helper allows `az deployment group create` up to 20 minutes within the existing 40-minute activation job; ordinary Azure queries retain their 120-second limit. An explicit operation deadline takes precedence over either allowance. A subprocess timeout leaves the resource operation unconfirmed: ARM may continue after the CLI exits. Inspect the actual ARM deployment state before deciding whether to retry; the helper does not automatically retry or assume rollback.
+
 1. Select and retain stable `AUTH_APP_NAME`, dedicated Table name, external restore epoch and distinct signing/wrapping key names. Inspect the selected destination/configuration with authorized operator access; establish cost, cleanup and recovery ownership. Local `infra/auth/deploy.sh foundation-check` discovers deterministic names without Azure calls.
 2. Plan/apply foundation through the working OIDC route (the available local Azure session cannot select this subscription):
 
