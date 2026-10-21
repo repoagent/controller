@@ -56,11 +56,11 @@ env:
   AUTH_RUNTIME_ACCESS_READY: ${{ vars.AUTH_RUNTIME_ACCESS_READY }}
   AUTH_SIGNING_KEY_URI: ${{ vars.AUTH_SIGNING_KEY_URI }}
   AUTH_DATA_PROTECTION_KEY_URI: ${{ vars.AUTH_DATA_PROTECTION_KEY_URI }}
-  AUTH_TABLE_NAME: ${{ vars.AUTH_TABLE_NAME || 'brokerstate' }}
+  AUTH_TABLE_NAME: ${{ vars.AUTH_TABLE_NAME }}
   AUTH_DEPLOYMENT_EPOCH: ${{ vars.AUTH_DEPLOYMENT_EPOCH }}
-  AUTH_REQUEST_LIMIT_PER_MINUTE: ${{ vars.AUTH_REQUEST_LIMIT_PER_MINUTE || '120' }}
-  AUTH_CONCURRENT_REQUEST_LIMIT: ${{ vars.AUTH_CONCURRENT_REQUEST_LIMIT || '8' }}
-  AUTH_REQUEST_TIMEOUT_SECONDS: ${{ vars.AUTH_REQUEST_TIMEOUT_SECONDS || '15' }}
+  AUTH_REQUEST_LIMIT_PER_MINUTE: ${{ vars.AUTH_REQUEST_LIMIT_PER_MINUTE }}
+  AUTH_CONCURRENT_REQUEST_LIMIT: ${{ vars.AUTH_CONCURRENT_REQUEST_LIMIT }}
+  AUTH_REQUEST_TIMEOUT_SECONDS: ${{ vars.AUTH_REQUEST_TIMEOUT_SECONDS }}
 jobs:
   access-check:
     if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'access-check'
@@ -118,7 +118,9 @@ jobs:
           az bicep install --version "$BICEP_VERSION"
           export BICEP_BIN="$HOME/.azure/bin/bicep"
           (cd service/auth && bash verify.sh)
-          bash infra/auth/validate.sh
+          for template in infra/auth/*.bicep; do
+            "$BICEP_BIN" build "$template" --stdout >/dev/null
+          done
           python3 -m unittest discover -s scripts/delivery -p 'test_*auth*.py' -v
   publish:
     needs: verify-service

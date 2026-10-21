@@ -3,10 +3,9 @@ targetScope = 'resourceGroup'
 param location string
 param appName string
 param storageName string
-param tableName string
+param tableName string = 'brokerstate'
 param identityOnly bool
 param image string = ''
-param monitoringConnectionString string = ''
 param deploymentEpoch string = ''
 var ownership = { repositoryId: '1426154477', ownerId: '345029828', managedBy: 'repoagent-auth' }
 resource createdCleanupIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (identityOnly) {
@@ -18,6 +17,8 @@ resource existingCleanupIdentity 'Microsoft.ManagedIdentity/userAssignedIdentiti
   name: '${appName}-cleanup'
 }
 resource environment 'Microsoft.App/managedEnvironments@2025-01-01' existing = { name: '${appName}-environment' }
+resource insights 'Microsoft.Insights/components@2020-02-02' existing = { name: '${appName}-insights' }
+var monitoringConnectionString = identityOnly ? '' : insights.properties.ConnectionString
 resource job 'Microsoft.App/jobs@2025-01-01' = if (!identityOnly) {
   name: '${appName}-cleanup'
   location: location

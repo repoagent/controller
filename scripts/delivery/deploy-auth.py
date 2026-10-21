@@ -8,8 +8,15 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "infra/auth"))
-from deploy import canonical_origin, OWNERSHIP, accepted_source, DeploymentError
+OWNERSHIP = {'repositoryId': '1426154477', 'ownerId': '345029828', 'managedBy': 'repoagent-auth'}
+
+
+def canonical_origin(app, domain):
+    label = r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?'
+    if (not isinstance(domain, str) or len(app + '.' + domain) > 253
+            or not re.fullmatch(label + r'(?:\.' + label + r')+', domain)):
+        raise ValueError('Owned environment defaultDomain must be a DNS suffix')
+    return 'https://' + app + '.' + domain
 
 
 def require(name, pattern):
@@ -82,7 +89,10 @@ def deploy(config):
     verify_origin(before)
     print('Broker origin: ' + origin)
     if os.environ.get('AUTH_EXPECTED_SOURCE_SHA') is not None:
-        accepted_source()
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name('auth-pipeline.py')), 'source-check'],
+                                capture_output=True, text=True)
+        if result.returncode:
+            raise ValueError('Accepted source differs from current main')
     result = subprocess.run(['az', 'containerapp', 'update', *target,
                              '--container-name', before['containers'][0]['name'],
                              '--image', config['AUTH_IMAGE'], '--output', 'none'], capture_output=True)
@@ -114,5 +124,5 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (ValueError, OSError, DeploymentError, subprocess.SubprocessError) as error:
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
         sys.exit(str(error))

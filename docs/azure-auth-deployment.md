@@ -44,7 +44,9 @@ Azure Login exchanges the GitHub token for Azure access; this setup stores no Az
 
 [`ci-auth-service.yml`](../.github/workflows/ci-auth-service.yml), **Auth service CI**, verifies service and infrastructure changes on pull requests and `main`. Its full delivery path verifies the service against pinned Azurite, compiles Bicep, publishes an immutable auth image after the existing public-registry/readiness gates, applies guarded runtime infrastructure, and verifies the intended image and ready revision. Publication and deployment run only on `main`; deployment uses the existing branch OIDC identity with `contents: read` and `id-token: write`. No GitHub environment is introduced.
 
-For infrastructure changes, read the current resource and module documentation, use the latest released versions of any registry modules, and compile locally before pushing. These templates currently declare resources directly, with no registry module dependencies. The workflow pins Bicep CLI to the latest release verified for this change, `v0.48.1`. Verify infrastructure by running Bicep against the resource group and inspecting the resulting resources with Azure CLI or the portal.
+For infrastructure changes, read the current resource/module documentation, use the latest released registry module versions, and compile locally before pushing. These templates use direct resource declarations. GitHub jobs select the installed Bicep v0.48.1 executable explicitly. Verify infrastructure by deploying to Azure and inspecting the actual resources. Before an environment becomes mission critical, establish a separate staging or test environment in a real Azure region.
+
+Resource settings and references live in Bicep. `deploy.sh` selects the operation and passes inputs to Azure CLI. Image publication and application health checks remain separate delivery steps.
 
 Manual `operation=access-check` retains the original outputs-only [`verify-access.bicep`](../infra/auth/verify-access.bicep) check. It verifies the resource-group location and records an incremental deployment named `github-oidc-<run-id>-<attempt>`. Its success proves OIDC login and deployment access, not service provisioning or broker acceptance. Manual `operation=deploy` selects full delivery. [`deploy-auth.yml`](../.github/workflows/deploy-auth.yml) updates an existing app to an approved immutable digest for deployment or rollback, preserving its acceptance gate.
 
@@ -80,11 +82,11 @@ The host needs GitHub-authorized Agent-variable write access; only the broker's 
 
 These are source mechanics, not hosted evidence. Source merge authorizes none of the live commands below. Obtain the specific operator authorization for publication, resource apply, key import, grants and variable changes. Keep #35/#28 open until actual hosted gates pass. Preserve nonsecret source/digest/app/revision/replica/origin, workflow-run and acceptance-evidence references; never private requests/responses or tokens in logs/artifacts.
 
-The existing workflow has one shared main-only activation route: `foundation-plan`, `foundation-apply`, `stage-plan`, `stage-apply`, `promote-staged`, `stage-stop`, `stage-resume`. These choices exclude normal build/publication/deploy jobs. Every choice requires `expected-source-sha`: the exact full SHA must match the dispatched main checkout, `GITHUB_SHA` and actual remote main, rechecked before writes. A moving-main mismatch fails; deliberately accept the new artifact instead of bypassing the check. Runtime choices additionally require anonymous fixed-GHCR image attestation, including the source revision label. Existing branch OIDC, Contributor scope, concurrency and no-environment trust remain unchanged.
+The workflow has one main-only activation route for foundation, no-ingress runtime, cleanup and staging revisions. Each operation checks `expected-source-sha` against checkout, `GITHUB_SHA` and current remote main at operation start. Runtime and Job deployments additionally attest the immutable GHCR image/source anonymously. These choices exclude normal publication/deploy jobs. Branch OIDC, Contributor scope and shared concurrency remain unchanged.
 
-The deployment helper allows `az deployment group create` up to 20 minutes within the existing 40-minute activation job; ordinary Azure queries retain their 120-second limit. An explicit operation deadline takes precedence over either allowance. A subprocess timeout leaves the resource operation unconfirmed: ARM may continue after the CLI exits. Inspect the actual ARM deployment state before deciding whether to retry; the helper does not automatically retry or assume rollback.
+The activation job has a 40-minute timeout. Azure CLI runs the actual Incremental deployment and reports its state, Bicep outputs and resource inventory. ARM can continue after a client disconnect or timeout; inspect the deployment in Azure before retrying.
 
-1. Select and retain stable `AUTH_APP_NAME`, required `AUTH_STORAGE_ACCOUNT_NAME` and `AUTH_KEY_VAULT_NAME`, dedicated Table name, external restore epoch and distinct signing/wrapping key names. Supply the names as repository variables for the workflow and environment variables for local commands, using the [naming constraints](auth-infrastructure.md#guarded-entrypoints). Inspect the selected destination/configuration with authorized operator access; establish cost, cleanup and recovery ownership. Local `infra/auth/deploy.sh foundation-check` validates the selected names and reports references without Azure calls. Existing deployments must explicitly retain their current names; changing destinations needs a separate operator cutover and never establishes that old data is empty. Global name collisions fail without fallback or adoption.
+1. Retain the stable app, storage, vault and Table names, external restore epoch and distinct signing/wrapping keys. Supply them through repository variables or local environment variables. `foundation-check` checks required target inputs locally. Inspect existing resources before deployment; changing names does not migrate data.
 2. Plan/apply foundation through the working OIDC route:
 
    ```sh
@@ -95,7 +97,7 @@ The deployment helper allows `az deployment group create` up to 20 minutes withi
      -f operation=foundation-apply -f expected-source-sha="$accepted_source"
    ```
 
-   Foundation guards remain unchanged; no image/hosted flags are needed and no app is created. Capture owned environment domain, runtime resource/client/principal IDs and exact Table/Blob/vault IDs. Apply starts billed resources and purge-protected vault retention.
+   Foundation uses `main.bicep` with `deployApp=false`, requiring no image or hosted flags. Inspect the actual environment, workspace, identity, storage and vault with Azure CLI or the portal. Capture Bicep output values and resource IDs.
 3. With separate key-administration authority, securely import the real GitHub App signing key and create a distinct wrapping key. With separate role authority, review/apply `runtime-rbac.bicep` at the exact key, Blob-container and Table scopes in [the infrastructure contract](auth-infrastructure.md#operator-only-permissions). Record only pinned version URIs. Never place PEM/key material in Bicep, argv or logs. Deployment Contributor cannot perform this role setup; do not broaden it.
 4. Stop/fence every broker writer. Initialize only a genuinely fresh dedicated Table with the two complete **Int64** quota entities in [retained-state.md](../service/auth/retained-state.md), verifying actual stored types/values. Existing unaccounted data requires an offline charged inventory; never seed it as zero.
 5. For an authorized first publication, dispatch the accepted current-main commit using the isolated Actions job token:
@@ -127,7 +129,7 @@ The deployment helper allows `az deployment group create` up to 20 minutes withi
      -f operation=stage-apply -f expected-source-sha="$accepted_source" -f image="$accepted_image"
    ```
 
-   Confirm ingress absent (internal ingress is also forbidden), immutable selected revision, actual runtime identity, canonical origin and temporary min/max 1/1. Compute/log bounds remain unchanged. A public app is refused, never taken offline. Staging sets no READY assertion and performs no public rollout verification.
+   Inspect the target before applying staging configuration. After deployment confirm absent ingress, the selected immutable image, runtime identity, canonical origin and min/max 1/1. Perform application and data-plane acceptance against that deployed service. Staging sets no READY assertion.
 7. Use the selected-console procedure below for actual runtime/provider/private-repository, storage/recovery and denial evidence. Verify independent cleanup #72 with HTTP stopped/zero replicas; a local suite/readiness 200 does not prove that. Stop the isolated replica while paused.
 8. Only after every corresponding evidence item exists, set `AUTH_PROVIDER_READY`, `AUTH_STORAGE_READY`, `AUTH_CLEANUP_READY`, `AUTH_RUNTIME_ACCESS_READY` and `AUTH_DEPLOYMENT_READY` truthfully, then promote the *same digest*:
 
@@ -158,7 +160,7 @@ Prove Table access/ETags and denial outside the dedicated table; encrypted Blob 
 
 ## Confirmed isolated stop and resume
 
-Close acceptance/debug sessions. Both operations require exact source/digest and the recorded revision:
+Close acceptance/debug sessions. Both operations require the accepted source and recorded revision. Inspect that revision's digest before operating:
 
 ```sh
 gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
@@ -170,9 +172,9 @@ gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
   -f image="$accepted_image" -f revision="$staging_revision"
 ```
 
-Stop rechecks ownership/no ingress and the exact revision/digest, deactivates only that revision, then inspects every observed revision and each actual replica list. Confirmation requires no active revisions and zero actual replicas within a 60-second observation deadline. Empty/ambiguous/failed observations are not proof. Failure is unconfirmed shutdown, requiring operator inspection; a successful deactivate command alone does not establish zero compute. No deletion or permanent stop scheduler is used.
+The script requires no ingress and a revision belonging to the selected app, deactivates that revision and lists its replicas. Inspect every app revision and actual replicas in Azure to confirm zero compute. Command success alone does not prove all replicas stopped.
 
-Resume activates only that verified revision, reselects its replica and checks no ingress/digest plus local live/ready health through selected-container exec. Existing curl or wget is required; unavailable tools/console behavior or failed health produces unconfirmed resume. Re-establish private runtime identity context before data-plane acceptance. If main advanced, both routes refuse stale source; obtain a separately reviewed maintenance procedure rather than weaken source binding.
+Resume activates the selected revision and lists replicas. Inspect readiness and use its container's local live/ready endpoints before continuing acceptance. Re-establish runtime identity context before data-plane checks. If main advanced, select the new accepted source explicitly.
 
 Configured 1/1 is a per-revision target, not a global hard spend cap; maintenance/rollout can overlap replicas. Storage, logs and vault charges continue after confirmed zero compute replicas.
 
@@ -205,7 +207,7 @@ These source routes preserve the exact main-only OIDC subject, Contributor scope
      -f operation=cleanup-apply -f expected-source-sha="$accepted_source" -f image="$accepted_image"
    ```
 
-Successful ARM status alone is insufficient. Receipts require actual owned identity and exact Job readback, including Consumption, immutable desired image, six-variable allowlist (the original four plus the two fixed Application Insights values), cleanup-only identity, command, fixed scheduling/capacity and absence of forbidden additions. Unconfirmed apply requires inspection before retry; a Job may already be running. An owned prior approved-repository digest can update to the new current-main-attested digest, but prior-image drift during planning fails. Changing epoch/identity or other nonconforming prior state is not an automatic update/repair. Restoring a Manual Job also resumes scheduling with the desired image and does not prove older executions drained.
+After deployment inspect the actual Job: Consumption environment, immutable image, six environment bindings, cleanup-only identity, command, schedule and capacity must match Bicep. A Job can already be running after apply or a client disconnect. Restoring a Manual Job to its Bicep schedule does not prove older executions drained.
 
 ## Cleanup schedule suspension and drain
 
@@ -230,8 +232,6 @@ jq '{"$schema":"https://schema.management.azure.com/schemas/2019-04-01/deploymen
 # Keep only the identity's writable type and resource-ID keys; strip read-only IDs.
 jq '.resources[0].identity |= {type:.type,
   userAssignedIdentities:(.userAssignedIdentities | with_entries(.value={}))}' manual.json > manual-checked.json
-az deployment group validate --resource-group "$AZURE_RESOURCE_GROUP" \
-  --subscription "$AZURE_SUBSCRIPTION_ID" --mode Incremental --template-file manual-checked.json
 az deployment group what-if --resource-group "$AZURE_RESOURCE_GROUP" \
   --subscription "$AZURE_SUBSCRIPTION_ID" --mode Incremental --template-file manual-checked.json \
   --result-format FullResourcePayloads --no-pretty-print
@@ -282,16 +282,16 @@ Latest100 execution history covers only about100minutes at nominal minute cadenc
 
 ## Low-volume monitoring deployment
 
-The guarded local entrypoint adds `monitoring-plan` and `monitoring-apply`; no workflow/OIDC or readiness setting is added. Root owns actual resource apply, grants, budget configuration and hosted acceptance. Use the accepted current-main checkout and existing target variables, `AUTH_EXPECTED_SOURCE_SHA`, `GITHUB_SHA` and `GITHUB_REF=refs/heads/main`. Source is rechecked before writes. Neither a source build nor ARM success sets any of the five hosted readiness assertions.
+The CLI entrypoint supports `monitoring-plan` and `monitoring-apply` using the accepted current-main checkout and existing target variables. No OIDC, role or readiness setting is added. Infrastructure deployment does not establish hosted application acceptance.
 
-First plan/apply the existing foundation template to retain30-day workspace retention, lower the cap to0.1GB/day and change the environment console destination to `none`. Then provision Insights/action group with alerts disabled. Monitoring preflight requires those exact owned dependencies. The Contributor route never creates roles: the separate operator-only `monitoring-rbac.bicep` grants only Monitoring Metrics Publisher on this Insights resource to the existing runtime and cleanup identities. Identity-only cleanup provisioning remains independent of monitoring and signing configuration.
+Deploy foundation with 30-day retention, cap0.1GB/day and disabled console persistence (null destination and Log Analytics configuration). Then deploy Insights/action group with alerts disabled. Apply `monitoring-rbac.bicep` separately with role authority for Metrics Publisher on Insights, and inspect the actual assignments. Cleanup identity bootstrap remains independent of monitoring.
 
-Supply `AUTH_MONITORING_INPUT_FILE` as the path to an owner-only regular JSON file, created using the private-input procedure above. Its fields are `recipient` (required), `budgetAmount` (optional positive integer;0 omits budget) and `budgetStartDate` (first-of-month YYYY-MM-DD, required with a budget). Never place the recipient in argv, public source, logs or plan output. Deployment parameters live in a private temporary directory/file; errors and outputs omit raw Azure bodies and the recipient. `cost-plan` also redacts contact email input.
+Supply `AUTH_MONITORING_PARAMETERS_FILE` as a private0600 ARM parameters JSON file. Each input uses `parameters.<name>.value`: `recipient`, `budgetAmount` (0 omits budget), `budgetStartDate` (first-of-month YYYY-MM-DD), and optionally `enableAlerts` and `jobFailureState`. Pass the file by reference; keep the actual recipient out of source, argv and logs.
 
-Run `infra/auth/deploy.sh monitoring-plan`, inspect its exact resource write list, then use `monitoring-apply` only under root's live authorization. The manifest permits Insights, one private action group, optional exact monthly budget and, when selected, five named rules. Global action/metric resources are explicitly typed; existing untaggable budgets must match the exact approved properties and scope, with no takeover. Apply rechecks ownership and requires resource readback plus a no-change ARM comparison; ambiguous provider normalization leaves apply unconfirmed for inspection.
+Use `infra/auth/deploy.sh monitoring-plan` for Azure's change summary or `monitoring-apply` for the actual deployment. Bicep declares Insights, a private action group, optional monthly budget and five optional alert rules. Inspect the deployed configuration in Azure afterward.
 
-Hosted runtime/cleanup activation reads the connection from the owned Insights resource, verifies its workspace binding and `DisableLocalAuth=true`, and requires exactly the two deterministic publisher assignments at that resource. Both processes receive `APPLICATIONINSIGHTS_CONNECTION_STRING` and `APPLICATIONINSIGHTS_STATSBEAT_DISABLED=true`; cleanup has exactly six variables, no runtime-secret references. Local optional monitoring can remain absent; the guarded hosted activation path requires monitored configuration.
+Runtime and cleanup Bicep reference the existing Insights connection directly. Both receive `APPLICATIONINSIGHTS_CONNECTION_STRING` and `APPLICATIONINSIGHTS_STATSBEAT_DISABLED=true`; cleanup has six variables and no signing-secret references. Inspect AAD-only ingestion, the workspace binding and both publisher assignments in Azure.
 
-After the app/Job exist and root observes the actual native Job failure-state value, set `AUTH_MONITORING_ENABLE_ALERTS=true` and `AUTH_JOB_FAILURE_STATE` to that observed value, then plan/apply again. This selects exactly five unsplit rules: native failed Job execution, five HTTP5xx requests/5min, average memory above80% of0.5Gi/15min, aggregate cleanup missing/unsafe observations, and billed telemetry above50MB/24h. No waking probe or missing-replica alert is installed. Empty cleanup input must produce one numeric trigger; real AppMetrics schema/KQL evaluation, native dimensions, action delivery/resolution and scale-to-zero remain hosted gates. Six-hour cycle observations trigger investigation; twelve hours warrants urgent operator follow-up through the same rule, not a separate alert.
+After the app/Job exist, set the private parameters `enableAlerts=true` and `jobFailureState` to the observed native failure-state value, then deploy again. The five rules cover Job failures, HTTP5xx, memory pressure, cleanup observations and telemetry volume. Verify actual metrics/KQL, dimensions, notification delivery/resolution and scale-to-zero in Azure. Six-hour cleanup cycle observations trigger investigation; twelve hours warrants urgent follow-up.
 
 The user's nominal budget is20USD/month; verified subscription billing currency is EUR and root selected18EUR/month (about20.19USD at the dated2026-10-20 reference). Source accepts a generic amount and no currency/FX parameter. Monthly Actual50/80/100% notifications use Azure's ten-year default when endDate is omitted. This budget has not been applied by source work. Budget alerts, workspace caps and replica limits notify or constrain particular resources; they do not guarantee total spending or stop all charges. Console persistence is disabled; sensitive original cleanup JSON is not a cloud log-retention mechanism.

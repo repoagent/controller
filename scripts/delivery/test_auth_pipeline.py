@@ -21,7 +21,7 @@ TAG = REPOSITORY + ':sha-' + SHA
 IMAGE = REPOSITORY + '@sha256:' + 'a' * 64
 CANARY = 'fake-token-$(touch token-was-executed);keep-private'
 SOURCE_FILES = ('service/auth/global.json', 'service/auth/verify.sh', 'service/auth/Dockerfile',
-                'infra/auth/validate.sh', 'infra/auth/deploy.sh', 'infra/auth/main.bicep')
+                'infra/auth/deploy.sh', 'infra/auth/main.bicep')
 CHECK = ['infra/auth/deploy.sh', 'check']
 METADATA = ['gh', 'api', 'users/repoagent/packages/container/controller-auth']
 BUILD = ['docker', 'build', '--platform', 'linux/amd64', '--label',
