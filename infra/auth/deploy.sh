@@ -9,12 +9,6 @@ done
 test "$AZURE_SUBSCRIPTION_ID" = 46f7e5d6-05f3-435b-8089-6c63a203dbfa
 test "$AZURE_RESOURCE_GROUP" = rg-repoagent-controller-auth
 test "$AZURE_LOCATION" = swedencentral
-case "$operation" in
-  check|plan|apply|promote-staged)
-    for name in AUTH_PROVIDER_READY AUTH_STORAGE_READY AUTH_CLEANUP_READY AUTH_RUNTIME_ACCESS_READY AUTH_DEPLOYMENT_READY; do
-      test "${!name:-}" = true || { echo "$name requires actual hosted acceptance" >&2; exit 1; }
-    done ;;
-esac
 case "$operation" in check|foundation-check) exit 0 ;; esac
 
 if [[ -n "${AUTH_EXPECTED_SOURCE_SHA:-}" ]]; then
@@ -94,4 +88,25 @@ case "$operation" in
       --query '{state:properties.provisioningState,outputs:properties.outputs}' --output json
     az resource list "${target[@]}" \
       --query '[].{name:name,type:type,location:location}' --output json ;;
+esac
+
+case "$operation" in
+  apply|promote-staged)
+    test "$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query 'properties.template.containers[0].image' -o tsv)" = "$AUTH_IMAGE"
+    test "$(az containerapp job show "${target[@]}" --name "$AUTH_APP_NAME-cleanup" --query 'properties.template.containers[0].image' -o tsv)" = "$AUTH_IMAGE"
+    ready=false
+    for ((attempt=0; attempt<60; attempt++)); do
+      if [[ "$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query 'properties.latestRevisionName != `null` && properties.latestRevisionName == properties.latestReadyRevisionName' -o json)" == true ]]; then
+        ready=true
+        break
+      fi
+      sleep 5
+    done
+    test "$ready" = true || { echo 'Latest auth revision is not ready; inspect Azure before retrying.' >&2; exit 1; }
+    origin="https://$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query 'properties.configuration.ingress.fqdn' -o tsv)"
+    for endpoint in live ready; do
+      curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 5 \
+        --connect-timeout 10 --max-time 30 --output /dev/null "$origin/health/$endpoint"
+    done
+    printf 'API and cleanup use %s; public live/ready checks passed at %s.\n' "$AUTH_IMAGE" "$origin" ;;
 esac

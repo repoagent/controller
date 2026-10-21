@@ -6,7 +6,7 @@ Azure resource configuration lives in `infra/auth/*.bicep`. `deploy.sh` selects 
 
 | Template | Resources |
 | --- | --- |
-| `main.bicep` | Runtime identity, Log Analytics workspace, Container Apps environment, StorageV2 account, durable Blob container, broker Table, Key Vault and optional auth Container App |
+| `main.bicep` | Runtime identity, Log Analytics workspace, Container Apps environment, StorageV2 account, durable Blob container, broker Table, Key Vault and optional auth Container App plus scheduled cleanup module |
 | `cleanup.bicep` | Cleanup identity bootstrap or scheduled Container Apps Job |
 | `monitoring.bicep` | AAD-only Application Insights, private action group, optional budget and operational alerts |
 | `runtime-rbac.bicep` | Operator-managed signing, wrapping-key, Blob-container and Table grants |
@@ -37,26 +37,26 @@ Verify infrastructure by deploying against Azure and inspecting the resources wi
 | --- | --- |
 | `foundation-check` | Check required target inputs locally |
 | `foundation-plan` / `foundation-apply` | Compile and run Azure what-if or Incremental foundation deployment; no app |
-| `check` | Check target inputs and hosted readiness assertions locally |
-| `plan` / `apply` | Compile and run Azure what-if or Incremental public runtime deployment |
+| `check` | Check required target inputs locally |
+| `plan` / `apply` | Compile and run Azure what-if or Incremental public API and cleanup deployment from one image |
 | `stage-plan` / `stage-apply` | Deploy the accepted image without ingress, with min/max 1/1 |
-| `promote-staged` | Apply public runtime configuration after all hosted readiness assertions |
+| `promote-staged` | Apply public API and cleanup configuration using the staged digest |
 | `stage-stop` / `stage-resume` | Deactivate/activate the selected no-ingress staging revision and list its replicas |
 | `cleanup-identity-plan` / `cleanup-identity-apply` | Plan/deploy the cleanup identity |
 | `cleanup-plan` / `cleanup-apply` | Plan/deploy the scheduled cleanup Job |
 | `monitoring-plan` / `monitoring-apply` | Plan/deploy monitoring from a private ARM parameters file |
 
-The script performs an Azure what-if only for explicit plan operations. Apply operations compile the selected template, run `az deployment group create`, and display the actual deployment state, Bicep outputs and resource inventory. Inspect failures in Azure before retrying: ARM can continue after a client disconnect. The script does not claim endpoint or data-plane readiness from a successful infrastructure deployment.
+The script performs an Azure what-if only for explicit plan operations. Apply operations compile the selected template, run `az deployment group create`, and display the actual deployment state, Bicep outputs and resource inventory. Inspect failures in Azure before retrying: ARM can continue after a client disconnect. Public apply additionally checks the actual API and Job images, ready revision and both public health endpoints. Data-plane and lifecycle acceptance remain separate.
 
 ## Canonical origin and readiness
 
-Bicep derives `Broker__BrokerOrigin` from the app name and environment's actual default domain. Runtime identity IDs, storage endpoints and the Application Insights connection are references to Azure resources, rather than settings reconstructed in Python. Normal image rollout/rollback separately checks the app's public origin, intended digest and ready revision.
+Bicep derives `Broker__BrokerOrigin` from the app name and environment's actual default domain. Runtime identity IDs, storage endpoints and the Application Insights connection are references to Azure resources, rather than settings reconstructed in Python. Normal rollout and manual rollback use the same Bicep path and check both deployed images, ready API revision and public HTTP health.
 
 `/health/ready` verifies local application composition. Actual GitHub access, managed-identity permissions, retained-state recovery and cleanup behavior require application acceptance against the deployed service.
 
 ## Runtime prerequisites
 
-Public runtime operations require the five hosted assertions: `AUTH_PROVIDER_READY`, `AUTH_STORAGE_READY`, `AUTH_CLEANUP_READY`, `AUTH_RUNTIME_ACCESS_READY` and `AUTH_DEPLOYMENT_READY`. Leave them false until the corresponding real evidence exists. Initial no-ingress staging omits them so acceptance can be performed.
+Changes merged to `main` automatically verify, publish and deploy both execution modes. Hosted acceptance is recorded in #35/#28 rather than manual READY variables. The dedicated GHCR package must allow Actions publication and anonymous pulls; each published digest is anonymously inspected before deployment.
 
 Runtime inputs are the immutable `AUTH_IMAGE`, distinct pinned `AUTH_SIGNING_KEY_URI` and `AUTH_DATA_PROTECTION_KEY_URI`, and external `AUTH_DEPLOYMENT_EPOCH`. Optional `AUTH_TABLE_NAME` and request-limit variables override Bicep parameter defaults. Defaults and allowed ranges live in Bicep. Preserve the restore epoch outside Table backups.
 
@@ -78,10 +78,10 @@ After real resource deployment, verify application behavior, managed identities,
 
 ## First-activation configuration
 
-Use the existing main-only GitHub OIDC route. Bootstrap foundation, provision keys and exact grants, initialize only a genuinely fresh dedicated Table, then deploy the accepted image without ingress. Record actual resource IDs, image digest, workflow run, revision and observed outcomes. Inspect the resources after each real deployment. Promotion applies the public Bicep configuration only after hosted readiness assertions are established.
+Use the existing main-only GitHub OIDC route. Bootstrap foundation, provision keys and exact grants, initialize only a genuinely fresh dedicated Table, then deploy the accepted image without ingress. Record actual resource IDs, image digest, workflow run, revision and observed outcomes. Inspect the resources after each real deployment. Promotion applies the public API and cleanup Bicep configuration together. Deployment checks do not replace lifecycle acceptance.
 
 ## Independent cleanup Job
 
-`cleanup.bicep` bootstraps a separate `${appName}-cleanup` identity before scheduling its Job. The Job uses that identity, the existing Consumption environment and six environment bindings: Table endpoint/name, external epoch, identity client ID and two Application Insights values. It runs `dotnet RepoAgent.Auth.dll cleanup --once`, with UTC cron `* * * * *`, one 0.25 vCPU/0.5 GiB container, parallelism/completion 1/1, zero retries and a 90-second timeout. Its image comes from the accepted immutable auth digest.
+`cleanup.bicep` bootstraps a separate `${appName}-cleanup` identity before scheduling its Job. The Job uses that identity, the existing Consumption environment and six environment bindings: Table endpoint/name, external epoch, identity client ID and two Application Insights values. It runs `dotnet RepoAgent.Auth.dll cleanup --once`, with UTC cron `* * * * *`, one 0.25 vCPU/0.5 GiB container, parallelism/completion 1/1, zero retries and a 90-second timeout. Its image comes from the same immutable digest as the API. Separate scheduling lets cleanup run when HTTP has scaled to zero; its identity remains Table-only.
 
 Identity bootstrap needs no image or Insights reference. Job deployment requires those resources and starts scheduling immediately. Inspect actual Job identity, configuration and execution history in Azure. Confirm HTTP has zero actual replicas when demonstrating cleanup independence. A command exit, configured scale or sampled metric alone does not establish bounded physical deletion or a global concurrency/spending limit; actual cleanup and recovery acceptance remain in the runbook.

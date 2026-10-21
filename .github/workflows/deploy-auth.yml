@@ -1,4 +1,4 @@
-name: Deploy auth service
+name: Deploy auth service and cleanup
 on:
   workflow_dispatch:
     inputs:
@@ -15,7 +15,7 @@ jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     permissions:
       contents: read
       id-token: write
@@ -24,10 +24,20 @@ jobs:
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      AUTH_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      BICEP_VERSION: v0.48.1
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AUTH_STORAGE_ACCOUNT_NAME: ${{ vars.AUTH_STORAGE_ACCOUNT_NAME }}
+      AUTH_KEY_VAULT_NAME: ${{ vars.AUTH_KEY_VAULT_NAME }}
+      AUTH_SIGNING_KEY_URI: ${{ vars.AUTH_SIGNING_KEY_URI }}
+      AUTH_DATA_PROTECTION_KEY_URI: ${{ vars.AUTH_DATA_PROTECTION_KEY_URI }}
+      AUTH_TABLE_NAME: ${{ vars.AUTH_TABLE_NAME }}
+      AUTH_DEPLOYMENT_EPOCH: ${{ vars.AUTH_DEPLOYMENT_EPOCH }}
+      AUTH_REQUEST_LIMIT_PER_MINUTE: ${{ vars.AUTH_REQUEST_LIMIT_PER_MINUTE }}
+      AUTH_CONCURRENT_REQUEST_LIMIT: ${{ vars.AUTH_CONCURRENT_REQUEST_LIMIT }}
+      AUTH_REQUEST_TIMEOUT_SECONDS: ${{ vars.AUTH_REQUEST_TIMEOUT_SECONDS }}
       AUTH_APP_NAME: ${{ vars.AUTH_APP_NAME }}
       AUTH_IMAGE_REPOSITORY: ${{ vars.AUTH_IMAGE_REPOSITORY }}
-      AUTH_DEPLOYMENT_READY: ${{ vars.AUTH_DEPLOYMENT_READY }}
       AUTH_IMAGE: ${{ inputs.image }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -35,11 +45,16 @@ jobs:
           persist-credentials: false
       - run: sudo apt-get update && sudo apt-get install -y skopeo
       - name: Validate setup and auth image before login
-        run: python3 scripts/delivery/deploy-auth.py preflight
+        run: |
+          python3 scripts/delivery/auth-pipeline.py attest
+          bash infra/auth/deploy.sh check
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Update intended existing app and verify ready revision
-        run: python3 scripts/delivery/deploy-auth.py deploy
+      - name: Deploy API and cleanup from one digest and verify Azure and HTTPS
+        run: |
+          az bicep install --version "$BICEP_VERSION"
+          export BICEP_BIN="$HOME/.azure/bin/bicep"
+          bash infra/auth/deploy.sh apply

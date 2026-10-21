@@ -22,8 +22,6 @@ IMAGE = REPOSITORY + '@sha256:' + 'a' * 64
 CANARY = 'fake-token-$(touch token-was-executed);keep-private'
 SOURCE_FILES = ('service/auth/global.json', 'service/auth/verify.sh', 'service/auth/Dockerfile',
                 'infra/auth/deploy.sh', 'infra/auth/main.bicep')
-CHECK = ['infra/auth/deploy.sh', 'check']
-METADATA = ['gh', 'api', 'users/repoagent/packages/container/controller-auth']
 BUILD = ['docker', 'build', '--platform', 'linux/amd64', '--label',
          'org.opencontainers.image.revision=' + SHA, '--tag', TAG, 'service/auth']
 INSPECT = ['docker', 'image', 'inspect', TAG]
@@ -64,7 +62,7 @@ def local_image(**changes):
 
 
 def remote_image(**changes):
-    return dict(dict(config=dict(Labels={'io.repoagent.role': 'auth-service'}, User='10001:10001'),
+    return dict(dict(config=dict(Labels={'io.repoagent.role': 'auth-service', 'org.opencontainers.image.revision': SHA}, User='10001:10001'),
                      os='linux', architecture='amd64'), **changes)
 
 
@@ -73,7 +71,7 @@ def step(argv, response=None, error=None):
 
 
 def publication(local=None, digests=None, remote=None):
-    return [step(CHECK), step(METADATA, {'visibility': 'public'}), step(BUILD),
+    return [step(BUILD),
             step(INSPECT, [local if local is not None else local_image()]), step(PUSH),
             step(INSPECT, [local_image(RepoDigests=digests if digests is not None else [IMAGE])]),
             step(ATTEST, remote if remote is not None else remote_image())]
@@ -146,39 +144,21 @@ class AuthPipelineCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((calls, output), ([], 'existing=value\n'))
 
-    def test_publication_requires_dedicated_public_repository_and_infra_readiness(self):
-        for env, transcript, expected, error in [
-                ({'AUTH_IMAGE_REPOSITORY': 'ghcr.io/repoagent/controller'}, [], [], 'must be the dedicated'),
-                ({'AUTH_DEPLOYMENT_READY': ''}, [], [], 'AUTH_DEPLOYMENT_READY must be true'),
-                ({}, [step(CHECK, error='runtime prerequisites unavailable')], [CHECK], 'failed during auth delivery'),
-                ({}, [step(CHECK), step(METADATA, error=CANARY)], [CHECK, METADATA], 'metadata is unavailable'),
-                ({}, [step(CHECK), step(METADATA, {'visibility': 'private'})], [CHECK, METADATA], 'must already exist and be public')]:
-            with self.subTest(env=env, error=error):
-                result, calls, output, _ = self.invoke('publish', transcript, environment=env)
+    def test_publication_requires_the_dedicated_repository(self):
+        result, calls, output, _ = self.invoke('publish', environment={
+            'AUTH_IMAGE_REPOSITORY': 'ghcr.io/repoagent/controller'})
 
-                self.assertEqual(result.returncode, 1)
-                self.assertIn(error, result.stderr)
-                self.assertEqual(([call['argv'] for call in calls], output), (expected, 'existing=value\n'))
-                self.assertNotIn(CANARY, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('must be the dedicated', result.stderr)
+        self.assertEqual((calls, output), ([], 'existing=value\n'))
 
-    def test_missing_or_malformed_azure_identity_stops_before_any_provider(self):
-        for key in ['AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']:
-            for value in ['', 'not-a-uuid']:
-                for verb in ['check', 'publish']:
-                    with self.subTest(key=key, value=value, verb=verb):
-                        # Keep every later prerequisite valid to expose a real
-                        # check/publish continuation rather than a fixture error.
-                        result, calls, output, _ = self.invoke(verb, publication(), environment={key: value})
-
-                        self.assertEqual(result.returncode, 1)
-                        self.assertIn(key + ' is missing or invalid', result.stderr)
-                        self.assertEqual(([call['argv'] for call in calls], output), ([], 'existing=value\n'))
-
-    def test_check_runs_infra_and_public_package_preflight_without_building(self):
-        result, calls, output, _ = self.invoke('check', publication()[:2])
+    def test_check_needs_no_cloud_credentials_or_acceptance_assertions(self):
+        result, calls, output, _ = self.invoke('check', environment={
+            'AUTH_DEPLOYMENT_READY': '', 'AZURE_CLIENT_ID': '', 'AZURE_TENANT_ID': '',
+            'AZURE_SUBSCRIPTION_ID': ''})
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(([call['argv'] for call in calls], output), ([CHECK, METADATA], 'existing=value\n'))
+        self.assertEqual((calls, output), ([], 'existing=value\n'))
 
     def test_local_image_role_platform_and_numeric_nonroot_user_gate_push(self):
         invalid = [local_image(Config=dict(Labels={'io.repoagent.role': 'controller'}, User='10001')),
@@ -187,39 +167,38 @@ class AuthPipelineCliTests(unittest.TestCase):
                     for user in ['', '0', '0:10001', 'root', 'app']]
         for image in invalid:
             with self.subTest(image=image):
-                result, calls, output, _ = self.invoke('publish', publication(local=image)[:4])
+                result, calls, output, _ = self.invoke('publish', publication(local=image)[:2])
 
                 self.assertEqual(result.returncode, 1)
                 self.assertIn('image', result.stderr.lower())
                 self.assertEqual(([call['argv'] for call in calls], output),
-                                 ([CHECK, METADATA, BUILD, INSPECT], 'existing=value\n'))
+                                 ([BUILD, INSPECT], 'existing=value\n'))
 
     def test_publish_requires_reviewed_source_sha_before_build(self):
-        result, calls, output, _ = self.invoke('publish', publication()[:2], environment={'GITHUB_SHA': 'main;echo bad'})
+        result, calls, output, _ = self.invoke('publish', [], environment={'GITHUB_SHA': 'main;echo bad'})
 
         self.assertEqual(result.returncode, 1)
         self.assertIn('GITHUB_SHA must identify the reviewed source commit', result.stderr)
-        self.assertEqual(([call['argv'] for call in calls], output), ([CHECK, METADATA], 'existing=value\n'))
+        self.assertEqual(([call['argv'] for call in calls], output), ([], 'existing=value\n'))
 
     def test_publish_outputs_only_the_exact_anonymously_attested_digest(self):
-        result, calls, output, _ = self.invoke('publish', publication())
+        result, calls, output, _ = self.invoke('publish', publication(), environment={'AUTH_DEPLOYMENT_READY': ''})
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([call['argv'] for call in calls], [CHECK, METADATA, BUILD, INSPECT, PUSH, INSPECT, ATTEST])
+        self.assertEqual([call['argv'] for call in calls], [BUILD, INSPECT, PUSH, INSPECT, ATTEST])
         self.assertEqual(output, 'existing=value\nimage=' + IMAGE + '\n')
-        self.assertEqual(calls[1]['gh_token'], CANARY)
         self.assertNotIn(CANARY, result.stdout + result.stderr + output + json.dumps([call['argv'] for call in calls]))
 
     def test_ambiguous_wrong_repository_or_malformed_digests_never_become_outputs(self):
         for digests in [[], [IMAGE, IMAGE], ['ghcr.io/repoagent/controller@sha256:' + 'a' * 64],
                         [REPOSITORY + ':latest'], [REPOSITORY + '@sha256:bad']]:
             with self.subTest(digests=digests):
-                result, calls, output, _ = self.invoke('publish', publication(digests=digests)[:6])
+                result, calls, output, _ = self.invoke('publish', publication(digests=digests)[:4])
 
                 self.assertEqual(result.returncode, 1)
                 self.assertIn('one unambiguous repository digest', result.stderr)
                 self.assertEqual(([call['argv'] for call in calls], output),
-                                 ([CHECK, METADATA, BUILD, INSPECT, PUSH, INSPECT], 'existing=value\n'))
+                                 ([BUILD, INSPECT, PUSH, INSPECT], 'existing=value\n'))
 
     def test_failed_anonymous_attestation_never_exports_an_image(self):
         for remote in [remote_image(config=dict(Labels={}, User='10001')), remote_image(architecture='arm64'),
@@ -229,8 +208,8 @@ class AuthPipelineCliTests(unittest.TestCase):
 
                 self.assertEqual(result.returncode, 1)
                 self.assertEqual(([call['argv'] for call in calls], output),
-                                 ([CHECK, METADATA, BUILD, INSPECT, PUSH, INSPECT, ATTEST], 'existing=value\n'))
-        result, calls, output, _ = self.invoke('publish', publication()[:6] + [step(ATTEST, error=CANARY)])
+                                 ([BUILD, INSPECT, PUSH, INSPECT, ATTEST], 'existing=value\n'))
+        result, calls, output, _ = self.invoke('publish', publication()[:4] + [step(ATTEST, error=CANARY)])
 
         self.assertEqual(result.returncode, 1)
         self.assertEqual(output, 'existing=value\n')
