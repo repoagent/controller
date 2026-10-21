@@ -104,13 +104,19 @@ public static class BridgeCommand
                         var nativeRoot = checkout?.Root ?? cwd;
                         var nativeConfig = Path.Combine(credentialDirectory, "gh-config");
                         if (checkout is not null) await Codex.TrustWorkspace(nativeRoot, wrapper, nativeConfig, cancellationToken);
-                        await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null);
+                        var reconciliation = checkout is null ? null : new CheckoutRefresh(checkout, statePath,
+                            store.Discussions.Any(entry => entry.Value!.Text("sessionId").Length != 0),
+                            store.Discussions.Any(entry => entry.Value?["pending"] is not null));
+                        await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, reconciliation);
+                        await using var managedRefresh = reconciliation;
                         await codex.Initialize(cancellationToken);
-                        var bridge = new Bridge(github, codex, store, numbers);
+                        if (reconciliation is not null) await reconciliation.Start(codex,
+                            TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)), cancellationToken);
+                        var bridge = new Bridge(github, codex, store, numbers, reconciliation);
                         if (publicUrl is not null)
                         {
                             await new DiscussionWebhooks(github, bridge, statePath,
-                                new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval)))).Run(cancellationToken);
+                                new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), reconciliation).Run(cancellationToken);
                             return 0;
                         }
                         Log.Write("mode", $"polling interval-seconds={result.GetValue(interval)}");

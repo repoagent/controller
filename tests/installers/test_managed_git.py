@@ -351,7 +351,7 @@ class ManagedGitTests(unittest.TestCase):
 
 
 class GitProvider:
-    def __init__(self, directory, fork=False, repository="owner/project", app_slug="test-app", token="lease-A", listen_host="127.0.0.1", broker_target=None, repository_id=345):
+    def __init__(self, directory, fork=False, repository="owner/project", app_slug="test-app", token="lease-A", listen_host="127.0.0.1", broker_target=None, repository_id=345, responses=False):
         self.directory = directory
         self.repository, self.app_slug = repository, app_slug
         self.broker_target = broker_target
@@ -361,6 +361,7 @@ class GitProvider:
         self.lease_offset_minutes = 0
         self.lease_status = 200
         self.requests = []
+        self.responses, self.model_requests, self.denied = responses, [], []
         self.cert = directory / 'cert.pem'
         self.key = directory / 'key.pem'
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
@@ -368,6 +369,13 @@ class GitProvider:
                         '-subj', '/CN=github.com', '-addext',
                         'subjectAltName=DNS:github.com,DNS:api.github.com,DNS:broker.fixture'],
                        check=True, capture_output=True)
+        self.server_cert, self.server_key = self.cert, self.key
+        if responses:
+            self.server_cert, self.server_key = directory / 'leaf.pem', directory / 'leaf.key'
+            extensions = directory / 'leaf.ext'
+            extensions.write_text('basicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:github.com,DNS:api.github.com,DNS:broker.fixture\n')
+            subprocess.run(['openssl', 'req', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(self.server_key), '-out', str(directory / 'leaf.csr'), '-subj', '/CN=broker.fixture'], check=True, capture_output=True)
+            subprocess.run(['openssl', 'x509', '-req', '-in', str(directory / 'leaf.csr'), '-CA', str(self.cert), '-CAkey', str(self.key), '-CAcreateserial', '-out', str(self.server_cert), '-days', '1', '-extfile', str(extensions)], check=True, capture_output=True)
         seed = directory / 'seed'
         seed.mkdir()
         for args in [['init', '-b', 'main', str(seed)], ['-C', str(seed), 'config', 'user.email', 'fixture@example.test'],
@@ -404,12 +412,13 @@ class GitProvider:
                                     key.data.sendall(data)
                     return
                 if self.path not in ('github.com:443', 'api.github.com:443', 'broker.fixture:443'):
+                    provider.denied.append(('CONNECT', self.path))
                     self.send_error(403)
                     return
                 self.send_response(200)
                 self.end_headers()
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-                context.load_cert_chain(provider.cert, provider.key)
+                context.load_cert_chain(provider.server_cert, provider.server_key)
                 self.connection = context.wrap_socket(self.connection, server_side=True)
                 self.rfile = self.connection.makefile('rb')
                 self.wfile = self.connection.makefile('wb')
@@ -433,6 +442,9 @@ class GitProvider:
             def do_POST(self):
                 self.dispatch()
 
+            def do_PATCH(self):
+                self.dispatch()
+
             def dispatch(self):
                 if self.headers.get('Transfer-Encoding', '').lower() == 'chunked':
                     chunks = []
@@ -448,17 +460,50 @@ class GitProvider:
                     body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
                 host = self.headers.get('Host', '')
                 provider.requests.append((self.command, host, self.path))
+                if provider.responses and host == 'broker.fixture' and self.path.startswith('/v1/'):
+                    if self.command != 'POST' or self.path != '/v1/responses' or self.headers.get('Content-Encoding', 'identity') != 'identity' or self.headers.get('Authorization') or len(provider.model_requests) >= 2:
+                        provider.denied.append((self.command, host, self.path)); return self.reply({}, 403)
+                    provider.model_requests.append(dict(headers=dict(self.headers), body=json.loads(body)))
+                    print('RESPONSES_REQUEST ' + json.dumps(provider.model_requests[-1]), flush=True)
+                    number = len(provider.model_requests)
+                    rid = 'local-response-' + str(number)
+                    item = dict(type='message', role='assistant', id='local-message-' + str(number), content=[dict(type='output_text', text='Harmless fixture assistant ' + str(number) + '.')])
+                    events = [dict(type='response.created', response=dict(id=rid)), dict(type='response.output_item.done', item=item), dict(type='response.completed', response=dict(id=rid, usage=dict(input_tokens=0, input_tokens_details=None, output_tokens=0, output_tokens_details=None, total_tokens=0)))]
+                    payload = ''.join('event: ' + e['type'] + '\ndata: ' + json.dumps(e) + '\n\n' for e in events).encode()
+                    self.send_response(200); self.send_header('Content-Type', 'text/event-stream')
+                    self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
+                    return
                 if host == 'broker.fixture':
                     return self.reply(provider.lease() if provider.lease_status == 200 else {}, provider.lease_status)
                 if host == 'api.github.com':
+                    if getattr(provider, 'webhooks', False) and self.command in ('POST', 'PATCH') and self.path in ('/repos/' + repository + '/hooks', '/repos/' + repository + '/hooks/456'):
+                        hook = json.loads(body); provider.hooks.append(hook)
+                        return self.reply(dict(id=456, **hook))
                     if self.command == 'GET' and self.path == '/repos/' + repository:
+                        fault = getattr(provider, 'postfetch_failure', None)
+                        if fault and len(provider.git_tokens) > fault['git']:
+                            fault.update(git=len(provider.git_tokens), count=fault['count'] + 1)
+                            return self.reply({}, 503)
                         return self.reply(dict(id=provider.repository_id, full_name=repository, clone_url='https://github.com/' + repository + '.git', default_branch='main'))
+                    if self.command == 'GET' and self.path == '/repos/' + repository + '/git/ref/heads/main':
+                        if getattr(provider, 'ref_status', None):
+                            return self.reply({}, provider.ref_status)
+                        sha = subprocess.run(['git', '--git-dir', str(target), 'rev-parse', 'refs/heads/main'],
+                                             check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+                        observer = getattr(provider, 'ref_observer', None)
+                        if observer: observer(sha)
+                        return self.reply(dict(ref='refs/heads/main', object=dict(type='commit', sha=sha)))
                     if self.command != 'POST' or self.path != '/graphql' or not body:
                         print('GIT_PROVIDER_DENIED ' + json.dumps({'method': self.command, 'path': self.path}), flush=True)
                         return self.reply({}, 403)
                     query = json.loads(body).get('query', '')
+                    if 'discussion(number:' in query:
+                        return self.reply({'data': {'repository': {'discussion': provider.discussions[0]}}})
                     if 'discussions(' in query:
-                        return self.reply({'data': {'repository': {'discussions': {'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+                        return self.reply({'data': {'repository': {'discussions': {'nodes': getattr(provider, 'discussions', []), 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+                    if 'node(id:' in query:
+                        field = 'comments' if 'comments(' in query else 'reactions'
+                        return self.reply({'data': {'node': {field: {'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'user(login:' in query:
                         return self.reply({'data': {'user': {'login': 'repoagent'}}})
                     if 'repository' not in query:
@@ -516,10 +561,17 @@ class GitProvider:
         return environment
 
     def enrollment(self):
-        return dict(protocolVersion=2, brokerOrigin='https://broker.fixture', githubHost='github.com',
+        enrollment = dict(protocolVersion=2, brokerOrigin='https://broker.fixture', githubHost='github.com',
                     deviceId='device-1', deviceSecret='a' * 43, appId=123, appSlug='test-app', installationId=234,
                     repositoryId=345, repository='owner/project', permissions={'discussions': 'write', 'contents': 'read'},
                     profile='polling-clone', policyVersion='repository-agent-clone-approval-v2')
+        if getattr(self, 'webhooks', False):
+            enrollment['permissions']['repository_hooks'] = 'write'
+            enrollment['profile'] = 'webhook-clone'
+            if not self.clone:
+                enrollment.update(protocolVersion=1); enrollment['permissions'].pop('contents')
+                enrollment.pop('profile'); enrollment.pop('policyVersion')
+        return enrollment
 
     def lease(self):
         lease = self.enrollment()
