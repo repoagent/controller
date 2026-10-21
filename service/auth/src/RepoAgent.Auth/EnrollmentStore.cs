@@ -201,6 +201,18 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
         s.Approval.Require(a);
         return a;
     }
+    internal async Task ReleaseUnsentAttemptAsync(EnrollmentSnapshot s, TableEntity attempt, CancellationToken ct)
+    {
+        RequireLive(s.Pending);
+        if (Text(attempt, "State") != "settled" || attempt.GetBoolean("CapacityReleased") != true
+            || Text(attempt, "SettlementReason") != "unsent" || attempt.ContainsKey("SendClaimedAt")
+            || Date(attempt, "SettledAt") < Date(attempt, "ReservedAt") || Date(attempt, "SettledAt") > clock.GetUtcNow())
+            throw new IssuanceDenied();
+        // Keep the charged audit and original pending clocks. The gate/pending/attempt
+        // ETags fence stale senders before a separately charged replacement is admitted.
+        s.Pending.Remove("Attempt");
+        await CommitAsync(s, [Action(attempt)], ct);
+    }
     internal string Recover(EnrollmentSnapshot s, TableEntity attempt)
     {
         PayloadClock.RequireAttempt(attempt);
