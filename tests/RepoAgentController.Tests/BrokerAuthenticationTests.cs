@@ -77,7 +77,7 @@ public sealed class BrokerAuthenticationTests
     }
 
     [Fact]
-    public async Task Existing_wrapper_observes_renewal_then_fails_closed_and_recovers_after_authorization()
+    public async Task Existing_wrapper_observes_renewal_then_requires_a_fresh_lifetime_after_failure()
     {
         using var fixture = new Fixture();
         using var credentials = fixture.Credentials();
@@ -96,7 +96,11 @@ public sealed class BrokerAuthenticationTests
         Assert.NotEqual(0, failed.Exit);
         Assert.DoesNotContain("gh-invoked", failed.Output);
         fixture.Transport.Status = HttpStatusCode.OK;
-        await credentials.GetToken(TestContext.Current.CancellationToken);
+        var requests = fixture.Transport.Requests.Count;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
+        Assert.Equal(requests, fixture.Transport.Requests.Count);
+        using var restarted = fixture.Credentials();
+        await restarted.Initialize(null, TestContext.Current.CancellationToken);
         Assert.Equal(0, (await fixture.InvokeWrapper()).Exit);
     }
 
@@ -136,7 +140,7 @@ public sealed class BrokerAuthenticationTests
     }
 
     [Fact]
-    public async Task Stalled_broker_body_times_out_clears_credentials_and_allows_retry()
+    public async Task Stalled_broker_body_times_out_clears_credentials_and_allows_a_fresh_start()
     {
         using var fixture = new Fixture();
         using var credentials = fixture.Credentials();
@@ -164,7 +168,9 @@ public sealed class BrokerAuthenticationTests
             Assert.DoesNotContain("human-token", failed.Output);
 
             fixture.Transport.Body = null;
-            await credentials.GetToken(cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(cancellation.Token));
+            using var restarted = fixture.Credentials();
+            await restarted.Initialize(null, cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             var recovered = await fixture.InvokeWrapper();
             Assert.Equal(0, recovered.Exit);
             Assert.Contains("opaque-token-3", recovered.Output);

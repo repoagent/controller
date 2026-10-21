@@ -11,16 +11,21 @@ namespace RepoAgentController.Tests;
 public sealed class BrokerLifetimeTests
 {
     [Theory]
-    [InlineData("turn", false)]
-    [InlineData("initialize", false)]
-    public async Task Failed_broker_renewal_stops_owned_native_work_and_preserves_recovery(string stage, bool webhooks)
-        => await Exercise(stage, webhooks, false);
+    [InlineData("turn", false, "denied")]
+    [InlineData("initialize", false, "denied")]
+    [InlineData("turn", true, "denied")]
+    [InlineData("turn", false, "malformed")]
+    [InlineData("turn", false, "transport")]
+    [InlineData("turn", false, "deadline")]
+    [InlineData("turn", false, "unavailable")]
+    public async Task Failed_broker_renewal_stops_owned_native_work_and_preserves_recovery(string stage, bool webhooks, string failure)
+        => await Exercise(stage, webhooks, false, failure);
 
     [Fact]
     public async Task User_cancellation_keeps_a_successful_exit_and_drains_native_work()
         => await Exercise("turn", false, true);
 
-    static async Task Exercise(string stage, bool webhooks, bool userCancellation)
+    static async Task Exercise(string stage, bool webhooks, bool userCancellation, string failure = "denied")
     {
         if (!OperatingSystem.IsLinux()) return; // Shipping Linux process-tree boundary, observed through /proc.
         using var fixture = new BrokerAuthenticationTests.Fixture(webhooks: webhooks);
@@ -51,6 +56,7 @@ public sealed class BrokerLifetimeTests
         Process? parent = null, child = null;
         using var unrelated = Process.Start("sleep", "300")!;
         Task<int>? run = null;
+        using var stalled = new BrokerAuthenticationTests.StalledBody();
         try
         {
             foreach (var pair in environment) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
@@ -78,6 +84,9 @@ public sealed class BrokerLifetimeTests
             Assert.False(parent.HasExited);
             Assert.False(child.HasExited);
             Assert.False(run.IsCompleted); // Native initialized or received turn input; startup failure cannot pass.
+            var allowed = await fixture.InvokeWrapper();
+            Assert.Equal(0, allowed.Exit);
+            Assert.Contains("gh-invoked", allowed.Output);
             var state = File.ReadAllText(fixture.State);
             var enrollment = File.ReadAllText(fixture.EnrollmentFile);
             var nativeHistory = File.ReadAllText(history);
@@ -91,10 +100,18 @@ public sealed class BrokerLifetimeTests
             if (userCancellation) await shutdown.CancelAsync();
             else
             {
-                fixture.Transport.Status = HttpStatusCode.Unauthorized;
+                fixture.Transport.Status = failure == "unavailable" ? HttpStatusCode.ServiceUnavailable
+                    : failure == "denied" ? HttpStatusCode.Unauthorized : HttpStatusCode.OK;
+                fixture.Transport.Defect = failure is "malformed" or "transport" ? failure : null;
+                if (failure == "deadline") fixture.Transport.Body = stalled;
                 fixture.Transport.Requested = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 fixture.Clock.Advance(TimeSpan.FromMinutes(56));
                 await fixture.Transport.Requested.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                if (failure == "deadline")
+                {
+                    await stalled.Reading.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                    fixture.Clock.Advance(TimeSpan.FromSeconds(60));
+                }
             }
             // Real-time deadline is a failure watchdog, never the renewal clock.
             var exit = await run.WaitAsync(TimeSpan.FromSeconds(8), TestContext.Current.CancellationToken);
@@ -180,6 +197,7 @@ public sealed class BrokerLifetimeTests
          print(json.dumps({'data':data}))
         elif len(a)>1 and a[1].startswith('repos/owner/repository/hooks'):
          body=json.load(sys.stdin);print(json.dumps({'id':1,'active':body.get('active',True)}))
+        elif a==['capture']:print('gh-invoked')
         else:raise RuntimeError('Unexpected GitHub command')
         """;
 }
