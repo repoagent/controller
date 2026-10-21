@@ -18,6 +18,27 @@ from test_managed_git import GitProvider
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def selected_native_sha256():
+    selection = os.environ.get('REPOAGENT_TEST_NATIVE_CONTROLLER')
+    if not selection:
+        raise RuntimeError('Docker proof requires explicit REPOAGENT_TEST_NATIVE_CONTROLLER')
+    artifact = Path(selection)
+    try:
+        if not artifact.is_file() or not os.access(artifact, os.X_OK):
+            raise ValueError('must select an executable file')
+        content = artifact.read_bytes()
+        if not content.startswith(b'\x7fELF'):
+            raise ValueError('must select a native Linux executable')
+        identity = subprocess.run([str(artifact.resolve()), '--help'], capture_output=True,
+                                  text=True, timeout=15, check=True)
+        if not all(value in identity.stdout for value in
+                   ('RepoAgentController', '--enrollment-file', '--clone', '--check-auth')):
+            raise ValueError('executable does not expose the clone controller CLI')
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise RuntimeError('Invalid REPOAGENT_TEST_NATIVE_CONTROLLER: ' + str(error)) from error
+    return hashlib.sha256(content).hexdigest()
+
+
 @unittest.skipUnless(os.environ.get('AUTH_TEST_TABLE_ENDPOINT'), 'Owned Azurite endpoint required')
 class CloneAssembledTests(unittest.TestCase):
     @classmethod
@@ -35,9 +56,9 @@ class CloneAssembledTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get('REPOAGENT_TEST_DOCKER_IMAGE'), 'Actual current-component Docker image required')
     def test_private_completed_clone_file_enters_actual_docker_runtime(self):
-        self.run_clone_journey(container=True)
+        self.run_clone_journey(container=True, expected_native=selected_native_sha256())
 
-    def run_clone_journey(self, container=False):
+    def run_clone_journey(self, container=False, expected_native=None):
         journey = host.EnrollmentJourney(self, profile='polling-clone')
         directory = journey.directory
         subprocess.run(['openssl', 'pkcs12', '-export', '-out', str(directory / 'cert.pfx'),
@@ -109,7 +130,7 @@ class CloneAssembledTests(unittest.TestCase):
             if snapshots[-1]['counters']['Signs'] >= 2:
                 cross_observed_window()
             if container:
-                self.assert_docker_runtime(journey, provider, public)
+                self.assert_docker_runtime(journey, provider, public, expected_native)
                 recorded = events()
                 self.assertTrue(any(event.get('path', '').startswith('/v2/devices/') and
                                     event['path'].endswith('/installation-token') and event['status'] == 200 for event in recorded))
@@ -140,7 +161,7 @@ class CloneAssembledTests(unittest.TestCase):
             if broker.stdin:
                 broker.stdin.close()
 
-    def assert_docker_runtime(self, journey, provider, public):
+    def assert_docker_runtime(self, journey, provider, public, expected_native):
         image = os.environ['REPOAGENT_TEST_DOCKER_IMAGE']
         instance = 'issue63-' + os.urandom(5).hex()
         name = 'repoagent-' + instance
@@ -196,7 +217,7 @@ class CloneAssembledTests(unittest.TestCase):
                 self.assertEqual(actual, hashlib.sha256((ROOT / 'container' / filename).read_bytes()).hexdigest())
             actual_native = docker('run', '--rm', '--network', 'none', '--entrypoint', '/usr/bin/sha256sum',
                                    selected, '/opt/repoagent/controller/RepoAgentController').stdout.split()[0]
-            self.assertEqual(actual_native, '0aab3682bfe23d72dc0c5a9de1d0d9fc0b7f635ca5ab0e0bb44ca487b7bcd31c')
+            self.assertEqual(actual_native, expected_native)
             print('DOCKER current-component image=' + selected + ' proof=' + json.dumps(proof), flush=True)
         finally:
             subprocess.run(['docker', '--host=unix:///var/run/docker.sock', 'rm', '--force', container_name],
