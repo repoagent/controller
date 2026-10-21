@@ -7,12 +7,15 @@ public sealed record BrokerOptions(Uri TableEndpoint, string TableName, string D
     public int RetainedEnrollmentLimit { get; init; } = 256;
     public int RetainedIssuanceLimit { get; init; } = 4096;
 
-    public static BrokerOptions Read(IConfiguration configuration)
+    public static BrokerOptions Read(IConfiguration configuration) => Read(configuration, false);
+
+    internal static BrokerOptions Read(IConfiguration configuration, bool allowDevelopmentLoopback)
     {
         var section = configuration.GetSection("Broker");
         if (!Uri.TryCreate(section["TableEndpoint"], UriKind.Absolute, out var endpoint)
-            || endpoint.Scheme != "https" || !string.IsNullOrEmpty(endpoint.UserInfo)
-            || endpoint.AbsolutePath != "/" || endpoint.Query.Length != 0 || endpoint.Fragment.Length != 0)
+            || !string.IsNullOrEmpty(endpoint.UserInfo) || endpoint.Query.Length != 0 || endpoint.Fragment.Length != 0
+            || !(endpoint.Scheme == "https" && endpoint.AbsolutePath == "/"
+                || allowDevelopmentLoopback && IsDevelopmentTableEndpoint(endpoint)))
             throw new InvalidOperationException("Broker:TableEndpoint must be an HTTPS Table service origin.");
         var table = section["TableName"];
         if (table is null || table.Length is < 3 or > 63 || !char.IsAsciiLetter(table[0])
@@ -41,6 +44,11 @@ public sealed record BrokerOptions(Uri TableEndpoint, string TableName, string D
             RetainedIssuanceLimit = Limit(section, nameof(RetainedIssuanceLimit), 4096, 4096)
         };
     }
+
+    internal static bool IsDevelopmentTableEndpoint(Uri endpoint) =>
+        endpoint.Scheme == "http" && endpoint.IsLoopback
+        && endpoint.AbsolutePath.Length > 1
+        && endpoint.AbsolutePath[1..].All(char.IsAsciiLetterOrDigit);
 
     private static int Limit(IConfiguration section, string name, int fallback, int maximum)
     {

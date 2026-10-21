@@ -5,6 +5,12 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Features;
 using RepoAgent.Auth;
 
+if (args.FirstOrDefault() == "cleanup")
+{
+    Environment.ExitCode = await BrokerCleanupCommand.RunAsync(args);
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(services => BrokerOptions.Read(services.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton(services =>
