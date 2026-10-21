@@ -65,11 +65,13 @@ public sealed partial class CleanupProcessTests
     }
 
     [Theory]
-    [InlineData("polling", false)]
-    [InlineData("polling", true)]
-    [InlineData("polling-clone", false)]
-    [InlineData("polling-clone", true)]
-    public async Task Completion_and_token_are_removed_but_active_acknowledged_device_and_policy_survive(string profile, bool acknowledge)
+    [InlineData("polling", false, false)]
+    [InlineData("polling", true, false)]
+    [InlineData("polling-clone", false, false)]
+    [InlineData("polling-clone", true, false)]
+    [InlineData("polling", true, true)]
+    [InlineData("polling-clone", true, true)]
+    public async Task Cleanup_preserves_binding_and_releases_only_settled_terminal_owners(string profile, bool acknowledge, bool revoke)
     {
         await using var f = await EnrollmentFixture.CreateAsync();
         CloneEnrollmentContractTests.ConfigureGitHub(f, profile);
@@ -92,6 +94,11 @@ public sealed partial class CleanupProcessTests
             using var ack = await f.Send($"/v2/devices/{deviceId}/acknowledgment", new { completionId = receipt.GetProperty("completionId").GetString() }, secret);
             Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
         }
+        if (revoke)
+        {
+            using var closed = await f.Send($"/v{(profile == "polling-clone" ? 2 : 1)}/devices/{deviceId}", secret: secret, method: HttpMethod.Delete);
+            Assert.Equal(HttpStatusCode.NoContent, closed.StatusCode);
+        }
         var key = "pending:" + id;
         var pending = await Read(f.Storage, RevocationFixture.Partition, key);
         var active = await Read(f.Storage, RevocationFixture.Partition, "device:" + deviceId);
@@ -108,7 +115,7 @@ public sealed partial class CleanupProcessTests
             AssertSdkAccounting(result.Summary);
             var gate = await Read(f.Storage, RevocationFixture.Partition, "gate");
             if (!result.Summary.GetProperty("incompleteCoverage").GetBoolean()
-                && (acknowledge || !gate.ContainsKey("OwnerDeviceId"))) break;
+                && (acknowledge && !revoke || !gate.ContainsKey("OwnerDeviceId"))) break;
         }
         var after = await Read(f.Storage, RevocationFixture.Partition, key);
         Assert.False(after.ContainsKey("ProtectedCompletion"));
@@ -116,7 +123,7 @@ public sealed partial class CleanupProcessTests
         var preserved = await Read(f.Storage, active.PartitionKey, active.RowKey);
         foreach (var field in new[] { "ExpiresAt", "PolicyVersion", "Profile", "Acknowledged" })
             Assert.Equal(active[field], preserved[field]);
-        if (acknowledge)
+        if (acknowledge && !revoke)
         {
             Assert.Equal(active.GetString("SecretHash"), preserved.GetString("SecretHash"));
             Assert.Equal(active.GetDateTimeOffset("LastActivityAt"), preserved.GetDateTimeOffset("LastActivityAt"));
@@ -137,7 +144,7 @@ public sealed partial class CleanupProcessTests
             Assert.Equal(ledger.GetString("PolicyVersion"), attempt.GetString("PolicyVersion"));
             Assert.Equal(ledger.GetDateTimeOffset("PayloadPurgeAt"), attempt.GetDateTimeOffset("PayloadPurgeAt"));
         }
-        if (acknowledge)
+        if (acknowledge && !revoke)
         {
             // Prove provider/signing setup and the current grant work before testing the epoch fence.
             f.Clock.Advance(DateTimeOffset.UtcNow - f.Clock.GetUtcNow());

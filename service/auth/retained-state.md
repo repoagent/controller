@@ -95,6 +95,12 @@ One four-action repository transaction conditions the gate, pending and device E
 A new enrollment needs a fresh device, private credential and repository approval. The expired credential remains denied; it is never renewed or resurrected. Completed-enrollment ledger/device/locator and audit evidence remain charged under the existing retention rules. This transition does not attest cessation of a delayed locator publisher, refund its credits, reset accounting or provide active-controller handover.
 
 
+## Revoked acknowledged owner release
+
+After pending-capacity release, the same bounded visit can release an acknowledged owner only when the common gate is already closed and still names that exact revoked device. It requires an existing matching revocation receipt, full current-epoch ledger/pending/device/completion/installation/profile/approval binding, the generation-bound pending release proof, no verifier reference, and positively settled zero gate/device capability counts. The pending row may retain acknowledged `active` completion identity or committed `closed` state. An active gate, expiry alone, missing receipt or incomplete binding cannot authorize this rule; unknown/sending capabilities remain charged and block replacement.
+
+One four-action transaction conditions gate, pending, device and existing receipt ETags, makes the gate vacant, and records `OwnerReleasedAt` with reason `revoked-acknowledged`. It preserves original revocation, device activity/expiry and first-terminal clocks, revoked state, all audit/publication evidence and retained credits. The same ten-point-read/one-EGT path stays within the existing settlement ceiling. Stale workers cannot release a newer owner. This provides broker reassignment after settlement, not proof that native children stopped or that copied bearer capabilities were invalidated by a local cache/replica change; full live handover remains #34.
+
 ## Retained allocation retirement
 
 The same two `Reclaim*Async` methods attempt retained retirement only when their ledger already records globally completed capacity release. Settlement and retirement are separate invocations; a settlement call never silently includes the retirement budget. There are no additional public methods, scans, scheduler, HTTP routes or automatic retries. Missing final ledgers are no-ops; storage conflicts propagate for a later caller invocation.
