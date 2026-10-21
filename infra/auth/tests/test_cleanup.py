@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -71,9 +72,10 @@ class CleanupProcessTests(unittest.TestCase):
         self.job = cleanup_job(self.env['AUTH_DEPLOYMENT_EPOCH'])
         self.scenario['postCreateResources'] = {JOB_ID: self.job}
 
-    def operation(self, mode):
+    def operation(self, mode, changes=None):
         active = IDENTITY_ID if mode.startswith('cleanup-identity-') else JOB_ID
-        self.scenario['plan'] = dict(status='Succeeded', changes=[dict(resourceId=active, changeType='Create')])
+        self.scenario['plan'] = dict(status='Succeeded', changes=(changes if changes is not None else
+            [dict(resourceId=active, changeType='Create')]))
         result = self.invoke(mode)
         allowed = {('group', 'show'), ('resource', 'show'), ('deployment', 'group', 'validate'),
                    ('deployment', 'group', 'what-if'), ('deployment', 'group', 'create')}
@@ -174,6 +176,183 @@ class CleanupProcessTests(unittest.TestCase):
         self.assertIn('unconfirmed', result.stderr.lower())
 
 
+    def test_stable_prior_image_updates_and_manual_schedule_restores(self):
+        # C90-03: observing prior A is distinct from accepting desired current B.
+        for trigger in ('Schedule', 'Manual'):
+            with self.subTest(trigger=trigger):
+                prior = copy.deepcopy(self.job)
+                prior['properties']['template']['containers'][0]['image'] = activation.IMAGE[:-64] + 'b' * 64
+                if trigger == 'Manual':
+                    prior['properties']['configuration'].pop('scheduleTriggerConfig')
+                    prior['properties']['configuration'].update(triggerType='Manual',
+                        manualTriggerConfig=dict(parallelism=1, replicaCompletionCount=1))
+                self.scenario['resources'][JOB_ID] = prior
+                result = self.operation('cleanup-apply')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.assert_single_write(False)['image']['value'], activation.IMAGE)
+
+    def test_source_and_identity_changes_after_plan_never_write(self):
+        # C90-07: source and platform identity are independently rechecked.
+        baseline = copy.deepcopy(self.scenario)
+        for changed in ('source', 'identity', 'job-image', 'job-disappears'):
+            with self.subTest(changed=changed):
+                self.scenario = copy.deepcopy(baseline)
+                self.main = [self.env['GITHUB_SHA']]
+                if changed == 'source':
+                    self.main += ['c' * 40]
+                elif changed == 'identity':
+                    drift = cleanup_identity()
+                    drift['properties']['clientId'] = deployment.CLIENT_ID
+                    self.scenario['postPlanResources'] = {IDENTITY_ID: drift}
+                else:
+                    self.scenario['resources'][JOB_ID] = copy.deepcopy(self.job)
+                    drift = copy.deepcopy(self.job)
+                    drift['properties']['template']['containers'][0]['image'] = activation.IMAGE[:-64] + 'c' * 64
+                    self.scenario['postPlanResources'] = {JOB_ID: None if changed == 'job-disappears' else drift}
+                result = self.operation('cleanup-apply')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.creates(), [])
+
+    def test_what_if_cannot_authorize_inactive_foreign_or_destructive_writes(self):
+        # C90-08: declarations are not the active one-resource write manifest.
+        for mode, resource_id, change in (
+                ('cleanup-apply', IDENTITY_ID, 'NoChange'),
+                ('cleanup-identity-apply', JOB_ID, 'Create'),
+                ('cleanup-apply', deployment.APP_ID, 'Modify'),
+                ('cleanup-apply', JOB_ID, 'Delete')):
+            with self.subTest(mode=mode, resource_id=resource_id, change=change):
+                result = self.operation(mode, [dict(resourceId=resource_id, changeType=change)])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.creates(), [])
+
+    def test_dangerous_job_shapes_never_confirm_and_prior_drift_never_writes(self):
+        # C90-09/10: one table owns distinct dangerous shapes, not a mode matrix.
+        container = ('properties', 'template', 'containers', 0)
+        cases = [
+            ('epoch-before', container + ('env', 2, 'value'), 'foreign', False),
+            ('profile-before', ('properties', 'workloadProfileName'), 'Dedicated', False),
+            ('mutable-before', container + ('image',), 'ghcr.io/repoagent/controller-auth:main', False),
+            ('foreign-repository-before', container + ('image',), 'ghcr.io/foreign/auth@sha256:' + 'a' * 64, False),
+            ('ownership-before', ('tags', 'repositoryId'), 'foreign', False),
+            ('secret-ref-after', container + ('env', 0), dict(name='Broker__TableEndpoint', value='ignored', secretRef='secret'), True),
+            ('duplicate-env-after', container + ('env', 1), self.job['properties']['template']['containers'][0]['env'][0], True),
+            ('extra-container-after', ('properties', 'template', 'containers'), [{}, {}], True),
+            ('init-container-after', ('properties', 'template', 'initContainers'), [{}], True),
+            ('probe-after', container + ('probes',), [{}], True),
+            ('mount-after', container + ('volumeMounts',), [{}], True),
+            ('registry-after', ('properties', 'configuration', 'registries'), [dict(server='private')], True),
+            ('old-image-after', container + ('image',), activation.IMAGE[:-64] + 'b' * 64, True),
+            ('missing-profile-after', ('properties', 'workloadProfileName'), None, True),
+            ('cpu-after', container + ('resources', 'cpu'), 0.5, True),
+        ]
+        baseline = copy.deepcopy(self.scenario)
+        for name, path, value, after in cases:
+            with self.subTest(shape=name):
+                self.scenario = copy.deepcopy(baseline)
+                bad = copy.deepcopy(self.job)
+                target = bad
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = copy.deepcopy(value)
+                self.scenario['postCreateResources' if after else 'resources'][JOB_ID] = bad
+                result = self.operation('cleanup-apply')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(len(self.creates()), int(after))
+                if after:
+                    self.assertIn('unconfirmed', result.stderr)
+                    self.assertNotIn('"applied": true', result.stdout)
+
+    def test_every_cleanup_dependency_must_be_fresh_after_create(self):
+        # C90-10: retain first/existing variants only for cache-bearing active object.
+        storage_id = deployment.SCOPE + '/providers/Microsoft.Storage/storageAccounts/' + deployment.STORAGE
+        baseline = copy.deepcopy(self.scenario)
+        cases = [(rid, False) for rid in (LOG_ID, deployment.ENVIRONMENT_ID, storage_id, deployment.TABLE_ID, IDENTITY_ID)]
+        cases += [(JOB_ID, first) for first in (True, False)]
+        for missing, first in cases:
+            with self.subTest(missing=missing, first=first):
+                self.scenario = copy.deepcopy(baseline)
+                if not first:
+                    self.scenario['resources'][JOB_ID] = copy.deepcopy(self.job)
+                self.scenario['postCreateResources'] = {JOB_ID: self.job, missing: None}
+                result = self.operation('cleanup-apply')
+                self.assert_missing_after_write(result, missing, False)
+
+    def test_changed_image_attestation_immediately_before_create_never_writes(self):
+        # C90-07/11: raw anonymous config changes after its first accepted observation.
+        source = activation.SKOPEO.replace(
+            "os.environ.get('IMAGE_SOURCE', os.environ['AUTH_EXPECTED_SOURCE_SHA'])",
+            "(os.environ['AUTH_EXPECTED_SOURCE_SHA'] if len(open(os.environ['IMAGE_JOURNAL']).readlines()) == 1 else 'f' * 40)")
+        (self.directory / 'skopeo').write_text('#!' + sys.executable + '\n' + source)
+        result = self.operation('cleanup-apply')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.creates(), [])
+        self.assertEqual(len(Path(self.env['IMAGE_JOURNAL']).read_text().splitlines()), 2)
+
+    def test_raw_read_failures_are_not_absence_or_grant_authority(self):
+        # C90-09: raw provider errors/malformed input stay private and never write.
+        baseline = copy.deepcopy(self.scenario)
+        for response in ({'error': '(Forbidden) ' + activation.CANARY}, {'raw': '{malformed'},
+                         {'error': 'connection timeout ' + activation.CANARY}):
+            with self.subTest(response=response):
+                self.scenario = copy.deepcopy(baseline)
+                self.scenario['responses']['resource show'] = response
+                result = self.operation('cleanup-apply')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.creates(), [])
+
+    def test_reused_log_binding_and_identity_ids_are_checked_before_write(self):
+        baseline = copy.deepcopy(self.scenario)
+        for resource_id, path, value in (
+                (LOG_ID, ('properties', 'retentionInDays'), 90),
+                (deployment.ENVIRONMENT_ID, ('properties', 'appLogsConfiguration', 'logAnalyticsConfiguration', 'customerId'), 'foreign'),
+                (IDENTITY_ID, ('properties', 'principalId'), 'malformed')):
+            with self.subTest(resource_id=resource_id, path=path):
+                self.scenario = copy.deepcopy(baseline)
+                target = self.scenario['resources'][resource_id]
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+                result = self.operation('cleanup-apply')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.creates(), [])
+
+    def test_bootstrap_dependencies_must_remain_present_after_identity_create(self):
+        baseline = copy.deepcopy(self.scenario)
+        storage_id = deployment.SCOPE + '/providers/Microsoft.Storage/storageAccounts/' + deployment.STORAGE
+        for missing in (LOG_ID, deployment.ENVIRONMENT_ID, storage_id, deployment.TABLE_ID):
+            with self.subTest(missing=missing):
+                self.scenario = copy.deepcopy(baseline)
+                self.scenario['resources'].pop(IDENTITY_ID)
+                self.scenario['postCreateResources'] = {IDENTITY_ID: cleanup_identity(), missing: None}
+                result = self.operation('cleanup-identity-apply')
+                self.assert_missing_after_write(result, missing, True)
+
+    def test_public_cost_plan_preserves_scoped_arithmetic_and_open_operator_inputs(self):
+        # C90-12: output arithmetic belongs to this project, SDK guarantees do not.
+        Path(self.env['GIT_OBSERVATIONS']).write_text(json.dumps(self.main))
+        result = deployment.DeploymentProcessTests.run_deploy(self, 'cost-plan')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        plan = output['cleanupCapacityPlan']
+        expected = dict(nominalStartsPerDay=1440, processSeconds=60, sdkTableDispatches=128,
+            sdkBatchDispatches=32, logicalQueryPages=16, turnAdmissionDispatches=40, turnAdmissionBatches=8,
+            nominalDailySdkTableDispatches=184320, nominalDailySdkBatchDispatches=46080,
+            nominalReplicaSecondsPerDay=129600, nominalVcpuSecondsPerDay=32400, nominalGiBSecondsPerDay=64800,
+            logRetentionDays=30, logDailyQuotaGb=1, hardSpendingCap=False, globalConcurrencyCap=False)
+        self.assertEqual({key: plan[key] for key in expected}, expected)
+        envelope = plan['reviewedHttp11Envelope']
+        self.assertEqual([envelope[key] for key in ('maxSendsPerSdkDispatch', 'calculatedTableSendsPerStart',
+            'calculatedBatchSendsPerStart', 'nominalDailyCalculatedTableSends', 'nominalDailyCalculatedBatchSends')],
+            [4, 512, 128, 737280, 184320])
+        self.assertEqual(envelope['scope'], 'Azure.Core1.62.0/.NET10.0.13/direct HTTP1.x/no handler authentication')
+        self.assertTrue(envelope['batchesIncludedInTotal'])
+        self.assertFalse(envelope['measuredWireTraffic'])
+        self.assertFalse(envelope['executingRuntimeAttested'])
+        self.assertTrue(output['budgetPlan']['missingInputs'])
+        self.assertFalse(output['budgetPlan']['readyToApply'])
+        self.assertEqual(self.calls, [])
+
+
 class CleanupCompiledContractTests(unittest.TestCase):
     def test_conditional_job_shape_and_operator_table_grant(self):
         # C90-04: inspect actual compiler output, never simulate ARM evaluation.
@@ -213,12 +392,15 @@ class CleanupCompiledContractTests(unittest.TestCase):
         self.assertEqual(container['command'], ['dotnet', 'RepoAgent.Auth.dll'])
         self.assertEqual(container['args'], ['cleanup', '--once'])
         self.assertEqual(container['image'], "[parameters('image')]")
-        self.assertEqual(container['resources'], dict(cpu=0.25, memory='0.5Gi'))
+        self.assertIn(container['resources'], (dict(cpu=0.25, memory='0.5Gi'),
+                                               dict(cpu="[json('0.25')]", memory='0.5Gi')))
         env = {entry['name']: entry for entry in container['env']}
         self.assertEqual(len(container['env']), 4)
         self.assertEqual(set(env), {'Broker__TableEndpoint', 'Broker__TableName',
             'Broker__DeploymentEpoch', 'Broker__ManagedIdentityClientId'})
         self.assertTrue(all(set(entry) == {'name', 'value'} for entry in container['env']))
+        self.assertIn("parameters('storageName')", env['Broker__TableEndpoint']['value'])
+        self.assertIn('.table.core.windows.net/', env['Broker__TableEndpoint']['value'])
         self.assertEqual(env['Broker__TableName']['value'], "[parameters('tableName')]")
         self.assertEqual(env['Broker__DeploymentEpoch']['value'], "[parameters('deploymentEpoch')]")
         client = env['Broker__ManagedIdentityClientId']['value']
@@ -228,6 +410,7 @@ class CleanupCompiledContractTests(unittest.TestCase):
             value = template['outputs'][name]['value']
             self.assertTrue(value.startswith("[if(parameters('identityOnly'), reference("), value)
             self.assertEqual(value.count('.' + field), 2)
+            self.assertEqual(value.count("resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-cleanup', parameters('appName')))"), 2)
             self.assertNotIn('Microsoft.App/jobs', value)
         rbac, = templates['cleanup-rbac']['resources']
         self.assertEqual(rbac['type'], 'Microsoft.Authorization/roleAssignments')
@@ -236,6 +419,21 @@ class CleanupCompiledContractTests(unittest.TestCase):
         self.assertIn('0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3', json.dumps(templates['cleanup-rbac']))
         self.assertEqual(rbac['properties']['principalType'], 'ServicePrincipal')
         self.assertIn('-cleanup', rbac['properties']['principalId'])
+
+
+class CleanupWorkflowTests(unittest.TestCase):
+    def test_cleanup_routes_preserve_main_oidc_and_ordinary_release_selection(self):
+        # C90-11/13: reuse existing ordinary guard assertions, add only cleanup routing.
+        activation.ActivationWorkflowConfigurationTests.test_activation_uses_existing_branch_oidc_scope_and_excludes_normal_jobs(self)
+        workflow = activation.WORKFLOW.read_text()
+        options = workflow.split('options: [', 1)[1].split(']', 1)[0].split(', ')
+        whitelist = workflow.split("contains(fromJSON('[", 1)[1].split("]')", 1)[0]
+        for mode in ('cleanup-identity-plan', 'cleanup-identity-apply', 'cleanup-plan', 'cleanup-apply'):
+            self.assertIn(mode, options)
+            self.assertIn('"' + mode + '"', whitelist)
+            self.assertIn(mode, activation.ROUTE.split(')', 1)[0])
+        self.assertIn("!startsWith(inputs.operation, 'cleanup-identity-')", workflow)
+        self.assertNotIn('AUTH_CLEANUP_READY=', activation.ROUTE)
 
 
 if __name__ == '__main__':
