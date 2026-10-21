@@ -90,7 +90,7 @@ def publish():
         output.write('image=' + image + '\n')
 
 
-def build_publish(sha, context, bootstrap=False):
+def build_publish(sha, context, bootstrap=False, *, before_push=None):
     tag = repository() + ':sha-' + sha
     command(['docker', 'build', '--platform', 'linux/amd64', '--label',
              'org.opencontainers.image.revision=' + sha, '--tag', tag, str(context)], capture=bootstrap)
@@ -100,6 +100,8 @@ def build_publish(sha, context, bootstrap=False):
         raise ValueError('Built auth image must target Linux amd64')
     if bootstrap and data.get('Config', {}).get('Labels', {}).get('org.opencontainers.image.revision') != sha:
         raise ValueError('Built image revision differs from archived source')
+    if before_push is not None:
+        before_push()
     command(['docker', 'push', tag], capture=bootstrap)
     data = json.loads(command(['docker', 'image', 'inspect', tag], capture=True))[0]
     digests = [value for value in data.get('RepoDigests', [])
@@ -109,7 +111,7 @@ def build_publish(sha, context, bootstrap=False):
     return digests[0]
 
 
-def bootstrap_publish():
+def bootstrap_publish(*, before_push=None):
     repository()
     sha = os.environ.get('GITHUB_SHA', '')
     if not re.fullmatch(r'[0-9a-f]{40}', sha):
@@ -123,7 +125,7 @@ def bootstrap_publish():
         command(['tar', '-xf', str(archive), '-C', str(checkout)], capture=True)
         source(checkout)
         command(['bash', 'service/auth/verify.sh'], cwd=checkout, capture=True)
-        image = build_publish(sha, checkout / 'service/auth', bootstrap=True)
+        image = build_publish(sha, checkout / 'service/auth', bootstrap=True, before_push=before_push)
     receipt = dict(source=sha, image=image, publicationComplete=False)
     print(json.dumps(receipt), flush=True)
     os.environ.update(AUTH_IMAGE=image, AUTH_EXPECTED_SOURCE_SHA=sha)
@@ -137,12 +139,27 @@ def bootstrap_publish():
     print(json.dumps(dict(receipt, publicationComplete=True)))
 
 
+def bootstrap_publish_actions():
+    # Reuse only the source guard; bootstrap must not construct Azure configuration.
+    sys.path.insert(0, str(ROOT / 'infra/auth'))
+    from deploy import accepted_source, DeploymentError
+
+    def guard():
+        try:
+            accepted_source()
+        except (DeploymentError, subprocess.SubprocessError):
+            raise ValueError('Cannot verify accepted current main source; bootstrap refused') from None
+
+    guard()
+    bootstrap_publish(before_push=guard)
+
+
 if __name__ == '__main__':
     try:
         verbs = {'source': source, 'check': check_publication, 'attest': attest, 'publish': publish,
-                 'bootstrap-publish': bootstrap_publish}
+                 'bootstrap-publish': bootstrap_publish, 'bootstrap-publish-actions': bootstrap_publish_actions}
         if len(sys.argv) != 2 or sys.argv[1] not in verbs:
-            raise ValueError('Expected source, check, attest, publish or bootstrap-publish')
+            raise ValueError('Expected source, check, attest, publish, bootstrap-publish or bootstrap-publish-actions')
         verbs[sys.argv[1]]()
     except (ValueError, OSError, KeyError, IndexError) as error:
         sys.exit(str(error))

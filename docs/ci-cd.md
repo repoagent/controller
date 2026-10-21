@@ -44,7 +44,7 @@ Verify the archive checksum before extraction, then run `sha256sum -c SHA256SUMS
 
 `Auth service CI` retains the existing manual access check and adds read-only PR verification plus automatic main delivery. Its paths cover `service/auth`, `infra/auth`, auth delivery scripts/tests/workflows and shared root MSBuild/NuGet files. Controller-only changes do not trigger auth delivery. The actual service tests, Bicep compiler and infrastructure process/compiled-template tests run before publication. PR jobs receive no publication or Azure credentials.
 
-**The current service implements self-revocation only.** Issuance, enrollment and independent cleanup remain outstanding; `/health/ready` returns 503. Source verification can pass while production delivery remains blocked. Missing acceptance or configuration produces an actionable failure before publication/provisioning; it is never reported as a successful deployment or replaced with a healthy placeholder.
+The service implements repository-approved enrollment, installation-token issuance and renewal, self-revocation, and the independent `cleanup --once` command. `/health/ready` checks required service registrations without exercising GitHub, storage or signing. Source verification and a healthy response do not establish production acceptance. Missing acceptance or configuration still blocks normal publication/provisioning; the workflow does not substitute a healthy placeholder.
 
 After all prerequisites are accepted, trusted main jobs build a Linux amd64 service image, verify its role and numeric nonroot user, publish it and resolve an immutable digest. The Azure job anonymously verifies that digest, runs guarded resource ownership/what-if checks, applies Incremental Bicep and waits for the intended ready revision. Automatic delivery and manual rollback share a concurrency group. Publication has `packages: write` and no Azure token; deployment has `id-token: write` and no package write.
 
@@ -69,7 +69,7 @@ Reuse the exact resource group, subscription, identity and main-only OIDC subjec
 | `AUTH_CONCURRENT_REQUEST_LIMIT` | Optional: 8 by default, allowed 1–128 |
 | `AUTH_REQUEST_TIMEOUT_SECONDS` | Optional: 15 by default, allowed 1–60 |
 
-The Table/runtime configuration above is implemented in the merged #55 infrastructure changes. The endpoint and managed-identity client ID derive from owned resources. There is no human GitHub OAuth client secret in the UI-free protocol. The approval Environment/variable is managed separately by the installing operator's host GitHub CLI; controller tokens cannot change it.
+The Table/runtime configuration above is implemented in the merged #55 infrastructure changes. The endpoint and managed-identity client ID derive from owned resources. There is no human GitHub OAuth client secret in the UI-free protocol. The approving operator's host GitHub CLI manages a direct repository Agent variable; controller runtime tokens cannot change it. No GitHub Environment or inherited organization variable supplies approval.
 
 Readiness flags are operator attestations, not automated proof. Keep them unset while requirements are incomplete. Real Azure managed-identity Table transactions and scoped denial, signing, GitHub authorization, cleanup, restore and the staged user journey remain required before enabling production delivery.
 
