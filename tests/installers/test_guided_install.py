@@ -146,6 +146,9 @@ class GuidedInstallTests(unittest.TestCase):
                 self.assertTrue(state['running'])
                 self.assertEqual(self.journey.read('launch.json')['enrollmentProfile'], profile)
                 self.journey.private()
+                stopped = subprocess.run(['pwsh', '-NoProfile', '-File', str(ROOT / 'repoagent.ps1'), 'stop'],
+                    cwd=self.directory, env=dict(self.environment, REPOAGENT_INSTANCE='guided-red'), capture_output=True, text=True, timeout=45)
+                self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
                 result, state = self.run_guided(saved=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertTrue(state['settings']['clone'])
