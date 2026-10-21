@@ -13,9 +13,9 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def native_config(root, home):
+def native_config(root, home, discovery=False):
     """Observe the actual native layer; callers must acquire trust through production."""
-    executable = os.environ.get('CHECKOUT_NATIVE', shutil.which('codex'))
+    executable = os.environ.get('CHECKOUT_NATIVE', os.environ.get('CHECKOUT_REAL_NATIVE', shutil.which('codex')))
     environment = dict(PATH=os.environ['PATH'], CODEX_HOME=str(home), LANG='C.UTF-8')
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen([executable, 'app-server'], cwd=root, env=environment,
@@ -50,7 +50,11 @@ def native_config(root, home):
             assert initialized['codexHome'] == str(home)
             process.stdin.write(b'{"method":"initialized"}\n')
             process.stdin.flush()
-            return request(2, 'config/read', dict(cwd=str(root), includeLayers=True))
+            result = request(2, 'config/read', dict(cwd=str(root), includeLayers=True))
+            if discovery:
+                result['fixtureSkills'] = request(3, 'skills/list', dict(cwds=[str(root)], forceReload=True))
+                result['fixtureThread'] = request(4, 'thread/start', dict(cwd=str(root)))
+            return result
         finally:
             process.stdin.close()
             try:
@@ -66,7 +70,7 @@ def assert_trusted_project(test, observation, root):
     layers = [layer for layer in observation['layers'] if layer['name']['type'] == 'project'
               and Path(layer['name']['dotCodexFolder']) == root / '.codex']
     test.assertEqual(len(layers), 1, observation)
-    test.assertFalse(layers[0].get('disabledReason'), layers[0])
+    test.assertFalse(layers[0].get('disabledReason'), dict(project=layers[0], effective=observation['config']['model_reasoning_effort']))
     test.assertEqual(observation['config']['model_reasoning_effort'], 'low', observation)
 
 
@@ -97,5 +101,60 @@ class CheckoutShippingInputs(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+@unittest.skipUnless(os.environ.get('CHECKOUT_SHIPPING_IMAGE'), 'Explicit image built from current shipping context required')
+class CheckoutShippingContainer(unittest.TestCase):
+    def test_shipping_aot_clone_and_restart_use_normal_tls_and_production_trust(self):
+        from test_managed_git import GitProvider
+        import tomllib
+        image = os.environ['CHECKOUT_SHIPPING_IMAGE']
+        with tempfile.TemporaryDirectory(prefix='issue64 shipping container ') as directory:
+            directory = Path(directory)
+            provider = GitProvider(directory, listen_host='0.0.0.0')
+            self.addCleanup(provider.close)
+            enrollment = directory / 'enrollment.json'
+            enrollment.write_text(json.dumps(provider.enrollment())); enrollment.chmod(0o600)
+            home, workspace = directory / 'home', directory / 'workspace'
+            home.mkdir(mode=0o700); workspace.mkdir()
+            config = home / 'config.toml'
+            config.write_text('model_reasoning_effort = "medium"\n'); config.chmod(0o600)
+            docker = ['docker', '--host=unix:///var/run/docker.sock', 'run', '--rm', '--add-host', 'host.docker.internal:host-gateway',
+                      '--mount', f'type=bind,src={directory},dst={directory}', '--entrypoint', '/opt/repoagent/controller/RepoAgentController']
+            proxy = 'http://host.docker.internal:' + str(provider.server.server_address[1])
+            environment = dict(HTTPS_PROXY=proxy, HTTP_PROXY=proxy, ALL_PROXY='', NO_PROXY='',
+                               https_proxy=proxy, http_proxy=proxy, all_proxy='', no_proxy='',
+                               SSL_CERT_FILE=str(provider.cert), GIT_SSL_CAINFO=str(provider.cert))
+            for name, value in environment.items():
+                docker += ['--env', name + '=' + value]
+            docker += ['--env', 'CODEX_HOME=' + str(home), image]
+            command = docker + ['--repo', 'owner/project', '--app-id', '123', '--broker-url', 'https://broker.fixture',
+                                '--enrollment-file', str(enrollment), '--state', str(directory / 'state.json'),
+                                '--workspace', str(workspace), '--clone', '--once']
+            for attempt in range(2):
+                result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr + ' requests=' + repr(provider.requests))
+                self.assertIn('checkout-ready', result.stdout)
+                self.assertEqual((workspace / 'repository/README').read_text(), 'approved repository\n')
+            parsed = tomllib.loads(config.read_text())
+            self.assertEqual(parsed['projects'], {str(workspace / 'repository'): {'trust_level': 'trusted'}})
+            self.assertTrue(provider.git_tokens)
+            self.assertEqual(set(provider.git_tokens), {'lease-A'})
+            git_requests = [request for request in provider.requests if request[1] == 'github.com']
+            print('SHIPPING image=' + image + ' normal-TLS git requests=' + str(len(git_requests)), flush=True)
+
+
 if __name__ == '__main__':
-    unittest.main()
+    if len(sys.argv) > 1 and sys.argv[1] == '--observe-production':
+        import tomllib
+        root, home = map(Path, sys.argv[2:])
+        observation = native_config(root, home, discovery=True)
+        assert_trusted_project(unittest.TestCase(), observation, root)
+        config = tomllib.loads((home / 'config.toml').read_text())
+        assert config['projects'] == {'/unrelated-fixture': {'trust_level': 'untrusted'}, str(root): {'trust_level': 'trusted'}}
+        assert str(root / 'AGENTS.md') in json.dumps(observation['fixtureThread']['instructionSources'])
+        assert str(root / '.agents/skills/issue64-context/SKILL.md') in json.dumps(observation['fixtureSkills'])
+        assert str(root.parents[1] / 'sibling/.agents/skills/issue64-sibling/SKILL.md') not in json.dumps(observation['fixtureSkills'])
+        assert observation['fixtureThread']['cwd'] == str(root)
+        assert observation['fixtureThread']['thread']['cwd'] == str(root)
+        print(json.dumps(observation))
+    else:
+        unittest.main()

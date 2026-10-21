@@ -450,7 +450,11 @@ class GitProvider:
                 if host == 'broker.fixture':
                     return self.reply(provider.lease() if provider.lease_status == 200 else {}, provider.lease_status)
                 if host == 'api.github.com':
+                    if self.command == 'GET' and self.path == '/repos/' + repository:
+                        return self.reply(dict(id=345, full_name=repository, clone_url='https://github.com/' + repository + '.git', default_branch='main'))
                     query = json.loads(body).get('query', '')
+                    if 'discussions(' in query:
+                        return self.reply({'data': {'repository': {'discussions': {'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'user(login:' in query:
                         return self.reply({'data': {'user': {'login': 'repoagent'}}})
                     if 'repository' not in query:
