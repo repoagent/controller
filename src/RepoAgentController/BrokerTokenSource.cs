@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace RepoAgentController;
 
-/// <summary>Consumes only leases bound to the operator's protected v1 enrollment.</summary>
+/// <summary>Consumes only leases bound to the operator's explicitly versioned protected enrollment.</summary>
 internal sealed class BrokerTokenSource : IInstallationTokenSource
 {
     const int MaximumBytes = 64 * 1024;
@@ -15,16 +15,22 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
     readonly JsonDocument enrollment;
     readonly TimeProvider clock;
     readonly bool repositoryWebhooks;
+    readonly bool clone;
+    readonly int version;
+    string[] Fields => clone ? [.. BindingFields, "profile", "policyVersion"] : BindingFields;
+    public string? GitRepository => clone ? Text(enrollment.RootElement, "repository") : null;
+    public string? GitProfile => clone ? Text(enrollment.RootElement, "profile") : null;
     readonly string deviceId;
     readonly string secret;
     public string AppSlug => enrollment.RootElement.GetProperty("appSlug").GetString()!;
 
     public BrokerTokenSource(HttpClient http, string brokerOrigin, string enrollmentFile, string appId, string repository,
-        TimeProvider clock, bool repositoryWebhooks)
+        TimeProvider clock, bool repositoryWebhooks, bool clone = false)
     {
         this.http = http;
         this.clock = clock;
         this.repositoryWebhooks = repositoryWebhooks;
+        this.clone = clone;
         origin = ParseOrigin(brokerOrigin);
         if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Broker credentials require the Linux or macOS controller runtime");
         if ( (File.GetUnixFileMode(enrollmentFile) & ~(UnixFileMode.UserRead | UnixFileMode.UserWrite)) != 0)
@@ -43,7 +49,9 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         try
         {
             var root = enrollment.RootElement;
-            CheckFields(root, [.. BindingFields, "brokerOrigin", "githubHost", "deviceId", "deviceSecret"]);
+            version = checked((int)Id(root, "protocolVersion"));
+            if (version != (clone ? 2 : 1)) throw Invalid("explicit runtime selection differs from enrollment version");
+            CheckFields(root, [.. Fields, "brokerOrigin", "githubHost", "deviceId", "deviceSecret"]);
             CheckBinding(root);
             if (Text(root, "githubHost") != "github.com") throw Invalid("only github.com is supported");
             if (ParseOrigin(Text(root, "brokerOrigin")) != origin) throw Invalid("broker origin differs from enrollment");
@@ -82,7 +90,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60), clock);
         using var acquisition = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
         ct = acquisition.Token;
-        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, $"/v1/devices/{deviceId}/installation-token"));
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, $"/v{version}/devices/{deviceId}/installation-token"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         HttpResponseMessage response;
@@ -103,7 +111,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
             }
             using var document = Parse(bytes.AsMemory(0, length));
             var result = document.RootElement;
-            CheckFields(result, [.. BindingFields, "token", "expiresAt"]);
+            CheckFields(result, [.. Fields, "token", "expiresAt"]);
             CheckBinding(result);
             var approved = enrollment.RootElement;
             foreach (var field in new[] { "appId", "installationId", "repositoryId" })
@@ -124,14 +132,19 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
 
     void CheckBinding(JsonElement value)
     {
-        if (Id(value, "protocolVersion") != 1) throw Invalid("unsupported protocol version");
+        if (Id(value, "protocolVersion") != version) throw Invalid("unsupported protocol version");
         foreach (var field in new[] { "appId", "installationId", "repositoryId" }) _ = Id(value, field);
         if (!Name(Text(value, "appSlug"))) throw Invalid("invalid App slug");
         var parts = Text(value, "repository").Split('/');
         if (parts.Length != 2 || !parts.All(Name)) throw Invalid("invalid repository name");
+        if (clone && (Text(value, "profile") != (repositoryWebhooks ? "webhook-clone" : "polling-clone") ||
+            Text(value, "policyVersion") != "repository-agent-clone-approval-v2")) throw Invalid("clone policy differs");
         var permissions = value.GetProperty("permissions");
-        CheckFields(permissions, repositoryWebhooks ? ["discussions", "repository_hooks"] : ["discussions"], ["metadata"]);
-        if (Text(permissions, "discussions") != "write" ||
+        var required = new List<string> { "discussions" };
+        if (repositoryWebhooks) required.Add("repository_hooks");
+        if (clone) required.Add("contents");
+        CheckFields(permissions, required.ToArray(), ["metadata"]);
+        if (Text(permissions, "discussions") != "write" || (clone && Text(permissions, "contents") != "read") ||
             (repositoryWebhooks && Text(permissions, "repository_hooks") != "write") ||
             (permissions.TryGetProperty("metadata", out var metadata) && (metadata.ValueKind != JsonValueKind.String || metadata.GetString() != "read")))
             throw Invalid("permission profile differs from runtime");

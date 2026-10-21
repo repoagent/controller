@@ -19,7 +19,7 @@ sealed class Codex : IAsyncDisposable
     public Codex(string workspace, string githubCommand, string configurationDirectory)
     {
         this.workspace = workspace;
-        instructions = Instructions + $" GitHub authentication is the configured GitHub App installation. Use the authenticated gh command at {githubCommand} for all GitHub calls; invoke that absolute path if a login shell changes PATH. The wrapper reads current credentials on every invocation. Keep this identity; do not run gh auth login or bypass the wrapper.";
+        instructions = Instructions + $" GitHub authentication is the configured GitHub App installation. Use the authenticated gh command at {githubCommand} for all GitHub calls; invoke that absolute path if a login shell changes PATH. The wrapper reads current credentials on every invocation. For approved clone mode use gh repo clone and the sibling repoagent-git fetch --directory CHECKOUT command for Git network access; ordinary local Git remains available. Keep this identity; do not run gh auth login or bypass the wrapper.";
         var start = new ProcessStartInfo("codex") { WorkingDirectory = workspace, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
         AppGitHubCommand.IsolateEnvironment(start, configurationDirectory);
         start.Environment["PATH"] = Path.GetDirectoryName(githubCommand) + Path.PathSeparator + start.Environment["PATH"];

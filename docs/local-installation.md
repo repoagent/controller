@@ -46,6 +46,8 @@ Existing PEM users can select `-Authentication OwnApp`; explicit `-AppId`/`-KeyP
     -Instance own-app -NonInteractive -Apply
 ```
 
+Own-App `-Clone` explicitly adds Contents read on a fresh instance and persists that choice for retries. Older launch records remain non-clone; changing this choice requires a fresh instance. Guided Broker setup remains ordinary polling; explicit clone enrollment is available through `-Action Enroll -EnrollmentProfile polling-clone` or `webhook-clone` and the separate runtime commands.
+
 Choose a fresh instance when changing credential mode; existing storage is not silently adopted or relabeled. Existing Own-App Docker settings without a host launch record require explicit inputs for the first guided run, because preview does not launch a container to retrieve settings. `-Action Enroll` and `-Action Revoke` retain their independent host command behavior.
 
 A successful command reports either verified/stopped or local runtime readiness. Native Windows PowerShell with actual Docker Desktop, a real authenticated Codex turn/history, live Agent-variable host-write/broker-read/runtime-denial, private-repository availability and hosted/Azure/signing recovery remain separate acceptance gates. Process fixtures and source merge do not establish those outcomes.

@@ -234,6 +234,56 @@ public sealed class AppAuthenticationTests
         Assert.False(File.Exists(tokenFile));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Direct_clone_binds_immutable_repository_and_exact_scope_on_renewal(bool webhooks)
+    {
+        using var fixture = new AppFixture();
+        fixture.Provider.WebhookPermission = webhooks ? "write" : null;
+        using var credentials = fixture.Credentials(repositoryWebhooks: webhooks, clone: true);
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        await credentials.GetToken(TestContext.Current.CancellationToken);
+        Assert.Equal(2, fixture.Provider.TokenRequests.Count);
+        var first = fixture.Provider.TokenRequests[0];
+        Assert.Equal("gh-discussion-agent-bridge", Assert.Single(first["repositories"]!.AsArray())!.GetValue<string>());
+        var next = fixture.Provider.TokenRequests[1];
+        Assert.False(next.AsObject().ContainsKey("repositories"));
+        Assert.Equal(1234, Assert.Single(next["repository_ids"]!.AsArray())!.GetValue<long>());
+        foreach (var request in fixture.Provider.TokenRequests)
+        {
+            Assert.Equal("read", request["permissions"]!["contents"]!.GetValue<string>());
+            Assert.Equal(webhooks ? 3 : 2, request["permissions"]!.AsObject().Count);
+        }
+    }
+
+    [Theory]
+    [InlineData("multiple", false)]
+    [InlineData("name", false)]
+    [InlineData("contents-write", false)]
+    [InlineData("extra-permission", false)]
+    [InlineData("id", true)]
+    [InlineData("multiple", true)]
+    [InlineData("name", true)]
+    [InlineData("contents-write", true)]
+    [InlineData("extra-permission", true)]
+    public async Task Direct_clone_never_publishes_a_provider_scope_mismatch(string defect, bool renewal)
+    {
+        using var fixture = new AppFixture();
+        using var credentials = fixture.Credentials(clone: true);
+        if (renewal)
+        {
+            await credentials.Initialize(null, TestContext.Current.CancellationToken);
+            fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        }
+        fixture.Provider.CloneScopeDefect = defect;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => renewal
+            ? credentials.GetToken(TestContext.Current.CancellationToken)
+            : credentials.Initialize(null, TestContext.Current.CancellationToken));
+        Assert.False(File.Exists(credentials.TokenFile));
+    }
+
     static async Task<(int Exit, string Output)> Run(string command, string[] arguments, string? ambientToken = null)
     {
         var start = new ProcessStartInfo(command) { RedirectStandardOutput = true, RedirectStandardError = true };
@@ -269,7 +319,11 @@ public sealed class AppAuthenticationTests
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(Gh, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
 
-        public GitHubAppCredentials Credentials(bool repositoryWebhooks = false) => new(http, "Iv-test-client", privateKey, "egil/gh-discussion-agent-bridge", Path.Combine(Directory, "credentials"), Clock, repositoryWebhooks);
+        public GitHubAppCredentials Credentials(bool repositoryWebhooks = false, bool clone = false)
+        {
+            Provider.CloneScope = clone;
+            return new(http, "Iv-test-client", privateKey, "egil/gh-discussion-agent-bridge", Path.Combine(Directory, "credentials"), Clock, repositoryWebhooks, clone);
+        }
         public void Dispose() { http.Dispose(); key.Dispose(); System.IO.Directory.Delete(Directory, true); }
     }
 
@@ -299,6 +353,8 @@ public sealed class AppAuthenticationTests
     {
         public List<JsonNode> TokenRequests { get; } = [];
         public bool RejectRefresh { get; set; }
+        public bool CloneScope { get; set; }
+        public string? CloneScopeDefect { get; set; }
         public string DiscussionPermission { get; set; } = "write";
         public string? WebhookPermission { get; set; }
 
@@ -317,11 +373,24 @@ public sealed class AppAuthenticationTests
             {
                 case "/app": result = new { id = 5387625, slug = "discussion-agent-bridge" }; break;
                 case "/repos/egil/gh-discussion-agent-bridge/installation":
-                    result = new { id = 42, app_id = 5387625, permissions = new { discussions = DiscussionPermission, repository_hooks = WebhookPermission } }; break;
+                    result = new { id = 42, app_id = 5387625, permissions = new { discussions = DiscussionPermission, repository_hooks = WebhookPermission, contents = "read" } }; break;
                 case "/app/installations/42/access_tokens":
                     TokenRequests.Add(JsonNode.Parse(await request.Content!.ReadAsStringAsync(ct))!);
                     if (RejectRefresh) return new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("DO-NOT-LOG bearer-body") };
-                    result = new { token = "installation-token-" + TokenRequests.Count, expires_at = clock.GetUtcNow().AddHours(1) }; break;
+                    if (CloneScope)
+                    {
+                        var scope = TokenRequests[^1]["permissions"]!.DeepClone().AsObject();
+                        var repos = new JsonArray(JsonSerializer.SerializeToNode(new { id = 1234, full_name = "egil/gh-discussion-agent-bridge" }));
+                        if (CloneScopeDefect == "multiple") repos.Add(repos[0]!.DeepClone());
+                        if (CloneScopeDefect == "id") repos[0]!["id"] = 9876;
+                        if (CloneScopeDefect == "name") repos[0]!["full_name"] = "other/repository";
+                        if (CloneScopeDefect == "contents-write") scope["contents"] = "write";
+                        if (CloneScopeDefect == "extra-permission") scope["actions"] = "read";
+                        result = new { token = "installation-token-" + TokenRequests.Count,
+                            expires_at = clock.GetUtcNow().AddHours(1), repository_selection = "selected", permissions = scope, repositories = repos };
+                    }
+                    else result = new { token = "installation-token-" + TokenRequests.Count, expires_at = clock.GetUtcNow().AddHours(1) };
+                    break;
                 default: throw new InvalidOperationException("Unexpected authentication request");
             }
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(result), Encoding.UTF8, "application/json") };

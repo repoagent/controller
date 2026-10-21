@@ -27,8 +27,9 @@ class LostResponse(Exception):
 
 class EnrollmentJourney:
     """Real process/TLS/filesystem; only GitHub and the broker are external doubles."""
-    def __init__(self, case, *, variable='TEAM_CONTROLLER_APPROVAL', fault=None):
-        self.case, self.variable, self.fault = case, variable, fault
+    def __init__(self, case, *, variable='TEAM_CONTROLLER_APPROVAL', fault=None, profile='polling'):
+        self.case, self.variable, self.fault, self.profile = case, variable, fault, profile
+        self.clone = profile.endswith('-clone')
         self.directory = Path(case.enterContext(tempfile.TemporaryDirectory(prefix='host enrollment ')))
         self.state = self.directory / 'private-state'
         self.model = self.directory / 'github.json'
@@ -39,8 +40,8 @@ class EnrollmentJourney:
         self.deadline = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=15)).isoformat()
         self.marker = json.dumps(dict(version=2, approvalKind='repository-agent-variable', githubHost='github.com',
             appId=5387625, appSlug='repo-agent-connector', repositoryId=123, repository='example/project',
-            installationId=789, deviceId='d' * 32, challenge='c' * 43, profile='polling',
-            policyVersion='repository-agent-approval-v2', epoch='test-epoch', variable=variable), separators=(',', ':'))
+            installationId=789, deviceId='d' * 32, challenge='c' * 43, profile=profile,
+            policyVersion='repository-agent-clone-approval-v2' if self.clone else 'repository-agent-approval-v2', epoch='test-epoch', variable=variable), separators=(',', ':'))
         for artifact in case.fixture_build.iterdir():
             shutil.copy2(artifact, self.directory / artifact.name)
         openssl = shutil.which('openssl')
@@ -125,7 +126,7 @@ class EnrollmentJourney:
 
             def do_DELETE(self):
                 try:
-                    case.assertEqual(self.path, '/v1/devices/' + 'd' * 32)
+                    case.assertEqual(self.path, ('/v2/devices/' if journey.clone else '/v1/devices/') + 'd' * 32)
                     case.assertEqual(self.headers.get('Authorization'), 'Bearer ' + journey.read('enrollment.json')['deviceSecret'])
                     journey.events.append({'path': self.path, 'method': 'DELETE'})
                     self.send_response(503 if journey.fault == 'revoke-unavailable' else 204)
@@ -201,6 +202,12 @@ class EnrollmentJourney:
                 githubHost='github.com', deviceId='d' * 32, deviceSecret='s' * 43, appId=5387625,
                 appSlug='repo-agent-connector', installationId=789, repositoryId=123,
                 repository='example/project', permissions={'discussions': 'write'}))
+            if self.clone:
+                result['enrollment'].update(protocolVersion=2, profile=self.profile,
+                    policyVersion='repository-agent-clone-approval-v2')
+                result['enrollment']['permissions']['contents'] = 'read'
+            if self.profile.startswith('webhook'):
+                result['enrollment']['permissions']['repository_hooks'] = 'write'
             if self.fault == 'lost-completion':
                 self.fault = None
                 raise LostResponse()
@@ -223,6 +230,8 @@ class EnrollmentJourney:
                 '-Action', action, '-NonInteractive', '-Apply', '-StateDirectory', str(self.state)]
         if not saved:
             args += ['-Repository', 'example/project', '-BrokerOrigin', self.origin]
+            if self.profile != 'polling':
+                args += ['-EnrollmentProfile', self.profile]
             if self.variable != 'APPROVED_CONTROLLER':
                 args += ['-ApprovalVariable', self.variable.lower()]
         result = subprocess.run(args + list(extra), cwd=self.directory, env=self.environment,
@@ -360,6 +369,31 @@ class HostEnrollmentTests(unittest.TestCase):
         self.assertNotIn('environmentId', outcome)
         self.assertEqual(sum('DELETE' in event['argv'] for event in journey.github()), 1)
         self.assertEqual(journey.errors, [])
+
+    def test_clone_profiles_persist_private_receipt_before_ack_and_select_v2_revoke(self):
+        for profile in ('polling-clone', 'webhook-clone'):
+            with self.subTest(profile=profile):
+                journey = EnrollmentJourney(self, profile=profile)
+                result = journey.run()
+                self.assertEqual(result.returncode, 0, journey.diagnostic(result))
+                receipt = journey.read('enrollment.json')
+                self.assertEqual(receipt['protocolVersion'], 2)
+                self.assertEqual(receipt['profile'], profile)
+                self.assertEqual(receipt['policyVersion'], 'repository-agent-clone-approval-v2')
+                self.assertEqual(receipt['permissions']['contents'], 'read')
+                self.assertEqual('repository_hooks' in receipt['permissions'], profile == 'webhook-clone')
+                self.assertTrue(journey.read('recovery.json')['acknowledged'])
+                self.assertIn('contents:read', result.stdout)
+                self.assertIn('installation 789', result.stdout)
+                journey.private()
+                resumed = journey.run(saved=True)
+                self.assertEqual(resumed.returncode, 0, journey.diagnostic(resumed))
+                revoked = journey.run(saved=True, action='Revoke', extra=('-ApprovalStatePath', str(journey.state / 'approval.json'),
+                    '-EnrollmentFile', str(journey.state / 'enrollment.json')))
+                self.assertEqual(revoked.returncode, 0, journey.diagnostic(revoked))
+                self.assertFalse(journey.errors, journey.errors)
+                self.assertTrue(any(event.get('method') == 'DELETE' and event['path'].startswith('/v2/devices/')
+                                    for event in journey.events))
 
     def test_legacy_saved_enrollment_is_refused_without_remote_work_or_file_changes(self):
         journey = EnrollmentJourney(self)

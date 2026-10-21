@@ -12,6 +12,7 @@ public sealed record EnrollmentRequest(string IdempotencyId, long RepositoryId, 
     public void Validate()
     {
         new AgentEnrollmentRequest(IdempotencyId, RepositoryId, Repository, Variable, Profile).Validate();
+        if (Profile is not ("polling" or "webhook")) throw new IssuanceDenied(400);
         if (Environment is null || Environment.Length is < 1 or > 255 || Environment.Any(char.IsControl)) throw new IssuanceDenied(400);
     }
     public string Digest() => Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(this)));
@@ -26,7 +27,7 @@ public sealed record AgentEnrollmentRequest(string IdempotencyId, long Repositor
             || Repository is null || Repository.Split('/') is not [var owner, var name] || !Segment(owner) || !Segment(name)
             || Variable is null || Variable.Length is < 1 or > 100 || char.IsAsciiDigit(Variable[0])
             || Variable.StartsWith("GITHUB_", StringComparison.OrdinalIgnoreCase)
-            || !Variable.All(c => char.IsAsciiLetterOrDigit(c) || c == '_') || Profile is not ("polling" or "webhook")) throw new IssuanceDenied(400);
+            || !Variable.All(c => char.IsAsciiLetterOrDigit(c) || c == '_') || Profile is not ("polling" or "webhook" or "polling-clone" or "webhook-clone")) throw new IssuanceDenied(400);
     }
     private static bool Segment(string s) => s.Length is > 0 and <= 100 && s is not ("." or "..")
         && s.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
@@ -46,7 +47,7 @@ internal sealed record EnrollmentInput(string IdempotencyId, long RepositoryId, 
     {
         request.Validate();
         return new(request.IdempotencyId, request.RepositoryId, request.Repository, null,
-            request.Variable, request.Profile, request.Digest(), ApprovalContract.Agent);
+            request.Variable, request.Profile, request.Digest(), request.Profile.EndsWith("-clone", StringComparison.Ordinal) ? ApprovalContract.AgentClone : ApprovalContract.Agent);
     }
 }
 

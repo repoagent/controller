@@ -9,7 +9,7 @@ namespace RepoAgent.Auth;
 // This module owns one Table-specific authorization transaction, not a generic persistence interface.
 public sealed class DeviceRevocation(TableClient table, BrokerOptions options, TimeProvider clock)
 {
-    public async Task<int> RevokeAsync(string deviceId, string? secret, CancellationToken cancellationToken)
+    public async Task<int> RevokeAsync(string deviceId, string? secret, CancellationToken cancellationToken, int runtimeVersion = 1)
     {
         var hash = DeviceSecret.Hash(secret);
         if (!DeviceSecret.IsDeviceId(deviceId) || hash is null) return 401;
@@ -38,6 +38,13 @@ public sealed class DeviceRevocation(TableClient table, BrokerOptions options, T
                     || RequiredString(device, "Epoch") != options.DeploymentEpoch) return 401;
                 if (!DeviceSecret.Matches(hash, RequiredString(device, "SecretHash"))) return 401;
                 if (RequiredDate(device, "ExpiresAt") <= clock.GetUtcNow()) return 401;
+                // Historical revocation rows may predate profile/approval fields; only v1 can use them.
+                if (device.ContainsKey("ApprovalKind") || device.ContainsKey("SetupVersion") || device.ContainsKey("PolicyVersion") || device.ContainsKey("Profile"))
+                {
+                    var approval = ApprovalContract.Read(device);
+                    if (approval.RuntimeVersion != runtimeVersion || !approval.Allows(IssuancePolicy.Text(device, "Profile"))) return 401;
+                }
+                else if (runtimeVersion != 1) return 401;
                 var sequence = RequiredSequence(gate);
                 var gateState = RequiredString(gate, "State");
                 var deviceState = RequiredString(device, "State");
@@ -85,7 +92,7 @@ public sealed class DeviceRevocation(TableClient table, BrokerOptions options, T
             return 503;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception exception) when (exception is RequestFailedException or AuthenticationFailedException
+        catch (Exception exception) when (exception is IssuanceDenied or RequestFailedException or AuthenticationFailedException
             or HttpRequestException or IOException or InvalidDataException or InvalidCastException or FormatException
             or JsonException or OverflowException or OperationCanceledException)
         {
@@ -94,7 +101,7 @@ public sealed class DeviceRevocation(TableClient table, BrokerOptions options, T
         }
     }
 
-    private async Task<TableEntity?> ReadAsync(string partition, string row, CancellationToken cancellationToken)
+    private async Task<TableEntity?> ReadAsync(string partition, string row, CancellationToken cancellationToken, int runtimeVersion = 1)
     {
         try
         {

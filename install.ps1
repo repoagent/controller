@@ -21,7 +21,8 @@ param(
     [ValidateSet('Broker', 'OwnApp')][string]$Authentication,
     [string]$BrokerOrigin,
     [string]$StateDirectory,
-    [ValidateSet('polling', 'webhook')][string]$EnrollmentProfile,
+    [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone')][string]$EnrollmentProfile,
+    [switch]$Clone,
     [string]$ApprovalStatePath,
     [string]$EnrollmentFile,
     [string]$GitHubEnvironment,
@@ -131,12 +132,19 @@ try {
         'imageManifest','imageManifestSha256','derivedDockerfile','derivedDockerfileSha256','runtimeImageId','appId','keyPath','installationId',
         'mentionUser','model','mode','publicUrl','listenPort','reconcileInterval','toolUpdates','webSearch','codexAuthPath')
     if ($saved) {
+        if ($saved.Contains('clone')) { $fields += 'clone' }
         Assert-Fields $saved $fields
         if ($saved.schemaVersion -ne 1 -or $saved.instance -cne $Instance -or -not $(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase.Equals($saved.stateDirectory, $StateDirectory) } else { [StringComparer]::Ordinal.Equals($saved.stateDirectory, $StateDirectory) })) { Stop-Install 'Saved launch coordinates differ from the selected instance/state directory.' }
         foreach ($field in $fields | Where-Object { $_ -ne 'schemaVersion' }) {
             if ($saved[$field] -isnot [string] -or $saved[$field] -match '[\p{Cc}]') { Stop-Install 'Invalid saved launch choice; inspect the original state without discarding recovery files.' }
         }
     }
+    # Older launch records have no clone selection and remain non-clone. This is
+    # launch intent only; credential versions/profiles remain owned by enrollment.
+    $savedClone = $saved -and $saved.Contains('clone') -and $saved.clone -ceq 'true'
+    if ($saved -and $saved.Contains('clone') -and $saved.clone -cnotin @('true','false')) { Stop-Install 'Invalid saved clone selection.' }
+    $resolvedClone = if ($provided.ContainsKey('Clone')) { [bool]$Clone } else { [bool]$savedClone }
+    if ($saved -and $resolvedClone -ne [bool]$savedClone) { Stop-Install 'Changing clone authority requires a fresh instance and enrollment.' }
     $Authentication = Setting Authentication $(if ($AppId -or $KeyPath) { 'OwnApp' } else { 'Broker' })
     if ($Authentication -notin @('Broker','OwnApp')) { Stop-Install 'Authentication must be Broker or OwnApp.' }
     $approvalPath = Join-Path $StateDirectory 'approval.json'
@@ -171,6 +179,7 @@ try {
     if ($ListenPort -notmatch '^[0-9]{1,5}$' -or [int]$ListenPort -notin 1..65535 -or $ReconcileInterval -notmatch '^[1-9][0-9]{0,8}$') { Stop-Install 'ListenPort must be 1–65535 and ReconcileInterval a positive integer.' }
     if ($Mode -eq 'fixed-url') { $PublicUrl = Setting PublicUrl -Required; $PublicUrl = Get-BrokerOrigin $PublicUrl }
     if ($Authentication -eq 'Broker') {
+        if ($resolvedClone) { Stop-Install 'Guided Broker installation supports ordinary polling only. Use explicit host enrollment and a fresh instance for clone authority.' }
         if ($KeyPath -or $provided.ContainsKey('AppId')) { Stop-Install 'Broker and own-App key/App selectors cannot be combined.' }
         if ($Mode -ne 'polling' -or $resolvedProfile -ne 'polling') { Stop-Install 'Guided Broker installation supports polling only; mode and profile must both be polling.' }
         $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin -Required
@@ -244,12 +253,13 @@ try {
         $match = [regex]::Match((Get-Content "$PSScriptRoot/scripts/compose-image.py" -Raw), "(?m)^RUNTIME = '([^']+)'\r?$")
         if (-not $match.Success) { Stop-Install 'Cannot read the maintained base image selection.' }; $match.Groups[1].Value
     }
-    $plan = [ordered]@{ schemaVersion=1; instance=$Instance; stateDirectory=$StateDirectory; authentication=$Authentication; repository=$Repository;
+    $plan = [ordered]@{ clone=$(if ($resolvedClone) { 'true' } else { 'false' }); schemaVersion=1; instance=$Instance; stateDirectory=$StateDirectory; authentication=$Authentication; repository=$Repository;
         brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; enrollmentProfile=$resolvedProfile; imageManifest=$ImageManifest;
         imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
         listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; toolUpdates=$ToolUpdates; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath }
     Write-Host "Instance: $Instance; repository: $Repository; authentication: $Authentication; mode: $Mode"
+    if ($resolvedClone) { Write-Host 'OwnApp clone mode: Contents read in addition to the selected Discussion profile; fresh authority is required.' }
     Write-Host "Host launch/recovery state: $StateDirectory"
     Write-Host "Image: $(if ($runtimeImageId) { $runtimeImageId } else { 'pending build' }); base: $baseImage; platform: linux/amd64; maintained compatibility: Ubuntu 26.04."
     Write-Host "Manifest: $ImageManifest; SHA256: $manifestHash; controller source: $($software.controller.source)."
@@ -305,6 +315,7 @@ try {
     Write-PrivateJson $launchPath $plan
     $stage = 'configure and privately import enrollment'
     $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--tool-updates', $ToolUpdates, '--web-search', $WebSearch)
+    if ($resolvedClone) { $configuration += '--clone' }
     if ($InstallationId) { $configuration += @('--installation-id', $InstallationId) }
     if ($Authentication -eq 'Broker') { $configuration += @('--broker-url', $BrokerOrigin, '--enrollment-file', $enrollmentPath) }
     else {

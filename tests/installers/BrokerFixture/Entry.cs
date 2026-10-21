@@ -21,6 +21,7 @@ namespace HostEnrollmentFixture;
 internal static class Entry
 {
     internal static string DirectoryPath = null!;
+    internal static bool SkipAckFault;
     internal static readonly object LogGate = new();
     internal static void Record(object value)
     {
@@ -29,6 +30,7 @@ internal static class Entry
     public static async Task Main(string[] args)
     {
         DirectoryPath = args[0];
+        SkipAckFault = args.Contains("no-ack-fault");
         var endpoint = args[1]; var tableName = args[2]; var port = int.Parse(args[3]);
         var table = new TableClient(new Uri(endpoint), tableName, new TableSharedKeyCredential("devstoreaccount1",
             "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="),
@@ -56,7 +58,8 @@ internal static class Entry
             // Restart never creates, seeds, resets or blesses an existing table.
             Record(new { activation="resume-existing-fixture-table", tableName });
         } else throw new InvalidOperationException("Explicit fixture table lifecycle required.");
-        var origin = Environment.GetEnvironmentVariable("HOST_ENROLLMENT_FIXTURE_ORIGIN") ?? "https://localhost:" + port;
+        var origin = args.FirstOrDefault(value => value.StartsWith("origin=", StringComparison.Ordinal))?[7..]
+            ?? Environment.GetEnvironmentVariable("HOST_ENROLLMENT_FIXTURE_ORIGIN") ?? "https://localhost:" + port;
         var github = new GitHubBoundary();
         await using var factory = new BrokerFactory().WithWebHostBuilder(builder =>
         {
@@ -107,8 +110,9 @@ internal sealed class Observation : IStartupFilter
                     throw new InvalidOperationException("Receipt not persisted before ack.");
                 if (OperatingSystem.IsLinux() && (File.GetUnixFileMode(Path.Combine(state,"enrollment.json")) != (UnixFileMode.UserRead|UnixFileMode.UserWrite)))
                     throw new InvalidOperationException("Receipt not private.");
+                Entry.Record(new { path, receiptBeforeAck=true });
                 var fault = Path.Combine(Entry.DirectoryPath,"ack-response-lost");
-                if (!File.Exists(fault)) { File.WriteAllText(fault,"observed"); Entry.Record(new { path, status=0, receiptBeforeAck=true }); context.Abort(); return; }
+                if (!Entry.SkipAckFault && !File.Exists(fault)) { File.WriteAllText(fault,"observed"); Entry.Record(new { path, status=0, receiptBeforeAck=true }); context.Abort(); return; }
             }
             await following();
             Entry.Record(new { path, status=context.Response.StatusCode, retryAfter=context.Response.Headers.RetryAfter.ToString() });
@@ -161,8 +165,11 @@ internal sealed class GitHubBoundary : HttpMessageHandler
             var ids=input.GetProperty("repository_ids");
             if (ids.GetArrayLength()!=1 || ids[0].GetInt64()!=123) throw new InvalidOperationException("Wrong provider repository scope");
             var verifier=permissions.TryGetProperty("agent_variables",out var approval);
+            var clone = permissions.TryGetProperty("contents", out var contents);
+            var hooks = permissions.TryGetProperty("repository_hooks", out var hookAccess);
             if (verifier ? approval.GetString()!="read" || permissions.EnumerateObject().Count()!=1 :
-                permissions.EnumerateObject().Count()!=1 || permissions.GetProperty("discussions").GetString()!="write")
+                permissions.EnumerateObject().Count()!=1+(clone?1:0)+(hooks?1:0) || permissions.GetProperty("discussions").GetString()!="write" ||
+                (clone && contents.GetString()!="read") || (hooks && hookAccess.GetString()!="write"))
                 throw new InvalidOperationException("Wrong provider token scope");
             Entry.Record(new { provider=request.Method+" "+path, permissions });
             result=new { token=verifier?"assembled-verifier-token":"assembled-runtime-token", expires_at=DateTimeOffset.UtcNow.AddHours(1), repository_selection="selected", permissions,
@@ -170,7 +177,7 @@ internal sealed class GitHubBoundary : HttpMessageHandler
             return new(HttpStatusCode.Created) { Content=JsonContent.Create(result) };
         }
         if (path.EndsWith("/installation")) result=new { id=789,app_id=5387625,app_slug="repo-agent-connector",suspended_at=(string?)null,
-            permissions=new { discussions="write",agent_variables="read" } };
+            permissions=new { discussions="write",agent_variables="read",contents="read",repository_hooks="write" } };
         else if(path=="/installation/repositories") result=new { total_count=1,repositories=new[]{new{id=123,full_name="example/project"}} };
         else if(path=="/repos/example/project/agents/variables") {
             using var model=JsonDocument.Parse(File.ReadAllText(Path.Combine(Entry.DirectoryPath,"github.json")));
