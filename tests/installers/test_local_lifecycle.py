@@ -49,14 +49,27 @@ class LocalLifecycleProcessTests(unittest.TestCase):
     def test_uninstall_preview_defers_volume_binding_and_has_no_effects(self):
         self.configure()
         before = self.state()
-        result = self.uninstall()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        outcome = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')][0]
-        self.assertEqual((outcome['action'], outcome['instance'], outcome['result']), ('Uninstall', runtime.INSTANCE, 'preview'))
-        self.assertIn('unverified until Apply', result.stdout)
-        self.assertIn(runtime.IMAGE, result.stdout)
-        self.assertFalse((self.private / 'host').exists())
-        self.assert_no_effects(before)
+        for extra in ((), ('-GitHubEnvironment', 'production-west', '-ExpectedEnvironmentId', '456')):
+            with self.subTest(legacy=bool(extra)):
+                result = self.uninstall(*extra)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                outcome = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')][0]
+                self.assertEqual((outcome['action'], outcome['instance'], outcome['result']), ('Uninstall', runtime.INSTANCE, 'preview'))
+                self.assertIn('unverified until Apply', result.stdout)
+                self.assertIn(runtime.IMAGE, result.stdout)
+                self.assertFalse((self.private / 'host').exists())
+                self.assert_no_effects(before)
+                revoke = outcome['revoke']
+                if extra:
+                    self.assertEqual((revoke['approvalKind'], revoke.get('githubEnvironment'), revoke.get('environmentId')),
+                                     ('environment-variable', 'production-west', 456), result.stdout)
+                    readable = '\n'.join(line for line in result.stdout.splitlines() if not line.startswith('{'))
+                    self.assertIn('production-west', readable)
+                    self.assertIn('456', readable)
+                else:
+                    self.assertEqual(revoke['approvalKind'], 'repository-agent-variable')
+                    self.assertNotIn('githubEnvironment', revoke)
+                    self.assertNotIn('environmentId', revoke)
 
     def test_conflicting_saved_binding_refuses_before_effects(self):
         self.configure()

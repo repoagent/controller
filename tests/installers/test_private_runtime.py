@@ -267,7 +267,7 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
                     self.enrollment.write_bytes(original)
 
     @unittest.skipUnless(os.name == 'nt', 'Native Windows effective ancestor DACL case')
-    def test_private_source_with_effective_unsafe_ancestor_is_rejected_before_docker(self):
+    def test_private_source_with_effective_unsafe_ancestor_is_rejected_before_effects(self):
         ancestor = self.private / 'controlled unsafe ancestor'
         ancestor.mkdir()
         parent = ancestor / 'private parent'
@@ -284,7 +284,7 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
             self.set_windows_private_acl(ancestor, directory=True, dangerous=True)
             self.invoke('configure', '--repository', 'owner/repository', '--app-id', '123',
                 '--broker-url', BROKER, '--enrollment-file', str(source), success=False)
-            self.assertFalse(self.state(), 'Unsafe ancestry must fail before any Docker command')
+            self.assert_only_discovery()
         finally:
             self.set_windows_private_acl(ancestor, directory=True)
 
