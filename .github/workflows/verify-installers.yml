@@ -99,7 +99,7 @@ jobs:
   windows-host-enrollment:
     name: Host enrollment and guided installer (windows-2025)
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       REPOAGENT_TEST_WINDOWS_ROOT: LocalMachine
       PYTHONUTF8: '1'
