@@ -41,6 +41,8 @@ if command == 'containerapp exec':
         if previous is not None:
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, previous)
             record['terminalRestored'] = termios.tcgetattr(sys.stdin.fileno()) == previous
+if '--template-file' in args:
+    record['template'] = json.loads(Path(args[args.index('--template-file') + 1]).read_text())
 if '--parameters' in args:
     record['parameters'] = json.loads(Path(args[args.index('--parameters') + 1].removeprefix('@')).read_text())
 def journal():

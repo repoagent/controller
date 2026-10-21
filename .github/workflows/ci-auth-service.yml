@@ -3,13 +3,13 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Select normal delivery or a guarded first-activation operation
+        description: Select normal delivery, image bootstrap or a guarded first-activation operation
         type: choice
-        options: [access-check, deploy, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume]
+        options: [access-check, deploy, bootstrap-publish, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume, cleanup-identity-plan, cleanup-identity-apply, cleanup-plan, cleanup-apply]
         default: access-check
         required: true
       expected-source-sha:
-        description: Exact accepted current main commit (required for activation operations)
+        description: Exact accepted current main commit (required for bootstrap and activation operations)
         type: string
       image:
         description: Accepted immutable GHCR digest (runtime operations only)
@@ -99,7 +99,7 @@ jobs:
   verify-service:
     if: github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -182,8 +182,44 @@ jobs:
       - name: Verify deployed immutable image and ready revision
         run: python3 scripts/delivery/deploy-auth.py deploy
 
+  bootstrap-publish:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'bootstrap-publish'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    env:
+      AUTH_EXPECTED_SOURCE_SHA: ${{ inputs.expected-source-sha }}
+      AUTH_IMAGE_REPOSITORY: ghcr.io/repoagent/controller-auth
+      AUTH_PACKAGE_ACTIONS_ACCESS_CONFIRMED: ''
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          global-json-file: service/auth/global.json
+      - run: sudo apt-get update && sudo apt-get install -y skopeo
+      - name: Bootstrap accepted source with temporary registry credentials
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+          BOOTSTRAP_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BOOTSTRAP_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          DOCKER_CONFIG="$(mktemp -d "$RUNNER_TEMP/auth-bootstrap-docker.XXXXXX")"
+          export DOCKER_CONFIG
+          trap 'rm -rf -- "$DOCKER_CONFIG"' EXIT
+          printf 'Bootstrap run: %s attempt %s\n' "$BOOTSTRAP_RUN_URL" "$BOOTSTRAP_RUN_ATTEMPT"
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
+          unset REGISTRY_TOKEN
+          python3 scripts/delivery/auth-pipeline.py bootstrap-publish-actions
+
   activation:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && contains(fromJSON('["foundation-plan","foundation-apply","stage-plan","stage-apply","promote-staged","stage-stop","stage-resume"]'), inputs.operation)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && contains(fromJSON('["foundation-plan","foundation-apply","stage-plan","stage-apply","promote-staged","stage-stop","stage-resume","cleanup-identity-plan","cleanup-identity-apply","cleanup-plan","cleanup-apply"]'), inputs.operation)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -200,7 +236,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      - if: ${{ !startsWith(inputs.operation, 'foundation-') }}
+      - if: ${{ !startsWith(inputs.operation, 'foundation-') && !startsWith(inputs.operation, 'cleanup-identity-') }}
         run: sudo apt-get update && sudo apt-get install -y skopeo
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
@@ -212,7 +248,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$AUTH_OPERATION" in
-            foundation-plan|foundation-apply|stage-plan|stage-apply|promote-staged|stage-stop|stage-resume)
+            foundation-plan|foundation-apply|stage-plan|stage-apply|promote-staged|stage-stop|stage-resume|cleanup-identity-plan|cleanup-identity-apply|cleanup-plan|cleanup-apply)
               bash infra/auth/deploy.sh "$AUTH_OPERATION" ;;
             *) exit 1 ;;
           esac
