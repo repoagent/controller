@@ -25,10 +25,10 @@ fi
 target=(--subscription "$AZURE_SUBSCRIPTION_ID" --resource-group "$AZURE_RESOURCE_GROUP")
 case "$operation" in
   promote-staged)
-    test "$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query properties.configuration.ingress -o json)" = null
+    test "$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query 'properties.configuration.ingress == `null`' -o json)" = true
     test "$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query 'properties.template.containers[0].image' -o tsv)" = "${AUTH_IMAGE:?Select the staged image}" ;;
   stage-stop|stage-resume)
-    test "$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query properties.configuration.ingress -o json)" = null
+    test "$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query 'properties.configuration.ingress == `null`' -o json)" = true
     [[ "${AUTH_STAGE_REVISION:?Select the staging revision}" == "$AUTH_APP_NAME"--* ]]
     action=deactivate
     [[ "$operation" != stage-resume ]] || action=activate
