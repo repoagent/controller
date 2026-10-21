@@ -58,7 +58,7 @@ internal static class Entry
             // Restart never creates, seeds, resets or blesses an existing table.
             Record(new { activation="resume-existing-fixture-table", tableName });
         } else throw new InvalidOperationException("Explicit fixture table lifecycle required.");
-        var origin = "https://localhost:" + port;
+        var origin = args.FirstOrDefault(value => value.StartsWith("origin=", StringComparison.Ordinal))?[7..] ?? "https://localhost:" + port;
         var github = new GitHubBoundary();
         await using var factory = new BrokerFactory().WithWebHostBuilder(builder =>
         {

@@ -10,6 +10,7 @@ import json
 import selectors
 import os
 from pathlib import Path
+import socket
 import socketserver
 import ssl
 import subprocess
@@ -350,10 +351,12 @@ class ManagedGitTests(unittest.TestCase):
 
 
 class GitProvider:
-    def __init__(self, directory, fork=False):
+    def __init__(self, directory, fork=False, repository="owner/project", app_slug="test-app", token="lease-A", listen_host="127.0.0.1", broker_target=None):
         self.directory = directory
+        self.repository, self.app_slug = repository, app_slug
+        self.broker_target = broker_target
         self.git_tokens = []
-        self.token = 'lease-A'
+        self.token = token
         self.lease_offset_minutes = 0
         self.lease_status = 200
         self.requests = []
@@ -372,7 +375,7 @@ class GitProvider:
         (seed / 'README').write_text('approved repository\n')
         subprocess.run(['git', '-C', str(seed), 'add', 'README'], check=True, capture_output=True)
         subprocess.run(['git', '-C', str(seed), 'commit', '-m', 'fixture'], check=True, capture_output=True)
-        target = directory / 'repositories/owner/project.git'
+        target = directory / ('repositories/' + repository + '.git')
         target.parent.mkdir(parents=True)
         subprocess.run(['git', 'clone', '--bare', str(seed), str(target)], check=True, capture_output=True)
         provider = self
@@ -382,6 +385,23 @@ class GitProvider:
                 pass
 
             def do_CONNECT(self):
+                if provider.broker_target and self.path == 'broker.fixture:' + str(provider.broker_target[1]):
+                    with socket.create_connection(provider.broker_target, timeout=10) as upstream:
+                        self.send_response(200)
+                        self.end_headers()
+                        with selectors.DefaultSelector() as relay:
+                            relay.register(self.connection, selectors.EVENT_READ, upstream)
+                            relay.register(upstream, selectors.EVENT_READ, self.connection)
+                            while True:
+                                ready = relay.select(30)
+                                if not ready:
+                                    return
+                                for key, mask in ready:
+                                    data = key.fileobj.recv(65536)
+                                    if not data:
+                                        return
+                                    key.data.sendall(data)
+                    return
                 if self.path not in ('github.com:443', 'api.github.com:443', 'broker.fixture:443'):
                     self.send_error(403)
                     return
@@ -431,15 +451,17 @@ class GitProvider:
                     return self.reply(provider.lease() if provider.lease_status == 200 else {}, provider.lease_status)
                 if host == 'api.github.com':
                     query = json.loads(body).get('query', '')
+                    if 'user(login:' in query:
+                        return self.reply({'data': {'user': {'login': 'repoagent'}}})
                     if 'repository' not in query:
-                        return self.reply({'data': {'viewer': {'login': 'test-app[bot]'}}})
-                    return self.reply({'data': {'repository': {'name': 'project', 'owner': {'login': 'owner'},
-                                      'url': 'https://github.com/owner/project', 'isFork': fork,
+                        return self.reply({'data': {'viewer': {'login': provider.app_slug + '[bot]'}}})
+                    return self.reply({'data': {'repository': {'name': repository.split('/')[1], 'owner': {'login': repository.split('/')[0]},
+                                      'url': 'https://github.com/' + repository, 'isFork': fork,
                                       'parent': {'name': 'parent', 'owner': {'login': 'upstream'},
                                                  'url': 'https://github.com/upstream/parent',
                                                  'defaultBranchRef': {'name': 'main'}},
                                       'defaultBranchRef': {'name': 'main'}}}})
-                if host != 'github.com' or not self.path.startswith('/owner/project.git/'):
+                if host != 'github.com' or not self.path.startswith('/' + repository + '.git/'):
                     return self.reply({}, 403)
                 authorization = self.headers.get('Authorization', '')
                 if not authorization:
@@ -472,7 +494,7 @@ class GitProvider:
             allow_reuse_address = True
             daemon_threads = True
 
-        self.server = Server(('127.0.0.1', 0), Handler)
+        self.server = Server((listen_host, 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
