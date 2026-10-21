@@ -29,6 +29,8 @@ var ownership = {
   managedBy: 'repoagent-auth'
 }
 
+var brokerOrigin = 'https://${appName}.${environment.properties.defaultDomain}'
+
 resource runtime 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: '${appName}-runtime'
   location: location
@@ -153,6 +155,7 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = if (deployApp) {
           { name: 'Auth__DataProtectionKeyUri', value: dataProtectionKeyUri }
           { name: 'Auth__DataProtectionBlobUri', value: '${storage.properties.primaryEndpoints.blob}data-protection/keyring.xml' }
           { name: 'Auth__DataProtectionApplicationName', value: 'repoagent-auth-${appName}' }
+          { name: 'Broker__BrokerOrigin', value: brokerOrigin }
           { name: 'Broker__TableEndpoint', value: storage.properties.primaryEndpoints.table }
           { name: 'Broker__TableName', value: brokerTable.name }
           { name: 'Broker__DeploymentEpoch', value: deploymentEpoch }
@@ -185,3 +188,5 @@ output runtimeIdentityClientId string = runtime.properties.clientId
 output tableEndpoint string = storage.properties.primaryEndpoints.table
 output tableName string = brokerTable.name
 output tableResourceId string = brokerTable.id
+
+output brokerOrigin string = brokerOrigin

@@ -17,7 +17,7 @@
 | Deterministic `ra-…-kv` Key Vault | Empty, RBAC-enabled, 90-day soft delete and purge protection |
 | `${AUTH_APP_NAME}` in runtime modes | Immutable image, HTTPS ingress on 8080, managed identity, startup/liveness/readiness probes, Single revision mode, minimum 0/maximum 1 replica, 0.25 CPU/0.5Gi memory |
 
-Storage/vault names use 16 hex characters of SHA-256 over the group resource ID plus `/` and app name. `foundation-check` discovers these names locally. Name collisions elsewhere fail ARM validation; the tooling never adopts or renames to evade a collision. Keep the app and Table names stable; changing them selects different state rather than migrating it.
+Storage/vault names use 16 hex characters of SHA-256 over the group resource ID plus `/` and app name. `foundation-check` discovers these names locally. Name collisions elsewhere fail ARM validation; the tooling never adopts or renames to evade a collision. Keep the app, managed environment and Table names stable; changing them selects different state rather than migrating it.
 
 The endpoints use public Azure networking and authenticated data access. Anonymous Blob denial does not mean private networking. Public ingress can incur request, storage and network charges. Process-local request bounds, configured compute/log capacity and delayed spending alerts are distinct controls; none is a hard spending cap. Log ingestion quota may suppress diagnostics. Logs must exclude credentials, request bodies and sensitive enrollment data. Maximum one replica does not serialize authorization or establish a global quota; rollout overlap can exist.
 
@@ -54,7 +54,15 @@ Ownership preflight checks exact ARM ID/type, location and tags `repositoryId=14
 
 What-if must succeed, allow only owned Create/Modify/NoChange, and forbid deletions or unsupported changes. Ignore entries leave unrelated resources alone under Incremental mode. Repeat ownership inspection immediately before apply narrows the race but does not make inspection/write atomic: serialize deployments and restrict group mutation. Tags are operational guards, not protection against another Contributor.
 
-Stdout JSON contains `appName`, `runtimeIdentityId`, `runtimeIdentityPrincipalId`, `runtimeIdentityClientId`, `keyVaultName`, `dataProtectionBlobUri`, `tableEndpoint`, `tableName`, `tableResourceId`, `runtimeConfiguration`, `capacityPlan`, and `applied`. Identity client/principal IDs are platform-issued values read from the owned identity during Azure plans/applies; local checks or a plan creating a missing identity report null rather than fabricating IDs. Bicep outputs the same references and binds its own resource expressions directly into the container. Progress goes to stderr without Azure response bodies or secrets. Output is configuration, not endpoint readiness.
+Stdout JSON contains `appName`, `runtimeIdentityId`, `runtimeIdentityPrincipalId`, `runtimeIdentityClientId`, `keyVaultName`, `dataProtectionBlobUri`, `tableEndpoint`, `tableName`, `tableResourceId`, `brokerOrigin`, `runtimeConfiguration`, `capacityPlan`, and `applied`. Identity client/principal IDs are platform-issued values read from the owned identity during Azure plans/applies; local checks or a plan creating a missing identity report null rather than fabricating IDs. Bicep outputs the same references and binds its own resource expressions directly into the container. Progress goes to stderr without Azure response bodies or secrets. Output is configuration, not endpoint readiness.
+
+## Canonical origin and readiness
+
+Bicep derives `https://<appName>.<owned environment.properties.defaultDomain>`, injects `Broker__BrokerOrigin` on every runtime deployment and outputs the same `brokerOrigin`. It uses the owned foundation environment, without an app self-reference or custom-origin override. Foundation exists before runtime, so the real domain is available before the first app. The helper verifies exact environment ownership and validates its domain as a DNS suffix before runtime writes, then reports the origin. Offline checks return null for the unresolved origin; they never invent an Azure domain.
+
+Runtime apply checks that the deployed app uses the owned environment and its public ingress FQDN matches that origin. Normal image deployment/rollback also checks the owned environment, configured origin and public FQDN before updating and before reporting a ready revision. Keep app/environment names stable after enrollment; changing the origin requires a controlled migration. Do not use an ad hoc environment-variable update that a later Bicep apply overwrites.
+
+`/health/ready` reports local composition only: valid startup settings plus enrollment and issuance registrations return 200; incomplete/revoke-only composition returns 503 while `/health/live` remains 200. The response is empty and noncacheable. Probes inspect registrations without resolving provider-backed services and do no external I/O. Data Protection may attempt normal key-ring preload at startup. Neither startup nor health 200 establishes runtime permissions, initialized quotas, upstream availability, independent cleanup or recovery acceptance.
 
 ## Runtime prerequisites
 
@@ -65,6 +73,7 @@ Stdout JSON contains `appName`, `runtimeIdentityId`, `runtimeIdentityPrincipalId
 | `AUTH_SIGNING_KEY_URI` | `Auth__SigningKeyUri`: versioned `https://<owned-vault>.vault.azure.net/keys/<name>/<32-hex-version>` |
 | `AUTH_DATA_PROTECTION_KEY_URI` | `Auth__DataProtectionKeyUri`: different key name in the same vault |
 | Owned Blob reference/stable app name | `Auth__DataProtectionBlobUri` and `Auth__DataProtectionApplicationName` |
+| Owned environment defaultDomain/stable app name | `Broker__BrokerOrigin`: canonical HTTPS origin, no caller override |
 | Owned storage endpoint/selected Table | `Broker__TableEndpoint`, `Broker__TableName` |
 | `AUTH_DEPLOYMENT_EPOCH` | Required `Broker__DeploymentEpoch`: 1–128 ASCII letters/digits/hyphen/underscore |
 | Owned runtime identity client ID | `Broker__ManagedIdentityClientId` and `AZURE_CLIENT_ID`; never principal/resource ID or caller-supplied credentials |
