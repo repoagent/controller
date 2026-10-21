@@ -2,28 +2,23 @@
 
 <#
 .SYNOPSIS
-Build, configure, verify and start RepoAgent with Docker Desktop Linux containers.
+Preview or explicitly apply one local RepoAgent installation.
 .DESCRIPTION
-Prompts for missing values and explains each step. Reuses saved instance settings
-as defaults. Imports an existing CODEX_HOME/auth.json (or ~/.codex/auth.json) when
-available, otherwise offers container device sign-in. Direct-App Install needs no host gh. Enroll uses host gh authentication and
-PowerShell 7.4 or later to save a shared-App enrollment before runtime setup.
-Revoke uses the host's existing gh authentication to inspect or withdraw one
-repository approval; it needs no Docker, PEM or controller credential.
-Use -NonInteractive to disable all prompts and browser opening; valid Codex
-credentials must then be supplied or already present in the container.
+PowerShell 7.4+ composes host Agent-variable enrollment and private Docker startup.
+Inputs override saved launch choices; missing required inputs prompt unless
+-NonInteractive. Without -Apply there are no image builds, containers or writes.
+Existing own-App options remain available with -Authentication OwnApp.
 .EXAMPLE
-.\install.ps1
+.\install.ps1 -Repository owner/repo -BrokerOrigin https://broker.example -Instance demo -NonInteractive
 .EXAMPLE
-.\install.ps1 -Repository my-org/my-repo -AppId 123456 -KeyPath C:\keys\app.pem -NonInteractive
+.\install.ps1 -Repository owner/repo -BrokerOrigin https://broker.example -Instance demo -NonInteractive -Apply
 .EXAMPLE
-.\install.ps1 -Repository my-org/my-repo -AppId 123456 -KeyPath C:\keys\app.pem -CodexAuthPath C:\Users\me\.codex\auth.json -Instance my-repo -NoStart
-.EXAMPLE
-.\install.ps1 -Action Revoke -Repository my-org/my-repo
+.\install.ps1 -Authentication OwnApp -Repository owner/repo -AppId 123 -KeyPath C:\keys\app.pem -Apply
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Install', 'Enroll', 'Revoke')][string]$Action = 'Install',
+    [ValidateSet('Broker', 'OwnApp')][string]$Authentication,
     [string]$BrokerOrigin,
     [string]$StateDirectory,
     [ValidateSet('polling', 'webhook')][string]$EnrollmentProfile,
@@ -79,136 +74,267 @@ if ($Action -eq 'Revoke') {
 }
 $provided = $PSBoundParameters
 $cli = Join-Path $PSScriptRoot 'repoagent.ps1'
-$stageIndex = 0
-if ($Instance -cnotmatch '^[a-z0-9][a-z0-9-]{0,40}$') { throw 'Invalid instance. Use 1-41 lowercase letters, digits or hyphens; start with a letter or digit.' }
-$env:REPOAGENT_INSTANCE = $Instance
-
-function Show-Stage([string]$Title) {
-    $script:stageIndex++
-    Write-Host "`nStage $script:stageIndex/5 - $Title"
+$stage = 'validate the selected plan'
+$diagnostic = 'Check the selected inputs and private saved state; nothing is repaired automatically.'
+$oldInstance = $env:REPOAGENT_INSTANCE
+$oldImage = $env:REPOAGENT_IMAGE
+function Stop-Install([string]$Message) { $script:diagnostic = $Message; throw 'Installation stopped.' }
+function Setting([string]$Name, [string]$Default = '', [switch]$Required) {
+    $field = $Name.Substring(0, 1).ToLowerInvariant() + $Name.Substring(1)
+    $value = if ($provided.ContainsKey($Name)) { [string]$provided[$Name] }
+        elseif ($saved -and $saved.Contains($field)) { [string]$saved[$field] }
+        else { $Default }
+    if (-not $value -and $Required -and -not $NonInteractive) { $value = Read-Host "Supply -$Name" }
+    if (-not $value -and $Required) { Stop-Install "Supply -$Name, or use the original instance/state directory to resume." }
+    if ($value -match '[\p{Cc}]') { Stop-Install "-$Name cannot contain control characters." }
+    return $value
 }
-
-function Get-Setting([string]$Name, [string]$Field, [string]$Default, [string]$Prompt) {
-    if ($provided.ContainsKey($Name)) { return [string]$provided[$Name] }
-    if ($Field) {
-        try {
-            $saved = & $cli get $Field 2>$null
-            if ($saved) { $Default = [string]$saved }
-        } catch { } # A new instance has no settings yet.
+function Input-File([string]$Path) {
+    if ($Path -match '[,\r\n]' -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { Stop-Install 'Selected input file is missing or has a path containing commas/newlines.' }
+    $full = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $item = Get-Item -LiteralPath $full -Force
+    while ($item) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { Stop-Install 'Selected input paths cannot traverse links.' }
+        $item = if ($item -is [IO.DirectoryInfo]) { $item.Parent } else { $item.Directory }
     }
-    if ($NonInteractive) { return $Default }
-    $suffix = if ($Default) { " [$Default]" } else { '' }
-    $answer = Read-Host "$Prompt$suffix"
-    if ([string]::IsNullOrEmpty($answer)) { return $Default }
-    return $answer
+    return $full
 }
-
-Write-Host 'RepoAgent installation: Docker check/build, GitHub configuration, Codex sign-in, verification, start.'
-Write-Host "Instance: $Instance. Existing Docker volumes are preserved; stop a running instance before changing setup."
-Show-Stage 'Check Docker and prepare the image'
-Write-Host 'The agent can use its container filesystem/network. Its runtime mounts no host home directory or Docker socket.'
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Docker CLI is missing. Install/start Docker Desktop and reopen PowerShell.' }
+function Invoke-Runtime([string[]]$Arguments) {
+    $global:LASTEXITCODE = 0
+    & $cli @Arguments | Out-Host
+    if ($LASTEXITCODE -ne 0) { Stop-Install 'Runtime operation failed. Private enrollment and instance data are retained; retry the same installation.' }
+}
+function Show-Binding($Binding) {
+    # Only bounded public identity fields are suitable for a transcript. The native
+    # consumer remains responsible for validating the frozen credential itself.
+    Assert-Text $Binding.deviceId '\A[0-9a-f]{32}\z'
+    Assert-Id $Binding.appId; Assert-Id $Binding.installationId
+    Write-Host "Saved device: $($Binding.deviceId); App: $($Binding.appId); installation: $($Binding.installationId); authorization is checked on Apply."
+}
+function Read-Document([string]$Path) {
+    return Read-HostJson ([Text.Encoding]::UTF8.GetString((Read-PrivateFileBytes $Path)))
+}
 try {
-    $dockerOs = & docker info --format '{{.OSType}}'
-    if ($LASTEXITCODE -ne 0) { throw 'Docker is unavailable.' }
-} catch { throw 'Cannot reach Docker. Start Docker Desktop and retry.' }
-if ($dockerOs -ne 'linux') { throw 'RepoAgent needs Linux containers. Switch Docker Desktop to Linux containers.' }
-$running = $false
-try { $running = ((& docker inspect --format '{{.State.Running}}' "repoagent-$Instance" 2>$null) -eq 'true') } catch { }
-if ($running) { throw 'Stop the running instance before installing; its stored data will be preserved.' }
-if ($SkipBuild) { Write-Host 'Using the existing image; -SkipBuild skips the Docker build.' }
-else {
-    Write-Host 'Building the Linux image from this checkout. Build tools, Codex and gh are installed inside Docker.'
-    $buildOptions = @{}
-    if ($ImageManifest) { $buildOptions.Manifest = $ImageManifest }
-    if ($DerivedDockerfile) { $buildOptions.DerivedDockerfile = $DerivedDockerfile }
-    if ($BuildArg.Count) { $buildOptions.BuildArg = $BuildArg }
-    & "$PSScriptRoot/scripts/build-image.ps1" @buildOptions
+    if ($PSVersionTable.PSVersion -lt [version]'7.4') { Stop-Install 'Guided Install requires PowerShell 7.4 or later for checked durable host state.' }
+    if ($Instance -cnotmatch '^[a-z0-9][a-z0-9-]{0,40}$') { Stop-Install 'Instance must have 1–41 lowercase letters, digits or hyphens, starting with a letter or digit.' }
+    if ($GitHubEnvironment -or $ExpectedEnvironmentId -or $EnrollmentFile -or $ApprovalStatePath) { Stop-Install 'Install uses its selected state directory. Use Enroll/Revoke or the supplied-enrollment runtime commands for those inputs.' }
+    Import-Module "$PSScriptRoot/scripts/host-enrollment.psm1" -DisableNameChecking
+    Import-Module "$PSScriptRoot/scripts/private-file.psm1"
+    . "$PSScriptRoot/scripts/azure/image-input.ps1"
+    if (-not $StateDirectory) { $StateDirectory = Join-Path ([Environment]::GetFolderPath('UserProfile')) ".repoagent/instances/$Instance" }
+    $StateDirectory = [IO.Path]::GetFullPath($StateDirectory)
+    if ($StateDirectory -match '[,\p{Cc}]') { Stop-Install 'State directory cannot contain commas or control characters.' }
+    $launchPath = Join-Path $StateDirectory 'launch.json'
+    $enrollmentPath = Join-Path $StateDirectory 'enrollment.json'
+    $saved = if (Test-Path -LiteralPath $launchPath) { Read-Document $launchPath } else { $null }
+    $fields = @('schemaVersion','instance','stateDirectory','authentication','repository','brokerOrigin','approvalVariable','enrollmentProfile',
+        'imageManifest','imageManifestSha256','derivedDockerfile','derivedDockerfileSha256','runtimeImageId','appId','keyPath','installationId',
+        'mentionUser','model','mode','publicUrl','listenPort','reconcileInterval','toolUpdates','webSearch','codexAuthPath')
+    if ($saved) {
+        Assert-Fields $saved $fields
+        if ($saved.schemaVersion -ne 1 -or $saved.instance -cne $Instance -or -not $(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase.Equals($saved.stateDirectory, $StateDirectory) } else { [StringComparer]::Ordinal.Equals($saved.stateDirectory, $StateDirectory) })) { Stop-Install 'Saved launch coordinates differ from the selected instance/state directory.' }
+        foreach ($field in $fields | Where-Object { $_ -ne 'schemaVersion' }) {
+            if ($saved[$field] -isnot [string] -or $saved[$field] -match '[\p{Cc}]') { Stop-Install 'Invalid saved launch choice; inspect the original state without discarding recovery files.' }
+        }
+    }
+    $Authentication = Setting Authentication $(if ($AppId -or $KeyPath) { 'OwnApp' } else { 'Broker' })
+    if ($Authentication -notin @('Broker','OwnApp')) { Stop-Install 'Authentication must be Broker or OwnApp.' }
+    $approvalPath = Join-Path $StateDirectory 'approval.json'
+    $approval = if (Test-Path -LiteralPath $approvalPath) { Read-Document $approvalPath } else { $null }
+    if ($approval) {
+        if ($Authentication -ne 'Broker') { Stop-Install 'Existing host enrollment requires Broker authentication; choose a fresh instance for OwnApp.' }
+        # The enrollment command remains responsible for validating/recovering its document.
+        foreach ($pair in @(@('Repository','repository'),@('BrokerOrigin','brokerOrigin'),@('ApprovalVariable','approvalVariable'),@('EnrollmentProfile','profile'))) {
+            if (-not $provided.ContainsKey($pair[0]) -and (-not $saved -or -not $saved[$pair[0]])) { Set-Variable $pair[0] $approval[$pair[1]] }
+        }
+    }
+    $Repository = Setting Repository $Repository -Required
+    $Mode = Setting Mode 'polling'
+    $EnrollmentProfile = Setting EnrollmentProfile $(if ($EnrollmentProfile) { $EnrollmentProfile } else { 'polling' })
+    $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin
+    $ApprovalVariable = Setting ApprovalVariable $(if ($ApprovalVariable) { $ApprovalVariable } else { 'APPROVED_CONTROLLER' })
+    $AppId = Setting AppId
+    $KeyPath = Setting KeyPath
+    $InstallationId = Setting InstallationId
+    $MentionUser = Setting MentionUser
+    $Model = Setting Model 'gpt-6.1-sol'
+    $ToolUpdates = Setting ToolUpdates 'latest'
+    $WebSearch = Setting WebSearch 'live'
+    $PublicUrl = Setting PublicUrl
+    $ListenPort = Setting ListenPort '8080'
+    $ReconcileInterval = Setting ReconcileInterval '300'
+    if ($Repository -cnotmatch '^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$' -or @($Repository.Split('/') | Where-Object { $_ -in @('.','..') }).Count) { Stop-Install 'Repository must be OWNER/REPO.' }
+    if ($Mode -notin @('polling','fixed-url','quick-tunnel') -or $ToolUpdates -notin @('latest','pinned') -or $WebSearch -notin @('live','cached','disabled')) { Stop-Install 'Invalid runtime mode, tool update or web search choice.' }
+    if (-not $Model -or ($MentionUser -and $MentionUser -cnotmatch '^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$')) { Stop-Install 'Supply a model and a valid optional mention login without @.' }
+    [long]$parsedInstallation = 0
+    if ($InstallationId -and ($InstallationId -notmatch '^[1-9][0-9]*$' -or -not [long]::TryParse($InstallationId, [ref]$parsedInstallation))) { Stop-Install 'InstallationId must be a positive integer.' }
+    if ($ListenPort -notmatch '^[0-9]{1,5}$' -or [int]$ListenPort -notin 1..65535 -or $ReconcileInterval -notmatch '^[1-9][0-9]{0,8}$') { Stop-Install 'ListenPort must be 1–65535 and ReconcileInterval a positive integer.' }
+    if ($Mode -eq 'fixed-url') { $PublicUrl = Setting PublicUrl -Required; $PublicUrl = Get-BrokerOrigin $PublicUrl }
+    if ($Authentication -eq 'Broker') {
+        if ($KeyPath -or $provided.ContainsKey('AppId')) { Stop-Install 'Broker and own-App key/App selectors cannot be combined.' }
+        if ($Mode -ne 'polling' -or $EnrollmentProfile -ne 'polling') { Stop-Install 'Guided Broker installation supports polling only; mode and profile must both be polling.' }
+        $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin -Required
+        $BrokerOrigin = Get-BrokerOrigin $BrokerOrigin
+        $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
+        $enrollOptions = @{ Repository=$Repository; BrokerOrigin=$BrokerOrigin; ApprovalVariable=$ApprovalVariable; Profile=$EnrollmentProfile; StateDirectory=$StateDirectory; NonInteractive=$true }
+        $global:LASTEXITCODE = 0
+        & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions | Out-Host
+        if ($LASTEXITCODE -ne 0) { Stop-Install 'Host enrollment plan failed. Check the selected coordinates/private state; no runtime work was attempted.' }
+    } else {
+        if ($BrokerOrigin -or $provided.ContainsKey('ApprovalVariable') -or $provided.ContainsKey('EnrollmentProfile')) { Stop-Install 'OwnApp cannot use broker enrollment selectors.' }
+        $AppId = Setting AppId -Required; $KeyPath = Input-File (Setting KeyPath -Required)
+        if ($AppId -cnotmatch '^(?:[0-9]+|Iv[A-Za-z0-9.]+)$') { Stop-Install 'Supply an App ID or client ID, not a token.' }
+        $ApprovalVariable = ''; $EnrollmentProfile = ''
+    }
+    foreach ($field in @('authentication','repository','brokerOrigin','appId','keyPath')) {
+        $selected = Get-Variable $field -ValueOnly
+        if ($saved -and $saved[$field] -cne $selected) { Stop-Install 'Changing saved repository, authentication or App binding requires a fresh instance.' }
+    }
+    $ImageManifest = Input-File (Setting ImageManifest (Join-Path $PSScriptRoot 'image/default.json'))
+    $software = Read-ImageInput $ImageManifest
+    $manifestHash = (Get-FileHash -LiteralPath $ImageManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+    $DerivedDockerfile = Setting DerivedDockerfile
+    if ($DerivedDockerfile) { $DerivedDockerfile = Input-File $DerivedDockerfile }
+    if ($BuildArg.Count -and -not $DerivedDockerfile) { Stop-Install 'BuildArg requires DerivedDockerfile.' }
+    $derivedHash = if ($DerivedDockerfile) { (Get-FileHash -LiteralPath $DerivedDockerfile -Algorithm SHA256).Hash.ToLowerInvariant() } else { '' }
+    if ($saved -and ($saved.imageManifestSha256 -cne $manifestHash -or $saved.derivedDockerfileSha256 -cne $derivedHash)) { Stop-Install 'Image inputs changed since the saved plan. Choose a fresh instance for different image choices.' }
+    $runtimeImageId = if ($saved) { $saved.runtimeImageId } else { '' }
+    if ($runtimeImageId -and $runtimeImageId -cnotmatch '^sha256:[a-f0-9]{64}$') { Stop-Install 'Invalid saved immutable image ID.' }
+    $image = if ($runtimeImageId) { $runtimeImageId } elseif ($oldImage) { $oldImage } else { 'repoagent:local' }
+    $hasCredentials = $false
+    $dockerReady = $false
+    if (Get-Command docker -ErrorAction SilentlyContinue) {
+        $os = & docker info --format '{{.OSType}}' 2>$null
+        $dockerReady = $LASTEXITCODE -eq 0 -and $os -eq 'linux'
+    }
+    if ($dockerReady) {
+        if ((& docker inspect --format '{{.State.Running}}' "repoagent-$Instance" 2>$null) -eq 'true' -and $Apply) { Stop-Install 'Stop this instance with repoagent.ps1 before applying; its data will be retained.' }
+        # Read only: owned labels recover an interrupted launch-ID save without creating mounts.
+        foreach ($storage in @('config','credentials','workspace','history','state','tools','enrollment')) {
+            $name = "repoagent-$Instance-$storage"
+            $names = @(& docker volume ls --filter "name=^$name`$" --format '{{.Name}}')
+            if ($LASTEXITCODE -ne 0) { Stop-Install 'Cannot inspect selected Docker storage.' }
+            if ($names -notcontains $name) { continue }
+            if ($storage -eq 'credentials') { $hasCredentials = $true }
+            $labels = (& docker volume inspect --format '{{json .Labels}}' $name) | ConvertFrom-Json -AsHashtable
+            if ($LASTEXITCODE -ne 0) { Stop-Install 'Cannot inspect selected volume ownership.' }
+            if ($Authentication -eq 'Broker') {
+                if (-not $labels -or $labels['io.repoagent.owner'] -ne 'private-runtime-v1' -or $labels['io.repoagent.instance'] -cne $Instance -or $labels['io.repoagent.storage'] -cne $storage -or $labels['io.repoagent.image'] -cnotmatch '^sha256:[a-f0-9]{64}$') { Stop-Install 'Conflicting or legacy Docker storage; choose a fresh instance.' }
+                if ($runtimeImageId -and $runtimeImageId -cne $labels['io.repoagent.image']) { Stop-Install 'Saved image conflicts with owned Docker storage.' }
+                $runtimeImageId = $labels['io.repoagent.image']; $image = $runtimeImageId
+            } elseif ($labels -and $labels['io.repoagent.owner'] -eq 'private-runtime-v1') { Stop-Install 'Broker storage cannot be used for OwnApp.' }
+        }
+    }
+    if ($Apply -and -not $dockerReady) { Stop-Install 'Start Docker Desktop with Linux containers, then retry.' }
+    $build = -not $SkipBuild -and -not $runtimeImageId
+    if (-not $build -and $dockerReady) {
+        $id = & docker image inspect --format '{{.Id}}' $image 2>$null
+        if ($LASTEXITCODE -ne 0 -or $id -cnotmatch '^sha256:[a-f0-9]{64}$') { Stop-Install 'Selected existing controller image is unavailable; build it first or omit SkipBuild on a fresh instance.' }
+        $runtimeImageId = $id; $image = $id
+    }
+    $authHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) '.codex' }
+    $detectedAuth = Join-Path $authHome 'auth.json'
+    $CodexAuthPath = Setting CodexAuthPath $(if (Test-Path -LiteralPath $detectedAuth -PathType Leaf) { $detectedAuth } else { '' })
+    if (-not $CodexAuthPath -and -not $hasCredentials -and -not $DeviceLogin) { $CodexAuthPath = Setting CodexAuthPath '' -Required }
+    if ($DeviceLogin) { $CodexAuthPath = '-' }
+    if ($CodexAuthPath -and $CodexAuthPath -ne '-' -and (-not $hasCredentials -or $provided.ContainsKey('CodexAuthPath'))) { $CodexAuthPath = Input-File $CodexAuthPath }
+    if (-not $hasCredentials -and (-not $CodexAuthPath -or $CodexAuthPath -eq '-') -and -not $DeviceLogin) { Stop-Install 'Supply -CodexAuthPath for an existing sign-in, or explicitly select interactive -DeviceLogin.' }
+    if ($NonInteractive -and $DeviceLogin) { Stop-Install 'DeviceLogin requires interactive Apply; supply CodexAuthPath or reuse container credentials.' }
+    $baseImage = if ($software.Contains('baseImage')) { $software.baseImage.reference } else {
+        $match = [regex]::Match((Get-Content "$PSScriptRoot/scripts/compose-image.py" -Raw), "(?m)^RUNTIME = '([^']+)'\r?$")
+        if (-not $match.Success) { Stop-Install 'Cannot read the maintained base image selection.' }; $match.Groups[1].Value
+    }
+    $plan = [ordered]@{ schemaVersion=1; instance=$Instance; stateDirectory=$StateDirectory; authentication=$Authentication; repository=$Repository;
+        brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; enrollmentProfile=$EnrollmentProfile; imageManifest=$ImageManifest;
+        imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
+        appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
+        listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; toolUpdates=$ToolUpdates; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath }
+    Write-Host "Instance: $Instance; repository: $Repository; authentication: $Authentication; mode: $Mode"
+    Write-Host "Host launch/recovery state: $StateDirectory"
+    Write-Host "Image: $(if ($runtimeImageId) { $runtimeImageId } else { 'pending build' }); base: $baseImage; platform: linux/amd64; maintained compatibility: Ubuntu 26.04."
+    Write-Host "Software: Codex $($software.agent.version), gh $($software.githubCli.version); tools: $($software.tools | ConvertTo-Json -Compress); model: $Model; updates: $ToolUpdates."
+    Write-Host 'Download/build size and duration are unknown; depend on cache, selected base and tools. Full source/ABI build validation occurs on Apply.'
+    Write-Host "Container: repoagent-$Instance. Retain config, credentials, workspace, history, state and tools volumes; broker enrollment volume is read-only at runtime."
+    foreach ($storage in @('config','credentials','workspace','history','state','tools') + $(if ($Authentication -eq 'Broker') { @('enrollment') } else { @() })) {
+        $destination = if ($storage -eq 'workspace') { '/workspace' } else { "/data/$storage" }
+        Write-Host "  repoagent-$Instance-$storage -> $destination $(if ($storage -in @('config','enrollment')) { '(runtime read-only)' })"
+    }
+    if ($Authentication -eq 'OwnApp') { Write-Host "App: $AppId; expected installation: $(if ($InstallationId) { $InstallationId } else { 'discovered during check' }); read-only PEM mount: /run/secrets/github-app.pem" }
+    Write-Host 'Runtime mounts no host home, host gh credentials, recovery journal or Docker socket. Only selected Codex auth.json is imported; host history/sign-in are preserved.'
+    if ($Authentication -eq 'Broker') {
+        if (Test-Path -LiteralPath $enrollmentPath) {
+            $binding = Read-Document $enrollmentPath
+            Show-Binding $binding
+        } else { Write-Host 'Device and installation: pending enrollment; no identity has been allocated.' }
+    }
+    if (-not $Apply) { Write-Host 'Read-only preview. Rerun with -Apply to enroll, prepare the image, configure, verify and start.'; exit 0 }
+    $stage = 'save launch coordinates'
+    $missing = [Collections.Generic.Stack[string]]::new()
+    $parent = $StateDirectory
+    while (-not (Test-Path -LiteralPath $parent)) { $missing.Push($parent); $parent = [IO.Path]::GetDirectoryName($parent) }
+    foreach ($directory in $missing) { $null = Initialize-PrivateDirectory $directory }
+    $null = Initialize-PrivateDirectory $StateDirectory
+    Write-PrivateJson $launchPath $plan
+    if ($Authentication -eq 'Broker') {
+        $stage = 'enroll or resume the same controller'
+        & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions -Apply | Out-Host
+        if ($LASTEXITCODE -ne 0) { Stop-Install 'Host enrollment is incomplete. Retain this state and retry the same command; no runtime was started.' }
+        $binding = Read-Document $enrollmentPath
+        if ($InstallationId -and $InstallationId -cne [string]$binding.installationId) { Stop-Install 'Expected installation differs from the enrolled binding; no runtime started.' }
+        $AppId = [string]$binding.appId; $InstallationId = [string]$binding.installationId
+        Write-Host "Bound device: $($binding.deviceId); App: $AppId; installation: $InstallationId."
+        $plan.appId = $AppId; $plan.installationId = $InstallationId
+        Write-PrivateJson $launchPath $plan
+    }
+    $env:REPOAGENT_INSTANCE = $Instance
+    $env:REPOAGENT_IMAGE = $image
+    if ($build) {
+        $stage = 'build the selected image'
+        $options = @{ Manifest=$ImageManifest }
+        if ($DerivedDockerfile) { $options.DerivedDockerfile = $DerivedDockerfile }
+        if ($BuildArg.Count) { $options.BuildArg = $BuildArg }
+        & "$PSScriptRoot/scripts/build-image.ps1" @options | Out-Host
+        if ($LASTEXITCODE -ne 0) { Stop-Install 'Image build failed; enrollment is retained for retry.' }
+        $runtimeImageId = & docker image inspect --format '{{.Id}}' $image
+        if ($LASTEXITCODE -ne 0 -or $runtimeImageId -cnotmatch '^sha256:[a-f0-9]{64}$') { Stop-Install 'Cannot resolve the built immutable controller image.' }
+    }
+    $env:REPOAGENT_IMAGE = $runtimeImageId
+    $plan.runtimeImageId = $runtimeImageId
+    Write-PrivateJson $launchPath $plan
+    $stage = 'configure and privately import enrollment'
+    $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--tool-updates', $ToolUpdates, '--web-search', $WebSearch)
+    if ($InstallationId) { $configuration += @('--installation-id', $InstallationId) }
+    if ($Authentication -eq 'Broker') { $configuration += @('--broker-url', $BrokerOrigin, '--enrollment-file', $enrollmentPath) }
+    else {
+        & docker run --rm --mount "type=bind,src=$KeyPath,dst=/run/secrets/github-app.pem,readonly" --entrypoint sh $runtimeImageId -c 'test -r /run/secrets/github-app.pem'
+        if ($LASTEXITCODE -ne 0) { Stop-Install 'Docker UID1000 cannot read the selected PEM; check permissions/file sharing.' }
+        $configuration += @('--key-path', $KeyPath, '--listen-port', $ListenPort, '--reconcile-interval', $ReconcileInterval, "--public-url=$PublicUrl")
+    }
+    Invoke-Runtime $configuration
+    $stage = 'check Codex sign-in'
+    $reuseCredentials = $false
+    if ($hasCredentials -and -not $DeviceLogin -and -not $provided.ContainsKey('CodexAuthPath')) {
+        # A volume may exist after failed configure/import. Only successful login
+        # establishes reusable credentials; never replace a working refresh cache.
+        $global:LASTEXITCODE = 0
+        try { & $cli login --non-interactive | Out-Host; $reuseCredentials = $LASTEXITCODE -eq 0 } catch { $reuseCredentials = $false }
+    }
+    if (-not $reuseCredentials) {
+        if ($CodexAuthPath -and $CodexAuthPath -ne '-') { Invoke-Runtime @('import-codex-auth', (Input-File $CodexAuthPath)) }
+        if ($DeviceLogin) { Invoke-Runtime @('login') } else { Invoke-Runtime @('login','--non-interactive') }
+    }
+    $stage = 'verify runtime authorization'
+    Invoke-Runtime @('check')
+    if ($NoStart) { Write-Host 'Verified; selected runtime remains stopped (-NoStart).' }
+    else { $stage = 'start the selected runtime'; Invoke-Runtime @('start'); Write-Host 'Selected runtime is ready.' }
+    Write-Host "Resume: ./install.ps1 -Instance '$Instance' -StateDirectory '$($StateDirectory.Replace("'", "''"))' -NonInteractive -Apply"
+    Write-Host "Lifecycle: set REPOAGENT_INSTANCE=$Instance and REPOAGENT_IMAGE=$runtimeImageId; use ./repoagent.ps1 logs --follow, stop, start or restart."
+    Write-Host 'Image publication is separate: scripts/publish-image.ps1. Azure planning is read-only: scripts/plan-azure.ps1. This result establishes local readiness only.'
+} catch {
+    Write-Warning "Could not $stage. $diagnostic"
+    Write-Host "Selected instance: $Instance. Retain the original state directory and rerun the same inputs with -Apply."
+    exit 1
+} finally {
+    $env:REPOAGENT_INSTANCE = $oldInstance
+    $env:REPOAGENT_IMAGE = $oldImage
 }
-
-Show-Stage 'Choose the repository and GitHub App'
-Write-Host 'Enable Discussions in the target repository: Settings > General > Features > Discussions.'
-Write-Host 'For a new organization App: organization Settings > Developer settings > GitHub Apps > New GitHub App.'
-Write-Host 'Choose a unique App name and your organization URL as Homepage URL. User authorization/callbacks are unused.'
-Write-Host 'For polling: turn off Webhook Active; grant repository Discussions: read and write.'
-Write-Host 'Choose Only on this account when the App belongs to the target organization.'
-Write-Host 'Create the App; record its App ID; generate/download a private PEM key outside this checkout.'
-Write-Host 'Install App > select the organization > Only select repositories > choose the target repository.'
-Write-Host 'App creation, installation and permission approval happen in your browser; no GitHub account token is collected.'
-if (-not $NonInteractive -and (-not $provided.ContainsKey('AppId') -or -not $provided.ContainsKey('KeyPath'))) {
-    Write-Host 'Opening https://github.com/settings/apps (for an organization-owned App, use the organization settings above).'
-    try { Start-Process 'https://github.com/settings/apps' | Out-Null } catch { Write-Host 'Open that URL manually in your browser.' }
-}
-$Repository = Get-Setting Repository repository '' 'Repository (OWNER/REPO)'
-$AppId = Get-Setting AppId appId '' 'App ID or client ID'
-$KeyPath = Get-Setting KeyPath keyPath '' 'PEM private-key file path'
-$InstallationId = Get-Setting InstallationId installationId '' 'Expected installation ID (optional)'
-$MentionUser = Get-Setting MentionUser mentionUser '' 'Dedicated mention user without @ (optional; empty uses the App bot)'
-$Model = Get-Setting Model model 'gpt-6.1-sol' 'Codex model'
-$Mode = Get-Setting Mode mode 'polling' 'Mode: polling, fixed-url or quick-tunnel'
-$ToolUpdates = Get-Setting ToolUpdates toolUpdates 'latest' 'Tool updates: latest or pinned'
-$WebSearch = Get-Setting WebSearch webSearch 'live' 'Web search: live, cached or disabled'
-if (-not $Repository -or -not $AppId -or -not $KeyPath) { throw 'Repository, App ID and key path are required. Supply -Repository, -AppId and -KeyPath.' }
-if (-not (Test-Path -LiteralPath $KeyPath -PathType Leaf)) { throw 'PEM private-key file is missing.' }
-$KeyPath = (Resolve-Path -LiteralPath $KeyPath).ProviderPath
-if ($KeyPath -match '[,\r\n]') { throw 'Private-key paths cannot contain commas or newlines.' }
-$configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, '--key-path', $KeyPath,
-    "--mention-user=$MentionUser", '--model', $Model, '--mode', $Mode, '--tool-updates', $ToolUpdates, '--web-search', $WebSearch)
-if ($Mode -ne 'polling') {
-    Write-Host 'Webhook modes also require repository Webhooks: read and write; approve the installation permissions.'
-    $ListenPort = Get-Setting ListenPort listenPort '8080' 'Listener port'
-    $ReconcileInterval = Get-Setting ReconcileInterval reconcileInterval '300' 'Reconciliation interval in seconds'
-    $configuration += @('--listen-port', $ListenPort, '--reconcile-interval', $ReconcileInterval)
-    if ($Mode -eq 'fixed-url') {
-        Write-Host 'Your external HTTPS proxy must forward /github/webhook to the container listener.'
-        $PublicUrl = Get-Setting PublicUrl publicUrl '' 'Public HTTPS origin'
-        $configuration += @('--public-url', $PublicUrl)
-    } else { Write-Host 'Quick Tunnel creates a temporary public hostname for development; no Cloudflare account is needed.' }
-}
-if ($InstallationId) { $configuration += @('--installation-id', $InstallationId) }
-Write-Host 'Checking that container UID 1000 can read the read-only PEM mount. Host file permissions are not changed.'
-$image = if ($env:REPOAGENT_IMAGE) { $env:REPOAGENT_IMAGE } else { 'repoagent:local' }
-& docker run --rm --mount "type=bind,src=$KeyPath,dst=/run/secrets/github-app.pem,readonly" --entrypoint sh $image -c 'test -r /run/secrets/github-app.pem'
-if ($LASTEXITCODE -ne 0) { throw 'Docker cannot read the PEM as UID 1000. Check the file permissions and Docker file sharing.' }
-Write-Host "Saving configuration for $Repository with App $AppId in instance $Instance."
-& $cli @configuration
-
-Show-Stage 'Reuse your Codex sign-in or sign in inside Docker'
-Write-Host 'Only the selected auth.json is copied into the Docker credentials volume; host config and history are not imported.'
-$authDirectory = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
-$detectedAuth = Join-Path $authDirectory 'auth.json'
-if (-not (Test-Path -LiteralPath $detectedAuth -PathType Leaf)) { $detectedAuth = '' }
-if ($DeviceLogin) { $CodexAuthPath = '' }
-else {
-    Write-Host 'Press Enter to use a detected cache; enter - to skip importing and use container sign-in.'
-    $CodexAuthPath = Get-Setting CodexAuthPath '' $detectedAuth 'Existing Codex auth.json path (optional)'
-}
-if ($CodexAuthPath -and $CodexAuthPath -ne '-') {
-    if (-not (Test-Path -LiteralPath $CodexAuthPath -PathType Leaf)) { throw 'Selected Codex auth.json file is missing.' }
-    $CodexAuthPath = (Resolve-Path -LiteralPath $CodexAuthPath).ProviderPath
-    Write-Host "Importing $CodexAuthPath read-only; its contents are not printed."
-    & $cli import-codex-auth $CodexAuthPath
-}
-if ($NonInteractive) { & $cli login --non-interactive }
-else {
-    Write-Host 'Checking container sign-in. If needed, follow the printed device URL/code in your browser.'
-    Write-Host 'Device login must be enabled in ChatGPT security/workspace settings. OS keyring credentials cannot be copied as a file.'
-    & $cli login
-}
-
-Show-Stage 'Verify Codex and the installed GitHub App'
-Write-Host 'Checking Codex login and the actual App installation, repository permission and bot identity before starting work.'
-& $cli check
-Show-Stage 'Start the agent and show next steps'
-if ($NoStart) { Write-Host 'Verification succeeded. -NoStart leaves the agent stopped.' }
-else {
-    Write-Host 'Starting the container; latest mode checks tool updates before starting work. Waiting for the ready log.'
-    & $cli start
-}
-Write-Host "For future PowerShell sessions: `$env:REPOAGENT_INSTANCE = '$Instance'"
-Write-Host 'Use .\repoagent.ps1 logs --follow to follow logs; Ctrl+C stops the log viewer.'
-Write-Host 'Use .\repoagent.ps1 stop, start or restart to manage the container.'
-Write-Host 'Mention the actor login printed above, including [bot], in a Discussion body/comment to start a conversation.'
-Write-Host 'Or, while stopped: .\repoagent.ps1 enroll https://github.com/OWNER/REPO/discussions/NUMBER'
-Write-Host 'This installation handles Discussions. Its token does not grant repository code pushes or PR creation.'
-Write-Host 'Configuration, Codex credentials, workspace, history, state and updated tools persist in Docker volumes.'
