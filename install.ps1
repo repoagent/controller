@@ -150,7 +150,7 @@ try {
     }
     $Repository = Setting Repository $Repository -Required
     $Mode = Setting Mode 'polling'
-    $EnrollmentProfile = Setting EnrollmentProfile $(if ($EnrollmentProfile) { $EnrollmentProfile } else { 'polling' })
+    $resolvedProfile = Setting EnrollmentProfile $(if ($EnrollmentProfile) { $EnrollmentProfile } else { 'polling' })
     $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin
     $ApprovalVariable = Setting ApprovalVariable $(if ($ApprovalVariable) { $ApprovalVariable } else { 'APPROVED_CONTROLLER' })
     $AppId = Setting AppId
@@ -172,11 +172,11 @@ try {
     if ($Mode -eq 'fixed-url') { $PublicUrl = Setting PublicUrl -Required; $PublicUrl = Get-BrokerOrigin $PublicUrl }
     if ($Authentication -eq 'Broker') {
         if ($KeyPath -or $provided.ContainsKey('AppId')) { Stop-Install 'Broker and own-App key/App selectors cannot be combined.' }
-        if ($Mode -ne 'polling' -or $EnrollmentProfile -ne 'polling') { Stop-Install 'Guided Broker installation supports polling only; mode and profile must both be polling.' }
+        if ($Mode -ne 'polling' -or $resolvedProfile -ne 'polling') { Stop-Install 'Guided Broker installation supports polling only; mode and profile must both be polling.' }
         $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin -Required
         $BrokerOrigin = Get-BrokerOrigin $BrokerOrigin
         $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
-        $enrollOptions = @{ Repository=$Repository; BrokerOrigin=$BrokerOrigin; ApprovalVariable=$ApprovalVariable; Profile=$EnrollmentProfile; StateDirectory=$StateDirectory; NonInteractive=$true }
+        $enrollOptions = @{ Repository=$Repository; BrokerOrigin=$BrokerOrigin; ApprovalVariable=$ApprovalVariable; Profile=$resolvedProfile; StateDirectory=$StateDirectory; NonInteractive=$true }
         $global:LASTEXITCODE = 0
         & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions | Out-Host
         if ($LASTEXITCODE -ne 0) { Stop-Install 'Host enrollment plan failed. Check the selected coordinates/private state; no runtime work was attempted.' }
@@ -184,7 +184,7 @@ try {
         if ($BrokerOrigin -or $provided.ContainsKey('ApprovalVariable') -or $provided.ContainsKey('EnrollmentProfile')) { Stop-Install 'OwnApp cannot use broker enrollment selectors.' }
         $AppId = Setting AppId -Required; $KeyPath = Input-File (Setting KeyPath -Required)
         if ($AppId -cnotmatch '^(?:[0-9]+|Iv[A-Za-z0-9.]+)$') { Stop-Install 'Supply an App ID or client ID, not a token.' }
-        $ApprovalVariable = ''; $EnrollmentProfile = ''
+        $ApprovalVariable = ''; $resolvedProfile = ''
     }
     foreach ($field in @('authentication','repository','brokerOrigin','appId','keyPath')) {
         $selected = Get-Variable $field -ValueOnly
@@ -245,7 +245,7 @@ try {
         if (-not $match.Success) { Stop-Install 'Cannot read the maintained base image selection.' }; $match.Groups[1].Value
     }
     $plan = [ordered]@{ schemaVersion=1; instance=$Instance; stateDirectory=$StateDirectory; authentication=$Authentication; repository=$Repository;
-        brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; enrollmentProfile=$EnrollmentProfile; imageManifest=$ImageManifest;
+        brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; enrollmentProfile=$resolvedProfile; imageManifest=$ImageManifest;
         imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
         listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; toolUpdates=$ToolUpdates; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath }
