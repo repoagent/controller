@@ -18,6 +18,8 @@ public sealed class ManagedCheckoutTests
     public async Task Startup_uses_the_owned_default_branch_only_with_explicit_clone_authority(bool clone, bool checkAuth)
     {
         if (OperatingSystem.IsWindows()) return; // This process fixture uses the Linux shipping tools.
+        var realGit = Environment.GetEnvironmentVariable("PATH")!.Split(Path.PathSeparator)
+            .Select(path => Path.GetFullPath(Path.Combine(path, "git"))).First(File.Exists);
         // Git, durable files and native are real; only GitHub transport is replaced.
         using var fixture = new BrokerAuthenticationTests.Fixture(clone: clone);
         var origin = Path.Combine(fixture.Directory, "origin");
@@ -52,8 +54,8 @@ public sealed class ManagedCheckoutTests
             a=sys.argv[1:]
             if a[:2]==['repo','clone']:
              assert a[2]=='https://github.com/owner/repository.git',a
-             subprocess.run(['git','clone',os.environ['CHECKOUT_ORIGIN'],a[3]],check=True)
-             subprocess.run(['git','-C',a[3],'remote','set-url','origin',a[2]],check=True)
+             subprocess.run([os.environ['CHECKOUT_REAL_GIT'],'clone',os.environ['CHECKOUT_ORIGIN'],a[3]],check=True)
+             subprocess.run([os.environ['CHECKOUT_REAL_GIT'],'-C',a[3],'remote','set-url','origin',a[2]],check=True)
             elif a[:2]==['api','graphql']:
              q=json.load(sys.stdin)['query']
              data={'viewer':{'login':'test-app[bot]'}} if 'query { viewer' in q else {'repository':{'discussions':{'nodes':[],'pageInfo':{'hasNextPage':False,'endCursor':None}}}}
@@ -67,12 +69,25 @@ public sealed class ManagedCheckoutTests
         {
             ["PATH"] = bin + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"),
             ["CHECKOUT_CAPTURE"] = capture, ["CHECKOUT_ORIGIN"] = origin,
-            ["CHECKOUT_REAL_NATIVE"] = native, ["CODEX_HOME"] = home
+            ["CHECKOUT_REAL_NATIVE"] = native, ["CODEX_HOME"] = home, ["CHECKOUT_REAL_GIT"] = realGit
         };
         var previous = environment.Keys.ToDictionary(k => k, Environment.GetEnvironmentVariable);
         try
         {
             foreach (var pair in environment) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
+            if (clone && !checkAuth)
+            {
+                // Prove this external transport survives a restrictive git prepended to PATH.
+                var hostileGit = Path.Combine(bin, "git");
+                File.WriteAllText(hostileGit, "#!/bin/sh\nexit 97\n");
+                Executable(hostileGit);
+                var adapterRoot = Path.Combine(fixture.Directory, "adapter-control");
+                try { await Run(fixture.Gh, "repo", "clone", "https://github.com/owner/repository.git", adapterRoot); }
+                finally { File.Delete(hostileGit); }
+                Assert.Equal("approved repository\n", File.ReadAllText(Path.Combine(adapterRoot, "tracked-sentinel")));
+                Assert.Equal("https://github.com/owner/repository.git", await Git("-C", adapterRoot, "remote", "get-url", "origin"));
+                Assert.Equal(commit, await Git("-C", adapterRoot, "rev-parse", "HEAD"));
+            }
             var args = new List<string> { "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
                 "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
                 "--workspace", workspace, "--once" };
@@ -98,9 +113,10 @@ public sealed class ManagedCheckoutTests
     {
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
-    static async Task<string> Git(params string[] arguments)
+    static Task<string> Git(params string[] arguments) => Run("git", arguments);
+    static async Task<string> Run(string executable, params string[] arguments)
     {
-        var start = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true };
+        var start = new ProcessStartInfo(executable) { RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         using var process = Process.Start(start)!;
         var output = process.StandardOutput.ReadToEndAsync();
