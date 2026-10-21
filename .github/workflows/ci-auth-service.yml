@@ -116,6 +116,7 @@ jobs:
       - name: Verify the service and compile Bicep without cloud credentials
         run: |
           az bicep install --version "$BICEP_VERSION"
+          export BICEP_BIN="$HOME/.azure/bin/bicep"
           (cd service/auth && bash verify.sh)
           bash infra/auth/validate.sh
           python3 -m unittest discover -s scripts/delivery -p 'test_*auth*.py' -v
@@ -184,6 +185,7 @@ jobs:
           AUTH_IMAGE_PUBLIC: 'true'
         run: |
           az bicep install --version "$BICEP_VERSION"
+          export BICEP_BIN="$HOME/.azure/bin/bicep"
           bash infra/auth/deploy.sh apply
       - name: Verify deployed immutable image and ready revision
         run: python3 scripts/delivery/deploy-auth.py deploy
@@ -254,6 +256,7 @@ jobs:
         run: |
           set -euo pipefail
           az bicep install --version "$BICEP_VERSION"
+          export BICEP_BIN="$HOME/.azure/bin/bicep"
           case "$AUTH_OPERATION" in
             foundation-plan|foundation-apply|stage-plan|stage-apply|promote-staged|stage-stop|stage-resume|cleanup-identity-plan|cleanup-identity-apply|cleanup-plan|cleanup-apply)
               bash infra/auth/deploy.sh "$AUTH_OPERATION" ;;
