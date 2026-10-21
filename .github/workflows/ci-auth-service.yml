@@ -39,6 +39,7 @@ concurrency:
   group: auth-service-${{ github.event_name == 'pull_request' && github.ref || 'delivery' }}
   cancel-in-progress: false
 env:
+  BICEP_VERSION: v0.48.1
   AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
   AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
   AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
@@ -90,6 +91,7 @@ jobs:
           DEPLOYMENT_NAME: github-oidc-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          az bicep install --version "$BICEP_VERSION"
           test "$(az group show --name "$AZURE_RESOURCE_GROUP" --query location --output tsv)" = "$AZURE_LOCATION"
           az deployment group create \
             --name "$DEPLOYMENT_NAME" \
@@ -113,6 +115,7 @@ jobs:
           global-json-file: service/auth/global.json
       - name: Verify the service and compile Bicep without cloud credentials
         run: |
+          az bicep install --version "$BICEP_VERSION"
           (cd service/auth && bash verify.sh)
           bash infra/auth/validate.sh
           python3 -m unittest discover -s scripts/delivery -p 'test_*auth*.py' -v
@@ -179,7 +182,9 @@ jobs:
           AUTH_IMAGE_ROLE: auth-service
           AUTH_IMAGE_NON_ROOT: 'true'
           AUTH_IMAGE_PUBLIC: 'true'
-        run: bash infra/auth/deploy.sh apply
+        run: |
+          az bicep install --version "$BICEP_VERSION"
+          bash infra/auth/deploy.sh apply
       - name: Verify deployed immutable image and ready revision
         run: python3 scripts/delivery/deploy-auth.py deploy
 
@@ -248,6 +253,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          az bicep install --version "$BICEP_VERSION"
           case "$AUTH_OPERATION" in
             foundation-plan|foundation-apply|stage-plan|stage-apply|promote-staged|stage-stop|stage-resume|cleanup-identity-plan|cleanup-identity-apply|cleanup-plan|cleanup-apply)
               bash infra/auth/deploy.sh "$AUTH_OPERATION" ;;

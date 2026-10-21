@@ -38,7 +38,8 @@ def validate(path):
             0, 1, {"cpu": "[json('0.25')]", "memory": "0.5Gi"}, 30, "[json('0.1')]"):
         raise ValueError("Template exceeds the approved pilot capacity/log envelope")
     environment = next(r for r in resources if r["type"] == "Microsoft.App/managedEnvironments")
-    if environment["properties"].get("appLogsConfiguration") != {"destination": "none"}:
+    if environment["properties"].get("appLogsConfiguration") != {
+            "destination": None, "logAnalyticsConfiguration": None}:
         raise ValueError("Console persistence must remain disabled")
     telemetry = {item["name"]: item["value"] for item in container["env"] if item["name"].startswith("APPLICATIONINSIGHTS_")}
     if telemetry != telemetry_env():

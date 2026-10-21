@@ -205,9 +205,9 @@ class Deployment:
             properties = resource.get("properties", {})
             if ((kind == RESOURCE_TYPES[1] and (properties.get("retentionInDays") != 30
                     or properties.get("workspaceCapping", {}).get("dailyQuotaGb") != 0.1))
-                    or (kind == RESOURCE_TYPES[2] and (properties.get("appLogsConfiguration", {}).get("destination") != "none"
+                    or (kind == RESOURCE_TYPES[2] and (properties.get("appLogsConfiguration", {}).get("destination") is not None
                         or properties.get("appLogsConfiguration", {}).get("logAnalyticsConfiguration")))):
-                raise DeploymentError("Monitoring requires owned 30-day/0.1GB workspace and console destination none")
+                raise DeploymentError("Monitoring requires owned 30-day/0.1GB workspace and disabled console persistence")
         if self.monitoring and self.params["enableAlerts"]:
             for kind, suffix, role in ((RESOURCE_TYPES[6], "", "auth-service"), (CLEANUP_JOB, "-cleanup", "auth-cleanup")):
                 resource = self.az(["resource", "show", "--ids", self.resource_id(kind, self.app + suffix), "--api-version", "2025-01-01"])
@@ -537,7 +537,7 @@ class Deployment:
 
         if self.cleanup and (not isinstance(logs, dict) or not logs.get("customerId")
                 or logs.get("retentionInDays") != 30 or logs.get("workspaceCapping", {}).get("dailyQuotaGb") != 0.1
-                or not isinstance(environment_logs, dict) or environment_logs.get("destination") != "none"
+                or not isinstance(environment_logs, dict) or environment_logs.get("destination") is not None
                 or environment_logs.get("logAnalyticsConfiguration")):
             raise DeploymentError("Cleanup requires the owned bounded log workspace/environment binding")
 
