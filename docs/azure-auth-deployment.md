@@ -101,12 +101,14 @@ The existing workflow has one shared main-only activation route: `foundation-pla
      python3 scripts/delivery/auth-pipeline.py bootstrap-publish
    ```
 
-   The helper archives the entire actual commit into temporary storage, runs source/service verification there and builds only its `service/auth` context. Dirty/untracked local source is excluded. It checks role/nonroot/Linux-amd64/revision, pushes only the fixed repository and records the actual source/digest. It never calls Azure. A private first push prints `publicationComplete=false` and fails anonymous attestation; retain that receipt. An operator must make that exact package public and grant repository Actions access. No helper changes registry visibility/permissions. Resume by anonymously attesting the recorded digest/source without rebuilding:
+   The helper archives the entire actual commit into temporary storage, runs source/service verification there and builds only its `service/auth` context. Dirty/untracked local source is excluded. It checks role/nonroot/Linux-amd64/revision, pushes only the fixed repository and records the actual source/digest. It never calls Azure. A private first push prints `publicationComplete=false` and fails anonymous attestation; retain that receipt. An operator must make that exact package public and grant repository Actions access. No helper changes registry visibility/permissions. Anonymous pull alone cannot establish Actions push access: bootstrap reports complete only when the operator has also supplied `AUTH_PACKAGE_ACTIONS_ACCESS_CONFIRMED=true` after verifying that access. This is an operator assertion, never set by the helper. Resume by anonymously attesting the recorded digest/source without rebuilding:
 
    ```sh
    AUTH_IMAGE_REPOSITORY=ghcr.io/repoagent/controller-auth AUTH_IMAGE="$accepted_image" \
      AUTH_EXPECTED_SOURCE_SHA="$accepted_source" python3 scripts/delivery/auth-pipeline.py attest
    ```
+
+   After resumed attestation and separate Actions-access verification, append both nonsecret evidence references to the original receipt. Do not rerun bootstrap merely to change its receipt status.
 
 6. Supply real nonsecret runtime configuration using the existing Actions variables (pinned distinct keys, epoch, stable app/Table configuration). Leave hosted flags unset/false. Review stage-plan, then separately authorize stage-apply:
 

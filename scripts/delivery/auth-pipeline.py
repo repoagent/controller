@@ -132,6 +132,8 @@ def bootstrap_publish():
     except ValueError:
         raise ValueError('Publication incomplete; operator must make controller-auth public, grant Actions access, '
                          'then anonymously attest the recorded digest/source; do not rebuild to resume') from None
+    if os.environ.get('AUTH_PACKAGE_ACTIONS_ACCESS_CONFIRMED') != 'true':
+        raise ValueError('Public digest attested; publication incomplete until operator confirms repository Actions package access')
     print(json.dumps(dict(receipt, publicationComplete=True)))
 
 
