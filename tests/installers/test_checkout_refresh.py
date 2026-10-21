@@ -351,6 +351,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                     if hold_reload:
                         self.rpc(f, 'initialize')  # Git/owner B; real replacement initialize deliberately withheld.
                         journal = json.loads(f.journal.read_text())
+                        self.assertIn('applying', journal, 'Applying checkpoint cleared while replacement initialize is pending')
                         self.assertEqual(journal['applying']['target'], target)
                         self.assertLess(journal['completed'], journal['requested'])
                     else: self.settled(f)
@@ -388,7 +389,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.terminal(f, 'S1', 'T1')
             f.wait('native-event')
             journal = json.loads(f.journal.read_text())
-            self.assertEqual(len(journal['active']), 1)
+            self.assertEqual(len(journal['active']), 1, 'Early terminal cleared admission before acknowledgement')
             self.assertFalse(next(iter(journal['active'].values()))['confirmed'])
             self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
             self.assertEqual(len(f.provider.git_tokens), requests)
@@ -476,6 +477,86 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), baseline)
             self.assertEqual(len(f.provider.git_tokens), requests)
             print('MATRIX_EOF replacement-epoch=blocked active-retained=true nofetch=true', flush=True)
+
+
+
+    def test_create_resume_and_clean_active_restart_preserve_reservations(self):
+        for case in ('create', 'resume', 'save-failure', 'active-restart'):
+            with self.subTest(case=case), self.fixture(protocol=True) as f:
+                if case in ('resume', 'active-restart'):
+                    with self.controller(f):
+                        f.provider.discussions = [self.discussion(1)]
+                        request = self.rpc(f, 'thread/start')
+                        self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+                        request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+                        f.wait('poll-completed success=True')
+                        if case == 'resume':
+                            self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+                            self.assertEqual(json.loads(f.journal.read_text())['active'], {})
+                    if case == 'active-restart':
+                        saved = json.loads(f.journal.read_text())
+                        self.assertTrue(saved['active']); self.assertFalse(saved['blocked'])
+                        result = subprocess.run(f.command + ['--once'], env=f.environment, capture_output=True, text=True, timeout=20)
+                        self.assertEqual(result.returncode, 1); self.assertIn('uncertain', result.stdout)
+                        self.assertTrue(json.loads(f.journal.read_text())['active'])
+                        print('GAP clean-active restart=blocked persisted-active=true', flush=True)
+                        continue
+                with self.controller(f):
+                    if case == 'resume': f.provider.discussions[0]['body'] += ' cold resumed input'
+                    else: f.provider.discussions = [self.discussion(1)]
+                    request = self.rpc(f, 'thread/resume' if case == 'resume' else 'thread/start')
+                    initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+                    requests = len(f.provider.git_tokens)
+                    target = self.publish(f)
+                    # The explicit held RPC makes this a busy barrier, never an idle-by-time inference.
+                    self.assertFalse(select.select([f.responses], [], [], 2)[0], 'First send crossed held create/resume')
+                    journal = json.loads(f.journal.read_text())
+                    self.assertEqual(len(journal['active']), 1)
+                    self.assertGreater(journal['requested'], journal['completed'])
+                    self.assertFalse(next(iter(journal['active'].values()))['confirmed'])
+                    self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
+                    self.assertEqual(len(f.provider.git_tokens), requests)
+                    if case == 'save-failure': Path(str(f.state) + '.tmp').mkdir()
+                    self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+                    if case == 'save-failure':
+                        f.wait('manual-recovery')
+                        self.assertTrue(json.loads(f.journal.read_text())['blocked'])
+                        self.assertTrue(json.loads(f.state.read_text())['discussions']['D1']['pending'])
+                        self.assertFalse(select.select([f.responses], [], [], 0)[0])
+                        self.assertEqual(len(f.provider.git_tokens), requests)
+                    else:
+                        request = self.rpc(f, 'turn/start')
+                        turn = 'T2' if case == 'resume' else 'T1'
+                        self.reply(f, request, dict(turn=dict(id=turn)))
+                        self.terminal(f, 'S1', turn)
+                        f.wait('checkout-refreshed'); self.settled(f)
+                        self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+                if case == 'save-failure':
+                    Path(str(f.state) + '.tmp').rmdir()  # Release only the fixture write fault.
+                    result = subprocess.run(f.command + ['--once'], env=f.environment, capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, 1); self.assertIn('uncertain', result.stdout)
+                print('GAP case=' + case + ' reservation-and-first-send=protected', flush=True)
+
+
+
+    def test_late_fetch_head_change_cannot_replace_the_captured_validated_target(self):
+        with self.fixture() as f, self.controller(f):
+            initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+            observed = []
+            def after_lookup(sha):
+                if sha == initial: return
+                observed.append(sha)
+                if len(observed) == 2:
+                    f.provider.ref_observer = None
+                    (f.checkout / '.git/FETCH_HEAD').write_text(initial + '\t\tlate fixture ref change\n')
+            f.provider.ref_observer = after_lookup
+            target = self.publish(f)
+            f.wait('checkout-refreshed'); self.settled(f)
+            self.assertEqual(observed, [target, target])
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'FETCH_HEAD'), initial)
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+            self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
+            print('GAP late-FETCH_HEAD=' + initial + ' captured-applied=' + target, flush=True)
 
 
 
