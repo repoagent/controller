@@ -1,6 +1,8 @@
 """Real managed-checkout startup freshness; empty polls create no native turns."""
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import hashlib
+import hmac
+import http.client
 import json
 import os
 from pathlib import Path
@@ -9,6 +11,7 @@ import runpy
 import select
 import signal
 import shutil
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -140,10 +143,11 @@ class CheckoutRefreshTests(unittest.TestCase):
 
 
     @contextmanager
-    def fixture(self, protocol=False, responses=False):
+    def fixture(self, protocol=False, responses=False, webhooks=False, clone=True):
         with tempfile.TemporaryDirectory(prefix='refresh-matrix-') as temporary:
             directory = Path(temporary)
             provider = GitProvider(directory, responses=responses)
+            provider.webhooks, provider.clone, provider.hooks = webhooks, clone, []
             try:
                 home, workspace = directory / 'home', directory / 'workspace'
                 home.mkdir(mode=0o700); workspace.mkdir()
@@ -167,6 +171,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 command = ['dotnet', str(CONTROLLER), '--repo', 'owner/project', '--app-id', '123', '--broker-url',
                            'https://broker.fixture', '--enrollment-file', str(enrollment), '--state', str(state),
                            '--workspace', str(workspace), '--clone', '--interval', '1']
+                if not clone: command.remove('--clone')
                 f = SimpleNamespace(directory=directory, provider=provider, environment=environment, state=state,
                                     checkout=checkout, owner=workspace / '.repoagent-checkout.json', command=command,
                                     run=run, git=git, journal=Path(str(state) + '.refresh.json'))
@@ -189,7 +194,9 @@ class CheckoutRefreshTests(unittest.TestCase):
                          with open(os.environ['MATRIX_IN']) as stream:
                           for line in stream:
                            if json.loads(line).get('fixtureCloseOutput'): os.close(1);return
-                           emit(line)
+                           forward=json.loads(line).get('fixtureForward')
+                           if forward: child.stdin.write(json.dumps(forward)+'\\n');child.stdin.flush()
+                           else: emit(line)
                         for line in sys.stdin:
                          message=json.loads(line);method=message.get('method','')
                          if method in ('thread/start','thread/resume','turn/start') or (method=='initialize' and os.path.exists(os.environ['MATRIX_HOLD'])):
@@ -208,7 +215,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             finally: provider.close()
 
     @contextmanager
-    def controller(self, f):
+    def controller(self, f, ready='poll-completed success=True'):
         process = subprocess.Popen(f.command, env=f.environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         events = queue.Queue()
         lines = []
@@ -225,7 +232,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 if fragment in line: return line
         f.process, f.wait = process, wait
         try:
-            wait('poll-completed success=True')
+            wait(ready)
             yield
         finally:
             if process.poll() is None: process.send_signal(signal.SIGINT)
@@ -625,6 +632,72 @@ class CheckoutRefreshTests(unittest.TestCase):
                   network=f.provider.requests, prefixLength=len(prefix), prefixSha256=hashlib.sha256(prefix).hexdigest(),
                   finalPrefixSha256=hashlib.sha256(final[:len(prefix)]).hexdigest(), rolloutSha256=hashlib.sha256(final).hexdigest())), flush=True)
 
+    def test_signed_push_is_durable_idle_safe_and_scoped_to_managed_clone(self):
+        for clone in (True, False):
+            with self.subTest(clone=clone), self.fixture(protocol=clone, webhooks=True, clone=clone) as f:
+                with socket.socket() as listener:
+                    listener.bind(('127.0.0.1', 0)); port = listener.getsockname()[1]
+                f.command += ['--webhook-url', 'https://fixture.invalid', '--listen-port', str(port), '--reconcile-interval', '3600']
+                if clone: f.provider.discussions = [self.discussion(1)]
+                with self.controller(f, 'mode=webhook-fixed'):
+                    settings = json.loads(Path(str(f.state) + '.webhook/hook.json').read_text())
+                    def deliver(payload, signature=True, event='push', delivery=1):
+                        body = json.dumps(payload).encode()
+                        digest = hmac.new(settings['secret'].encode(), body, hashlib.sha256).hexdigest()
+                        with closing(http.client.HTTPConnection('127.0.0.1', port, timeout=10)) as connection:
+                            connection.request('POST', '/github/webhook', body, {'X-GitHub-Event': event,
+                                'X-GitHub-Delivery': '00000000-0000-4000-8000-00000000000' + str(delivery),
+                                'X-Hub-Signature-256': 'sha256=' + (digest if signature else '0' * 64)})
+                            response = connection.getresponse(); response.read(); return response.status
+                    payload = dict(repository=dict(full_name='owner/project', id=345), ref='refs/heads/main', after='0' * 40)
+                    if not clone:
+                        f.wait('reconciliation-completed discussion=all success=True')
+                        self.assertNotIn('push', f.provider.hooks[0]['events'])
+                        self.assertEqual(deliver(payload), 204); self.assertFalse(f.journal.exists())
+                        continue
+                    request = self.rpc(f, 'thread/start')
+                    self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+                    request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+                    f.wait('reconciliation-completed discussion=all success=True')
+                    initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD'); requests = len(f.provider.git_tokens)
+                    target = self.publish(f); before = json.loads(f.journal.read_text())['requested']
+                    print('SIGNED_PUSH_READY held=S1/T1 originB=' + target + ' headA=' + initial, flush=True)
+                    self.assertEqual(deliver(payload), 202, 'Valid default push must persist a refresh request before acceptance')
+                    self.assertIn('push', f.provider.hooks[0]['events'])
+                    requested = json.loads(f.journal.read_text())['requested']; self.assertGreater(requested, before)
+                    for body, valid, status in [(payload, False, 401), (dict(payload, repository=dict(full_name='other/project', id=345)), True, 403),
+                            (dict(payload, repository=dict(full_name='owner/project', id=999)), True, 403),
+                            (dict(payload, ref=123), True, 400), (dict(payload, ref='refs/heads/other'), True, 204)]:
+                        self.assertEqual(deliver(body, valid), status)
+                        self.assertEqual(json.loads(f.journal.read_text())['requested'], requested)
+                    for delivery, sha in enumerate((target, initial), 1):
+                        self.assertEqual(deliver(dict(payload, after=sha), delivery=delivery), 202)
+                        self.assertGreater(json.loads(f.journal.read_text())['requested'], requested)
+                        requested = json.loads(f.journal.read_text())['requested']
+                    self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
+                    self.assertEqual(len(f.provider.git_tokens), requests)
+                    (f.directory / 'hold-reload').touch(); self.terminal(f, 'S1', 'T1')
+                    initialize = self.rpc(f, 'initialize'); applying = json.loads(f.journal.read_text())['applying']
+                    self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+                    self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
+                    self.assertEqual(deliver(payload), 202)
+                    journal = json.loads(f.journal.read_text())
+                    self.assertEqual(journal['applying'], applying); self.assertGreater(journal['requested'], applying['generation'])
+                    requested = journal['requested']; (f.directory / 'hold-reload').unlink()
+                    f.commands.write(json.dumps(dict(fixtureForward=initialize)) + '\n'); f.commands.flush()
+                    f.provider.discussions[0]['body'] += ' after reload'
+                    notice = dict(payload, action='edited', discussion=dict(number=1))
+                    self.assertEqual(deliver(notice, event='discussion'), 202)
+                    request = self.rpc(f, 'thread/resume'); self.reply(f, request, dict(thread=dict(id='S1', cwd=str(f.checkout)), cwd=str(f.checkout)))
+                    request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T2')))
+                    f.wait('webhook-observed discussion=1 success=True')
+                    journal = json.loads(f.journal.read_text()); self.assertNotIn('applying', journal)
+                    self.assertEqual(journal['completed'], requested); self.assertFalse(journal['blocked'])
+                    durable = f.journal.read_bytes(); Path(str(f.journal) + '.tmp').mkdir()
+                    self.assertEqual(deliver(payload), 500); self.assertEqual(f.journal.read_bytes(), durable)
+                    f.provider.discussions[0]['body'] += ' after fault'
+                    self.assertEqual(deliver(notice, event='discussion'), 202); f.wait('observation-error')
+                    self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
 
 
 if __name__ == '__main__':

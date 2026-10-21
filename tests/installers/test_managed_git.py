@@ -442,6 +442,9 @@ class GitProvider:
             def do_POST(self):
                 self.dispatch()
 
+            def do_PATCH(self):
+                self.dispatch()
+
             def dispatch(self):
                 if self.headers.get('Transfer-Encoding', '').lower() == 'chunked':
                     chunks = []
@@ -473,6 +476,9 @@ class GitProvider:
                 if host == 'broker.fixture':
                     return self.reply(provider.lease() if provider.lease_status == 200 else {}, provider.lease_status)
                 if host == 'api.github.com':
+                    if getattr(provider, 'webhooks', False) and self.command in ('POST', 'PATCH') and self.path in ('/repos/' + repository + '/hooks', '/repos/' + repository + '/hooks/456'):
+                        hook = json.loads(body); provider.hooks.append(hook)
+                        return self.reply(dict(id=456, **hook))
                     if self.command == 'GET' and self.path == '/repos/' + repository:
                         return self.reply(dict(id=provider.repository_id, full_name=repository, clone_url='https://github.com/' + repository + '.git', default_branch='main'))
                     if self.command == 'GET' and self.path == '/repos/' + repository + '/git/ref/heads/main':
@@ -485,6 +491,8 @@ class GitProvider:
                         print('GIT_PROVIDER_DENIED ' + json.dumps({'method': self.command, 'path': self.path}), flush=True)
                         return self.reply({}, 403)
                     query = json.loads(body).get('query', '')
+                    if 'discussion(number:' in query:
+                        return self.reply({'data': {'repository': {'discussion': provider.discussions[0]}}})
                     if 'discussions(' in query:
                         return self.reply({'data': {'repository': {'discussions': {'nodes': getattr(provider, 'discussions', []), 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'node(id:' in query:
@@ -547,10 +555,17 @@ class GitProvider:
         return environment
 
     def enrollment(self):
-        return dict(protocolVersion=2, brokerOrigin='https://broker.fixture', githubHost='github.com',
+        enrollment = dict(protocolVersion=2, brokerOrigin='https://broker.fixture', githubHost='github.com',
                     deviceId='device-1', deviceSecret='a' * 43, appId=123, appSlug='test-app', installationId=234,
                     repositoryId=345, repository='owner/project', permissions={'discussions': 'write', 'contents': 'read'},
                     profile='polling-clone', policyVersion='repository-agent-clone-approval-v2')
+        if getattr(self, 'webhooks', False):
+            enrollment['permissions']['repository_hooks'] = 'write'
+            enrollment['profile'] = 'webhook-clone'
+            if not self.clone:
+                enrollment.update(protocolVersion=1); enrollment['permissions'].pop('contents')
+                enrollment.pop('profile'); enrollment.pop('policyVersion')
+        return enrollment
 
     def lease(self):
         lease = self.enrollment()
