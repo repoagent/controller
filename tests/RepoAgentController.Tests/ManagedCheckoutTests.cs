@@ -301,6 +301,7 @@ public sealed class ManagedCheckoutTests
                         Console.WriteLine($"forced-shutdown root={rootProcess.Id} exited={rootProcess.HasExited}");
                         Assert.Equal(0, await leader.WaitAsync(TimeSpan.FromSeconds(10)));
                         Assert.True(rootProcess.HasExited);
+                        args[args.IndexOf("--state") + 1] = fixture.State;
                         Assert.Equal(0, await Start());
                     }
                 }
