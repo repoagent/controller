@@ -26,7 +26,7 @@ from test_checkout_native import native_config
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = 'sha256:09132ca02e59183e84eeb164a2a33ca8afbaa7aa56787f7101820a8da0916e9d'
-SHIPPING = 'sha256:024f7c8dc28c3007b97b2abf30a73532fcabcfeb7c164279dc043a0a0fa36ecb'
+SHIPPING = 'sha256:dca5d3859d0c514826f9c0ae82be9b38b470fd59825ca5c0352d04863fb90cee'
 AZURITE = 'mcr.microsoft.com/azure-storage/azurite:3.37.0'
 
 
@@ -85,7 +85,7 @@ class AssembledGuidedInstallTests(unittest.TestCase):
                 '/opt/repoagent/runtime.py', '/opt/repoagent/image-inventory.json').stdout
             print('GUIDED_SHIPPING_FINGERPRINT ' + json.dumps({'image':base, 'hashes':hashes}), flush=True)
             inventory = json.loads(docker('run', '--rm', '--network', 'none', '--entrypoint', 'cat', base, '/opt/repoagent/image-inventory.json').stdout)
-            self.assertEqual(inventory['controller']['sha256'], 'c28a5e25322728c52bb8a5ed4b13eec2a50700f5fe2b5205516f8d7079f2b707')
+            self.assertEqual(inventory['controller']['sha256'], 'eaccdf1afb9b02f7704f59692342a804696e95506ca3b90b1a7144ac8bf07110')
         # Docker Desktop exposes the actual host through this DNS name; an
         # alternate normal DNS origin can be selected on Linux Docker hosts.
         broker_host = 'broker.fixture' if clone else os.environ.get('REPOAGENT_GUIDED_BROKER_HOST', 'host.docker.internal')
