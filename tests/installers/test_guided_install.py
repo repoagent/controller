@@ -76,7 +76,7 @@ class GuidedInstallTests(unittest.TestCase):
             INSTALLER_DOCKER_PYTHON=sys.executable,
             INSTALLER_DOCKER_FIXTURE=str(Path(__file__).with_name('docker_fixture.py').resolve()))
         self.assertEqual(Path(shutil.which('docker', path=self.environment['PATH'])).resolve(),
-                         self.journey.directory / ('docker.exe' if os.name == 'nt' else 'docker'))
+                         (self.journey.directory / ('docker.exe' if os.name == 'nt' else 'docker')).resolve())
 
     def install(self, *, apply):
         command = ['pwsh', '-NoLogo', '-NoProfile', '-File', str(ROOT / 'install.ps1'),
@@ -346,6 +346,18 @@ class GuidedInstallTests(unittest.TestCase):
         self.assert_failure_then_same_identity_resume('start')
 
 
+    def assert_preview_build_identity(self, result, manifest, derived=None):
+        # Expected identities come from fixture coordinates/bytes, independently
+        # of the installer's saved plan or formatting choices.
+        identities = {'manifest path': str(manifest.resolve()),
+                      'controller source': json.loads(manifest.read_text())['controller']['source']}
+        if derived:
+            identities['derived Dockerfile path'] = str(derived.resolve())
+            identities['derived Dockerfile SHA256'] = hashlib.sha256(derived.read_bytes()).hexdigest()
+        for field, value in identities.items():
+            with self.subTest(preview_identity=field):
+                self.assertIn(value, result.stdout + result.stderr)
+
     def test_own_app_complete_inputs_preview_default_manifest_without_writes(self):
         key = self.owned / 'own-app.pem'
         key.write_text('FAKE-PEM-CONTENT-NEVER-LOG')
@@ -356,6 +368,8 @@ class GuidedInstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('OwnApp', result.stdout)
         self.assert_read_only(before)
+        self.assertIn('Read-only preview.', result.stdout)
+        self.assert_preview_build_identity(result, ROOT / 'image/default.json')
 
     def test_own_app_custom_digest_and_derived_build_arguments_remain_usable_behind_apply(self):
         key = self.owned / 'own-app.pem'
@@ -376,6 +390,10 @@ class GuidedInstallTests(unittest.TestCase):
         self.assertIn(IMAGE, result.stdout)
         self.assertNotIn('nonsecret-feature', result.stdout)
         self.assert_read_only(before)
+        self.assertIn('Read-only preview.', result.stdout)
+        self.assertNotIn('nonsecret-feature', result.stdout + result.stderr)
+        with self.subTest(selection='explicit'):
+            self.assert_preview_build_identity(result, manifest, derived)
         result, state = self.run_guided(overrides=overrides)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(state['running'])
@@ -389,12 +407,27 @@ class GuidedInstallTests(unittest.TestCase):
         self.assertEqual(launch['authentication'], 'OwnApp')
         self.assertEqual(launch['runtimeImageId'], IMAGE)
         self.assertEqual(launch['derivedDockerfile'], str(derived))
+        self.assertEqual(launch['imageManifestSha256'], hashlib.sha256(manifest.read_bytes()).hexdigest())
+        self.assertEqual(launch['derivedDockerfileSha256'], hashlib.sha256(derived.read_bytes()).hexdigest())
         self.assertNotIn('nonsecret-feature', json.dumps(launch))
         self.assertNotIn('FAKE-PEM-CONTENT-NEVER-LOG', json.dumps(launch) + result.stdout + result.stderr)
         self.assertEqual(self.journey.events, [])
         result, state = self.run_guided(saved=True, overrides={'NoStart': None})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(len(state['builds']), 2, 'Saved immutable image should avoid rebuilding')
+
+        before = snapshot(self.owned)
+        event_count = len(state['events'])
+        result, state = self.run_guided(saved=True, apply=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Read-only preview.', result.stdout)
+        self.assertEqual(snapshot(self.owned), before)
+        self.assertEqual(mutating_docker_commands(state['events'][event_count:]), [])
+        self.assertEqual(self.journey.events, [])
+        self.assertFalse(self.journey.log.exists())
+        self.assertNotIn('nonsecret-feature', result.stdout + result.stderr)
+        with self.subTest(selection='saved'):
+            self.assert_preview_build_identity(result, manifest, derived)
 
     def test_only_enrollment_bytes_and_selected_auth_cross_runtime_boundary(self):
         history = self.owned / 'history-sentinel.jsonl'
