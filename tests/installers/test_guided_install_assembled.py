@@ -4,6 +4,7 @@ Only external provider/signing/Codex transports are controlled. The fixture owns
 its Azurite, private files, image and runtime resources; no live credentials.
 """
 import hashlib
+import inspect
 import datetime
 import json
 import os
@@ -20,9 +21,12 @@ import urllib.request
 
 import test_host_enrollment as host
 from test_clone_assembled import selected_native_sha256
+from test_managed_git import GitProvider
+from test_checkout_native import native_config
 
 ROOT = Path(__file__).resolve().parents[2]
 BASE = 'sha256:09132ca02e59183e84eeb164a2a33ca8afbaa7aa56787f7101820a8da0916e9d'
+SHIPPING = 'sha256:dca5d3859d0c514826f9c0ae82be9b38b470fd59825ca5c0352d04863fb90cee'
 AZURITE = 'mcr.microsoft.com/azure-storage/azurite:3.37.0'
 
 
@@ -40,9 +44,15 @@ class AssembledGuidedInstallTests(unittest.TestCase):
             raise RuntimeError(result.stdout + result.stderr)
 
     def test_public_install_reaches_native_readiness_then_restart_reuses_identity(self):
+        self.run_public_install()
+
+    def test_shipping_clone_install_reaches_trusted_native_checkout_and_reuses_it(self):
+        self.run_public_install(clone=True)
+
+    def run_public_install(self, clone=False):
         native = Path(os.environ['REPOAGENT_TEST_NATIVE_CONTROLLER'])
         expected_native = selected_native_sha256()
-        journey = host.EnrollmentJourney(self, variable='APPROVED_CONTROLLER')
+        journey = host.EnrollmentJourney(self, variable='APPROVED_CONTROLLER', profile='polling-clone' if clone else 'polling')
         directory = journey.directory
         instance = 'guided-actual-' + uuid.uuid4().hex[:12]
         image = 'repoagent:issue74-assembled-' + instance
@@ -66,11 +76,20 @@ class AssembledGuidedInstallTests(unittest.TestCase):
                 docker('image', 'rm', reference, check=False)
         self.addCleanup(cleanup)
         self.assertEqual(docker('info', '--format', '{{.OSType}}').stdout.strip(), 'linux')
-        self.assertEqual(docker('image', 'inspect', BASE, '--format', '{{.Id}}').stdout.strip(), BASE)
+        base = SHIPPING if clone else BASE
+        self.assertEqual(docker('image', 'inspect', base, '--format', '{{.Id}}').stdout.strip(), base)
+        if clone:
+            expected_native = docker('run', '--rm', '--network', 'none', '--entrypoint', '/usr/bin/sha256sum', base, '/opt/repoagent/controller/RepoAgentController').stdout.split()[0]
+            hashes = docker('run', '--rm', '--network', 'none', '--entrypoint', '/usr/bin/sha256sum', base,
+                '/opt/repoagent/controller/RepoAgentController', '/opt/repoagent/tools/bin/codex',
+                '/opt/repoagent/runtime.py', '/opt/repoagent/image-inventory.json').stdout
+            print('GUIDED_SHIPPING_FINGERPRINT ' + json.dumps({'image':base, 'hashes':hashes}), flush=True)
+            inventory = json.loads(docker('run', '--rm', '--network', 'none', '--entrypoint', 'cat', base, '/opt/repoagent/image-inventory.json').stdout)
+            self.assertEqual(inventory['controller']['sha256'], 'eaccdf1afb9b02f7704f59692342a804696e95506ca3b90b1a7144ac8bf07110')
         # Docker Desktop exposes the actual host through this DNS name; an
         # alternate normal DNS origin can be selected on Linux Docker hosts.
-        broker_host = os.environ.get('REPOAGENT_GUIDED_BROKER_HOST', 'host.docker.internal')
-        socket.gethostbyname(broker_host)
+        broker_host = 'broker.fixture' if clone else os.environ.get('REPOAGENT_GUIDED_BROKER_HOST', 'host.docker.internal')
+        if not clone: socket.gethostbyname(broker_host)
         # Generate a unique public test CA/SAN, trusted by both normal TLS clients.
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
             '-keyout', str(directory / 'key.pem'), '-out', str(directory / 'cert.pem'), '-days', '1',
@@ -89,6 +108,23 @@ class AssembledGuidedInstallTests(unittest.TestCase):
         journey.environment.update(HOST_ENROLLMENT_FIXTURE_ORIGIN=journey.origin,
             HOST_ENROLLMENT_FIXTURE_BIND='0.0.0.0', NO_PROXY=broker_host + ',127.0.0.1,localhost',
             no_proxy=broker_host + ',127.0.0.1,localhost')
+        provider = None
+        if clone:
+            provider_dir = directory / 'git-provider'; provider_dir.mkdir()
+            provider = GitProvider(provider_dir, repository='example/project', app_slug='repo-agent-connector',
+                token='assembled-runtime-token', listen_host='0.0.0.0', broker_target=('127.0.0.1', port), repository_id=123)
+            self.addCleanup(provider.close)
+            bundle = directory / 'public-ca.pem'; bundle.write_bytes((directory / 'cert.pem').read_bytes() + provider.cert.read_bytes())
+            proxy = provider.environment()['HTTPS_PROXY']
+            journey.environment.update(HTTPS_PROXY=proxy, https_proxy=proxy, HTTP_PROXY=proxy, http_proxy=proxy,
+                NO_PROXY='127.0.0.1,localhost', no_proxy='127.0.0.1,localhost', ALL_PROXY='', all_proxy='', SSL_CERT_FILE=str(bundle))
+            seed = provider_dir / 'seed'
+            (seed / '.codex').mkdir(); (seed / '.codex/config.toml').write_text('model_reasoning_effort = "low"\n')
+            (seed / 'AGENTS.md').write_text('Use the joined issue64 repository fixture context.\n')
+            skill = seed / '.agents/skills/issue64-joined'; skill.mkdir(parents=True)
+            (skill / 'SKILL.md').write_text('---\nname: issue64-joined\ndescription: Inspect joined issue64 checkout evidence.\n---\nReport the joined checkout context.\n')
+            for args in [['add', '.'], ['commit', '-m', 'joined context'], ['push', str(provider_dir / 'repositories/example/project.git'), 'main']]:
+                subprocess.run(['git', '-C', str(seed), *args], check=True, capture_output=True)
         context = directory / 'image-context'
         context.mkdir()
         for path in (ROOT / 'container').glob('*.py'):
@@ -120,7 +156,7 @@ for line in sys.stdin:
         print(json.dumps({'id':request['id'],'result':{}}),flush=True)
     elif request.get('method') != 'initialized': sys.exit(95)
 ''')
-        docker('tag', BASE, base_alias)
+        docker('tag', base, base_alias)
         resources.append(base_alias)
         (context / 'Dockerfile').write_text(f'''FROM {base_alias}
 USER root
@@ -131,6 +167,19 @@ COPY gh codex /opt/repoagent/tools/bin/
 COPY test-ca.crt /usr/local/share/ca-certificates/issue74-test-ca.crt
 RUN chmod 0755 /opt/repoagent/controller/RepoAgentController /opt/repoagent/tools/bin/gh /opt/repoagent/tools/bin/codex && update-ca-certificates
 ENV NO_PROXY={broker_host} no_proxy={broker_host}
+USER 1000
+''')
+        if clone:
+            shutil.copyfile(provider.cert, context / 'provider-ca.crt')
+            proxy_host = os.environ.get('REPOAGENT_GUIDED_PROXY_HOST') or docker('run', '--rm', '--add-host', 'host.docker.internal:host-gateway',
+                '--entrypoint', '/usr/bin/python3', base, '-c', "import socket; print(socket.gethostbyname('host.docker.internal'))").stdout.strip()
+            proxy = 'http://' + proxy_host + ':' + str(provider.server.server_address[1])
+            (context / 'Dockerfile').write_text(f'''FROM {base_alias}
+USER root
+COPY *-ca.crt /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+ENV HTTPS_PROXY={proxy} HTTP_PROXY={proxy} https_proxy={proxy} http_proxy={proxy}
+ENV NO_PROXY= no_proxy= ALL_PROXY= all_proxy=
 USER 1000
 ''')
         docker('build', '--network', 'none', '-t', image, str(context))
@@ -187,7 +236,7 @@ USER 1000
             current = None
         self.addCleanup(stop_broker, True)
         auth = directory / 'fake-auth.json'
-        auth.write_text('{"fixtureAuth":true}')
+        auth.write_text(json.dumps({'auth_mode':'apikey', 'OPENAI_API_KEY':'sk-issue64-local-fixture-not-valid-provider-credential'}) if clone else '{"fixtureAuth":true}')
         auth.chmod(0o600)
         environment = dict(journey.environment, REPOAGENT_IMAGE=image_id, REPOAGENT_INSTANCE=instance,
             CODEX_HOME=str(directory / 'unused-auth-home'))
@@ -198,11 +247,12 @@ USER 1000
             if not saved:
                 arguments += ['-Repository', 'example/project', '-BrokerOrigin', journey.origin,
                     '-CodexAuthPath', str(auth), '-SkipBuild', '-ToolUpdates', 'pinned']
+                if clone: arguments += ['-Clone']
             result = subprocess.run(arguments, cwd=directory, env=environment,
                 input='', capture_output=True, text=True, timeout=150)
             # Only a bounded sanitized transcript is retained outside owned temp.
             output = result.stdout + result.stderr
-            secrets = [journey.environment['GH_TOKEN']]
+            secrets = [journey.environment['GH_TOKEN'], 'sk-issue64-local-fixture-not-valid-provider-credential']
             if (journey.state / 'enrollment.json').exists():
                 secrets.append(journey.read('enrollment.json')['deviceSecret'])
             if (journey.state / 'recovery.json').exists():
@@ -269,12 +319,15 @@ USER 1000
 
         start_broker()
         # A CA/SAN/reachability failure is fixture setup, never behavioral red.
-        with socket.create_connection((broker_host, port), timeout=5) as connection:
+        with socket.create_connection(('127.0.0.1' if clone else broker_host, port), timeout=5) as connection:
             with ssl.create_default_context(cafile=str(directory / 'cert.pem')).wrap_socket(
                     connection, server_hostname=broker_host):
                 pass
-        docker('run', '--rm', '--entrypoint', '/usr/bin/python3', image_id, '-c',
-            "import socket,ssl; s=socket.create_connection(('" + broker_host + "'," + str(port) + ",),timeout=5); ssl.create_default_context().wrap_socket(s,server_hostname='" + broker_host + "').close()")
+        if clone:
+            probe_tls = "import urllib.request,urllib.error\ntry: urllib.request.urlopen('" + journey.origin + "/fixture-probe',timeout=5)\nexcept urllib.error.HTTPError as error: error.close()"
+        else:
+            probe_tls = "import socket,ssl; s=socket.create_connection(('" + broker_host + "'," + str(port) + ",),timeout=5); ssl.create_default_context().wrap_socket(s,server_hostname='" + broker_host + "').close()"
+        docker('run', '--rm', '--entrypoint', '/usr/bin/python3', image_id, '-c', probe_tls)
         event_offset = len(events())
         result = install()
         receipt = journey.read('enrollment.json')
@@ -295,7 +348,47 @@ USER 1000
                 wait_observed_window('initial-runtime-authorization', event_offset)
                 result = install(saved=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr + service_output.read_text() + json.dumps(events()))
+        def checkout_proof():
+            # Reuse genuine native read RPCs with only this container's isolated fixture environment.
+            helper = inspect.getsource(native_config)
+            script = "import json,os,select,shutil,subprocess,tempfile,time,hashlib,tomllib; from pathlib import Path\n" + helper + """
+root=Path('/workspace/repository'); home=Path('/data/credentials/codex')
+o=native_config(root,home,discovery=True,environment=dict(os.environ))
+layers=[x for x in o['layers'] if x['name']['type']=='project' and x['name']['dotCodexFolder']==str(root/'.codex')]
+assert len(layers)==1 and not layers[0].get('disabledReason') and o['config']['model_reasoning_effort']=='low'
+assert str(root/'AGENTS.md') in o['fixtureThread']['instructionSources']
+assert str(root/'.agents/skills/issue64-joined/SKILL.md') in json.dumps(o['fixtureSkills'])
+assert tomllib.loads((home/'config.toml').read_text())['projects']=={str(root):{'trust_level':'trusted'}}
+assert o['fixtureThread']['cwd']==o['fixtureThread']['thread']['cwd']==str(root)
+assert subprocess.check_output(['git','-C',str(root),'status','--porcelain']).strip()==b''
+servers=[p for p in Path('/proc').iterdir() if p.name.isdigit() and (p/'cmdline').exists()]
+cwds=[]
+for p in servers:
+ try:
+  args=(p/'cmdline').read_bytes().split(bytes([0]))
+  if args and Path(os.fsdecode(args[0])).name=='codex' and b'app-server' in args:cwds.append(os.readlink(p/'cwd'))
+ except (OSError,ValueError):pass
+assert cwds and set(cwds)=={str(root)},cwds
+record=Path('/workspace/.repoagent-checkout.json').read_text()
+commit=subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
+assert json.loads(record)['commit']==commit
+proof={'record':record,'commit':commit,'owner':(root/'.git/repoagent-owner').read_text(),
+ 'sentinel':hashlib.sha256((root/'README').read_bytes()).hexdigest(),'nativeCwds':cwds,
+ 'controller':hashlib.sha256(Path('/opt/repoagent/controller/RepoAgentController').read_bytes()).hexdigest(),
+ 'codex':hashlib.sha256(Path('/opt/repoagent/tools/bin/codex').read_bytes()).hexdigest(),
+ 'effective':o['config']['model_reasoning_effort'],'instructions':o['fixtureThread']['instructionSources']}
+print(json.dumps(proof))
+"""
+            return json.loads(docker('exec', 'repoagent-' + instance, '/usr/bin/python3', '-c', script).stdout)
+
         assert_same_identity(receipt, marker)
+        context_before = checkout_proof() if clone else None
+        if clone:
+            self.assertEqual(receipt['protocolVersion'], 2)
+            self.assertEqual(receipt['profile'], 'polling-clone')
+            self.assertEqual(context_before['controller'], expected_native)
+            self.assertEqual(context_before['codex'], '399ff69c431c066e40de318fba45c2b07f45a76b19939d247ee4828fc70c4215')
+            print('GUIDED_JOINED_CONTEXT ' + json.dumps(context_before), flush=True)
         first = json.loads(docker('container', 'inspect', 'repoagent-' + instance).stdout)[0]
         self.assertEqual(first['Config']['User'], '1000')
         self.assertEqual(first['Config']['Entrypoint'], ['/usr/bin/python3', '-E', '/opt/repoagent/runtime.py'])
@@ -354,6 +447,10 @@ print(json.dumps(proof))
         self.assertIn(' ready ', docker('logs', 'repoagent-' + instance).stdout)
         self.assertEqual(second['Image'], image_id)
         self.assertEqual(second['Mounts'], first['Mounts'])
+        if clone:
+            self.assertEqual(checkout_proof(), context_before)
+            self.assertTrue(provider.git_tokens)
+            self.assertEqual(set(provider.git_tokens), {'assembled-runtime-token'})
         self.assertEqual(private_fingerprint(journey.read('enrollment.json')), private_fingerprint(receipt))
         self.assertEqual(journey.read('approval.json'), approval)
         self.assertEqual(sum('POST' in event['argv'] for event in journey.github()), 1)

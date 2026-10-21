@@ -27,6 +27,8 @@ def load_runtime():
         spec.loader.exec_module(runtime)
     finally:
         sys.path.pop(0)
+    if os.name == 'nt':  # Host fixture only; Linux ownership is covered in the shipping container.
+        runtime.prepare_codex_home = lambda: runtime.CODEX.mkdir(parents=True, exist_ok=True)
     return runtime
 
 

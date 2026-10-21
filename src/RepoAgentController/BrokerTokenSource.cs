@@ -18,6 +18,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
     readonly bool clone;
     readonly int version;
     string[] Fields => clone ? [.. BindingFields, "profile", "policyVersion"] : BindingFields;
+    public long? RepositoryId => clone ? Id(enrollment.RootElement, "repositoryId") : null;
     public string? GitRepository => clone ? Text(enrollment.RootElement, "repository") : null;
     public string? GitProfile => clone ? Text(enrollment.RootElement, "profile") : null;
     readonly string deviceId;

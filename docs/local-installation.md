@@ -6,15 +6,15 @@ Preview first, then run the same selection with `-Apply`:
 
 ```powershell
 .\install.ps1 -Repository owner/repo -BrokerOrigin https://broker.example.org `
-    -Instance repo-one -CodexAuthPath "$HOME/.codex/auth.json" -NonInteractive
+    -Instance repo-one -Clone -CodexAuthPath "$HOME/.codex/auth.json" -NonInteractive
 
 .\install.ps1 -Repository owner/repo -BrokerOrigin https://broker.example.org `
-    -Instance repo-one -CodexAuthPath "$HOME/.codex/auth.json" -NonInteractive -Apply
+    -Instance repo-one -Clone -CodexAuthPath "$HOME/.codex/auth.json" -NonInteractive -Apply
 ```
 
 Without `-Apply`, the command only reads inputs and inspects available Docker metadata. It creates no host files, volumes, containers, approval markers or enrollments, and pulls/builds no images. It shows the repository, trusted broker, App/profile/Agent-variable coordinate, image and tool choices, instance mounts and retained data. A fresh installation/device is explicitly pending until enrollment. Download/build time and size depend on caches and selected tools/base; the preview cannot estimate them reliably. Source and ABI build validation still run through the existing image composer during Apply.
 
-Complete inputs never prompt or open a browser. Interactive runs prompt for missing required values; `-NonInteractive` fails with the missing option. `-NoStart` still configures and checks the runtime, then leaves it stopped. Guided shared-App setup currently supports only `-Mode polling -EnrollmentProfile polling`; other profile/mode combinations fail before writes.
+Complete inputs never prompt or open a browser. Interactive runs prompt for missing required values; `-NonInteractive` fails with the missing option. `-NoStart` still configures and checks the runtime, then leaves it stopped. With `-Clone`, guided shared-App setup derives `polling-clone` for polling or `webhook-clone` for `fixed-url`/`quick-tunnel`; an explicit profile must match. Fixed URL requires `-PublicUrl https://your-listener.example`. Omit `-Clone` for ordinary polling without repository context. During a fresh interactive run that already prompts for missing required inputs, one optional context question defaults to No. Complete inputs, explicit Clone choices, noninteractive runs and saved instances never receive that question.
 
 ## Saved choices and recovery
 
@@ -46,7 +46,9 @@ Existing PEM users can select `-Authentication OwnApp`; explicit `-AppId`/`-KeyP
     -Instance own-app -NonInteractive -Apply
 ```
 
-Own-App `-Clone` explicitly adds Contents read on a fresh instance and persists that choice for retries. Older launch records remain non-clone; changing this choice requires a fresh instance. Guided Broker setup remains ordinary polling; explicit clone enrollment is available through `-Action Enroll -EnrollmentProfile polling-clone` or `webhook-clone` and the separate runtime commands.
+`-Clone` adds Contents read alongside Discussions write and, for webhook modes, repository hooks write. Broker setup uses fresh clone approval and enrollment; ordinary/v1 approval and older launch records cannot be upgraded by changing a flag. Choose a new instance and state directory for new approval. The selection persists across retries in both Broker and Own-App modes.
+
+The controller authenticates repository identity and its actual default branch, then clones into the persistent `/workspace/repository` root before starting native Codex. It trusts exactly that root in its private Codex configuration, allowing repository instructions, project configuration and local skills to load. Other settings, trust entries, sign-in and history are preserved. Review the repository context before approving this choice. Restart reuses the recorded clean commit without fetching updates; dirty, unrelated, replaced or incomplete checkouts are refused without repair. Ignored build/cache files may remain unchanged. No-context installations retain their existing workspace behavior.
 
 Choose a fresh instance when changing credential mode; existing storage is not silently adopted or relabeled. Existing Own-App Docker settings without a host launch record require explicit inputs for the first guided run, because preview does not launch a container to retrieve settings. `-Action Enroll` and `-Action Revoke` retain their independent host command behavior.
 

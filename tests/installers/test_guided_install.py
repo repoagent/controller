@@ -42,8 +42,8 @@ class GuidedInstallTests(unittest.TestCase):
         cls.docker_build = cls.fixture_build
         cls.fixture_build = gh_build
 
-    def setUp(self):
-        self.journey = host.EnrollmentJourney(self, variable='APPROVED_CONTROLLER')
+    def setUp(self, profile='polling'):
+        self.journey = host.EnrollmentJourney(self, variable='APPROVED_CONTROLLER', profile=profile)
         self.directory = self.journey.directory
         if os.name == 'nt':
             # #73's checked reader also validates all native ancestors. Shared
@@ -100,6 +100,91 @@ class GuidedInstallTests(unittest.TestCase):
             'brokerRequests': [event['path'] for event in self.journey.events],
             'enrollmentExists': (self.journey.state / 'enrollment.json').exists()}), flush=True)
         return result, state
+
+    def test_fresh_clone_preview_selects_context_profile_and_stays_read_only(self):
+        for mode in ('polling', 'fixed-url', 'quick-tunnel'):
+            with self.subTest(mode=mode):
+                before = snapshot(self.owned)
+                options = {'Clone': None, 'Mode': mode}
+                if mode == 'fixed-url': options['PublicUrl'] = 'https://listener.example'
+                result, _ = self.run_guided(apply=False, interactive=mode == 'polling', overrides=options)
+                self.assertNotIn('Clone this repository', result.prompt_output)
+                self.assert_read_only(before)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                output = (result.stdout + result.stderr).lower()
+                for expected in ('polling-clone' if mode == 'polling' else 'webhook-clone',
+                                 'contents read', 'discussions write', '/workspace/repository', 'trust', 'instructions', 'configuration'):
+                    self.assertIn(expected, output)
+                if mode != 'polling': self.assertRegex(output, r'(hooks|webhooks).*write')
+        before = snapshot(self.owned)
+        result, _ = self.run_guided(apply=False, overrides={'Clone': None, 'EnrollmentProfile': 'webhook-clone'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assert_read_only(before)
+
+    def test_fresh_clone_apply_binds_v2_profile_and_saved_resume_retains_authority(self):
+        for mode in ('polling', 'fixed-url', 'quick-tunnel'):
+            with self.subTest(mode=mode):
+                profile = 'polling-clone' if mode == 'polling' else 'webhook-clone'
+                self.setUp(profile=profile)
+                options = {'Clone': None, 'Mode': mode}
+                if mode == 'fixed-url': options['PublicUrl'] = 'https://listener.example'
+                result, state = self.run_guided(overrides=options)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                receipt, approval = self.journey.read('enrollment.json'), self.journey.read('approval.json')
+                self.assertEqual(receipt['protocolVersion'], 2)
+                self.assertEqual(receipt['profile'], profile)
+                self.assertEqual(receipt['policyVersion'], 'repository-agent-clone-approval-v2')
+                self.assertEqual(receipt['permissions']['contents'], 'read')
+                self.assertEqual(receipt['permissions']['discussions'], 'write')
+                self.assertEqual(receipt['permissions'].get('repository_hooks'), None if mode == 'polling' else 'write')
+                self.assertEqual(approval['setupVersion'], 2)
+                data = (self.journey.state / 'enrollment.json').read_bytes()
+                self.assertEqual(state['imports'], [{'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}])
+                self.assertTrue(any('--clone' in event and 'configure' in event for event in state['events']))
+                self.assertTrue(state['settings']['clone'])
+                self.assertEqual(state['settings']['mode'], mode)
+                self.assertTrue(state['running'])
+                self.assertEqual(self.journey.read('launch.json')['enrollmentProfile'], profile)
+                self.journey.private()
+                stopped = subprocess.run(['pwsh', '-NoProfile', '-File', str(ROOT / 'repoagent.ps1'), 'stop'],
+                    cwd=self.directory, env=dict(self.environment, REPOAGENT_INSTANCE='guided-red'), capture_output=True, text=True, timeout=45)
+                self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+                result, state = self.run_guided(saved=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(state['settings']['clone'])
+                self.assertEqual(self.journey.read('enrollment.json'), receipt)
+                self.assertEqual(self.journey.read('approval.json'), approval)
+                self.assertEqual(sum(event['path'] == '/v2/enrollments' for event in self.journey.events), 1)
+                self.assertEqual(sum('POST' in event['argv'] for event in self.journey.github()), 1)
+
+    def test_saved_ordinary_v1_enrollment_cannot_upgrade_by_clone_flag(self):
+        result, state = self.run_guided()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.journey.read('enrollment.json')['protocolVersion'], 1)
+        for legacy in (False, True):
+            if legacy:
+                launch = self.journey.read('launch.json'); del launch['clone']
+                (self.journey.state / 'launch.json').write_text(json.dumps(launch))
+            before, count, requests = snapshot(self.owned), len(state['events']), len(self.journey.events)
+            result, state = self.run_guided(saved=True, overrides={'Clone': None})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('fresh instance', result.stdout + result.stderr)
+            self.assertEqual(snapshot(self.owned), before)
+            self.assertEqual(mutating_docker_commands(state['events'][count:]), [])
+            self.assertEqual(len(self.journey.events), requests)
+
+    def test_context_question_defaults_no_only_when_fresh_input_prompting_is_needed(self):
+        before = snapshot(self.owned)
+        result, _ = self.run_guided(apply=False, interactive=True,
+            overrides={'Repository': False}, answers='example/project\n\n')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.prompt_output.count('Clone this repository'), 1, result.prompt_output)
+        self.assertNotIn('polling-clone', result.stdout)
+        self.assert_read_only(before)
+        result, _ = self.run_guided(apply=False, interactive=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('Clone this repository', result.prompt_output)
+        self.assert_read_only(before)
 
     def test_apply_complete_broker_inputs_enroll_and_start_selected_runtime(self):
         result, state = self.install(apply=True)

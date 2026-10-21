@@ -351,10 +351,11 @@ class ManagedGitTests(unittest.TestCase):
 
 
 class GitProvider:
-    def __init__(self, directory, fork=False, repository="owner/project", app_slug="test-app", token="lease-A", listen_host="127.0.0.1", broker_target=None):
+    def __init__(self, directory, fork=False, repository="owner/project", app_slug="test-app", token="lease-A", listen_host="127.0.0.1", broker_target=None, repository_id=345):
         self.directory = directory
         self.repository, self.app_slug = repository, app_slug
         self.broker_target = broker_target
+        self.repository_id = repository_id
         self.git_tokens = []
         self.token = token
         self.lease_offset_minutes = 0
@@ -450,7 +451,14 @@ class GitProvider:
                 if host == 'broker.fixture':
                     return self.reply(provider.lease() if provider.lease_status == 200 else {}, provider.lease_status)
                 if host == 'api.github.com':
+                    if self.command == 'GET' and self.path == '/repos/' + repository:
+                        return self.reply(dict(id=provider.repository_id, full_name=repository, clone_url='https://github.com/' + repository + '.git', default_branch='main'))
+                    if self.command != 'POST' or self.path != '/graphql' or not body:
+                        print('GIT_PROVIDER_DENIED ' + json.dumps({'method': self.command, 'path': self.path}), flush=True)
+                        return self.reply({}, 403)
                     query = json.loads(body).get('query', '')
+                    if 'discussions(' in query:
+                        return self.reply({'data': {'repository': {'discussions': {'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'user(login:' in query:
                         return self.reply({'data': {'user': {'login': 'repoagent'}}})
                     if 'repository' not in query:

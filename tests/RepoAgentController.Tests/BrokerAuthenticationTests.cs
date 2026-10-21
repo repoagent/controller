@@ -310,7 +310,7 @@ public sealed class BrokerAuthenticationTests
         Assert.Empty(fixture.Transport.Requests);
     }
 
-    sealed class Fixture : IDisposable
+    internal sealed class Fixture : IDisposable
     {
         public string Directory { get; } = Path.Combine(Path.GetTempPath(), "broker-tests-" + Guid.NewGuid().ToString("N"));
         public string State => Path.Combine(Directory, "state.json");
@@ -367,6 +367,8 @@ public sealed class BrokerAuthenticationTests
             File.WriteAllText(TokenFile + ".tmp", "prior-temporary-token");
         }
 
+        public HttpClient Http => http;
+
         public GitHubAppCredentials Credentials() => GitHubAppCredentials.FromBroker(http, "https://credentials.example.org/", EnrollmentFile, "123", "OWNER/Repository", CredentialDirectory, Clock, webhooks, clone);
 
         public Task<int> Start(string? option = null, string? value = null)
@@ -398,7 +400,7 @@ public sealed class BrokerAuthenticationTests
     }
 
     // Transport fixtures prove local consumer behavior, not provider compatibility or actual GitHub scope.
-    sealed class Transport(FakeTimeProvider clock, JsonObject enrollment) : HttpMessageHandler
+    internal sealed class Transport(FakeTimeProvider clock, JsonObject enrollment) : HttpMessageHandler
     {
         public List<Uri> Requests { get; } = [];
         public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
