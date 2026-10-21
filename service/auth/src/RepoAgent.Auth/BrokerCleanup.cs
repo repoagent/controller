@@ -37,7 +37,11 @@ internal sealed class BrokerCleanup(TableClient table, BrokerOptions options, Cl
                 {
                     await TurnAsync(lane, family, ct);
                 }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    cursors[lane] = null; // The checkpoint may not have committed; do not report candidate ages.
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     failures++;
@@ -79,7 +83,16 @@ internal sealed class BrokerCleanup(TableClient table, BrokerOptions options, Cl
             processedAllocations = processed, deletedRowsObserved = deleted, payloadFieldsRemovedObserved = removed,
             unsettledAllocationsObserved = unsettled, failures, conflicts,
             incompleteCoverage = completed.Cast<bool>().Any(value => !value), stopReason,
-            pages, tableRequests = budget.Requests, egts = budget.Egts, elapsedMilliseconds = elapsed.ElapsedMilliseconds,
+            logicalQueryPages = pages, sdkTableDispatches = budget.SdkDispatches, sdkBatchDispatches = budget.SdkBatchDispatches,
+            // Reference-scope calculation, not measured traffic or runtime-version detection.
+            reviewedHttp11Envelope = new
+            {
+                scope = "Azure.Core1.62.0/.NET10.0.13/direct HTTP1.x/no handler authentication",
+                maxSendsPerSdkDispatch = 4,
+                tableRequestUpperBound = 4 * budget.SdkDispatches,
+                batchRequestUpperBound = 4 * budget.SdkBatchDispatches
+            },
+            elapsedMilliseconds = elapsed.ElapsedMilliseconds,
             oldestObservedOverduePayloadAt = oldest, oldestObservedOverduePayloadAgeSeconds = Age(oldest, now),
             unknownDeadlineCount = unknownDeadlines, cursorAndCycleAges = ages
         };

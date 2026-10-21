@@ -14,7 +14,7 @@ internal static class BrokerCleanupCommand
             return 2;
         }
 
-        var budget = new CleanupRequestBudget();
+        using var budget = new CleanupRequestBudget();
         BrokerOptions options;
         TableClient table;
         try

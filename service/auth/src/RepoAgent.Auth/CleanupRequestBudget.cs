@@ -3,15 +3,20 @@ using Azure.Core.Pipeline;
 
 namespace RepoAgent.Auth;
 
-// Count at the transport boundary, including authentication reissues and failed sends.
-internal sealed class CleanupRequestBudget : HttpPipelineTransport
+// Count SDK dispatches, including bearer-auth reissues; HTTP may replay below this boundary.
+internal sealed class CleanupRequestBudget : HttpPipelineTransport, IDisposable
 {
-    private readonly HttpClientTransport inner = new();
+    private readonly HttpClientTransport inner = new(new SocketsHttpHandler
+    {
+        UseProxy = false, AllowAutoRedirect = false, UseCookies = false,
+        Credentials = null, DefaultProxyCredentials = null, PreAuthenticate = false
+    });
     private readonly object sync = new();
-    internal int Requests { get; private set; }
-    internal int Egts { get; private set; }
+    internal int SdkDispatches { get; private set; }
+    internal int SdkBatchDispatches { get; private set; }
     internal bool Exceeded { get; private set; }
-    internal bool CanStart(int requests, int egts) => Requests + requests <= 128 && Egts + egts <= 32;
+    internal bool CanStart(int dispatches, int batches) => SdkDispatches + dispatches <= 128 && SdkBatchDispatches + batches <= 32;
+    public void Dispose() => inner.Dispose();
     public override Request CreateRequest() => inner.CreateRequest();
     public override void Process(HttpMessage message) => ProcessAsync(message).AsTask().GetAwaiter().GetResult();
     public override async ValueTask ProcessAsync(HttpMessage message)
@@ -24,8 +29,8 @@ internal sealed class CleanupRequestBudget : HttpPipelineTransport
                 Exceeded = true;
                 throw new InvalidOperationException("Cleanup request budget invariant exceeded.");
             }
-            Requests++;
-            if (batch) Egts++;
+            SdkDispatches++;
+            if (batch) SdkBatchDispatches++;
         }
         await inner.ProcessAsync(message);
     }
