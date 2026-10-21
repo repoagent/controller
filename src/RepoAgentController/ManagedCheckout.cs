@@ -173,6 +173,7 @@ internal sealed class ManagedCheckout : IDisposable
         catch
         {
             if (!process.HasExited) process.Kill(true);
+            await process.WaitForExitAsync();
             try { await Task.WhenAll(output, error); } catch { }
             throw;
         }
