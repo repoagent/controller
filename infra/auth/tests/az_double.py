@@ -7,7 +7,10 @@ journal captures the actual command and parameter file before it disappears.
 import json
 import os
 from pathlib import Path
+import shlex
+import subprocess
 import sys
+import tempfile
 import termios
 import time
 import tty
@@ -80,6 +83,29 @@ if 'error' in response:
     journal()
     print(response['error'], file=sys.stderr)
     sys.exit(response.get('code', 1))
+if command == 'containerapp exec' and 'health' in response:
+    with tempfile.TemporaryDirectory(prefix='auth-health-tools-') as directory:
+        root = Path(directory)
+        requests = root / 'requests.jsonl'
+        # Independent tool outcomes only; the actual outbound shell owns probes,
+        # failure propagation and its marker. No real network executable is on PATH.
+        tool = '''import json, os, pathlib, sys
+with open(os.environ['HEALTH_REQUESTS'], 'a') as stream:
+    stream.write(json.dumps(dict(tool=pathlib.Path(sys.argv[0]).name, url=sys.argv[-1])) + '\\n')
+sys.exit(json.loads(os.environ['HEALTH_OUTCOMES']).get(sys.argv[-1], 0))
+'''
+        for name in response['health'].get('tools', ['curl', 'wget']):
+            executable = root / name
+            executable.write_text('#!' + sys.executable + '\n' + tool)
+            executable.chmod(0o700)
+        result = subprocess.run(shlex.split(args[args.index('--command') + 1]), capture_output=True, text=True,
+                                env={**os.environ, 'PATH': directory, 'HEALTH_REQUESTS': str(requests),
+                                     'HEALTH_OUTCOMES': json.dumps(response['health'].get('outcomes', {}))})
+        record['healthRequests'] = [json.loads(line) for line in requests.read_text().splitlines()] if requests.exists() else []
+    journal()
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    sys.exit(result.returncode)
 body = response.get('body')
 if (command == 'containerapp revision list' and 'raw' not in response and isinstance(body, list)
         and all(isinstance(item, dict) and isinstance(item.get('name'), str) and item['name']

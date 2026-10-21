@@ -78,7 +78,7 @@ class ActivationProcessTests(unittest.TestCase):
             'containerapp revision activate': {'raw': ''},
             'containerapp revision list': {'body': [{'name': REVISION, 'properties': {'active': False}}]},
             'containerapp replica list': {'body': []},
-            'containerapp exec': {'raw': 'AUTH_LOCAL_HEALTH_OK'},
+            'containerapp exec': {'health': {}},
             'containerapp update': {'body': {}},
         }
 
@@ -381,6 +381,33 @@ class ActivationProcessTests(unittest.TestCase):
             with self.assertRaises(ProcessLookupError, msg='No owned CLI/provider process may survive completion'):
                 os.kill(pid, 0)
 
+    def test_resume_executes_live_and_ready_and_refuses_failed_probes_or_missing_tools(self):
+        self.env['AUTH_STAGE_REVISION'] = REVISION
+        self.scenario['responses']['containerapp revision list']['body'][0]['properties']['active'] = True
+        self.scenario['responses']['containerapp replica list']['body'] = [{'name': 'new-replica'}]
+        live, ready = ('http://127.0.0.1:8080/health/' + path for path in ('live', 'ready'))
+        cases = [('curl', ['curl'], {}), ('wget', ['wget'], {}),
+                 ('live-fails', ['curl'], {live: 22}), ('ready-fails', ['curl'], {ready: 22}),
+                 ('no-tool', [], {})]
+        self.health_observations = []
+        for label, tools, outcomes in cases:
+            with self.subTest(case=label):
+                self.scenario['responses']['containerapp exec'] = {'health': {'tools': tools, 'outcomes': outcomes}}
+                result = self.invoke('stage-resume')
+                healthy = bool(tools) and not outcomes
+                execution = next(call for call in self.calls if call['args'][:2] == ['containerapp', 'exec'])
+                requests = execution['healthRequests']
+                self.health_observations.append(dict(case=label, returncode=result.returncode, requests=requests))
+                self.assertEqual(result.returncode == 0, healthy, result.stderr)
+                if healthy:
+                    self.assertTrue(json.loads(result.stdout)['resumed'])
+                    self.assertCountEqual(requests, [dict(tool=tools[0], url=url) for url in (live, ready)])
+                elif outcomes:
+                    self.assertTrue(set(outcomes) <= {request['url'] for request in requests})
+                else:
+                    self.assertEqual(requests, [])
+                self.assert_exec_processes_released()
+
     def test_resume_captures_provider_output_and_releases_terminal_on_success_and_refusal(self):
         self.env['AUTH_STAGE_REVISION'] = REVISION
         self.scenario['responses']['containerapp revision list']['body'][0]['properties']['active'] = True
@@ -389,6 +416,7 @@ class ActivationProcessTests(unittest.TestCase):
             with self.subTest(healthy=healthy):
                 # More than a pipe buffer on both streams exposes output forwarding
                 # and wait-before-drain deadlocks, without any actual credential.
+                # These are transport controls, separate from actual probe execution.
                 self.scenario['responses']['containerapp exec'] = {
                     'raw': CANARY + 'x' * 131072 + ('\nAUTH_LOCAL_HEALTH_OK' if healthy else ''),
                     'stderr': CANARY + 'y' * 131072}
