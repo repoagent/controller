@@ -14,6 +14,7 @@ internal static class BrokerCleanupCommand
             return 2;
         }
 
+        var budget = new CleanupRequestBudget();
         BrokerOptions options;
         TableClient table;
         try
@@ -26,6 +27,7 @@ internal static class BrokerCleanupCommand
             options = BrokerOptions.Read(configuration, developmentStorage);
             var clientOptions = new TableClientOptions
             {
+                Transport = budget,
                 Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(3) },
                 Diagnostics = { IsLoggingContentEnabled = false }
             };
@@ -54,25 +56,9 @@ internal static class BrokerCleanupCommand
         }
 
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        try
-        {
-            _ = await new RetainedState(table, options).SchemaAsync(deadline.Token);
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                processedAllocations = 0, deletedRowsObserved = 0, payloadFieldsRemovedObserved = 0,
-                incompleteCoverage = true, stopReason = "schema-validated-scaffold", failures = 0
-            }));
-            return 0;
-        }
-        catch (Exception)
-        {
-            // Storage exceptions can contain endpoints or credentials; expose only the outcome.
-            Console.WriteLine(JsonSerializer.Serialize(new
-            {
-                processedAllocations = 0, deletedRowsObserved = 0, payloadFieldsRemovedObserved = 0,
-                incompleteCoverage = true, stopReason = "schema-validation-failed", failures = 1
-            }));
-            return 1;
-        }
+        var cleanup = new BrokerCleanup(table, options, budget, TimeProvider.System);
+        var exitCode = await cleanup.RunAsync(deadline.Token);
+        Console.WriteLine(JsonSerializer.Serialize(cleanup.Summary()));
+        return exitCode;
     }
 }
