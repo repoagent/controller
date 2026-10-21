@@ -49,6 +49,10 @@ volumes, workspace/history, settings, skills, tools and wrappers remain. Preview
 uses host records and Docker metadata only; private-volume binding and disable
 state are unverified until Apply.
 
+With `-Apply`, the installer may inspect the selected instance’s disable state
+read-only before reporting a conflicting saved setting or clone option. This
+inspection does not start controller work or import credentials.
+
 The selected enrollment volume retains `disabled.json`. Supported PowerShell work,
 configuration and credential-import commands refuse this durable state. Safe stop,
 passive inspection, uninstall retry and standalone revoke remain available. Do not
