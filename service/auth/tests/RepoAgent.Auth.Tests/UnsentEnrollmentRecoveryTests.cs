@@ -1,0 +1,71 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using Azure.Data.Tables;
+using Xunit;
+
+namespace RepoAgent.Auth.Tests;
+
+public sealed partial class CapacityReclamationTests
+{
+    [Theory]
+    [InlineData("polling")]
+    [InlineData("polling-clone")]
+    public async Task Same_enrollment_recovers_after_cleanup_fences_an_unsent_verifier(string profile)
+    {
+        await using var f = await EnrollmentFixture.CreateAsync();
+        CloneEnrollmentContractTests.ConfigureGitHub(f, profile);
+        var request = new { idempotencyId = Guid.NewGuid().ToString("N"), repositoryId = 123456,
+            repository = "owner/project", variable = "APPROVAL", profile };
+        var pause = new CapacityPause(body => body.Contains("\"State\":\"sending\"", StringComparison.Ordinal));
+        await f.RestartAsync(pause.Transport);
+        var writer = f.Send("/v2/enrollments", request);
+        TableEntity ledger;
+        try
+        {
+            await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(8), Token);
+            ledger = Assert.Single(await IssuanceLedgers(f));
+            await Reclaim(f, ledger);
+            pause.Release.TrySetResult();
+            using var interrupted = await writer;
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, interrupted.StatusCode);
+            Assert.Equal(0, f.GitHub.Mints);
+        }
+        finally { pause.Release.TrySetResult(); using var response = await writer; }
+        var before = await Read(f, RevocationFixture.Partition, "pending:" + request.idempotencyId);
+        var old = await Read(f, RevocationFixture.Partition, ledger.GetString("AttemptRowKey")!);
+        await f.RestartAsync();
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+
+        using var retry = await f.Send("/v2/enrollments", request);
+
+        Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
+        var status = await retry.Content.ReadFromJsonAsync<JsonElement>(Token);
+        f.GitHub.Marker = status.GetProperty("marker").GetString()!;
+        var pending = status.GetProperty("pendingId").GetString()!;
+        Assert.Equal(before.GetString("PendingId"), pending);
+        var after = await Read(f, before.PartitionKey, before.RowKey);
+        foreach (var field in new[] { "DeviceId", "Challenge", "Deadline", "CreatedAt", "Epoch", "Generation" })
+            Assert.Equal(before[field], after[field]);
+        Assert.NotEqual(old.GetString("OperationId"), after.GetString("Attempt"));
+        var audit = await Read(f, old.PartitionKey, old.RowKey);
+        Assert.Equal("unsent", audit.GetString("SettlementReason"));
+        Assert.Equal(old.GetDateTimeOffset("JwtExpiresAt"), audit.GetDateTimeOffset("JwtExpiresAt"));
+        Assert.True(audit.GetBoolean("CapacityReleased"));
+        Assert.Equal(2L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("RetainedIssuanceCount"));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var completion = await f.Send($"/v2/enrollments/{pending}/completion");
+        Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
+        var receipt = await completion.Content.ReadFromJsonAsync<JsonElement>(Token);
+        var device = receipt.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        var secret = receipt.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
+        Assert.Equal(before.GetString("DeviceId"), device);
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var ack = await f.Send($"/v2/devices/{device}/acknowledgment",
+            new { completionId = receipt.GetProperty("completionId").GetString() }, secret);
+        Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var runtime = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
+        Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
+    }
+}
