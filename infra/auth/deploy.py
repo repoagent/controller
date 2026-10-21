@@ -21,6 +21,8 @@ HERE = Path(__file__).resolve().parent
 REPOSITORY_ID = "1426154477"
 OWNERSHIP = {"repositoryId": REPOSITORY_ID, "ownerId": "345029828", "managedBy": "repoagent-auth"}
 ACTIVATION = ("stage-plan", "stage-apply", "promote-staged", "stage-stop", "stage-resume")
+CLEANUP = ("cleanup-identity-plan", "cleanup-identity-apply", "cleanup-plan", "cleanup-apply")
+CLEANUP_JOB = "Microsoft.App/jobs"
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -76,8 +78,10 @@ class Deployment:
     def __init__(self, mode):
         self.mode = mode
         self.activation = mode in ACTIVATION
+        self.cleanup = mode in CLEANUP
+        self.identity_only = mode.startswith("cleanup-identity-")
         self.isolated = self.activation and mode != "promote-staged"
-        self.source = accepted_source() if self.activation or os.environ.get("AUTH_EXPECTED_SOURCE_SHA") is not None else None
+        self.source = accepted_source() if self.activation or self.cleanup or os.environ.get("AUTH_EXPECTED_SOURCE_SHA") is not None else None
         self.current = None
         self.revision = None
         self.replica = None
@@ -103,6 +107,9 @@ class Deployment:
             raise DeploymentError("AUTH_TABLE_NAME must be 3-63 ASCII alphanumeric characters starting with a letter")
         self.identity = {"clientId": None, "principalId": None}
         self.origin = None
+        if self.cleanup:
+            self.cleanup_configuration()
+            return
         self.params = {"location": self.location, "appName": self.app, "storageName": self.storage,
                        "vaultName": self.vault, "deployApp": not self.foundation, "tableName": self.table}
         if self.activation:
@@ -132,6 +139,93 @@ class Deployment:
                 if not self.activation and required(name) != expected:
                     raise DeploymentError(f"Image preflight attestation missing: {name}")
             self.params["image"] = image
+
+    def attest_cleanup(self):
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/delivery/auth-pipeline.py"), "attest"],
+                                capture_output=True, text=True, timeout=60)
+        if result.returncode:
+            raise DeploymentError("Cleanup accepted image/source anonymous attestation failed")
+
+    def cleanup_configuration(self):
+        self.prior_image = None
+        self.job_seen = False
+        self.params = dict(location=self.location, appName=self.app, storageName=self.storage,
+                           tableName=self.table, identityOnly=self.identity_only)
+        self.resources = [
+            (RESOURCE_TYPES[1], self.app + "-logs", "2023-09-01", "auth-logs"),
+            (RESOURCE_TYPES[2], self.app + "-environment", "2025-01-01", "auth-environment"),
+            (RESOURCE_TYPES[3], self.storage, "2023-05-01", "auth-data-protection"),
+            (RESOURCE_TYPES[7], self.storage + "/default/" + self.table, "2023-05-01", "auth-broker-state"),
+            (RESOURCE_TYPES[0], self.app + "-cleanup", "2023-01-31", "auth-cleanup-identity"),
+        ]
+        if not self.identity_only:
+            epoch = required("AUTH_DEPLOYMENT_EPOCH")
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", epoch):
+                raise DeploymentError("Cleanup requires a valid external deployment epoch")
+            image = required("AUTH_IMAGE")
+            if not re.fullmatch(r"ghcr\.io/repoagent/controller-auth@sha256:[0-9a-f]{64}", image):
+                raise DeploymentError("Cleanup requires an immutable approved auth image")
+            self.params.update(image=image, deploymentEpoch=epoch)
+            self.attest_cleanup()
+            self.resources.append((CLEANUP_JOB, self.app + "-cleanup", "2025-01-01", "auth-cleanup"))
+        self.cleanup_write_id = self.resource_id(RESOURCE_TYPES[0] if self.identity_only else CLEANUP_JOB,
+                                                 self.app + "-cleanup")
+
+    def cleanup_env(self):
+        return {"Broker__TableEndpoint": f"https://{self.storage}.table.core.windows.net/",
+                "Broker__TableName": self.table, "Broker__DeploymentEpoch": self.params["deploymentEpoch"],
+                "Broker__ManagedIdentityClientId": self.identity["clientId"]}
+
+    def cleanup_job(self, job, after_apply):
+        properties, identity = job.get("properties", {}), job.get("identity", {})
+        config, template = properties.get("configuration", {}), properties.get("template", {})
+        trigger = config.get("triggerType")
+        schedule = {"cronExpression": "* * * * *", "parallelism": 1, "replicaCompletionCount": 1}
+        expected = {"triggerType": trigger, "replicaRetryLimit": 0, "replicaTimeout": 90}
+        if trigger == "Schedule":
+            expected["scheduleTriggerConfig"] = schedule
+        elif trigger == "Manual" and not after_apply:
+            expected["manualTriggerConfig"] = {"parallelism": 1, "replicaCompletionCount": 1}
+        else:
+            raise DeploymentError("Cleanup trigger differs from the fixed schedule/manual configuration")
+        # Empty provider-normalized collections grant no additional configuration.
+        config = {key: value for key, value in config.items()
+                  if not (key in ("secrets", "registries", "identitySettings") and value in (None, []))}
+        trigger_config = config.get("scheduleTriggerConfig" if trigger == "Schedule" else "manualTriggerConfig", {})
+        if (config != expected or type(config.get("replicaRetryLimit")) is not int
+                or type(config.get("replicaTimeout")) is not int
+                or any(type(trigger_config.get(key)) is not int for key in ("parallelism", "replicaCompletionCount"))
+                or properties.get("workloadProfileName") != "Consumption"
+                or properties.get("environmentId", "").lower() != self.resource_id(RESOURCE_TYPES[2], self.app + "-environment").lower()
+                or identity.get("type") != "UserAssigned"
+                or [key.lower() for key in identity.get("userAssignedIdentities", {})] != [self.resource_id(RESOURCE_TYPES[0], self.app + "-cleanup").lower()]
+                or any(key not in ("containers", "initContainers", "volumes") for key in template)
+                or template.get("initContainers") or template.get("volumes")):
+            raise DeploymentError("Cleanup configuration/environment/identity differs")
+        containers = template.get("containers", [])
+        if len(containers) != 1:
+            raise DeploymentError("Cleanup requires exactly one container")
+        container = containers[0]
+        image = container.get("image")
+        if not isinstance(image, str) or not re.fullmatch(r"ghcr\.io/repoagent/controller-auth@sha256:[0-9a-f]{64}", image):
+            raise DeploymentError("Cleanup prior image must be an immutable approved-repository digest")
+        if after_apply:
+            if image != self.params["image"]:
+                raise DeploymentError("Cleanup readback differs from desired image")
+        elif self.job_seen and image != self.prior_image:
+            raise DeploymentError("Cleanup prior image changed during planning")
+        env = container.get("env", [])
+        if (container.get("name") != "cleanup" or container.get("command") != ["dotnet", "RepoAgent.Auth.dll"]
+                or container.get("args") != ["cleanup", "--once"]
+                or container.get("resources") != {"cpu": 0.25, "memory": "0.5Gi"}
+                or any(key not in ("name", "image", "command", "args", "resources", "env", "probes", "volumeMounts") for key in container)
+                or container.get("probes") or container.get("volumeMounts")
+                or len(env) != 4 or any(set(item) != {"name", "value"} for item in env)
+                or {item["name"]: item["value"] for item in env} != self.cleanup_env()):
+            raise DeploymentError("Cleanup command/container/environment differs")
+        if not after_apply:
+            self.prior_image, self.job_seen = image, True
+        self.current = job
 
     def runtime_configuration(self):
         gates = ("AUTH_PROVIDER_READY", "AUTH_STORAGE_READY", "AUTH_CLEANUP_READY", "AUTH_RUNTIME_ACCESS_READY")
@@ -204,6 +298,7 @@ class Deployment:
 
     def inspect(self, verify_ingress=False, require_resources=False):
         self.current = None
+        logs = environment_logs = None
         group = self.az(["group", "show", "--name", self.group])
         if str(group.get("id", "")).lower() != self.scope.lower() or group.get("location") != self.location:
             raise DeploymentError("Azure resource group identity/location mismatch")
@@ -211,6 +306,12 @@ class Deployment:
             resource_id = self.resource_id(kind, name)
             resource = self.az(["resource", "show", "--ids", resource_id, "--api-version", version], allow_missing=True)
             if resource is None:
+                if self.cleanup and not require_resources:
+                    if self.identity_only and kind == RESOURCE_TYPES[0] and not any(self.identity.values()):
+                        continue
+                    if not self.identity_only and kind == CLEANUP_JOB and not self.job_seen:
+                        continue
+                    raise DeploymentError("Cleanup requires existing owned dependencies; absence is not grant authority")
                 if require_resources:
                     raise DeploymentError("Deployed resource unavailable after apply; result unconfirmed")
                 if not self.foundation and (role != "auth-service" or verify_ingress or self.mode in ("promote-staged", "stage-stop", "stage-resume")):
@@ -233,7 +334,13 @@ class Deployment:
                 raise DeploymentError(f"Ownership conflict for {name}; refusing adoption")
             if not container and resource.get("location") != self.location:
                 raise DeploymentError(f"Resource location conflict for {name}")
+            if self.cleanup and kind == RESOURCE_TYPES[1]:
+                logs = resource.get("properties", {})
+            if self.cleanup and kind == CLEANUP_JOB:
+                self.cleanup_job(resource, require_resources)
             if kind == RESOURCE_TYPES[2]:
+                if self.cleanup:
+                    environment_logs = resource.get("properties", {}).get("appLogsConfiguration", {})
                 properties = resource.get("properties")
                 domain = properties.get("defaultDomain") if isinstance(properties, dict) else None
                 try:
@@ -272,6 +379,12 @@ class Deployment:
                     if self.identity[key] is not None and self.identity[key] != value:
                         raise DeploymentError("Owned runtime identity changed during deployment")
                     self.identity[key] = value
+
+        if self.cleanup and (not isinstance(logs, dict) or not logs.get("customerId")
+                or logs.get("retentionInDays") != 30 or logs.get("workspaceCapping", {}).get("dailyQuotaGb") != 1
+                or not isinstance(environment_logs, dict) or environment_logs.get("destination") != "log-analytics"
+                or environment_logs.get("logAnalyticsConfiguration", {}).get("customerId") != logs["customerId"]):
+            raise DeploymentError("Cleanup requires the owned bounded log workspace/environment binding")
 
     def staged_template(self, template):
         containers = template.get("containers", [])
@@ -395,10 +508,11 @@ class Deployment:
         subprocess.run([str(HERE / "validate.sh")], check=True, stdout=sys.stderr)
         with tempfile.TemporaryDirectory(prefix="auth-deployment-") as directory:
             compiler = shutil.which(os.environ.get("BICEP_BIN", "bicep")) or str(Path.home() / ".azure/bin/bicep")
-            template = Path(directory) / "main.json"
-            subprocess.run([compiler, "build", str(HERE / "main.bicep"), "--outfile", str(template)], check=True, stdout=sys.stderr)
-            from validate_arm import validate
-            validate(template)
+            template_name = "cleanup" if self.cleanup else "main"
+            template = Path(directory) / (template_name + ".json")
+            subprocess.run([compiler, "build", str(HERE / (template_name + ".bicep")), "--outfile", str(template)], check=True, stdout=sys.stderr)
+            from validate_arm import validate, validate_cleanup
+            (validate_cleanup if self.cleanup else validate)(template)
             self.inspect()
             if self.origin is not None:
                 print(f"Broker origin: {self.origin}", file=sys.stderr)
@@ -411,7 +525,8 @@ class Deployment:
             changes = plan.get("changes")
             if plan.get("status") != "Succeeded" or not isinstance(changes, list):
                 raise DeploymentError("Azure malformed or unsuccessful what-if")
-            allowed = {self.resource_id(kind, name).lower() for kind, name, _, _ in self.resources}
+            allowed = ({self.cleanup_write_id.lower()} if self.cleanup else
+                       {self.resource_id(kind, name).lower() for kind, name, _, _ in self.resources})
             for change in changes:
                 if not isinstance(change, dict) or change.get("changeType") not in ("Create", "Modify", "NoChange", "Ignore"):
                     raise DeploymentError("What-if contains deletion or unsupported changes")
@@ -419,13 +534,20 @@ class Deployment:
                     raise DeploymentError("What-if contains a resource outside the owned manifest")
                 if change["changeType"] != "Ignore":
                     print(f"Plan: {change['changeType']} {change['resourceId']}", file=sys.stderr)
-            applied = self.mode in ("apply", "foundation-apply", "stage-apply", "promote-staged")
+            applied = self.mode in ("apply", "foundation-apply", "stage-apply", "promote-staged", "cleanup-identity-apply", "cleanup-apply")
             if applied:
                 self.inspect()  # Recheck after planning, immediately before writes.
+                if self.cleanup and not self.identity_only:
+                    self.attest_cleanup()
                 result = self.az(["deployment", "group", "create", *common])
                 if not isinstance(result.get("properties"), dict) or result["properties"].get("provisioningState") != "Succeeded":
                     raise DeploymentError("Deployment did not report Succeeded; inspect Azure before retrying")
-                if not self.foundation:
+                if self.cleanup:
+                    try:
+                        self.inspect(require_resources=True)
+                    except (DeploymentError, OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as error:
+                        raise DeploymentError("Cleanup apply unconfirmed; inspect before retrying") from error
+                elif not self.foundation:
                     self.inspect(verify_ingress=not self.isolated, require_resources=True)
                     if self.isolated:
                         self.revision = self.current.get("properties", {}).get("latestRevisionName")
@@ -442,13 +564,25 @@ class Deployment:
                         if result.returncode:
                             raise DeploymentError("Same-digest public rollout/origin verification failed")
                 # Foundation creates the identity; read its platform-issued IDs.
-                if self.foundation:
+                if self.foundation and not self.cleanup:
                     self.inspect(require_resources=True)
                     if not all(self.identity.values()):
                         raise DeploymentError("Deployment identity unavailable after apply; inspect Azure before retrying")
         return self.outputs(applied)
 
     def outputs(self, applied):
+        from cost_plan import cleanup_capacity
+        if self.cleanup:
+            return {"operation": self.mode, "source": self.source, "image": self.params.get("image"),
+                    "deploymentEpoch": self.params.get("deploymentEpoch"), "appName": self.app,
+                    "cleanupJobId": self.resource_id(CLEANUP_JOB, self.app + "-cleanup"),
+                    "cleanupIdentityId": self.resource_id(RESOURCE_TYPES[0], self.app + "-cleanup"),
+                    "cleanupIdentityClientId": self.identity["clientId"], "cleanupIdentityPrincipalId": self.identity["principalId"],
+                    "environmentId": self.resource_id(RESOURCE_TYPES[2], self.app + "-environment"),
+                    "tableResourceId": self.resource_id(RESOURCE_TYPES[7], self.storage + "/default/" + self.table),
+                    "tableEndpoint": f"https://{self.storage}.table.core.windows.net/", "tableName": self.table,
+                    "cleanupConfiguration": None if self.identity_only else self.cleanup_env(),
+                    "cleanupCapacityPlan": cleanup_capacity(), "applied": applied, "releaseAcceptance": False}
         endpoint = f"https://{self.storage}.table.core.windows.net/"
         configuration = {
             "Broker__TableEndpoint": endpoint, "Broker__TableName": self.table,
@@ -469,14 +603,14 @@ class Deployment:
                 "capacityPlan": {"minReplicas": 1 if self.isolated else 0, "maxReplicas": 1, "cpu": 0.25, "memory": "0.5Gi",
                                  "logRetentionDays": 30, "logDailyQuotaGb": 1,
                                  "hardSpendingCap": False, "requestLimitsAreProcessLocal": True},
-                "applied": applied,
+                "cleanupCapacityPlan": cleanup_capacity(), "applied": applied,
                 **({"source": self.source, "image": self.params.get("image"), "isolated": self.isolated,
                     "releaseAcceptance": False, "revision": self.revision, "replica": self.replica} if self.activation else {})}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("check", "plan", "apply", "foundation-check", "foundation-plan", "foundation-apply", "cost-plan", *ACTIVATION))
+    parser.add_argument("mode", choices=("check", "plan", "apply", "foundation-check", "foundation-plan", "foundation-apply", "cost-plan", *ACTIVATION, *CLEANUP))
     args = parser.parse_args()
     try:
         print(json.dumps(Deployment(args.mode).run()))
