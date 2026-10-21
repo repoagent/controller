@@ -17,13 +17,13 @@ public sealed class GitHubAppCredentials : IDisposable
     public string TokenFile { get; }
 
     public GitHubAppCredentials(HttpClient http, string appId, string privateKeyPath, string repository,
-        string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false)
+        string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false)
     {
         this.clock = clock ?? TimeProvider.System;
         SecureDirectory(credentialDirectory);
         TokenFile = Path.Combine(credentialDirectory, "installation-token.json");
         Invalidate();
-        source = new DirectAppTokenSource(http, appId, privateKeyPath, repository, this.clock, repositoryWebhooks);
+        source = new DirectAppTokenSource(http, appId, privateKeyPath, repository, this.clock, repositoryWebhooks, clone);
     }
 
     GitHubAppCredentials(IInstallationTokenSource source, string credentialDirectory, TimeProvider clock)
@@ -36,11 +36,11 @@ public sealed class GitHubAppCredentials : IDisposable
     }
 
     public static GitHubAppCredentials FromBroker(HttpClient http, string brokerOrigin, string enrollmentFile,
-        string appId, string repository, string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false)
+        string appId, string repository, string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false)
     {
         ClearCache(credentialDirectory);
         var time = clock ?? TimeProvider.System;
-        return new(new BrokerTokenSource(http, brokerOrigin, enrollmentFile, appId, repository, time, repositoryWebhooks), credentialDirectory, time);
+        return new(new BrokerTokenSource(http, brokerOrigin, enrollmentFile, appId, repository, time, repositoryWebhooks, clone), credentialDirectory, time);
     }
 
     public async Task Initialize(long? expectedInstallation, CancellationToken ct)
@@ -82,7 +82,7 @@ public sealed class GitHubAppCredentials : IDisposable
         try
         {
             if (appSlug.Length == 0) throw new InvalidOperationException("GitHub App authentication has not been initialized");
-            if (token is not null && expiresAt > clock.GetUtcNow().AddMinutes(5)) return token;
+            if (token is not null && File.Exists(TokenFile) && expiresAt > clock.GetUtcNow().AddMinutes(5)) return token;
             try
             {
                 var lease = await source.Acquire(ct);
@@ -98,11 +98,16 @@ public sealed class GitHubAppCredentials : IDisposable
                 using (var file = new FileStream(temporary, options))
                 {
                     var cache = Json.Object(("token", freshToken), ("expiresAt", expiry.ToString("O")));
+                    if (source.GitRepository is { } repository)
+                    {
+                        cache["repository"] = repository;
+                        cache["profile"] = source.GitProfile;
+                    }
                     file.Write(Encoding.UTF8.GetBytes(cache.ToJsonString()));
                     file.Flush(true);
                 }
                 if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-                File.Move(temporary, TokenFile, true);
+                using (AppGitCredential.Lock(TokenFile)) File.Move(temporary, TokenFile, true);
                 token = freshToken;
                 expiresAt = expiry;
                 Log.Write("app-token-refreshed", $"actor={AgentLogin} expires={expiry:O}");

@@ -4,7 +4,7 @@ param(
     [string]$Repository,
     [string]$BrokerOrigin,
     [string]$ApprovalVariable,
-    [ValidateSet('polling', 'webhook')][string]$Profile,
+    [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone')][string]$Profile,
     [string]$StateDirectory,
     [switch]$Apply,
     [switch]$NonInteractive
@@ -97,7 +97,7 @@ function Check-Marker([string]$Text) {
     $m = Read-HostJson $Text
     Assert-Fields $m @('version','approvalKind','githubHost','appId','appSlug','repositoryId','repository','installationId','deviceId','challenge','profile','policyVersion','epoch','variable')
     foreach ($key in @('version','appId','repositoryId','installationId')) { Assert-Id $m[$key] }
-    if ($m.version -ne 2 -or $m.approvalKind -cne 'repository-agent-variable' -or $m.githubHost -cne 'github.com' -or $m.appId -ne 5387625 -or $m.appSlug -cne 'repo-agent-connector' -or $m.repositoryId -ne $config.repositoryId -or $m.repository -ine $Repository -or $m.variable -cne $ApprovalVariable -or $m.profile -cne $Profile -or $m.policyVersion -cne 'repository-agent-approval-v2') { Stop-Enrollment 'Broker approval marker differs from the trusted host intent.' }
+    if ($m.version -ne 2 -or $m.approvalKind -cne 'repository-agent-variable' -or $m.githubHost -cne 'github.com' -or $m.appId -ne 5387625 -or $m.appSlug -cne 'repo-agent-connector' -or $m.repositoryId -ne $config.repositoryId -or $m.repository -ine $Repository -or $m.variable -cne $ApprovalVariable -or $m.profile -cne $Profile -or $m.policyVersion -cne $policy) { Stop-Enrollment 'Broker approval marker differs from the trusted host intent.' }
     Assert-Text $m.deviceId '\A[0-9a-f]{32}\z'
     Assert-Text $m.challenge '\A[A-Za-z0-9_-]{43}\z'
     Assert-Text $m.epoch '\A[A-Za-z0-9_-]{1,128}\z'
@@ -105,13 +105,17 @@ function Check-Marker([string]$Text) {
     return $m
 }
 function Check-Enrollment($Enrollment, $Marker) {
-    Assert-Fields $Enrollment @('protocolVersion','brokerOrigin','githubHost','deviceId','deviceSecret','appId','appSlug','installationId','repositoryId','repository','permissions')
+    $bindingFields = @('protocolVersion','brokerOrigin','githubHost','deviceId','deviceSecret','appId','appSlug','installationId','repositoryId','repository','permissions')
+    if ($clone) { $bindingFields += @('profile','policyVersion') }
+    Assert-Fields $Enrollment $bindingFields
+    if ($clone -and ($Enrollment.profile -cne $Profile -or $Enrollment.policyVersion -cne $policy)) { Stop-Enrollment 'Clone policy differs.' }
     foreach ($key in @('protocolVersion','appId','installationId','repositoryId')) { Assert-Id $Enrollment[$key] }
-    if ($Enrollment.protocolVersion -ne 1 -or (Get-BrokerOrigin $Enrollment.brokerOrigin) -cne $BrokerOrigin -or $Enrollment.githubHost -cne 'github.com' -or $Enrollment.deviceId -cne $Marker.deviceId -or $Enrollment.appId -ne $Marker.appId -or $Enrollment.appSlug -cne $Marker.appSlug -or $Enrollment.installationId -ne $Marker.installationId -or $Enrollment.repositoryId -ne $Marker.repositoryId -or $Enrollment.repository -ine $Repository) { Stop-Enrollment 'Completion binding differs from the approved enrollment.' }
+    if ($Enrollment.protocolVersion -ne $runtimeVersion -or (Get-BrokerOrigin $Enrollment.brokerOrigin) -cne $BrokerOrigin -or $Enrollment.githubHost -cne 'github.com' -or $Enrollment.deviceId -cne $Marker.deviceId -or $Enrollment.appId -ne $Marker.appId -or $Enrollment.appSlug -cne $Marker.appSlug -or $Enrollment.installationId -ne $Marker.installationId -or $Enrollment.repositoryId -ne $Marker.repositoryId -or $Enrollment.repository -ine $Repository) { Stop-Enrollment 'Completion binding differs from the approved enrollment.' }
     Assert-Text $Enrollment.deviceSecret '\A[A-Za-z0-9_-]{43,128}\z'
-    $fields = @('discussions'); if ($Profile -eq 'webhook') { $fields += 'repository_hooks' }
+    $fields = @('discussions'); if ($Profile -in @('webhook','webhook-clone')) { $fields += 'repository_hooks' }
+    if ($clone) { $fields += 'contents'; if ($Enrollment.permissions.Contains('metadata')) { $fields += 'metadata' } }
     Assert-Fields $Enrollment.permissions $fields
-    foreach ($key in $fields) { if ($Enrollment.permissions[$key] -cne 'write') { Stop-Enrollment 'Completion permission profile differs.' } }
+    foreach ($key in $fields) { if ($Enrollment.permissions[$key] -cne $(if ($key -in @('contents','metadata')) { 'read' } else { 'write' })) { Stop-Enrollment 'Completion permission profile differs.' } }
 }
 function Wait-Work {
     if ($config.deadline -and [DateTimeOffset]::Parse($config.deadline) -le [DateTimeOffset]::UtcNow.AddSeconds(5)) { Stop-Enrollment 'Original enrollment deadline reached; private recovery state retained.' }
@@ -145,7 +149,13 @@ try {
     if (-not $BrokerOrigin -and -not $NonInteractive) { $BrokerOrigin = Read-Host 'Trusted broker HTTPS origin' }
     if (-not $ApprovalVariable) { $ApprovalVariable = if ($NonInteractive) { 'APPROVED_CONTROLLER' } else { $answer = Read-Host 'Approval variable [APPROVED_CONTROLLER]'; if ($answer) { $answer } else { 'APPROVED_CONTROLLER' } } }
     if (-not $Profile) { $Profile = 'polling' }
-    Assert-Text $Profile '\A(?:polling|webhook)\z'
+    Assert-Text $Profile '\A(?:polling|webhook|polling-clone|webhook-clone)\z'
+    $clone = $Profile.EndsWith('-clone', [StringComparison]::Ordinal)
+    $runtimeVersion = if ($clone) { 2 } else { 1 }
+    $policy = if ($clone) { 'repository-agent-clone-approval-v2' } else { 'repository-agent-approval-v2' }
+    $permissionPreview = 'discussions:write'
+    if ($clone) { $permissionPreview += ', contents:read' }
+    if ($Profile -in @('webhook','webhook-clone')) { $permissionPreview += ', repository_hooks:write' }
     $script:Diagnostic = 'Supply OWNER/REPO, a trusted HTTPS broker origin, and a valid Agent approval variable of at most 100 characters.'
     Assert-Text $Repository '\A[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\z'
     if (@($Repository.Split('/') | Where-Object { $_ -in @('.', '..') }).Count) { Stop-Enrollment 'Invalid repository.' }
@@ -160,6 +170,7 @@ try {
         Check-Recovery
     } elseif ($config.pendingId -or (Test-Path -LiteralPath $enrollmentPath)) { Stop-Enrollment 'Recovery journal is missing; do not create a replacement enrollment.' }
     Write-Host "Repository: $Repository; broker: $BrokerOrigin; App: 5387625 / repo-agent-connector; profile: $Profile"
+    Write-Host "Setup/marker: 2; controller/runtime: $runtimeVersion; policy: $policy; permissions: $permissionPreview"
     Write-Host "Repository Agent-variable approval: $ApprovalVariable; state: $StateDirectory"
     Write-Host 'Apply may start one pending Agent enrollment, write its validated public marker, save a private device credential and acknowledge it. Existing matching approval is reused; conflicts stop.'
     if (-not $Apply) { Write-Host 'Read-only plan. Use -Apply to execute. The fresh marker is available only after start.'; exit 0 }
@@ -194,7 +205,7 @@ try {
         $marker = Check-Marker $status.marker
         $config.marker = $status.marker; $config.expectedValueSha256 = Get-ValueHash $status.marker
         Save-State
-        Write-Host "Validated approval: repository ID $($marker.repositoryId), installation $($marker.installationId), device $($marker.deviceId), profile $Profile."
+        Write-Host "Validated approval: repository ID $($marker.repositoryId), installation $($marker.installationId), device $($marker.deviceId), profile $Profile; policy $policy; controller/runtime $runtimeVersion; permissions $permissionPreview."
         $null = Read-Repository
         $r = GitHub GET $varPath
         if ($r.Status -eq 200) {

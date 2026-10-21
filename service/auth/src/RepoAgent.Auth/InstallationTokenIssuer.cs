@@ -9,7 +9,7 @@ namespace RepoAgent.Auth;
 
 public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance github, AppJwtSigner signer, TimeProvider clock)
 {
-    public async Task<IssuanceResult> IssueAsync(string deviceId, string? secret, CancellationToken caller)
+    public async Task<IssuanceResult> IssueAsync(string deviceId, string? secret, CancellationToken caller, int runtimeVersion = 1)
     {
         using var work = new IssuanceWork(clock);
         GrantSnapshot? grant = null;
@@ -20,6 +20,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
         {
             caller.ThrowIfCancellationRequested();
             grant = await store.AuthenticateAsync(deviceId, secret, work.Cancellation);
+            if (grant.Approval.RuntimeVersion != runtimeVersion) throw new IssuanceDenied(401);
             var verifier = await store.VerifierAsync(grant, work.Cancellation);
             if (verifier is null)
             {
@@ -49,12 +50,18 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
             work.Fresh(release);
             await store.ReleaseAsync(grant, runtime, verifier, work.Cancellation);
             released = true;
-            return new(200, new
+            var response = new Dictionary<string, object>
             {
-                protocolVersion = 1, appId = AppId, appSlug = AppSlug,
-                installationId = grant.InstallationId, repositoryId = Id(grant.RepositoryId), repository = grant.Repository,
-                permissions = Permissions(grant.Profile), token = known.Token, expiresAt = known.ExpiresAt
-            });
+                ["protocolVersion"] = grant.Approval.RuntimeVersion, ["appId"] = AppId, ["appSlug"] = AppSlug,
+                ["installationId"] = grant.InstallationId, ["repositoryId"] = Id(grant.RepositoryId), ["repository"] = grant.Repository,
+                ["permissions"] = Permissions(grant.Profile), ["token"] = known.Token, ["expiresAt"] = known.ExpiresAt
+            };
+            if (grant.Approval == ApprovalContract.AgentClone)
+            {
+                response["profile"] = grant.Profile;
+                response["policyVersion"] = grant.Approval.Policy;
+            }
+            return new(200, response);
         }
         catch (Exception ex) when (Expected(ex))
         {

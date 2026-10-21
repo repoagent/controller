@@ -180,6 +180,22 @@ class ContainerConfigurationTests(unittest.TestCase):
             runtime.configure(args)
             self.assertEqual(json.loads(runtime.CONFIG.read_text())['keyPath'], args.key_path)
 
+    def test_clone_authority_is_explicit_and_cannot_replace_an_existing_instance(self):
+        runtime = load_runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.CONFIG = Path(directory) / 'config/settings.json'
+            runtime.CODEX = Path(directory) / 'codex'
+            args = argparse.Namespace(repository='example/project', app_id='123456', key_path='/private/key.pem',
+                installation_id=None, mention_user='', model='test-model', web_search='live', tool_updates='latest',
+                mode='polling', public_url='', listen_port=8080, reconcile_interval=300, clone=True)
+            runtime.configure(args)
+            saved = runtime.CONFIG.read_bytes()
+            self.assertIn('--clone', runtime.bridge_args(json.loads(saved)))
+            args.clone = False
+            with self.assertRaisesRegex(ValueError, 'fresh instance and enrollment'):
+                runtime.configure(args)
+            self.assertEqual(runtime.CONFIG.read_bytes(), saved)
+
     def test_unattended_runtime_login_never_starts_device_auth(self):
         runtime = load_runtime()
         with tempfile.TemporaryDirectory() as directory:
