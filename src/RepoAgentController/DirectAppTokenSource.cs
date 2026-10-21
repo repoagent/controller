@@ -10,6 +10,7 @@ internal readonly record struct InstallationLease(string Token, DateTimeOffset E
 internal interface IInstallationTokenSource : IDisposable
 {
     string AppSlug { get; }
+    long? RepositoryId => null;
     string? GitRepository => null;
     string? GitProfile => null;
     Task Initialize(long? expectedInstallation, CancellationToken ct);
@@ -27,6 +28,7 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
     readonly bool clone;
     long repositoryId;
     string canonicalRepository = "";
+    public long? RepositoryId => clone ? repositoryId : null;
     public string? GitRepository => clone ? canonicalRepository : null;
     public string? GitProfile => clone ? (repositoryWebhooks ? "webhook-clone" : "polling-clone") : null;
     long installationId;

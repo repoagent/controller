@@ -99,7 +99,12 @@ public static class BridgeCommand
                     var refresh = credentials.RefreshUntilCancelled(refreshCancellation.Token);
                     try
                     {
-                        await using var codex = new Codex(cwd, wrapper, Path.Combine(credentialDirectory, "gh-config"));
+                        using var checkout = result.GetValue(clone)
+                            ? await ManagedCheckout.Open(cwd, statePath, github, credentials, executable, cancellationToken) : null;
+                        var nativeRoot = checkout?.Root ?? cwd;
+                        var nativeConfig = Path.Combine(credentialDirectory, "gh-config");
+                        if (checkout is not null) await Codex.TrustWorkspace(nativeRoot, wrapper, nativeConfig, cancellationToken);
+                        await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null);
                         await codex.Initialize(cancellationToken);
                         var bridge = new Bridge(github, codex, store, numbers);
                         if (publicUrl is not null)
