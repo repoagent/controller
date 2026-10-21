@@ -111,6 +111,8 @@ for mount in mounts:
         volumes.setdefault(parts['src'], {'Labels': None})
 if operation == ['import-enrollment']:
     data = sys.stdin.buffer.read()
+    if os.environ.get('INSTALLER_DOCKER_FAIL_OPERATION') == 'import-enrollment':
+        finish(1, 'Controlled external enrollment import failure')
     state.setdefault('imports', []).append({'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
     finish()
 
@@ -147,10 +149,14 @@ if image.startswith('python@sha256:') and operation[:1] == ['/source/scripts/com
 if options.get('--entrypoint') == 'sh':
     finish(1 if os.environ.get('INSTALLER_UNREADABLE_KEY') else 0)
 if options.get('--entrypoint') in ('python3', '/usr/bin/python3'):
+    if os.environ.get('INSTALLER_DOCKER_FAIL_OPERATION') == 'import-codex-auth':
+        finish(1, 'Controlled external credential import failure')
     state['authenticated'] = True
     finish()
 if operation == ['versions']:
     finish(output='Fixture Codex and gh versions')
+if operation[0] == os.environ.get('INSTALLER_DOCKER_FAIL_OPERATION'):
+    finish(1, 'Controlled external ' + operation[0] + ' failure')
 if operation[0] == 'get':
     if not state['settings']:
         finish(1)
