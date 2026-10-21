@@ -30,6 +30,15 @@ RESOURCE_TYPES = (
 )
 
 
+def canonical_origin(app, domain):
+    # A DNS suffix, never a URI or a caller-selected origin.
+    label = r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+    if (not isinstance(domain, str) or len(app + "." + domain) > 253
+            or not re.fullmatch(label + r"(?:\." + label + r")+", domain)):
+        raise ValueError("Owned environment defaultDomain must be a DNS suffix")
+    return "https://" + app + "." + domain
+
+
 class DeploymentError(Exception):
     pass
 
@@ -64,6 +73,7 @@ class Deployment:
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{2,62}", self.table):
             raise DeploymentError("AUTH_TABLE_NAME must be 3-63 ASCII alphanumeric characters starting with a letter")
         self.identity = {"clientId": None, "principalId": None}
+        self.origin = None
         self.params = {"location": self.location, "appName": self.app, "storageName": self.storage,
                        "vaultName": self.vault, "deployApp": not self.foundation, "tableName": self.table}
         self.request_budget()
@@ -149,7 +159,7 @@ class Deployment:
             raise DeploymentError("Azure malformed object response")
         return value
 
-    def inspect(self):
+    def inspect(self, verify_ingress=False):
         group = self.az(["group", "show", "--name", self.group])
         if str(group.get("id", "")).lower() != self.scope.lower() or group.get("location") != self.location:
             raise DeploymentError("Azure resource group identity/location mismatch")
@@ -157,7 +167,7 @@ class Deployment:
             resource_id = self.resource_id(kind, name)
             resource = self.az(["resource", "show", "--ids", resource_id, "--api-version", version], allow_missing=True)
             if resource is None:
-                if not self.foundation and role != "auth-service":
+                if not self.foundation and (role != "auth-service" or verify_ingress):
                     raise DeploymentError("Runtime requires existing foundation and operator-granted access")
                 continue
             if str(resource.get("id", "")).lower() != resource_id.lower() or str(resource.get("type", "")).lower() != kind.lower():
@@ -177,6 +187,24 @@ class Deployment:
                 raise DeploymentError(f"Ownership conflict for {name}; refusing adoption")
             if not container and resource.get("location") != self.location:
                 raise DeploymentError(f"Resource location conflict for {name}")
+            if kind == RESOURCE_TYPES[2]:
+                properties = resource.get("properties")
+                domain = properties.get("defaultDomain") if isinstance(properties, dict) else None
+                origin = canonical_origin(self.app, domain)
+                if self.origin is not None and origin != self.origin:
+                    raise DeploymentError("Owned environment domain changed during deployment")
+                self.origin = origin
+            if verify_ingress and kind == RESOURCE_TYPES[6]:
+                properties = resource.get("properties")
+                configuration = properties.get("configuration") if isinstance(properties, dict) else None
+                ingress = configuration.get("ingress") if isinstance(configuration, dict) else None
+                if not isinstance(ingress, dict):
+                    raise DeploymentError("Deployed public ingress is unavailable")
+                if (properties.get("environmentId", "").lower() != self.resource_id(
+                        RESOURCE_TYPES[2], self.app + "-environment").lower()
+                        or ingress.get("external") is not True
+                        or ingress.get("fqdn") != self.origin.removeprefix("https://")):
+                    raise DeploymentError("Deployed public ingress differs from the canonical broker origin")
             if kind == RESOURCE_TYPES[0]:
                 properties = resource.get("properties")
                 if not isinstance(properties, dict):
@@ -202,6 +230,8 @@ class Deployment:
             from validate_arm import validate
             validate(template)
             self.inspect()
+            if self.origin is not None:
+                print(f"Broker origin: {self.origin}", file=sys.stderr)
             parameters = Path(directory) / "parameters.json"
             parameters.write_text(json.dumps({"parameters": {key: {"value": value} for key, value in self.params.items()}}), encoding="utf-8")
             common = ["--resource-group", self.group, "--name", f"auth-{self.app}", "--mode", "Incremental",
@@ -225,6 +255,8 @@ class Deployment:
                 result = self.az(["deployment", "group", "create", *common])
                 if not isinstance(result.get("properties"), dict) or result["properties"].get("provisioningState") != "Succeeded":
                     raise DeploymentError("Deployment did not report Succeeded; inspect Azure before retrying")
+                if not self.foundation:
+                    self.inspect(verify_ingress=True)
                 # Foundation creates the identity; read its platform-issued IDs.
                 if self.foundation:
                     self.inspect()
@@ -236,6 +268,7 @@ class Deployment:
         endpoint = f"https://{self.storage}.table.core.windows.net/"
         configuration = {
             "Broker__TableEndpoint": endpoint, "Broker__TableName": self.table,
+            "Broker__BrokerOrigin": self.origin,
             "Broker__ManagedIdentityClientId": self.identity["clientId"],
             "Broker__RequestLimitPerMinute": self.params["requestLimitPerMinute"],
             "Broker__ConcurrentRequestLimit": self.params["concurrentRequestLimit"],
@@ -243,7 +276,7 @@ class Deployment:
         }
         if not self.foundation:
             configuration["Broker__DeploymentEpoch"] = self.params["deploymentEpoch"]
-        return {"appName": self.app, "runtimeIdentityId": self.resource_id(RESOURCE_TYPES[0], self.app + "-runtime"),
+        return {"appName": self.app, "brokerOrigin": self.origin, "runtimeIdentityId": self.resource_id(RESOURCE_TYPES[0], self.app + "-runtime"),
                 "runtimeIdentityClientId": self.identity["clientId"], "runtimeIdentityPrincipalId": self.identity["principalId"],
                 "keyVaultName": self.vault, "dataProtectionBlobUri": f"https://{self.storage}.blob.core.windows.net/data-protection/keyring.xml",
                 "tableEndpoint": endpoint, "tableName": self.table,

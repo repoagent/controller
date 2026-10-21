@@ -20,6 +20,10 @@ SCOPE = f'/subscriptions/{SUBSCRIPTION}/resourceGroups/{GROUP}'
 VAULT = 'ra-0d59e18d5f921c41-kv'
 STORAGE = 'ra0d59e18d5f921c41dp'
 TABLE_ID = f'{SCOPE}/providers/Microsoft.Storage/storageAccounts/{STORAGE}/tableServices/default/tables/brokerstate'
+DOMAIN = 'gentle-field-123.swedencentral.azurecontainerapps.io'
+ORIGIN = 'https://auth-test.' + DOMAIN
+ENVIRONMENT_ID = f'{SCOPE}/providers/Microsoft.App/managedEnvironments/auth-test-environment'
+APP_ID = f'{SCOPE}/providers/Microsoft.App/containerApps/auth-test'
 CLIENT_ID = '11111111-2222-3333-4444-555555555555'
 PRINCIPAL_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 MANIFEST = [
@@ -49,6 +53,9 @@ def owned_resources():
                                'tags': ownership, 'properties': {'metadata': ownership}}
     result[f'{SCOPE}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-runtime']['properties'] = {
         'clientId': CLIENT_ID, 'principalId': PRINCIPAL_ID}
+    result[ENVIRONMENT_ID]['properties'] = {'defaultDomain': DOMAIN}
+    result[APP_ID]['properties'] = {'environmentId': ENVIRONMENT_ID, 'configuration': {
+        'ingress': {'external': True, 'fqdn': ORIGIN.removeprefix('https://')}}}
     return result
 
 
@@ -107,6 +114,44 @@ class DeploymentProcessTests(unittest.TestCase):
             args = call['args']
             command = tuple(args[:3] if args[0] == 'deployment' else args[:2])
             self.assertIn(command, read_commands, 'Refusal must not issue any mutation command')
+
+    def test_origin_is_unresolved_offline_and_stable_on_first_and_repeated_apply(self):
+        result = self.run_deploy('check')
+        self.assertIsNone(json.loads(result.stdout)['brokerOrigin'])
+        self.assertEqual(self.calls, [])
+        app = self.scenario['resources'].pop(APP_ID)
+        self.scenario['postCreateResources'] = {APP_ID: app}
+        for _ in range(2):
+            result = self.run_deploy()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['brokerOrigin'], ORIGIN)
+            self.assertEqual(json.loads(result.stdout)['runtimeConfiguration']['Broker__BrokerOrigin'], ORIGIN)
+            self.assertIn('Broker origin: ' + ORIGIN, result.stderr)
+            self.assertEqual(len(self.creates()), 1)
+            self.scenario['resources'][APP_ID] = app
+
+    def test_malformed_environment_domains_refuse_before_any_write(self):
+        for domain in (None, '', 123, [], 'https://example.test', 'user:pass@example.test',
+                       'example.test/path', 'example.test?query', 'example.test#fragment',
+                       'example.test:443', '.example.test', 'bad_.example.test', '-bad.example.test'):
+            with self.subTest(domain=domain):
+                self.scenario['resources'][ENVIRONMENT_ID]['properties']['defaultDomain'] = domain
+                self.assert_refused(self.run_deploy(), 'defaultDomain')
+
+    def test_foreign_environment_identity_and_location_refuse_before_write(self):
+        original = copy.deepcopy(self.scenario['resources'][ENVIRONMENT_ID])
+        for key, value in (('id', APP_ID), ('location', 'other-region'), ('tags', {})):
+            with self.subTest(key=key):
+                self.scenario['resources'][ENVIRONMENT_ID] = {**original, key: value}
+                self.assert_refused(self.run_deploy(), 'Auth deployment refused')
+
+    def test_public_ingress_mismatch_cannot_report_runtime_success(self):
+        self.scenario['resources'][APP_ID]['properties']['configuration']['ingress']['fqdn'] = 'foreign.example.test'
+        result = self.run_deploy()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('canonical broker origin', result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(len(self.creates()), 1)
 
     def test_invalid_configuration_and_each_unready_gate_stop_before_azure(self):
         cases = {'AUTH_APP_NAME': 'Bad Name', 'AZURE_SUBSCRIPTION_ID': 'wrong-subscription',
@@ -257,6 +302,7 @@ class DeploymentProcessTests(unittest.TestCase):
         output = json.loads(result.stdout)
         self.assertEqual(output['tableResourceId'], TABLE_ID)
         self.assertEqual(output['runtimeConfiguration'], {
+            'Broker__BrokerOrigin': None,
             'Broker__TableEndpoint': f'https://{STORAGE}.table.core.windows.net/',
             'Broker__TableName': 'brokerstate', 'Broker__ManagedIdentityClientId': None,
             'Broker__DeploymentEpoch': 'restore_2026-10-20',
@@ -284,6 +330,7 @@ class DeploymentProcessTests(unittest.TestCase):
         self.assertEqual(output['runtimeIdentityClientId'], CLIENT_ID)
         self.assertEqual(output['runtimeIdentityPrincipalId'], PRINCIPAL_ID)
         self.assertEqual(output['runtimeConfiguration'], {
+            'Broker__BrokerOrigin': ORIGIN,
             'Broker__TableEndpoint': f'https://{STORAGE}.table.core.windows.net/',
             'Broker__TableName': 'PilotState42', 'Broker__ManagedIdentityClientId': CLIENT_ID,
             'Broker__DeploymentEpoch': 'new_epoch-42', 'Broker__RequestLimitPerMinute': 234,

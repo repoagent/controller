@@ -8,6 +8,9 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "infra/auth"))
+from deploy import canonical_origin, OWNERSHIP
+
 
 def require(name, pattern):
     value = os.environ.get(name, '')
@@ -48,7 +51,7 @@ def inspect_image():
 def deploy(config):
     target = ['--subscription', config['AZURE_SUBSCRIPTION_ID'], '--resource-group',
               config['AUTH_RESOURCE_GROUP'], '--name', config['AUTH_APP_NAME']]
-    query = '{id:id,role:tags."repoagent-role",mode:properties.configuration.activeRevisionsMode,containers:properties.template.containers[].{name:name,image:image},latest:properties.latestRevisionName,ready:properties.latestReadyRevisionName}'
+    query = '{id:id,role:tags."repoagent-role",mode:properties.configuration.activeRevisionsMode,containers:properties.template.containers[].{name:name,image:image},environment:properties.environmentId,location:location,ingress:properties.configuration.ingress,origins:properties.template.containers[].env[?name==`Broker__BrokerOrigin`].value[],latest:properties.latestRevisionName,ready:properties.latestReadyRevisionName}'
     def app():
         return read_json(['az', 'containerapp', 'show', *target, '--query', query, '-o', 'json'])
     before = app()
@@ -57,6 +60,27 @@ def deploy(config):
         raise ValueError('Existing app identity or repoagent-role tag does not match auth-service target')
     if before.get('mode') != 'Single' or len(before.get('containers', [])) != 1:
         raise ValueError('Deployment requires an existing single-container app in Single revision mode')
+    environment_id = expected_id.rsplit('/Microsoft.App/', 1)[0] + '/Microsoft.App/managedEnvironments/' + config['AUTH_APP_NAME'] + '-environment'
+    environment = read_json(['az', 'resource', 'show', '--ids', environment_id,
+                             '--api-version', '2025-01-01', '--subscription', config['AZURE_SUBSCRIPTION_ID'], '-o', 'json'])
+    tags = environment.get('tags')
+    if (environment.get('id', '').lower() != environment_id.lower()
+            or environment.get('type', '').lower() != 'microsoft.app/managedenvironments'
+            or not isinstance(tags, dict)
+            or any(tags.get(key) != value for key, value in {**OWNERSHIP, 'role': 'auth-environment'}.items())
+            or not environment.get('location') or environment['location'] != before.get('location')):
+        raise ValueError('Owned broker environment identity/location/tags mismatch')
+    properties = environment.get('properties')
+    origin = canonical_origin(config['AUTH_APP_NAME'], properties.get('defaultDomain') if isinstance(properties, dict) else None)
+    def verify_origin(value):
+        ingress = value.get('ingress')
+        if (value.get('environment', '').lower() != environment_id.lower()
+                or not isinstance(ingress, dict) or ingress.get('external') is not True
+                or ingress.get('fqdn') != origin.removeprefix('https://')
+                or value.get('origins') != [origin]):
+            raise ValueError('Public ingress or configured broker origin differs from the owned environment')
+    verify_origin(before)
+    print('Broker origin: ' + origin)
     result = subprocess.run(['az', 'containerapp', 'update', *target,
                              '--container-name', before['containers'][0]['name'],
                              '--image', config['AUTH_IMAGE'], '--output', 'none'], capture_output=True)
@@ -64,6 +88,7 @@ def deploy(config):
         raise ValueError('Azure update failed; inspect the intended app in Azure')
     for _ in range(60):
         after = app()
+        verify_origin(after)
         if after.get('containers') != [{'name': before['containers'][0]['name'], 'image': config['AUTH_IMAGE']}]:
             raise ValueError('Resulting app image differs from requested immutable image')
         if after.get('latest') and after.get('latest') == after.get('ready'):

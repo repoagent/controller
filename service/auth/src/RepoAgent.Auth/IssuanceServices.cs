@@ -10,7 +10,16 @@ public static class IssuanceServices
     public static void Add(WebApplicationBuilder builder)
     {
         var configuration = builder.Configuration.GetSection("Auth");
-        if (configuration["SigningKeyUri"] is null) return; // Revoke-only deployment remains supported.
+        if (configuration["SigningKeyUri"] is null)
+        {
+            // Incomplete composition is supported; malformed supplied settings are not.
+            if (configuration["DataProtectionKeyUri"] is { } key) _ = KeyUri(key);
+            if (configuration["DataProtectionBlobUri"] is { } uri) _ = HttpsUri(uri);
+            if (configuration["DataProtectionApplicationName"] is { } name
+                && (string.IsNullOrWhiteSpace(name) || name.Length > 128))
+                throw new InvalidOperationException("Auth:DataProtectionApplicationName must identify the shared key ring.");
+            return;
+        }
         var signing = KeyUri(configuration["SigningKeyUri"]);
         var wrapping = KeyUri(configuration["DataProtectionKeyUri"]);
         var blob = HttpsUri(configuration["DataProtectionBlobUri"]);
