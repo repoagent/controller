@@ -368,7 +368,12 @@ class Deployment:
             return self.stage_lifecycle()
         if self.mode == "cost-plan":
             from cost_plan import budget_plan
-            return {**self.outputs(False), "budgetPlan": budget_plan(self.scope)}
+            try:
+                plan = budget_plan(self.scope)
+            except ValueError as error:
+                # This local validator emits fixed messages; decoding errors may contain input bytes.
+                raise DeploymentError(str(error) if type(error) is ValueError else "Budget plan must contain valid UTF-8 JSON") from None
+            return {**self.outputs(False), "budgetPlan": plan}
         if self.mode in ("check", "foundation-check"):
             return self.outputs(False)
         # Validate the real template before any Azure calls.
