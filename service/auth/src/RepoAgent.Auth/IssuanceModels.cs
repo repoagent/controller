@@ -20,6 +20,8 @@ public static class IssuancePolicy
     public static readonly TimeSpan PendingLifetime = TimeSpan.FromMinutes(15);
     public static IReadOnlyDictionary<string, string> Permissions(string profile) => profile switch
     {
+        "polling-clone" => new Dictionary<string, string> { ["discussions"] = "write", ["contents"] = "read" },
+        "webhook-clone" => new Dictionary<string, string> { ["discussions"] = "write", ["contents"] = "read", ["repository_hooks"] = "write" },
         "polling" => new Dictionary<string, string> { ["discussions"] = "write" },
         "webhook" => new Dictionary<string, string> { ["discussions"] = "write", ["repository_hooks"] = "write" },
         "agent-variable-verification" => new Dictionary<string, string> { ["agent_variables"] = "read" },
@@ -64,7 +66,7 @@ public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
             || IssuancePolicy.Text(Device, "AppSlug") != IssuancePolicy.AppSlug
             || IssuancePolicy.Text(Device, "GitHubHost") != "github.com"
             || IssuancePolicy.Text(Device, "PolicyVersion") != Approval.Policy
-            || InstallationId <= 0 || Profile is not ("polling" or "webhook")
+            || InstallationId <= 0 || !Approval.Allows(Profile)
             || Repository.Split('/') is not [var owner, var name] || !Segment(owner) || !Segment(name)
             || Variable.Length > 100 || !Variable.All(c => char.IsAsciiLetterOrDigit(c) || c == '_'))
             throw new IssuanceDenied();

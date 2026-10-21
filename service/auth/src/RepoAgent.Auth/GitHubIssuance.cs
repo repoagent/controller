@@ -40,7 +40,7 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
             work.Fresh(started);
             throw new ApprovalChanged();
         }
-        if (grant.Approval == ApprovalContract.Agent)
+        if (grant.Approval.IsAgent)
         {
             var approved = await ObserveAgentVariableAsync(grant.Repository, grant.Variable, grant.Marker, verifier, work);
             // A negative observation is authority to close only while all contributing

@@ -16,7 +16,9 @@ public static class AppGitHubCommand
             throw new InvalidOperationException("GitHub App credential is expired or unavailable; the bridge must refresh it before gh can run");
         Log.Protect(token);
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
-        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        var forwarded = arguments.ToArray();
+        forwarded = AppGitCredential.PrepareClone(start, tokenFile, forwarded);
+        foreach (var argument in forwarded) start.ArgumentList.Add(argument);
         IsolateEnvironment(start, Path.Combine(Path.GetDirectoryName(tokenFile)!, "gh-config"));
         start.Environment["GH_TOKEN"] = token;
         return start;

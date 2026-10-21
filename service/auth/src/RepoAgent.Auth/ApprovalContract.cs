@@ -10,6 +10,11 @@ internal sealed record ApprovalContract(string Kind, long SetupVersion, string P
     public static readonly ApprovalContract Legacy = new("environment-variable", 1, IssuancePolicy.Version, "verification");
     public static readonly ApprovalContract Agent = new("repository-agent-variable", 2, "repository-agent-approval-v2", "agent-variable-verification");
 
+    public static readonly ApprovalContract AgentClone = new("repository-agent-variable", 2, "repository-agent-clone-approval-v2", "agent-variable-verification");
+    public bool IsAgent => this == Agent || this == AgentClone;
+    public int RuntimeVersion => this == AgentClone ? 2 : 1;
+    public bool Allows(string profile) => this == AgentClone ? profile is "polling-clone" or "webhook-clone" : profile is "polling" or "webhook";
+
     public static ApprovalContract Read(TableEntity entity)
     {
         if (!entity.ContainsKey("ApprovalKind") && !entity.ContainsKey("SetupVersion"))
@@ -22,12 +27,12 @@ internal sealed record ApprovalContract(string Kind, long SetupVersion, string P
         var contract = Text(entity, "ApprovalKind") switch
         {
             "environment-variable" => Legacy,
-            "repository-agent-variable" => Agent,
+            "repository-agent-variable" => Text(entity, "PolicyVersion") == AgentClone.Policy ? AgentClone : Agent,
             _ => throw new IssuanceDenied()
         };
         if (Number(entity, "SetupVersion") != contract.SetupVersion || Text(entity, "PolicyVersion") != contract.Policy)
             throw new IssuanceDenied();
-        if (contract == Agent && (entity.ContainsKey("Environment") || entity.ContainsKey("EnvironmentId"))) throw new IssuanceDenied();
+        if (contract.IsAgent && (entity.ContainsKey("Environment") || entity.ContainsKey("EnvironmentId"))) throw new IssuanceDenied();
         return contract;
     }
 

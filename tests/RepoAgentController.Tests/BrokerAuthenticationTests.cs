@@ -243,6 +243,73 @@ public sealed class BrokerAuthenticationTests
         Assert.Empty(fixture.Transport.Requests);
     }
 
+    [Theory]
+    [InlineData("read")]
+    [InlineData("write")]
+    public async Task V1_file_rejects_Contents_before_any_broker_contact(string access)
+    {
+        using var fixture = new Fixture();
+        fixture.Enrollment["permissions"]!["contents"] = access;
+        fixture.SaveEnrollment();
+        Assert.Equal(1, await fixture.Start());
+        Assert.Empty(fixture.Transport.Requests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Clone_consumer_selects_v2_and_renewal_preserves_exact_profile(bool webhooks)
+    {
+        using var fixture = new Fixture(webhooks, clone: true);
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        Assert.Equal(1, fixture.Transport.Requests.Count);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        await credentials.GetToken(TestContext.Current.CancellationToken);
+        Assert.Equal(2, fixture.Transport.Requests.Count);
+        var cached = JsonNode.Parse(File.ReadAllText(fixture.TokenFile))!;
+        Assert.Equal(webhooks ? "webhook-clone" : "polling-clone", cached["profile"]!.GetValue<string>());
+        Assert.Equal("owner/repository", cached["repository"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData("profile")]
+    [InlineData("policyVersion")]
+    [InlineData("protocolVersion")]
+    [InlineData("permissions")]
+    [InlineData("appId")]
+    [InlineData("repositoryId")]
+    [InlineData("repository")]
+    [InlineData("missing")]
+    [InlineData("unknown")]
+    [InlineData("duplicate")]
+    [InlineData("redirect")]
+    public async Task Clone_lease_denial_clears_cache_without_retrying_v1(string defect)
+    {
+        using var fixture = new Fixture(clone: true);
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        fixture.Transport.Defect = defect;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
+        Assert.False(File.Exists(fixture.TokenFile));
+        Assert.Equal(2, fixture.Transport.Requests.Count);
+        Assert.All(fixture.Transport.Requests, uri => Assert.Contains("/v2/", uri.AbsolutePath));
+    }
+
+    [Theory]
+    [InlineData("profile")]
+    [InlineData("policyVersion")]
+    [InlineData("protocolVersion")]
+    public async Task Clone_file_requires_explicit_matching_family_before_contact(string field)
+    {
+        using var fixture = new Fixture(clone: true);
+        fixture.Enrollment.Remove(field);
+        fixture.SaveEnrollment();
+        Assert.Throws<InvalidOperationException>(() => fixture.Credentials());
+        Assert.Empty(fixture.Transport.Requests);
+    }
+
     sealed class Fixture : IDisposable
     {
         public string Directory { get; } = Path.Combine(Path.GetTempPath(), "broker-tests-" + Guid.NewGuid().ToString("N"));
@@ -256,16 +323,25 @@ public sealed class BrokerAuthenticationTests
         public Transport Transport { get; }
         readonly HttpClient http;
         readonly bool webhooks;
+        readonly bool clone;
         readonly string wrapper;
 
-        public Fixture(bool webhooks = false)
+        public Fixture(bool webhooks = false, bool clone = false)
         {
             this.webhooks = webhooks;
+            this.clone = clone;
             System.IO.Directory.CreateDirectory(Directory);
             Enrollment = JsonNode.Parse("""
                 {"protocolVersion":1,"brokerOrigin":"https://credentials.example.org","githubHost":"github.com","deviceId":"device-1","deviceSecret":"abcdefghijklmnopqrstuvwxyz_0123456789-ABCDEFG","appId":123,"appSlug":"test-app","installationId":234,"repositoryId":345,"repository":"owner/repository","permissions":{"discussions":"write"}}
                 """)!.AsObject();
             if (webhooks) Enrollment["permissions"]!["repository_hooks"] = "write";
+            if (clone)
+            {
+                Enrollment["protocolVersion"] = 2;
+                Enrollment["profile"] = webhooks ? "webhook-clone" : "polling-clone";
+                Enrollment["policyVersion"] = "repository-agent-clone-approval-v2";
+                Enrollment["permissions"]!["contents"] = "read";
+            }
             SaveEnrollment();
             Transport = new Transport(Clock, Enrollment);
             http = new HttpClient(Transport);
@@ -291,11 +367,12 @@ public sealed class BrokerAuthenticationTests
             File.WriteAllText(TokenFile + ".tmp", "prior-temporary-token");
         }
 
-        public GitHubAppCredentials Credentials() => GitHubAppCredentials.FromBroker(http, "https://credentials.example.org/", EnrollmentFile, "123", "OWNER/Repository", CredentialDirectory, Clock, webhooks);
+        public GitHubAppCredentials Credentials() => GitHubAppCredentials.FromBroker(http, "https://credentials.example.org/", EnrollmentFile, "123", "OWNER/Repository", CredentialDirectory, Clock, webhooks, clone);
 
         public Task<int> Start(string? option = null, string? value = null)
         {
             var args = new List<string> { "--repo", "owner/repository", "--app-id", "123", "--state", State, "--broker-url", "https://credentials.example.org", "--enrollment-file", EnrollmentFile, "--check-auth" };
+            if (clone) args.Add("--clone");
             if (webhooks) args.AddRange(["--webhook-url", "https://controller.example.org"]);
             if (option is not null)
             {
@@ -330,7 +407,7 @@ public sealed class BrokerAuthenticationTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Requests.Add(request.RequestUri!);
-            Assert.Equal("https://credentials.example.org/v1/devices/device-1/installation-token", request.RequestUri!.AbsoluteUri);
+            Assert.Equal($"https://credentials.example.org/v{enrollment["protocolVersion"]!.GetValue<int>()}/devices/device-1/installation-token", request.RequestUri!.AbsoluteUri);
             Assert.Equal(HttpMethod.Post, request.Method);
             Assert.Null(request.Content);
             Assert.Equal("application/json", request.Headers.Accept.Single().MediaType);
@@ -342,7 +419,9 @@ public sealed class BrokerAuthenticationTests
             switch (Defect)
             {
                 case "appId": case "installationId": case "repositoryId": result[Defect] = 999; break;
-                case "protocolVersion": result[Defect] = 2; break;
+                case "protocolVersion": result[Defect] = enrollment["protocolVersion"]!.GetValue<int>() == 1 ? 2 : 1; break;
+                case "profile": result[Defect] = "webhook-clone"; break;
+                case "policyVersion": result[Defect] = "repository-agent-approval-v2"; break;
                 case "appSlug": result[Defect] = "other-app"; break;
                 case "repository": result[Defect] = "owner/other"; break;
                 case "permissions": result["permissions"]!["contents"] = "write"; break;
