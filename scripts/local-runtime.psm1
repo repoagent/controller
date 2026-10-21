@@ -258,6 +258,11 @@ function Invoke-LocalUninstall([hashtable]$Options) {
         localCredentials='retained'; hostRecovery='unconfirmed'; revoke=$remote; selfRevoke='not-attempted'; result='partial' }
     Write-Host "Instance $($context.Instance); image $($context.Image); repository $($binding.repository); device $($binding.deviceId)."
     Write-Host "Approval $($binding.approvalKind): $($binding.approvalVariable); fingerprint $($binding.expectedValueSha256)."
+    if ($binding.approvalKind -eq 'environment-variable') {
+        $remote.githubEnvironment = $binding.githubEnvironment
+        $remote.environmentId = $binding.environmentId
+        Write-Host "GitHub Environment: $($binding.githubEnvironment); ID: $($binding.environmentId)."
+    }
     Write-Host 'Clear selected enrollment/enrollment.json, credentials/codex/auth.json and state/bridge.json.github-app/installation-token.json plus .tmp; retain all volumes.'
     if (-not $Options.Apply) {
         Write-Host 'Read-only preview; private-volume disable and binding remain unverified until Apply.'
