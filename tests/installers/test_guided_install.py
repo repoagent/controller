@@ -47,10 +47,6 @@ class GuidedInstallTests(unittest.TestCase):
     def setUpClass(cls):
         # Existing fixture setup builds only native executable transport shims.
         host.HostEnrollmentTests.setUpClass.__func__(cls)
-        gh_build = cls.fixture_build
-        runtime.PrivateRuntimeTests.setUpClass.__func__(cls)
-        cls.docker_build = cls.fixture_build
-        cls.fixture_build = gh_build
 
     def setUp(self, profile='polling'):
         self.journey = host.EnrollmentJourney(self, variable='APPROVED_CONTROLLER', profile=profile)
