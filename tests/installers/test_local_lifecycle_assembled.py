@@ -57,7 +57,7 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         self.assertEqual(original, hashlib.sha256((ROOT / 'container/runtime.py').read_bytes()).hexdigest())
         (directory / 'runtime.py').write_text("import runpy,signal,sys\nif sys.argv[1:] == ['start']:\n print(' ready repository=fixture controlled-runtime',flush=True)\n signal.pause()\nelse:\n runpy.run_path('/opt/repoagent/runtime-original.py',run_name='__main__')\n")
         docker('tag', parent, parent_alias)
-        (directory / 'Dockerfile').write_text('FROM ' + parent_alias + '\nUSER 0\nRUN mv /opt/repoagent/runtime.py /opt/repoagent/runtime-original.py\nCOPY runtime.py /opt/repoagent/runtime.py\nUSER 1000\n')
+        (directory / 'Dockerfile').write_text('FROM ' + parent_alias + '\nUSER 0\nRUN mv /opt/repoagent/runtime.py /opt/repoagent/runtime-original.py\nCOPY --chmod=0644 runtime.py /opt/repoagent/runtime.py\nUSER 1000\n')
         docker('build', '--network', 'none', '--pull=false', '--iidfile', str(directory / 'image-id'), str(directory))
         image = (directory / 'image-id').read_text().strip()
         source = directory / 'enrollment.json'
