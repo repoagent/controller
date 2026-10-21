@@ -25,6 +25,10 @@ public sealed class BrokerLifetimeTests
     public async Task User_cancellation_keeps_a_successful_exit_and_drains_native_work()
         => await Exercise("turn", false, true);
 
+    [Fact]
+    public async Task Concurrent_broker_renewal_and_native_disposal_cannot_orphan_a_bearer_holder()
+        => await Exercise("teardown", false, false);
+
     static async Task Exercise(string stage, bool webhooks, bool userCancellation, string failure = "denied")
     {
         if (!OperatingSystem.IsLinux()) return; // Shipping Linux process-tree boundary, observed through /proc.
@@ -57,6 +61,7 @@ public sealed class BrokerLifetimeTests
         using var unrelated = Process.Start("sleep", "300")!;
         Task<int>? run = null;
         using var stalled = new BrokerAuthenticationTests.StalledBody();
+        var renewalRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
             foreach (var pair in environment) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
@@ -66,6 +71,7 @@ public sealed class BrokerLifetimeTests
                 "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
                 "--workspace", fixture.Directory, "--interval", "3600"
             };
+            if (stage == "teardown") args.Add("--once");
             if (webhooks)
             {
                 using var port = new TcpListener(IPAddress.Loopback, 0);
@@ -91,7 +97,7 @@ public sealed class BrokerLifetimeTests
             var enrollment = File.ReadAllText(fixture.EnrollmentFile);
             var nativeHistory = File.ReadAllText(history);
             var admitted = File.ReadAllText(requests);
-            if (stage == "turn")
+            if (stage is "turn" or "teardown")
             {
                 Assert.Contains("turn/start", admitted);
                 Assert.NotNull(JsonNode.Parse(state)!["discussions"]!["D1"]!["pending"]);
@@ -104,9 +110,19 @@ public sealed class BrokerLifetimeTests
                     : failure == "denied" ? HttpStatusCode.Unauthorized : HttpStatusCode.OK;
                 fixture.Transport.Defect = failure is "malformed" or "transport" ? failure : null;
                 if (failure == "deadline") fixture.Transport.Body = stalled;
+                if (stage == "teardown") fixture.Transport.ResponseGate = renewalRelease.Task;
                 fixture.Transport.Requested = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 fixture.Clock.Advance(TimeSpan.FromMinutes(56));
                 await fixture.Transport.Requested.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                if (stage == "teardown")
+                {
+                    // Renewal is in flight. Let the accepted native turn finish and --once dispose.
+                    await connection.GetStream().WriteAsync(new byte[] { 1 }, TestContext.Current.CancellationToken);
+                    await parent.WaitForExitAsync(TestContext.Current.CancellationToken)
+                        .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                    // The old implementation has closed stdin and orphaned the child by this point.
+                    renewalRelease.TrySetResult();
+                }
                 if (failure == "deadline")
                 {
                     await stalled.Reading.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
@@ -115,11 +131,13 @@ public sealed class BrokerLifetimeTests
             }
             // Real-time deadline is a failure watchdog, never the renewal clock.
             var exit = await run.WaitAsync(TimeSpan.FromSeconds(8), TestContext.Current.CancellationToken);
-            Assert.Equal(userCancellation ? 0 : 1, exit);
+            // A completed normal teardown can cancel renewal before denial arrives; either way no child may survive.
+            if (stage != "teardown") Assert.Equal(userCancellation ? 0 : 1, exit);
             AssertStopped(parent);
             AssertStopped(child);
             Assert.False(unrelated.HasExited);
-            Assert.Equal(state, File.ReadAllText(fixture.State));
+            if (stage == "teardown") Assert.Null(JsonNode.Parse(File.ReadAllText(fixture.State))!["discussions"]!["D1"]!["pending"]);
+            else Assert.Equal(state, File.ReadAllText(fixture.State));
             Assert.Equal(enrollment, File.ReadAllText(fixture.EnrollmentFile));
             Assert.Equal(nativeHistory, File.ReadAllText(history));
             Assert.Equal(admitted, File.ReadAllText(requests));
@@ -131,6 +149,7 @@ public sealed class BrokerLifetimeTests
         }
         finally
         {
+            renewalRelease.TrySetResult();
             await shutdown.CancelAsync();
             foreach (var process in new[] { parent, child, unrelated })
                 if (process is not null && !process.HasExited) process.Kill(true);
@@ -156,9 +175,11 @@ public sealed class BrokerLifetimeTests
     // Only the unmanaged JSON-RPC peer is controlled; OS processes, pipes, token cache and locks are real.
     const string Native = """"
         #!/usr/bin/python3
-        import json,os,subprocess,sys
+        import json,os,signal,subprocess,sys,threading
         s=json.load(open(os.environ['NATIVE_DRAIN_SETTINGS']))
         child=None
+        acknowledged=threading.Event()
+        signal.signal(signal.SIGUSR1,lambda *_:acknowledged.set())
         def start_child():
          global child
          code=r"""
@@ -167,18 +188,22 @@ public sealed class BrokerLifetimeTests
         token=json.load(open(s['tokenFile']))['token']
         with socket.create_connection(('127.0.0.1',s['port'])) as ready:
          ready.sendall((json.dumps({'parent':os.getppid(),'child':os.getpid(),'credentialCopied':token.startswith('opaque-token-')})+'\n').encode())
+         if s['stage']=='teardown':ready.recv(1);os.kill(os.getppid(),signal.SIGUSR1)
         threading.Event().wait()
         """
          with open(s['history'],'w') as history:history.write('retain native history\n')
-         child=subprocess.Popen([sys.executable,'-c',code],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL)
+         child=subprocess.Popen([sys.executable,'-c','import signal\n'+code],stdin=subprocess.DEVNULL,stdout=None if s['stage']=='teardown' else subprocess.DEVNULL)
+         if s['stage']=='teardown':acknowledged.wait()
         for line in sys.stdin:
          request=json.loads(line)
          with open(s['requests'],'a') as log:log.write(line)
          method=request['method']
          if method=='initialize' and s['stage']=='initialize':start_child();continue
-         if method=='turn/start':start_child();continue
+         if method=='turn/start':
+          start_child()
+          if s['stage']!='teardown':continue
          if 'id' not in request:continue
-         result={'codexHome':os.getcwd()} if method=='initialize' else {'thread':{'id':'native-T1'}}
+         result={'codexHome':os.getcwd()} if method=='initialize' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1'}}
          print(json.dumps({'id':request['id'],'result':result}),flush=True)
         with open(s['eof'],'w') as marker:marker.write('EOF')
         if child and s['graceful']:child.terminate();child.wait()
@@ -190,7 +215,7 @@ public sealed class BrokerLifetimeTests
         a=sys.argv[1:]
         if a[:2]==['api','graphql']:
          q=json.load(sys.stdin)['query'];page={'nodes':[],'pageInfo':{'hasNextPage':False,'endCursor':None}}
-         discussion={'id':'D1','number':1,'url':'https://github.com/owner/repository/discussions/1','body':'@test-app[bot] work','bodyHTML':'work','title':'fixture','author':{'__typename':'User','login':'participant'},'reactionGroups':[]}
+         discussion={'id':'D1','number':1,'url':'https://github.com/owner/repository/discussions/1','body':'@test-app[bot] work','bodyHTML':'work','title':'fixture','author':{'__typename':'User','login':'participant'},'reactionGroups':[{'content':'EYES','viewerHasReacted':True}]}
          if 'query { viewer' in q:data={'viewer':{'login':'test-app[bot]'}}
          elif 'discussions(' in q:data={'repository':{'discussions':dict(page,nodes=[discussion])}}
          else:data={'node':{'comments' if 'comments(' in q else 'reactions':page}}

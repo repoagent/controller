@@ -413,10 +413,12 @@ public sealed class BrokerAuthenticationTests
         public string? Defect { get; set; }
         public Stream? Body { get; set; }
         public TaskCompletionSource? Requested { get; set; }
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        public Task? ResponseGate { get; set; }
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Requests.Add(request.RequestUri!);
             Requested?.TrySetResult();
+            if (ResponseGate is not null) await ResponseGate.WaitAsync(cancellationToken);
             Assert.Equal($"https://credentials.example.org/v{enrollment["protocolVersion"]!.GetValue<int>()}/devices/device-1/installation-token", request.RequestUri!.AbsoluteUri);
             Assert.Equal(HttpMethod.Post, request.Method);
             Assert.Null(request.Content);
@@ -450,8 +452,8 @@ public sealed class BrokerAuthenticationTests
             if (Defect == "malformed") body = "{DO-NOT-LOG";
             if (Defect == "oversized") body = new string('x', 65537);
             var status = Defect == "redirect" ? HttpStatusCode.TemporaryRedirect : Status;
-            return Defect == "transport" ? Task.FromException<HttpResponseMessage>(new HttpRequestException("transport unavailable"))
-                : Task.FromResult(new HttpResponseMessage(status) { Content = Body is not null ? new StreamContent(Body) : new StringContent(status == HttpStatusCode.OK ? body : "DO-NOT-LOG") });
+            if (Defect == "transport") throw new HttpRequestException("transport unavailable");
+            return new HttpResponseMessage(status) { Content = Body is not null ? new StreamContent(Body) : new StringContent(status == HttpStatusCode.OK ? body : "DO-NOT-LOG") };
         }
     }
 
