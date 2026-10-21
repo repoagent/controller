@@ -369,6 +369,52 @@ class ActivationProcessTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Local health/tools unavailable', result.stderr)
 
+    def assert_exec_processes_released(self):
+        execution = next(call for call in self.calls if call['args'][:2] == ['containerapp', 'exec'])
+        self.assertTrue(execution['stdinIsTty'])
+        self.assertEqual(execution['terminalSetup'], 'ok')
+        self.assertTrue(execution['terminalRestored'])
+        self.assertFalse(execution['stdoutIsTty'])
+        self.assertFalse(execution['stderrIsTty'])
+        self.assertIsNotNone(execution['terminalName'])
+        for pid in (execution['pid'], execution['parentPid']):
+            with self.assertRaises(ProcessLookupError, msg='No owned CLI/provider process may survive completion'):
+                os.kill(pid, 0)
+
+    def test_resume_captures_provider_output_and_releases_terminal_on_success_and_refusal(self):
+        self.env['AUTH_STAGE_REVISION'] = REVISION
+        self.scenario['responses']['containerapp revision list']['body'][0]['properties']['active'] = True
+        self.scenario['responses']['containerapp replica list']['body'] = [{'name': 'new-replica'}]
+        for healthy in (True, False):
+            with self.subTest(healthy=healthy):
+                # More than a pipe buffer on both streams exposes output forwarding
+                # and wait-before-drain deadlocks, without any actual credential.
+                self.scenario['responses']['containerapp exec'] = {
+                    'raw': CANARY + 'x' * 131072 + ('\nAUTH_LOCAL_HEALTH_OK' if healthy else ''),
+                    'stderr': CANARY + 'y' * 131072}
+                result = self.invoke('stage-resume')
+                self.assertEqual(result.returncode == 0, healthy, result.stderr)
+                if healthy:
+                    self.assertTrue(json.loads(result.stdout)['resumed'])
+                else:
+                    self.assertIn('Local health/tools unavailable', result.stderr)
+                    self.assertNotIn('"resumed": true', result.stdout)
+                self.assert_exec_processes_released()
+
+    def test_resume_timeout_kills_child_and_suppresses_partial_provider_output(self):
+        self.env['AUTH_STAGE_REVISION'] = REVISION
+        self.scenario['responses']['containerapp revision list']['body'][0]['properties']['active'] = True
+        self.scenario['responses']['containerapp replica list']['body'] = [{'name': 'new-replica'}]
+        self.scenario['responses']['containerapp exec'] = {'raw': CANARY, 'stderr': CANARY, 'delay': 65}
+        started = time.monotonic()
+        result = self.invoke('stage-resume')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLess(time.monotonic() - started, 74)
+        self.assertIn('TimeoutExpired', result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assert_exec_processes_released()
+
 
 class ActivationWorkflowConfigurationTests(unittest.TestCase):
     def test_activation_uses_existing_branch_oidc_scope_and_excludes_normal_jobs(self):

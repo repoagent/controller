@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 import termios
+import time
 import tty
 
 args = sys.argv[1:]
@@ -20,6 +21,11 @@ if command == 'containerapp exec':
     # Azure CLI's Unix exec transport requires terminal stdin even in CI.
     # Exercise that actual OS precondition instead of granting a health marker.
     record['stdinIsTty'] = sys.stdin.isatty()
+    record['stdoutIsTty'] = sys.stdout.isatty()
+    record['stderrIsTty'] = sys.stderr.isatty()
+    record['pid'] = os.getpid()
+    record['parentPid'] = os.getppid()
+    record['terminalName'] = os.ttyname(sys.stdin.fileno()) if record['stdinIsTty'] else None
     previous = termios.tcgetattr(sys.stdin.fileno()) if record['stdinIsTty'] else None
     try:
         tty.setcbreak(sys.stdin.fileno())
@@ -90,4 +96,8 @@ if '--query' in args:
     import jmespath
     body = jmespath.search(args[args.index('--query') + 1], body)
 journal()
-print(response['raw'] if 'raw' in response else json.dumps(body))
+if 'stderr' in response:
+    print(response['stderr'], file=sys.stderr, flush=True)
+print(response['raw'] if 'raw' in response else json.dumps(body), flush=True)
+if 'delay' in response:
+    time.sleep(response['delay'])
