@@ -79,16 +79,24 @@ $stage = 'validate the selected plan'
 $diagnostic = 'Check the selected inputs and private saved state; nothing is repaired automatically.'
 $oldInstance = $env:REPOAGENT_INSTANCE
 $oldImage = $env:REPOAGENT_IMAGE
+$promptedRequired = $false
 function Stop-Install([string]$Message) { $script:diagnostic = $Message; throw 'Installation stopped.' }
 function Setting([string]$Name, [string]$Default = '', [switch]$Required) {
     $field = $Name.Substring(0, 1).ToLowerInvariant() + $Name.Substring(1)
     $value = if ($provided.ContainsKey($Name)) { [string]$provided[$Name] }
         elseif ($saved -and $saved.Contains($field)) { [string]$saved[$field] }
         else { $Default }
-    if (-not $value -and $Required -and -not $NonInteractive) { $value = Read-Host "Supply -$Name" }
+    if (-not $value -and $Required -and -not $NonInteractive) { $script:promptedRequired = $true; $value = Read-Host "Supply -$Name" }
     if (-not $value -and $Required) { Stop-Install "Supply -$Name, or use the original instance/state directory to resume." }
     if ($value -match '[\p{Cc}]') { Stop-Install "-$Name cannot contain control characters." }
     return $value
+}
+function Select-RepositoryContext {
+    if ($promptedRequired -and -not $NonInteractive -and -not $provided.ContainsKey('Clone') -and -not $saved -and -not $approval -and
+        -not (Test-Path -LiteralPath $enrollmentPath) -and -not (Test-Path -LiteralPath (Join-Path $StateDirectory 'recovery.json'))) {
+        $answer = Read-Host 'Clone this repository for context and trust its instructions/configuration? [y/N]'
+        $script:resolvedClone = $answer -in @('y', 'yes')
+    }
 }
 function Input-File([string]$Path) {
     if ($Path -match '[,\r\n]' -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { Stop-Install 'Selected input file is missing or has a path containing commas/newlines.' }
@@ -158,7 +166,7 @@ try {
     }
     $Repository = Setting Repository $Repository -Required
     $Mode = Setting Mode 'polling'
-    $resolvedProfile = Setting EnrollmentProfile $(if ($EnrollmentProfile) { $EnrollmentProfile } else { 'polling' })
+    $resolvedProfile = ''
     $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin
     $ApprovalVariable = Setting ApprovalVariable $(if ($ApprovalVariable) { $ApprovalVariable } else { 'APPROVED_CONTROLLER' })
     $AppId = Setting AppId
@@ -179,11 +187,16 @@ try {
     if ($ListenPort -notmatch '^[0-9]{1,5}$' -or [int]$ListenPort -notin 1..65535 -or $ReconcileInterval -notmatch '^[1-9][0-9]{0,8}$') { Stop-Install 'ListenPort must be 1–65535 and ReconcileInterval a positive integer.' }
     if ($Mode -eq 'fixed-url') { $PublicUrl = Setting PublicUrl -Required; $PublicUrl = Get-BrokerOrigin $PublicUrl }
     if ($Authentication -eq 'Broker') {
-        if ($resolvedClone) { Stop-Install 'Guided Broker installation supports ordinary polling only. Use explicit host enrollment and a fresh instance for clone authority.' }
         if ($KeyPath -or $provided.ContainsKey('AppId')) { Stop-Install 'Broker and own-App key/App selectors cannot be combined.' }
-        if ($Mode -ne 'polling' -or $resolvedProfile -ne 'polling') { Stop-Install 'Guided Broker installation supports polling only; mode and profile must both be polling.' }
         $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin -Required
         $BrokerOrigin = Get-BrokerOrigin $BrokerOrigin
+        Select-RepositoryContext
+        $expectedProfile = if ($resolvedClone) { if ($Mode -eq 'polling') { 'polling-clone' } else { 'webhook-clone' } } else { 'polling' }
+        $resolvedProfile = Setting EnrollmentProfile $(if ($EnrollmentProfile) { $EnrollmentProfile } else { $expectedProfile })
+        if ($resolvedProfile -cne $expectedProfile -or (-not $resolvedClone -and $Mode -ne 'polling')) {
+            Stop-Install 'Mode and clone selection must match the enrollment profile; ordinary guided setup supports polling only.'
+        }
+        if ($resolvedClone -and $approval -and $approval.profile -cne $expectedProfile) { Stop-Install 'Changing clone authority requires a fresh instance and enrollment.' }
         $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
         $enrollOptions = @{ Repository=$Repository; BrokerOrigin=$BrokerOrigin; ApprovalVariable=$ApprovalVariable; Profile=$resolvedProfile; StateDirectory=$StateDirectory; NonInteractive=$true }
         $global:LASTEXITCODE = 0
@@ -192,6 +205,7 @@ try {
     } else {
         if ($BrokerOrigin -or $provided.ContainsKey('ApprovalVariable') -or $provided.ContainsKey('EnrollmentProfile')) { Stop-Install 'OwnApp cannot use broker enrollment selectors.' }
         $AppId = Setting AppId -Required; $KeyPath = Input-File (Setting KeyPath -Required)
+        Select-RepositoryContext
         if ($AppId -cnotmatch '^(?:[0-9]+|Iv[A-Za-z0-9.]+)$') { Stop-Install 'Supply an App ID or client ID, not a token.' }
         $ApprovalVariable = ''; $resolvedProfile = ''
     }
@@ -259,7 +273,10 @@ try {
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
         listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; toolUpdates=$ToolUpdates; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath }
     Write-Host "Instance: $Instance; repository: $Repository; authentication: $Authentication; mode: $Mode"
-    if ($resolvedClone) { Write-Host 'OwnApp clone mode: Contents read in addition to the selected Discussion profile; fresh authority is required.' }
+    if ($resolvedClone) {
+        Write-Host "Repository context: $resolvedProfile; Contents read, Discussions write$(if ($Mode -ne 'polling') { ', repository hooks write' }). Fresh instance and approval required."
+        Write-Host 'Persistent checkout: /workspace/repository. Trust this exact repository root for native instructions, project configuration and local skills.'
+    }
     Write-Host "Host launch/recovery state: $StateDirectory"
     Write-Host "Image: $(if ($runtimeImageId) { $runtimeImageId } else { 'pending build' }); base: $baseImage; platform: linux/amd64; maintained compatibility: Ubuntu 26.04."
     Write-Host "Manifest: $ImageManifest; SHA256: $manifestHash; controller source: $($software.controller.source)."
@@ -317,11 +334,12 @@ try {
     $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--tool-updates', $ToolUpdates, '--web-search', $WebSearch)
     if ($resolvedClone) { $configuration += '--clone' }
     if ($InstallationId) { $configuration += @('--installation-id', $InstallationId) }
+    $configuration += @('--listen-port', $ListenPort, '--reconcile-interval', $ReconcileInterval, "--public-url=$PublicUrl")
     if ($Authentication -eq 'Broker') { $configuration += @('--broker-url', $BrokerOrigin, '--enrollment-file', $enrollmentPath) }
     else {
         & docker run --rm --mount "type=bind,src=$KeyPath,dst=/run/secrets/github-app.pem,readonly" --entrypoint sh $runtimeImageId -c 'test -r /run/secrets/github-app.pem'
         if ($LASTEXITCODE -ne 0) { Stop-Install 'Docker UID1000 cannot read the selected PEM; check permissions/file sharing.' }
-        $configuration += @('--key-path', $KeyPath, '--listen-port', $ListenPort, '--reconcile-interval', $ReconcileInterval, "--public-url=$PublicUrl")
+        $configuration += @('--key-path', $KeyPath)
     }
     Invoke-Runtime $configuration
     $stage = 'check Codex sign-in'
