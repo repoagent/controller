@@ -5,6 +5,7 @@ param appName string
 param storageName string
 param vaultName string
 param deployApp bool = false
+param staged bool = false
 param image string = ''
 param signingKeyUri string = ''
 param dataProtectionKeyUri string = ''
@@ -122,6 +123,24 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
+var stagedConfiguration = { activeRevisionsMode: 'Single', maxInactiveRevisions: 3 }
+var releaseConfiguration = {
+  activeRevisionsMode: 'Single'
+  maxInactiveRevisions: 3
+  ingress: {
+    external: true
+    allowInsecure: false
+    targetPort: 8080
+    transport: 'http'
+  }
+}
+var stagedScale = { minReplicas: 1, maxReplicas: 1, rules: [] }
+var releaseScale = {
+  minReplicas: 0
+  maxReplicas: 1
+  rules: [{ name: 'http', http: { metadata: { concurrentRequests: '10' } } }]
+}
+
 resource app 'Microsoft.App/containerApps@2025-01-01' = if (deployApp) {
   name: appName
   location: location
@@ -133,16 +152,7 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = if (deployApp) {
   properties: {
     environmentId: environment.id
     workloadProfileName: 'Consumption'
-    configuration: {
-      activeRevisionsMode: 'Single'
-      maxInactiveRevisions: 3
-      ingress: {
-        external: true
-        allowInsecure: false
-        targetPort: 8080
-        transport: 'http'
-      }
-    }
+    configuration: staged ? stagedConfiguration : releaseConfiguration
     template: {
       containers: [{
         name: 'auth-service'
@@ -170,11 +180,7 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = if (deployApp) {
           { type: 'Readiness', httpGet: { path: '/health/ready', port: 8080 }, periodSeconds: 10, failureThreshold: 3 }
         ]
       }]
-      scale: {
-        minReplicas: 0
-        maxReplicas: 1
-        rules: [{ name: 'http', http: { metadata: { concurrentRequests: '10' } } }]
-      }
+      scale: staged ? stagedScale : releaseScale
     }
   }
 }

@@ -74,13 +74,99 @@ Use the IDs and resource-group name in the tables above. Updating a repository v
 
 The host needs GitHub-authorized Agent-variable write access; only the broker's internal verifier receives Agent variables read, subject to live installation-scope proof. Runtime controller profiles stay frozen without approval-variable access. No deployment resources, workflow, OIDC trust or live variable is changed by this decision; hosted acceptance remains required. See [the approval contract](auth-repository-approval.md).
 
-## Completing service deployment
+## First activation through existing OIDC
 
-The guarded Bicep foundation, runtime gates, operator-only permission template and local verification commands are documented in [authentication infrastructure](auth-infrastructure.md). They are source artifacts; no foundation or runtime apply has been performed.
+These are source mechanics, not hosted evidence. Source merge authorizes none of the live commands below. Obtain the specific operator authorization for publication, resource apply, key import, grants and variable changes. Keep #35/#28 open until actual hosted gates pass. Preserve nonsecret source/digest/app/revision/replica/origin, workflow-run and acceptance-evidence references; never private requests/responses or tokens in logs/artifacts.
 
-The automatic delivery source described above reuses the OIDC login and resource-group boundary. Its existing public image and hosted-readiness prerequisites still gate first activation; this runbook does not claim a staged activation path is delivered. Source scripts and local verification are not cloud evidence.
+The existing workflow has one shared main-only activation route: `foundation-plan`, `foundation-apply`, `stage-plan`, `stage-apply`, `promote-staged`, `stage-stop`, `stage-resume`. These choices exclude normal build/publication/deploy jobs. Every choice requires `expected-source-sha`: the exact full SHA must match the dispatched main checkout, `GITHUB_SHA` and actual remote main, rechecked before writes. A moving-main mismatch fails; deliberately accept the new artifact instead of bypassing the check. Runtime choices additionally require anonymous fixed-GHCR image attestation, including the source revision label. Existing branch OIDC, Contributor scope, concurrency and no-environment trust remain unchanged.
 
-Provision resources and runtime permissions through separately authorized operations, then prove image publication, rollout/rollback and hosted acceptance before reporting the service as available. The existing [delivery slices](research/2026-10-20-auth-delivery-slices.md#delivery-sequence-and-exit-criteria) and operations research retain those requirements; this bootstrap does not settle their open storage or authorization decisions.
+1. Select and retain stable `AUTH_APP_NAME`, dedicated Table name, external restore epoch and distinct signing/wrapping key names. Inspect the selected destination/configuration with authorized operator access; establish cost, cleanup and recovery ownership. Local `infra/auth/deploy.sh foundation-check` discovers deterministic names without Azure calls.
+2. Plan/apply foundation through the working OIDC route (the available local Azure session cannot select this subscription):
+
+   ```sh
+   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+     -f operation=foundation-plan -f expected-source-sha="$accepted_source"
+   # Inspect the plan/run output before separately authorized apply.
+   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+     -f operation=foundation-apply -f expected-source-sha="$accepted_source"
+   ```
+
+   Foundation guards remain unchanged; no image/hosted flags are needed and no app is created. Capture owned environment domain, runtime resource/client/principal IDs and exact Table/Blob/vault IDs. Apply starts billed resources and purge-protected vault retention.
+3. With separate key-administration authority, securely import the real GitHub App signing key and create a distinct wrapping key. With separate role authority, review/apply `runtime-rbac.bicep` at the exact key, Blob-container and Table scopes in [the infrastructure contract](auth-infrastructure.md#operator-only-permissions). Record only pinned version URIs. Never place PEM/key material in Bicep, argv or logs. Deployment Contributor cannot perform this role setup; do not broaden it.
+4. Stop/fence every broker writer. Initialize only a genuinely fresh dedicated Table with the two complete **Int64** quota entities in [retained-state.md](../service/auth/retained-state.md), verifying actual stored types/values. Existing unaccounted data requires an offline charged inventory; never seed it as zero.
+5. With separately authorized registry credentials established using stdin/private credential storage, bootstrap the real reviewed commit:
+
+   ```sh
+   AUTH_IMAGE_REPOSITORY=ghcr.io/repoagent/controller-auth GITHUB_SHA="$accepted_source" \
+     python3 scripts/delivery/auth-pipeline.py bootstrap-publish
+   ```
+
+   The helper archives the entire actual commit into temporary storage, runs source/service verification there and builds only its `service/auth` context. Dirty/untracked local source is excluded. It checks role/nonroot/Linux-amd64/revision, pushes only the fixed repository and records the actual source/digest. It never calls Azure. A private first push prints `publicationComplete=false` and fails anonymous attestation; retain that receipt. An operator must make that exact package public and grant repository Actions access. No helper changes registry visibility/permissions. Anonymous pull alone cannot establish Actions push access: bootstrap reports complete only when the operator has also supplied `AUTH_PACKAGE_ACTIONS_ACCESS_CONFIRMED=true` after verifying that access. This is an operator assertion, never set by the helper. Resume by anonymously attesting the recorded digest/source without rebuilding:
+
+   ```sh
+   AUTH_IMAGE_REPOSITORY=ghcr.io/repoagent/controller-auth AUTH_IMAGE="$accepted_image" \
+     AUTH_EXPECTED_SOURCE_SHA="$accepted_source" python3 scripts/delivery/auth-pipeline.py attest
+   ```
+
+   After resumed attestation and separate Actions-access verification, append both nonsecret evidence references to the original receipt. Do not rerun bootstrap merely to change its receipt status.
+
+6. Supply real nonsecret runtime configuration using the existing Actions variables (pinned distinct keys, epoch, stable app/Table configuration). Leave hosted flags unset/false. Review stage-plan, then separately authorize stage-apply:
+
+   ```sh
+   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+     -f operation=stage-plan -f expected-source-sha="$accepted_source" -f image="$accepted_image"
+   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+     -f operation=stage-apply -f expected-source-sha="$accepted_source" -f image="$accepted_image"
+   ```
+
+   Confirm ingress absent (internal ingress is also forbidden), immutable selected revision, actual runtime identity, canonical origin and temporary min/max 1/1. Compute/log bounds remain unchanged. A public app is refused, never taken offline. Staging sets no READY assertion and performs no public rollout verification.
+7. Use the selected-console procedure below for actual runtime/provider/private-repository, storage/recovery and denial evidence. Verify independent cleanup #72 with HTTP stopped/zero replicas; a local suite/readiness 200 does not prove that. Stop the isolated replica while paused.
+8. Only after every corresponding evidence item exists, set `AUTH_PROVIDER_READY`, `AUTH_STORAGE_READY`, `AUTH_CLEANUP_READY`, `AUTH_RUNTIME_ACCESS_READY` and `AUTH_DEPLOYMENT_READY` truthfully, then promote the *same digest*:
+
+   ```sh
+   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+     -f operation=promote-staged -f expected-source-sha="$accepted_source" -f image="$accepted_image"
+   ```
+
+   Promotion requires the current owned no-ingress staging app with that artifact and all release flags. It uses guarded full apply and public rollout/origin checks, restoring HTTPS/min 0/max 1 without rebuild. A newly built CI digest is a subsequent release with its own acceptance. Prove public TLS/cold start, bounded enrollment/recovery/ack, issuance/renewal, withdrawal/revocation/token settlement, rollback and selected-private-repository binding. Native Windows/Docker Desktop remains separately owned acceptance.
+
+## Selected console and private runtime evidence
+
+Use the returned app/revision and inspect replicas to select the exact `auth-service` container. Use Azure's existing selected-container exec or ephemeral debug console. An authorized CLI session can open:
+
+```sh
+az containerapp exec --subscription "$AZURE_SUBSCRIPTION_ID" --resource-group "$AZURE_RESOURCE_GROUP" \
+  --name "$AUTH_APP_NAME" --revision "$staging_revision" --replica "$staging_replica" \
+  --container auth-service --command /bin/sh
+```
+
+The production image uses standard ASP.NET 10.0.13 Ubuntu Noble and installs curl and jq for selected-container checks, retaining UID/GID 1654. Verify the actual deployed digest and installed tool options; a debug container must not be assumed to inherit the application's identity context. Require successful localhost `/health/live` and `/health/ready` on port 8080. Readiness200 proves composition only. Exercise normal broker enrollment/issuance/recovery endpoints for real lifecycle proof.
+
+Before private input, confirm console/session-recording policy supports it. Disable shell tracing and terminal echo; use `umask 077`, a private 0700 scratch directory and 0600 request/config/response files. Transfer secrets only through an approved private-input facility. Use installed tool-supported header configuration, body-file and response-file options; never expand bearer/identity headers into process argv, terminal output or logs. Use curl with a private `--config` file containing header, `data-binary = @<request-file>` and output-file settings; verify these options with nonsecret inputs first. Use jq to read tokens from private files and write extracted values to private files without terminal output. Missing tools/options/private-input support leaves acceptance failed; separately scope tooling rather than installing diagnostics or adding a production harness.
+
+Direct data-plane proof requires the selected auth-service container's actual `IDENTITY_ENDPOINT` and `IDENTITY_HEADER`, plus explicit `client_id` equal to the recorded runtime user-assigned client ID. Supply the header from a private config file, request `api-version=2019-08-01` and the appropriate `resource` (`https://storage.azure.com/` or `https://vault.azure.net`). Keep responses/tokens private. Verify returned identity context against recorded client/principal IDs before accepting evidence. Never use operator `az` credentials, a default identity or assumed debug identity inheritance.
+
+Prove Table access/ETags and denial outside the dedicated table; encrypted Blob key-ring persistence across selected-revision restart and denial outside its container; real App-key signing accepted by GitHub; distinct-key wrap/unwrap and denial outside each scope. Prove exact private-pilot installation-token repository/read scope and runtime approval-access denial. Prove epoch/restore recovery cannot revive revoked authority. Use normal broker requests for lifecycle behavior and private runtime-MI requests for direct scope evidence. Preserve only redacted outcomes/evidence references. Remove scratch files, clear sensitive variables, restore terminal state and close/clean up the ephemeral console session.
+
+## Confirmed isolated stop and resume
+
+Close acceptance/debug sessions. Both operations require exact source/digest and the recorded revision:
+
+```sh
+gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+  -f operation=stage-stop -f expected-source-sha="$accepted_source" \
+  -f image="$accepted_image" -f revision="$staging_revision"
+# Resume only when continuing acceptance:
+gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+  -f operation=stage-resume -f expected-source-sha="$accepted_source" \
+  -f image="$accepted_image" -f revision="$staging_revision"
+```
+
+Stop rechecks ownership/no ingress and the exact revision/digest, deactivates only that revision, then inspects every observed revision and each actual replica list. Confirmation requires no active revisions and zero actual replicas within a 60-second observation deadline. Empty/ambiguous/failed observations are not proof. Failure is unconfirmed shutdown, requiring operator inspection; a successful deactivate command alone does not establish zero compute. No deletion or permanent stop scheduler is used.
+
+Resume activates only that verified revision, reselects its replica and checks no ingress/digest plus local live/ready health through selected-container exec. Existing curl or wget is required; unavailable tools/console behavior or failed health produces unconfirmed resume. Re-establish private runtime identity context before data-plane acceptance. If main advanced, both routes refuse stale source; obtain a separately reviewed maintenance procedure rather than weaken source binding.
+
+Configured 1/1 is a per-revision target, not a global hard spend cap; maintenance/rollout can overlap replicas. Storage, logs and vault charges continue after confirmed zero compute replicas.
 
 ## Bootstrap history
 

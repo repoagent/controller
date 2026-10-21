@@ -9,7 +9,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "infra/auth"))
-from deploy import canonical_origin, OWNERSHIP
+from deploy import canonical_origin, OWNERSHIP, accepted_source, DeploymentError
 
 
 def require(name, pattern):
@@ -81,6 +81,8 @@ def deploy(config):
             raise ValueError('Public ingress or configured broker origin differs from the owned environment')
     verify_origin(before)
     print('Broker origin: ' + origin)
+    if os.environ.get('AUTH_EXPECTED_SOURCE_SHA') is not None:
+        accepted_source()
     result = subprocess.run(['az', 'containerapp', 'update', *target,
                              '--container-name', before['containers'][0]['name'],
                              '--image', config['AUTH_IMAGE'], '--output', 'none'], capture_output=True)
@@ -112,5 +114,5 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (ValueError, OSError) as error:
+    except (ValueError, OSError, DeploymentError, subprocess.SubprocessError) as error:
         sys.exit(str(error))

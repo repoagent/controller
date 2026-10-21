@@ -497,6 +497,20 @@ class DeploymentProcessTests(unittest.TestCase):
                 self.assert_refused(self.run_deploy('cost-plan'), 'Budget')
                 self.assertEqual(self.calls, [])
 
+    def test_cost_plan_decoding_failures_keep_budget_context_without_echoing_private_input(self):
+        canary = 'private-budget-input-must-not-escape'
+        for payload in (b'{"' + canary.encode() + b'":', canary.encode() + b'\xff'):
+            with self.subTest(payload=payload):
+                filename = self.directory / 'private-budget.json'
+                filename.write_bytes(payload)
+                self.env['AUTH_BUDGET_PLAN_FILE'] = str(filename)
+                result = self.run_deploy('cost-plan')
+
+                self.assert_refused(result, 'Budget')
+                self.assertEqual(self.calls, [])
+                self.assertEqual(result.stdout, '')
+                self.assertNotIn(canary, result.stderr + json.dumps(self.calls))
+
 
 if __name__ == '__main__':
     unittest.main()
