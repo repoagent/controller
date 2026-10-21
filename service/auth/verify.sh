@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+dotnet build dev/RepoAgent.Auth.AppHost/RepoAgent.Auth.AppHost.csproj --configuration Release --nologo
 
 image='mcr.microsoft.com/azure-storage/azurite@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5'
 results=$(mktemp -d)
