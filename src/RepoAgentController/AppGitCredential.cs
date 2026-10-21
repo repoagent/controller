@@ -200,7 +200,11 @@ internal static class AppGitCredential
                 if (line.Length == 0) break;
                 var text = line.ToString();
                 var split = text.IndexOf('=');
-                if (split <= 0 || !fields.TryAdd(text[..split], text[(split + 1)..])) throw new IOException();
+                if (split <= 0) throw new IOException();
+                var name = text[..split];
+                // Git sends repeated informational arrays; they never select our authority or credential.
+                if (name is not ("capability[]" or "wwwauth[]" or "state[]") &&
+                    !fields.TryAdd(name, text[(split + 1)..])) throw new IOException();
                 line.Clear();
                 if (count == 0) break;
             }
