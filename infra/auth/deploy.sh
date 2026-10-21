@@ -92,6 +92,6 @@ case "$operation" in
     fi
     az deployment group show "${target[@]}" --name "auth-$AUTH_APP_NAME" \
       --query '{state:properties.provisioningState,outputs:properties.outputs}' --output json
-    az resource list "${target[@]}" --tag managedBy=repoagent-auth \
+    az resource list "${target[@]}" \
       --query '[].{name:name,type:type,location:location}' --output json ;;
 esac
