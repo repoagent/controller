@@ -69,6 +69,10 @@ class CheckoutRefreshTests(unittest.TestCase):
         if build.returncode:
             raise RuntimeError(build.stdout + build.stderr)
         print('REFRESH_BUILD ' + build.stdout.strip(), flush=True)
+        controller = os.environ.get('CHECKOUT_CONTROLLER')
+        if controller and not Path(controller).is_absolute():
+            raise RuntimeError('CHECKOUT_CONTROLLER must be an absolute executable path')
+        cls.controller_command = [str(Path(controller).resolve(strict=True))] if controller else ['dotnet', str(CONTROLLER)]
 
     def test_restart_reconciles_the_owned_checkout_to_the_current_default_branch(self):
         with tempfile.TemporaryDirectory(prefix='checkout-refresh-') as temporary:
@@ -105,7 +109,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             state = directory / 'state.json'
             checkout = workspace / 'repository'
             owner = workspace / '.repoagent-checkout.json'
-            command = ['dotnet', str(CONTROLLER), '--repo', 'owner/project', '--app-id', '123',
+            command = self.controller_command + ['--repo', 'owner/project', '--app-id', '123',
                        '--broker-url', 'https://broker.fixture', '--enrollment-file', str(enrollment),
                        '--state', str(state), '--workspace', str(workspace), '--clone', '--once']
             before = git('--git-dir', directory / 'repositories/owner/project.git', 'rev-parse', 'HEAD')
@@ -168,7 +172,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 def git(*args): return run(['git', *args])
                 state = directory / 'state.json'
                 checkout = workspace / 'repository'
-                command = ['dotnet', str(CONTROLLER), '--repo', 'owner/project', '--app-id', '123', '--broker-url',
+                command = self.controller_command + ['--repo', 'owner/project', '--app-id', '123', '--broker-url',
                            'https://broker.fixture', '--enrollment-file', str(enrollment), '--state', str(state),
                            '--workspace', str(workspace), '--clone', '--interval', '1']
                 if not clone: command.remove('--clone')
