@@ -140,10 +140,10 @@ class CheckoutRefreshTests(unittest.TestCase):
 
 
     @contextmanager
-    def fixture(self, protocol=False):
+    def fixture(self, protocol=False, responses=False):
         with tempfile.TemporaryDirectory(prefix='refresh-matrix-') as temporary:
             directory = Path(temporary)
-            provider = GitProvider(directory)
+            provider = GitProvider(directory, responses=responses)
             try:
                 home, workspace = directory / 'home', directory / 'workspace'
                 home.mkdir(mode=0o700); workspace.mkdir()
@@ -368,7 +368,7 @@ class CheckoutRefreshTests(unittest.TestCase):
         for _ in range(5):
             f.wait('poll-completed success=True')
             journal = json.loads(f.journal.read_text())
-            if not journal.get('applying'):
+            if not journal.get('applying') and journal['completed'] == journal['requested']:
                 self.assertFalse(journal['blocked'])
                 self.assertEqual(journal['completed'], journal['requested'])
                 return
@@ -557,6 +557,73 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
             self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
             print('GAP late-FETCH_HEAD=' + initial + ' captured-applied=' + target, flush=True)
+
+
+
+    def test_genuine_controller_resume_receives_refreshed_instructions_skills_and_preserved_history(self):
+        from test_checkout_native import native_config
+        with self.fixture(responses=True) as f:
+            home, seed = f.directory / 'home', f.directory / 'seed'
+            config = home / 'config.toml'
+            config.write_text(config.read_text() + 'model = "gpt-6.1-sol"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Credential-free local fixture"\nbase_url = "https://broker.fixture/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n')
+            skill = seed / '.agents/skills/repo-refresh'
+            skill.mkdir(parents=True); (seed / '.codex').mkdir()
+            def context(version, effort):
+                (seed / 'AGENTS.md').write_text('Repository context NATIVE_AGENTS_' + version + '.\n')
+                (seed / '.codex/config.toml').write_text('model_reasoning_effort = "' + effort + '"\n')
+                (skill / 'SKILL.md').write_text('---\nname: repo-refresh\ndescription: Fixture scoped skill NATIVE_DESCRIPTION_' + version + '.\n---\nScoped instruction NATIVE_SKILL_BODY_' + version + '.\n')
+            context('A', 'low'); self.publish(f, content='native initial A\n')
+            with self.controller(f):
+                f.provider.discussions = [self.discussion(1)]
+                f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_FIRST'
+                first = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                self.assertEqual(first['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(first), flush=True)
+                self.settled(f)
+                self.assertEqual(first['params']['turn']['status'], 'completed')
+                self.assertEqual(len(f.provider.model_requests), 1)
+                session = json.loads(f.state.read_text())['discussions']['D1']['sessionId']
+                self.assertEqual(first['params']['threadId'], session)
+                rollout, = home.rglob('rollout-*.jsonl')
+                prefix = rollout.read_bytes()
+                self.assertIn(b'NATIVE_USER_FIRST', prefix)
+                self.assertIn(b'Harmless fixture assistant 1.', prefix)
+                request_a = json.dumps(f.provider.model_requests[0]['body'])
+                self.assertIn('NATIVE_AGENTS_A', request_a)
+                self.assertIn('NATIVE_SKILL_BODY_A', request_a)
+                context('B', 'high'); target = self.publish(f)
+                f.wait('checkout-refreshed'); self.settled(f)
+                probe = native_config(f.checkout, home, discovery=True, environment=f.environment)
+                self.assertEqual(probe['config']['model_reasoning_effort'], 'high')
+                project = [layer for layer in probe['layers'] if layer['name']['type'] == 'project']
+                self.assertTrue(project); self.assertFalse(project[0].get('disabledReason'))
+                listed = json.dumps(probe['fixtureSkills'])
+                self.assertIn(str(f.checkout / '.agents/skills/repo-refresh/SKILL.md'), listed)
+                self.assertIn('NATIVE_DESCRIPTION_B', listed)
+                self.assertNotIn('NATIVE_DESCRIPTION_A', listed)
+                f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_SECOND'
+                second = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                self.assertEqual(second['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(second), flush=True)
+                self.settled(f)
+                self.assertEqual(second['params']['turn']['status'], 'completed')
+                self.assertEqual(second['params']['threadId'], session)
+                self.assertEqual(json.loads(f.state.read_text())['discussions']['D1']['sessionId'], session)
+                self.assertEqual(len(f.provider.model_requests), 2)
+                request_b = json.dumps(f.provider.model_requests[1]['body'])
+                for text in ('NATIVE_USER_FIRST', 'Harmless fixture assistant 1.', 'NATIVE_USER_SECOND', 'NATIVE_AGENTS_B', 'NATIVE_SKILL_BODY_B'):
+                    self.assertIn(text, request_b)
+                self.assertLess(request_b.index('NATIVE_AGENTS_A'), request_b.index('NATIVE_AGENTS_B'))
+                self.assertIn('These AGENTS.md instructions replace all previously provided AGENTS.md instructions.', request_b)
+                self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
+                self.assertEqual(json.loads(f.journal.read_text())['active'], {})
+            final = rollout.read_bytes()
+            self.assertTrue(final.startswith(prefix))
+            self.assertIn(b'NATIVE_USER_SECOND', final)
+            self.assertIn(b'Harmless fixture assistant 2.', final)
+            self.assertFalse(any(item[0] == 'POST' for item in f.provider.denied))
+            print('NATIVE_INTEGRATION ' + json.dumps(dict(session=session, commit=target, requests=f.provider.model_requests,
+                  completions=[first, second], config=probe['config'], skills=probe['fixtureSkills'], denied=f.provider.denied,
+                  network=f.provider.requests, prefixLength=len(prefix), prefixSha256=hashlib.sha256(prefix).hexdigest(),
+                  finalPrefixSha256=hashlib.sha256(final[:len(prefix)]).hexdigest(), rolloutSha256=hashlib.sha256(final).hexdigest())), flush=True)
 
 
 

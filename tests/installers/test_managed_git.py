@@ -351,7 +351,7 @@ class ManagedGitTests(unittest.TestCase):
 
 
 class GitProvider:
-    def __init__(self, directory, fork=False, repository="owner/project", app_slug="test-app", token="lease-A", listen_host="127.0.0.1", broker_target=None, repository_id=345):
+    def __init__(self, directory, fork=False, repository="owner/project", app_slug="test-app", token="lease-A", listen_host="127.0.0.1", broker_target=None, repository_id=345, responses=False):
         self.directory = directory
         self.repository, self.app_slug = repository, app_slug
         self.broker_target = broker_target
@@ -361,6 +361,7 @@ class GitProvider:
         self.lease_offset_minutes = 0
         self.lease_status = 200
         self.requests = []
+        self.responses, self.model_requests, self.denied = responses, [], []
         self.cert = directory / 'cert.pem'
         self.key = directory / 'key.pem'
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
@@ -368,6 +369,13 @@ class GitProvider:
                         '-subj', '/CN=github.com', '-addext',
                         'subjectAltName=DNS:github.com,DNS:api.github.com,DNS:broker.fixture'],
                        check=True, capture_output=True)
+        self.server_cert, self.server_key = self.cert, self.key
+        if responses:
+            self.server_cert, self.server_key = directory / 'leaf.pem', directory / 'leaf.key'
+            extensions = directory / 'leaf.ext'
+            extensions.write_text('basicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:github.com,DNS:api.github.com,DNS:broker.fixture\n')
+            subprocess.run(['openssl', 'req', '-newkey', 'rsa:2048', '-nodes', '-keyout', str(self.server_key), '-out', str(directory / 'leaf.csr'), '-subj', '/CN=broker.fixture'], check=True, capture_output=True)
+            subprocess.run(['openssl', 'x509', '-req', '-in', str(directory / 'leaf.csr'), '-CA', str(self.cert), '-CAkey', str(self.key), '-CAcreateserial', '-out', str(self.server_cert), '-days', '1', '-extfile', str(extensions)], check=True, capture_output=True)
         seed = directory / 'seed'
         seed.mkdir()
         for args in [['init', '-b', 'main', str(seed)], ['-C', str(seed), 'config', 'user.email', 'fixture@example.test'],
@@ -404,12 +412,13 @@ class GitProvider:
                                     key.data.sendall(data)
                     return
                 if self.path not in ('github.com:443', 'api.github.com:443', 'broker.fixture:443'):
+                    provider.denied.append(('CONNECT', self.path))
                     self.send_error(403)
                     return
                 self.send_response(200)
                 self.end_headers()
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-                context.load_cert_chain(provider.cert, provider.key)
+                context.load_cert_chain(provider.server_cert, provider.server_key)
                 self.connection = context.wrap_socket(self.connection, server_side=True)
                 self.rfile = self.connection.makefile('rb')
                 self.wfile = self.connection.makefile('wb')
@@ -448,6 +457,19 @@ class GitProvider:
                     body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
                 host = self.headers.get('Host', '')
                 provider.requests.append((self.command, host, self.path))
+                if provider.responses and host == 'broker.fixture' and self.path.startswith('/v1/'):
+                    if self.command != 'POST' or self.path != '/v1/responses' or self.headers.get('Content-Encoding', 'identity') != 'identity' or self.headers.get('Authorization') or len(provider.model_requests) >= 2:
+                        provider.denied.append((self.command, host, self.path)); return self.reply({}, 403)
+                    provider.model_requests.append(dict(headers=dict(self.headers), body=json.loads(body)))
+                    print('RESPONSES_REQUEST ' + json.dumps(provider.model_requests[-1]), flush=True)
+                    number = len(provider.model_requests)
+                    rid = 'local-response-' + str(number)
+                    item = dict(type='message', role='assistant', id='local-message-' + str(number), content=[dict(type='output_text', text='Harmless fixture assistant ' + str(number) + '.')])
+                    events = [dict(type='response.created', response=dict(id=rid)), dict(type='response.output_item.done', item=item), dict(type='response.completed', response=dict(id=rid, usage=dict(input_tokens=0, input_tokens_details=None, output_tokens=0, output_tokens_details=None, total_tokens=0)))]
+                    payload = ''.join('event: ' + e['type'] + '\ndata: ' + json.dumps(e) + '\n\n' for e in events).encode()
+                    self.send_response(200); self.send_header('Content-Type', 'text/event-stream')
+                    self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
+                    return
                 if host == 'broker.fixture':
                     return self.reply(provider.lease() if provider.lease_status == 200 else {}, provider.lease_status)
                 if host == 'api.github.com':
