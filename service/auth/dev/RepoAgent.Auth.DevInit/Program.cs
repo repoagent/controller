@@ -40,7 +40,8 @@ foreach (var partition in new[] { "global:enrollment-v1", "global:issuance-v1" }
 await container.CreateIfNotExistsAsync(cancellationToken: ct);
 var keys = new KeyClient(vault, new EmulatedTokenCredential(vault.AbsoluteUri),
     new KeyClientOptions { DisableChallengeResourceVerification = true });
-var signing = await GetOrCreateKey("signing", configuration["SigningKeyPemPath"]);
+var pemPath = configuration["SigningKeyPemPath"];
+var signing = await GetOrCreateKey(string.IsNullOrEmpty(pemPath) ? "development-signing" : "app-signing", pemPath);
 var wrapping = await GetOrCreateKey("wrapping", null);
 var settings = new
 {
@@ -67,8 +68,8 @@ if (!OperatingSystem.IsWindows()) writeOptions.UnixCreateMode = UnixFileMode.Use
 await using (var stream = new FileStream(file, writeOptions))
     await JsonSerializer.SerializeAsync(stream, settings, new JsonSerializerOptions { WriteIndented = true }, ct);
 Console.WriteLine("Local broker storage and pinned emulator keys are ready.");
-Console.WriteLine(string.IsNullOrEmpty(configuration["SigningKeyPemPath"])
-    ? "Generated signing key: real GitHub App authentication requires an explicitly supplied App key."
+Console.WriteLine(string.IsNullOrEmpty(pemPath)
+    ? "Using a generated development signing key; real GitHub App authentication requires an explicitly supplied App key."
     : "Using the explicitly supplied GitHub App signing key in the local vault.");
 
 async Task<KeyVaultKey> GetOrCreateKey(string name, string? pemPath)
