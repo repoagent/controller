@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Azure.Data.Tables;
 using Xunit;
 
 namespace RepoAgent.Auth.Tests;
@@ -62,13 +63,15 @@ public sealed class CloneEnrollmentContractTests
         using var ack = await f.Send($"/v2/devices/{device}/acknowledgment",
             new { completionId = receipt.GetProperty("completionId").GetString() }, secret);
         Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
-        if (runtimeVersion == 2)
-        {
-            var mints = f.GitHub.Mints;
-            using var wrongFamily = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
-            Assert.Equal(HttpStatusCode.Unauthorized, wrongFamily.StatusCode);
-            Assert.Equal(mints, f.GitHub.Mints);
-        }
+        var beforeMismatch = await DurableVersions(f);
+        var mints = f.GitHub.Mints;
+        using var wrongFamily = await f.Send($"/v{3 - runtimeVersion}/devices/{device}/installation-token", secret: secret);
+        Assert.Equal(HttpStatusCode.Unauthorized, wrongFamily.StatusCode);
+        using var wrongRevoke = await f.Send($"/v{3 - runtimeVersion}/devices/{device}", secret: secret, method: HttpMethod.Delete);
+        Assert.Equal(HttpStatusCode.Unauthorized, wrongRevoke.StatusCode);
+        Assert.Equal(mints, f.GitHub.Mints);
+        // No durable quota, attempt, slot or enrollment write may precede family rejection.
+        Assert.Equal(beforeMismatch, await DurableVersions(f));
         for (var renewal = 0; renewal < 2; renewal++)
         {
             f.Clock.Advance(TimeSpan.FromMinutes(1));
@@ -86,6 +89,69 @@ public sealed class CloneEnrollmentContractTests
                 Assert.Equal(policy, lease.GetProperty("policyVersion").GetString());
             }
         }
+        if (runtimeVersion == 2)
+        {
+            f.GitHub.Marker = "";
+            f.Clock.Advance(TimeSpan.FromMinutes(1));
+            using var removed = await f.Send(route, secret: secret);
+            Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
+            f.GitHub.Marker = marker;
+            await f.RestartAsync();
+            f.Clock.Advance(TimeSpan.FromMinutes(1));
+            using var restored = await f.Send(route, secret: secret);
+            Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
+        }
+    }
+
+    [Theory]
+    [InlineData("ApprovalKind", "")]
+    [InlineData("SetupVersion", "")]
+    [InlineData("PolicyVersion", "repository-agent-approval-v2")]
+    [InlineData("Profile", "polling")]
+    public async Task Clone_durable_family_corruption_denies_before_reservation_or_provider(string field, string value)
+    {
+        await using var f = await EnrollmentFixture.CreateAsync();
+        ConfigureGitHub(f, "polling-clone");
+        using var start = await f.Send("/v2/enrollments", new
+        {
+            idempotencyId = Guid.NewGuid().ToString("N"), repositoryId = 123456,
+            repository = "owner/project", variable = "APPROVAL", profile = "polling-clone"
+        });
+        Assert.Equal(HttpStatusCode.OK, start.StatusCode);
+        var pending = await start.Content.ReadFromJsonAsync<JsonElement>(Token);
+        f.GitHub.Marker = pending.GetProperty("marker").GetString()!;
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var completion = await f.Send($"/v2/enrollments/{pending.GetProperty("pendingId").GetString()}/completion");
+        Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
+        var receipt = await completion.Content.ReadFromJsonAsync<JsonElement>(Token);
+        var file = receipt.GetProperty("enrollment");
+        var device = file.GetProperty("deviceId").GetString()!;
+        var secret = file.GetProperty("deviceSecret").GetString()!;
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var ack = await f.Send($"/v2/devices/{device}/acknowledgment",
+            new { completionId = receipt.GetProperty("completionId").GetString() }, secret);
+        Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
+        var row = (await f.Storage.Table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "device:" + device,
+            cancellationToken: Token)).Value;
+        if (value.Length == 0) row.Remove(field);
+        else row[field] = value;
+        await f.Storage.Table.UpdateEntityAsync(row, row.ETag, TableUpdateMode.Replace, Token);
+        await f.RestartAsync();
+        var before = await DurableVersions(f);
+        var requests = f.GitHub.Requests.Count;
+        using var denied = await f.Send($"/v2/devices/{device}/installation-token", secret: secret);
+        Assert.NotEqual(HttpStatusCode.OK, denied.StatusCode);
+        Assert.Equal("", await denied.Content.ReadAsStringAsync(Token));
+        Assert.Equal(requests, f.GitHub.Requests.Count);
+        Assert.Equal(before, await DurableVersions(f));
+    }
+
+    private static async Task<string[]> DurableVersions(EnrollmentFixture f)
+    {
+        var versions = new List<string>();
+        await foreach (var row in f.Storage.Table.QueryAsync<TableEntity>(cancellationToken: Token))
+            versions.Add(row.PartitionKey + "/" + row.RowKey + ":" + row.ETag);
+        return versions.Order().ToArray();
     }
 
     private static void AssertPermissions(string profile, JsonElement actual)

@@ -7,6 +7,7 @@ import base64
 import datetime
 import http.server
 import json
+import selectors
 import os
 from pathlib import Path
 import socketserver
@@ -21,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONTROLLER = ROOT / 'src/RepoAgentController/bin/Release/net11.0/RepoAgentController.dll'
 
 
+@unittest.skipIf(os.name == 'nt', 'Managed Git requires the Linux or macOS controller runtime')
 class ManagedGitTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -29,18 +31,50 @@ class ManagedGitTests(unittest.TestCase):
                                cwd=ROOT, capture_output=True, text=True, timeout=120)
         if build.returncode:
             raise RuntimeError(build.stdout + build.stderr)
+        if os.environ.get('REPOAGENT_TEST_NATIVE_CODEX'):
+            driver = subprocess.run(['dotnet', 'build', str(ROOT / 'tests/installers/CredentialDriver/CredentialDriver.csproj'),
+                                     '-c', 'Release', '--nologo', '-v', 'quiet'], cwd=ROOT,
+                                    capture_output=True, text=True, timeout=120)
+            if driver.returncode:
+                raise RuntimeError(driver.stdout + driver.stderr)
 
     def test_actual_gh_clone_and_fixed_fetch_use_only_the_current_repository_lease(self):
-        with tempfile.TemporaryDirectory(prefix='managed-git-') as temporary:
+        self.assert_clone_and_fetch()
+
+    def test_fork_clone_with_quoted_paths_excludes_ambient_credentials_and_upstream(self):
+        self.assert_clone_and_fetch(prefix="managed git's ", fork=True, ambient=True)
+
+    @unittest.skipUnless(os.environ.get('REPOAGENT_TEST_NATIVE_CODEX'), 'Installed native Codex command boundary required')
+    def test_persistent_native_process_observes_real_manager_renewal_then_denial(self):
+        self.assert_clone_and_fetch(native=True)
+
+    def assert_clone_and_fetch(self, prefix='managed-git-', fork=False, ambient=False, native=False):
+        with tempfile.TemporaryDirectory(prefix=prefix) as temporary:
             directory = Path(temporary)
-            fixture = GitProvider(directory)
+            fixture = GitProvider(directory, fork=fork)
             try:
                 environment = fixture.environment()
+                spy = directory / 'ambient-spy'
+                if ambient:
+                    home = directory / 'human-home'
+                    home.mkdir()
+                    (home / '.netrc').write_text('machine github.com login human password ambient-token\n')
+                    (home / '.netrc').chmod(0o600)
+                    helper = directory / 'ambient-helper'
+                    helper.write_text('#!/bin/sh\nprintf used >> "' + str(spy) + '"\nexit 1\n')
+                    helper.chmod(0o700)
+                    config = home / '.gitconfig'
+                    config.write_text('[credential]\n helper = ' + str(helper) + '\n[http]\n extraHeader = Authorization: ambient-token\n')
+                    environment.update(HOME=str(home), GIT_CONFIG_GLOBAL=str(config), GIT_ASKPASS=str(helper),
+                                       SSH_ASKPASS=str(helper), GIT_SSH_COMMAND=str(helper),
+                                       GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='credential.helper', GIT_CONFIG_VALUE_0=str(helper))
                 enrollment = directory / 'enrollment.json'
                 enrollment.write_text(json.dumps(fixture.enrollment()))
                 enrollment.chmod(0o600)
                 state = directory / 'controller-state.json'
-                self.run_ok(['dotnet', str(CONTROLLER), '--repo', 'owner/project', '--app-id', '123',
+                native_controller = os.environ.get('REPOAGENT_TEST_NATIVE_CONTROLLER')
+                command = [native_controller] if native_controller else ['dotnet', str(CONTROLLER)]
+                self.run_ok(command + ['--repo', 'owner/project', '--app-id', '123',
                              '--broker-url', 'https://broker.fixture', '--enrollment-file', str(enrollment),
                              '--state', str(state), '--clone', '--check-auth'], environment)
                 credential = Path(str(state) + '.github-app')
@@ -58,8 +92,160 @@ class ManagedGitTests(unittest.TestCase):
                 self.assertEqual(self.run_ok(['git', '-C', str(checkout), 'remote'], environment).stdout.strip(), 'origin')
                 self.run_ok([str(credential / 'bin/repoagent-git'), 'fetch', '--directory', str(checkout)], environment)
                 self.assertTrue((checkout / '.git/FETCH_HEAD').is_file())
+                if fork:
+                    self.assertEqual(self.run_ok(['git', '-C', str(checkout), 'config', '--get',
+                                                 'remote.origin.gh-resolved'], fixture.environment()).stdout.strip(), 'base')
+                    self.assertFalse(any('/upstream/' in path for method, host, path in fixture.requests))
+                self.assertFalse(spy.exists(), 'Ambient authentication must never execute')
+                if native:
+                    self.assert_native_renewal(fixture, environment, enrollment, credential, checkout)
+                if ambient:
+                    self.assert_managed_denials(fixture, environment, credential, wrapper, checkout, spy)
+
             finally:
                 fixture.close()
+
+    def assert_native_renewal(self, fixture, environment, enrollment, credential, checkout):
+        driver = subprocess.Popen(['dotnet', str(ROOT / 'tests/installers/CredentialDriver/bin/Release/net11.0/CredentialDriver.dll'),
+                                   str(enrollment), str(credential)], env=environment, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        native = None
+
+        buffers = {}
+
+        def line(process):
+            data = buffers.get(process.pid, b'')
+            while b'\n' not in data:
+                with selectors.DefaultSelector() as ready:
+                    ready.register(process.stdout, selectors.EVENT_READ)
+                    self.assertTrue(ready.select(20), 'Native/manager response timed out')
+                chunk = os.read(process.stdout.fileno(), 4096)
+                self.assertTrue(chunk, 'Native/manager exited before response')
+                data += chunk
+            result, buffers[process.pid] = data.split(b'\n', 1)
+            return result.decode()
+
+        def manager_status():
+            while True:
+                status = line(driver).strip()
+                if status in ('initialized', 'renewed', 'denied'):
+                    return status
+
+        try:
+            self.assertEqual(manager_status(), 'initialized')
+            native = subprocess.Popen([os.environ['REPOAGENT_TEST_NATIVE_CODEX'], 'app-server'], cwd=ROOT,
+                                      env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=subprocess.DEVNULL, text=True)
+            request_id = 0
+
+            def request(method, parameters):
+                nonlocal request_id
+                request_id += 1
+                native.stdin.write(json.dumps(dict(id=request_id, method=method, params=parameters)) + '\n')
+                native.stdin.flush()
+                while True:
+                    message = json.loads(line(native))
+                    if message.get('id') == request_id:
+                        self.assertNotIn('error', message, 'Native RPC request rejected')
+                        return message['result']
+
+            request('initialize', {'clientInfo': {'name': 'clone_conformance', 'version': '1'},
+                                   'capabilities': {'experimentalApi': False}})
+            native.stdin.write('{"method":"initialized"}\n')
+            native.stdin.flush()
+            wrapper = credential / 'bin/repoagent-git'
+            original_wrapper = wrapper.read_bytes()
+
+            def fetch():
+                return request('command/exec', {'command': [str(wrapper), 'fetch', '--directory', str(checkout)],
+                    'cwd': str(ROOT), 'timeoutMs': 20000})
+
+            def helper():
+                command = ['sh', '-c', "printf '%s\\n' protocol=https host=github.com path=owner/project.git '' | \"$1\" get",
+                           'bound-helper', str(credential / 'clone-bin/credential')]
+                return request('command/exec', {'command': command, 'cwd': str(ROOT), 'timeoutMs': 20000})
+
+            first_helper = helper()
+            self.assertEqual(first_helper['exitCode'], 0)
+            self.assertTrue(first_helper['stdout'] == 'username=x-access-token\npassword=lease-A\n\n')
+            first = fetch()
+            fixture.token, fixture.lease_offset_minutes = 'lease-B', 56
+            driver.stdin.write('renew\n')
+            driver.stdin.flush()
+            self.assertEqual(manager_status(), 'renewed')
+            second_helper = helper()
+            self.assertEqual(second_helper['exitCode'], 0)
+            self.assertTrue(second_helper['stdout'] == 'username=x-access-token\npassword=lease-B\n\n')
+            second = fetch()
+            self.assertEqual(wrapper.read_bytes(), original_wrapper)
+            fixture.lease_status = 401
+            driver.stdin.write('deny\n')
+            driver.stdin.flush()
+            self.assertEqual(manager_status(), 'denied')
+            self.assertFalse((credential / 'installation-token.json').exists())
+            before = len(fixture.requests)
+            denied = helper()
+            self.assertNotEqual(denied['exitCode'], 0)
+            self.assertEqual(denied['stdout'], 'quit=true\n\n')
+            denied_fetch = fetch()
+            self.assertNotEqual(denied_fetch['exitCode'], 0)
+            self.assertEqual(len(fixture.requests), before, 'Denied renewal must stop before provider network')
+            self.assertIsNone(native.poll(), 'One native process must survive rotation and denial')
+            print('Native persistent process pid=' + str(native.pid) + '; real manager/helper A-to-B/denial verified; fetch exits=' +
+                  str(first['exitCode']) + '/' + str(second['exitCode']), flush=True)
+            for phase, result in [('A', first), ('B', second)]:
+                self.assertEqual(result['exitCode'], 0, 'Native managed fetch ' + phase + ' must succeed with existing permissions: ' +
+                    result.get('stderr', '').replace('lease-A', '[test lease]').replace('lease-B', '[test lease]'))
+        finally:
+            for process in (native, driver):
+                if process is None:
+                    continue
+                if process.poll() is None:
+                    process.stdin.close()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                process.stdout.close()
+
+    def assert_managed_denials(self, fixture, environment, credential, wrapper, checkout, spy):
+        before = len(fixture.requests)
+        for arguments in [('repo', 'clone', 'other/project'),
+                          ('repo', 'clone', 'owner/project', '--depth', '1')]:
+            result = subprocess.run([str(wrapper), *arguments], env=environment,
+                                    capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+        unknown = subprocess.run([str(credential / 'clone-bin/git'), 'status'],
+                                 env=dict(environment, REPOAGENT_CLONE_TARGET=str(checkout)),
+                                 capture_output=True, text=True, timeout=15)
+        self.assertNotEqual(unknown.returncode, 0)
+        self.assertEqual(len(fixture.requests), before, 'Rejected shapes must perform no provider work')
+        included = fixture.directory / 'included-config'
+        included.write_text('[fixture]\n value = harmless\n')
+        for key, value in [('credential.helper', str(spy)), ('http.extraHeader', 'Authorization: ambient-token'),
+                           ('url.https://other.example/.insteadOf', 'https://github.com/'),
+                           ('include.path', str(included)), ('core.sshCommand', str(spy))]:
+            with self.subTest(config=key):
+                self.run_ok(['git', '-C', str(checkout), 'config', '--local', key, value], fixture.environment())
+                result = subprocess.run([str(credential / 'bin/repoagent-git'), 'fetch', '--directory', str(checkout)],
+                                        env=environment, capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(len(fixture.requests), before, 'Unsafe local config must deny before network')
+                self.run_ok(['git', '-C', str(checkout), 'config', '--local', '--unset-all', key], fixture.environment())
+        self.run_ok(['git', '-C', str(checkout), 'status', '--porcelain'], fixture.environment())
+        cache = credential / 'installation-token.json'
+        lease = json.loads(cache.read_text())
+        lease['expiresAt'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=1)).isoformat()
+        cache.write_text(json.dumps(lease))
+        for state in ('expired', 'missing'):
+            if state == 'missing':
+                cache.unlink()
+            result = subprocess.run([str(wrapper), 'repo', 'clone', 'owner/project', str(checkout) + '-denied'],
+                                    env=environment, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(len(fixture.requests), before)
+            self.assertFalse(spy.exists(), 'Denied state must not use ambient credentials')
 
     def test_helper_accepts_repeated_git_capabilities_but_rejects_duplicate_authority(self):
         # Git's credential protocol allows array-valued extension attributes.
@@ -116,6 +302,45 @@ class ManagedGitTests(unittest.TestCase):
                         'Malformed or mismatched authority must deny; credential emitted=' + str('password=' in result.stdout))
                     self.assertEqual(result.stdout, 'quit=true\n\n')
 
+    def test_helper_line_endings_and_store_do_not_change_authority_or_newer_lease(self):
+        with tempfile.TemporaryDirectory(prefix='managed-helper-state-') as temporary:
+            cache = Path(temporary) / 'installation-token.json'
+            lease = dict(token='lease-A', repository='owner/project', profile='polling-clone',
+                expiresAt=(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).isoformat())
+            cache.write_text(json.dumps(lease))
+            cache.chmod(0o600)
+            normal = 'protocol=https\nhost=github.com\npath=owner/project.git'
+
+            def invoke(record, operation='get'):
+                return subprocess.run(['dotnet', str(CONTROLLER), 'git-helper', str(cache), operation],
+                                      input=record, capture_output=True, text=True, timeout=15)
+
+            for name, record, allowed in [
+                ('CRLF', normal.replace('\n', '\r\n') + '\r\n\r\n', True),
+                ('EOF', normal, True), ('EOF-CR', normal + '\r', False),
+                ('repeated-CR', normal + '\r\r\n\n', False)]:
+                with self.subTest(ending=name):
+                    result = invoke(record)
+                    self.assertEqual(result.returncode == 0, allowed)
+                    self.assertTrue(result.stdout == ('username=x-access-token\npassword=lease-A\n\n'
+                                                     if allowed else 'quit=true\n\n'))
+            before = cache.read_bytes()
+            stored = invoke(normal + '\npassword=other-value\n\n', 'store')
+            self.assertEqual(stored.returncode, 0)
+            self.assertEqual(stored.stdout, '')
+            self.assertEqual(cache.read_bytes(), before)
+            lease['token'] = 'lease-B'
+            cache.write_text(json.dumps(lease))
+            rejected_old = invoke(normal + '\npassword=lease-A\n\n', 'erase')
+            self.assertEqual(rejected_old.returncode, 0)
+            self.assertTrue(cache.exists(), 'Rejection of A must preserve published B')
+            current = invoke(normal + '\n\n')
+            self.assertTrue(current.stdout == 'username=x-access-token\npassword=lease-B\n\n')
+            rejected_current = invoke(normal + '\npassword=lease-B\n\n', 'erase')
+            self.assertEqual(rejected_current.returncode, 0)
+            self.assertFalse(cache.exists())
+            self.assertNotEqual(invoke(normal + '\n\n').returncode, 0)
+
     def run_ok(self, command, environment):
         result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=40)
         # Avoid disclosing Authorization values even when a subprocess fails.
@@ -125,9 +350,12 @@ class ManagedGitTests(unittest.TestCase):
 
 
 class GitProvider:
-    def __init__(self, directory):
+    def __init__(self, directory, fork=False):
         self.directory = directory
         self.git_tokens = []
+        self.token = 'lease-A'
+        self.lease_offset_minutes = 0
+        self.lease_status = 200
         self.requests = []
         self.cert = directory / 'cert.pem'
         self.key = directory / 'key.pem'
@@ -154,6 +382,9 @@ class GitProvider:
                 pass
 
             def do_CONNECT(self):
+                if self.path not in ('github.com:443', 'api.github.com:443', 'broker.fixture:443'):
+                    self.send_error(403)
+                    return
                 self.send_response(200)
                 self.end_headers()
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -197,13 +428,16 @@ class GitProvider:
                 host = self.headers.get('Host', '')
                 provider.requests.append((self.command, host, self.path))
                 if host == 'broker.fixture':
-                    return self.reply(provider.lease())
+                    return self.reply(provider.lease() if provider.lease_status == 200 else {}, provider.lease_status)
                 if host == 'api.github.com':
                     query = json.loads(body).get('query', '')
                     if 'repository' not in query:
                         return self.reply({'data': {'viewer': {'login': 'test-app[bot]'}}})
                     return self.reply({'data': {'repository': {'name': 'project', 'owner': {'login': 'owner'},
-                                      'url': 'https://github.com/owner/project', 'isFork': False,
+                                      'url': 'https://github.com/owner/project', 'isFork': fork,
+                                      'parent': {'name': 'parent', 'owner': {'login': 'upstream'},
+                                                 'url': 'https://github.com/upstream/parent',
+                                                 'defaultBranchRef': {'name': 'main'}},
                                       'defaultBranchRef': {'name': 'main'}}}})
                 if host != 'github.com' or not self.path.startswith('/owner/project.git/'):
                     return self.reply({}, 403)
@@ -214,10 +448,10 @@ class GitProvider:
                     self.send_header('Content-Length', '0')
                     self.end_headers()
                     return
-                expected = 'Basic ' + base64.b64encode(b'x-access-token:lease-A').decode()
+                expected = 'Basic ' + base64.b64encode(('x-access-token:' + provider.token).encode()).decode()
                 if authorization != expected:
                     return self.reply({}, 403)
-                provider.git_tokens.append('lease-A')
+                provider.git_tokens.append(provider.token)
                 parsed = urlsplit(self.path)
                 environment = dict(os.environ, GIT_PROJECT_ROOT=str(directory / 'repositories'),
                                    GIT_HTTP_EXPORT_ALL='1', PATH_INFO=parsed.path, QUERY_STRING=parsed.query,
@@ -261,7 +495,7 @@ class GitProvider:
         lease = self.enrollment()
         for key in ['brokerOrigin', 'githubHost', 'deviceId', 'deviceSecret']:
             lease.pop(key)
-        lease.update(token='lease-A', expiresAt=(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).isoformat())
+        lease.update(token=self.token, expiresAt=(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1, minutes=self.lease_offset_minutes)).isoformat())
         return lease
 
     def close(self):
