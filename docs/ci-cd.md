@@ -59,6 +59,8 @@ Reuse the exact resource group, subscription, identity and main-only OIDC subjec
 | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Existing nonsecret deployment identity/target UUIDs from the runbook |
 | `AZURE_RESOURCE_GROUP`, `AZURE_LOCATION` | `rg-repoagent-controller-auth`, `swedencentral` |
 | `AUTH_APP_NAME` | Intended owned Container App |
+| `AUTH_STORAGE_ACCOUNT_NAME` | Required explicit storage account: 3–24 lowercase ASCII letters/digits; no default |
+| `AUTH_KEY_VAULT_NAME` | Required explicit vault: 3–24 ASCII letters/digits/hyphens, starts with a letter, ends alphanumeric, no consecutive hyphens; no default |
 | `AUTH_IMAGE_REPOSITORY` | Exactly `ghcr.io/repoagent/controller-auth` |
 | `AUTH_DEPLOYMENT_READY` | `true` only after complete service/platform acceptance |
 | `AUTH_PROVIDER_READY`, `AUTH_STORAGE_READY`, `AUTH_CLEANUP_READY`, `AUTH_RUNTIME_ACCESS_READY` | Each `true` only after the corresponding real acceptance |

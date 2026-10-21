@@ -5,7 +5,6 @@ Azure is the external process boundary. Never infer absence from a failed list o
 an arbitrary CLI failure. No raw Azure response/error body is logged.
 """
 import argparse
-import hashlib
 import json
 import os
 import pty
@@ -81,7 +80,6 @@ class Deployment:
         self.cleanup = mode in CLEANUP
         self.identity_only = mode.startswith("cleanup-identity-")
         self.isolated = self.activation and mode != "promote-staged"
-        self.source = accepted_source() if self.activation or self.cleanup or os.environ.get("AUTH_EXPECTED_SOURCE_SHA") is not None else None
         self.current = None
         self.revision = None
         self.replica = None
@@ -99,9 +97,13 @@ class Deployment:
         if not re.fullmatch(r"[a-z][a-z0-9-]{1,20}[a-z0-9]", self.app) or "--" in self.app:
             raise DeploymentError("AUTH_APP_NAME must be 3-22 lowercase letters/digits/hyphens")
         self.scope = f"/subscriptions/{self.subscription}/resourceGroups/{self.group}"
-        suffix = hashlib.sha256(f"{self.scope}/{self.app}".encode()).hexdigest()[:16]
-        self.storage = f"ra{suffix}dp"
-        self.vault = f"ra-{suffix}-kv"
+        self.storage = required("AUTH_STORAGE_ACCOUNT_NAME")
+        if not re.fullmatch(r"[a-z0-9]{3,24}", self.storage):
+            raise DeploymentError("AUTH_STORAGE_ACCOUNT_NAME must be 3-24 lowercase letters/digits")
+        self.vault = required("AUTH_KEY_VAULT_NAME")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{1,22}[A-Za-z0-9]", self.vault) or "--" in self.vault:
+            raise DeploymentError("AUTH_KEY_VAULT_NAME must be 3-24 ASCII letters/digits/hyphens, start with a letter, end alphanumeric and contain no consecutive hyphens")
+        self.source = accepted_source() if self.activation or self.cleanup or os.environ.get("AUTH_EXPECTED_SOURCE_SHA") is not None else None
         self.table = os.environ.get("AUTH_TABLE_NAME", "brokerstate")
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{2,62}", self.table):
             raise DeploymentError("AUTH_TABLE_NAME must be 3-63 ASCII alphanumeric characters starting with a letter")
