@@ -99,26 +99,37 @@ public sealed partial class CleanupProcessTests(ITestOutputHelper output)
         }
     }
     [Fact]
-    public async Task Bodyless_Table_GET_replay_exposes_the_legacy_wire_count_claim()
+    public async Task Bodyless_Table_GET_replay_preserves_SDK_counts_and_fits_the_reviewed_send_envelope()
     {
         await using var storage = new RevocationFixture();
         await storage.InitializeAsync();
         await using var proxy = new CleanupTableProxy(storage);
         await using var eof = new CleanupGetEofShim(proxy.Endpoint);
-        var result = await CleanupProcessFixture.RunAsync(storage, eof.Endpoint);
+        // Qualified connectivity evidence only: loopback may bypass proxies even
+        // with a default handler. Source review establishes the direct-only policy.
+        var result = await CleanupProcessFixture.RunAsync(storage, eof.Endpoint, environment: new Dictionary<string, string>
+        {
+            ["HTTP_PROXY"] = "http://127.0.0.1:1", ["HTTPS_PROXY"] = "http://127.0.0.1:1",
+            ["ALL_PROXY"] = "http://127.0.0.1:1", ["http_proxy"] = "http://127.0.0.1:1",
+            ["https_proxy"] = "http://127.0.0.1:1", ["all_proxy"] = "http://127.0.0.1:1",
+            ["NO_PROXY"] = "", ["no_proxy"] = ""
+        });
         var dropped = eof.Dropped;
-        var dispatches = result.Summary.GetProperty("tableRequests").GetInt32();
+        var dispatches = result.Summary.GetProperty("sdkTableDispatches").GetInt32();
         var repeated = proxy.Requests.Where(r => r.Method == "GET" && r.ClientRequestId is not null)
             .GroupBy(r => r.ClientRequestId).Count(g => g.Count() > 1);
-        output.WriteLine("Forwarded bodyless GET response dropped: {0}; incoming sends={1}; legacy tableRequests={2}; repeated SDK request identities={3}; exit={4}.",
+        output.WriteLine("Forwarded bodyless GET response dropped: {0}; incoming sends={1}; SDK dispatches={2}; repeated SDK request identities={3}; exit={4}.",
             dropped, proxy.Requests.Count, dispatches, repeated, result.Exit);
         Assert.True(dropped);
         Assert.Contains(".NET 10.0.13", proxy.Requests[0].UserAgent ?? "");
         Assert.True(repeated > 0, "The genuine bodyless-GET replay must be observed before evaluating the old count claim.");
         Assert.True(proxy.Requests.Count > dispatches);
-        // Deliberately protects the OLD claimed exact-wire contract for causal red evidence.
-        // The accepted accounting amendment will migrate this oracle explicitly afterward.
-        Assert.Equal(proxy.Requests.Count, dispatches);
+        // Explicit approved schema/oracle migration:47f preserves the authentic old
+        // equality failure. We retain replay, and now assert an honest scoped bound.
+        Assert.Equal(0, result.Exit);
+        AssertSdkAccounting(result.Summary);
+        Assert.InRange(proxy.Requests.Count, dispatches + 1,
+            result.Summary.GetProperty("reviewedHttp11Envelope").GetProperty("tableRequestUpperBound").GetInt32());
     }
 
     [Fact]
@@ -189,5 +200,6 @@ public sealed partial class CleanupProcessTests(ITestOutputHelper output)
             () => Assert.Equal(JsonValueKind.Null, selected.GetProperty("cursorAgeSeconds").ValueKind),
             () => Assert.Equal(JsonValueKind.Null, selected.GetProperty("cycleAgeSeconds").ValueKind));
     }
+
 
 }

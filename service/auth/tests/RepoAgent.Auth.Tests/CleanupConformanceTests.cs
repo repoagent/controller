@@ -21,14 +21,35 @@ public sealed partial class CleanupProcessTests
         f.Send("/v2/enrollments", new { idempotencyId = id, repositoryId = 123456, repository = "owner/project", variable = "APPROVAL", profile });
     private static BrokerCapacityReclamation Reclaim(EnrollmentFixture f) => new(f.Storage.Table,
         new(new Uri("https://example.table.core.windows.net"), f.Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15), f.Clock);
+    private static void AssertSdkAccounting(JsonElement summary)
+    {
+        var dispatches = summary.GetProperty("sdkTableDispatches").GetInt32();
+        var batches = summary.GetProperty("sdkBatchDispatches").GetInt32();
+        Assert.InRange(dispatches, 0, 128);
+        Assert.InRange(batches, 0, 32);
+        Assert.InRange(batches, 0, dispatches);
+        Assert.InRange(summary.GetProperty("logicalQueryPages").GetInt32(), 0, 16);
+        foreach (var oldName in new[] { "tableRequests", "egts", "pages" }) Assert.False(summary.TryGetProperty(oldName, out _));
+        var envelope = summary.GetProperty("reviewedHttp11Envelope");
+        Assert.Equal("Azure.Core1.62.0/.NET10.0.13/direct HTTP1.x/no handler authentication", envelope.GetProperty("scope").GetString());
+        Assert.Equal(4, envelope.GetProperty("maxSendsPerSdkDispatch").GetInt32());
+        Assert.Equal(4 * dispatches, envelope.GetProperty("tableRequestUpperBound").GetInt32());
+        Assert.Equal(4 * batches, envelope.GetProperty("batchRequestUpperBound").GetInt32());
+        Assert.InRange(envelope.GetProperty("tableRequestUpperBound").GetInt32(), 0, 512);
+        Assert.InRange(envelope.GetProperty("batchRequestUpperBound").GetInt32(), 0, 128);
+    }
+
     private static void AssertBudget(JsonElement summary, CleanupTableProxy proxy)
     {
-        Assert.Equal(proxy.Requests.Count, summary.GetProperty("tableRequests").GetInt32());
+        AssertSdkAccounting(summary);
+        // These existing cases do not inject bodyless-GET EOF replay. Equality here
+        // is a scoped observation; the separate replay case deliberately has extra sends.
+        Assert.Equal(proxy.Requests.Count, summary.GetProperty("sdkTableDispatches").GetInt32());
         Assert.InRange(proxy.Requests.Count, 1, 128);
-        Assert.Equal(proxy.Requests.Count(r => r.Path.EndsWith("/$batch", StringComparison.Ordinal)), summary.GetProperty("egts").GetInt32());
-        Assert.InRange(summary.GetProperty("egts").GetInt32(), 0, 32);
+        Assert.Equal(proxy.Requests.Count(r => r.Path.EndsWith("/$batch", StringComparison.Ordinal)), summary.GetProperty("sdkBatchDispatches").GetInt32());
+        Assert.InRange(summary.GetProperty("sdkBatchDispatches").GetInt32(), 0, 32);
         var queries = proxy.Requests.Where(r => r.Method == "GET" && r.Query.Contains("$filter", StringComparison.Ordinal)).ToList();
-        Assert.Equal(queries.Count, summary.GetProperty("pages").GetInt32());
+        Assert.Equal(queries.Count, summary.GetProperty("logicalQueryPages").GetInt32());
         Assert.InRange(queries.Count, 0, 16);
         Assert.All(proxy.PageSizes, size => Assert.InRange(size, 0, 32));
         foreach (var request in queries)
@@ -195,7 +216,7 @@ public sealed partial class CleanupProcessTests
         Assert.Equal("", cursor.GetString("EnrollmentLastKey"));
         var issuance = await Read(f.Storage, RevocationFixture.Partition, attemptLedger.GetString("AttemptRowKey")!);
         Assert.False(issuance.ContainsKey("ProtectedToken"));
-        output.WriteLine("Failed enrollment queries did not advance that stream; issuance payload progressed. Actual requests={0}, batches={1}.", proxy.Requests.Count, result.Summary.GetProperty("egts"));
+        output.WriteLine("Failed enrollment queries did not advance that stream; issuance payload progressed. Actual requests={0}, batches={1}.", proxy.Requests.Count, result.Summary.GetProperty("sdkBatchDispatches"));
     }
     [Fact]
     public async Task Real_backlog_beyond_one_page_resumes_across_processes_and_includes_behind_cursor_insertions_next_cycle()
@@ -237,7 +258,7 @@ public sealed partial class CleanupProcessTests
                 budgetStops++;
                 Assert.True(result.Summary.GetProperty("incompleteCoverage").GetBoolean());
                 // A whole 40-request turn cannot be admitted once actual use exceeds 88.
-                Assert.InRange(result.Summary.GetProperty("tableRequests").GetInt32(), 89, 128);
+                Assert.InRange(result.Summary.GetProperty("sdkTableDispatches").GetInt32(), 89, 128);
             }
             var cursor = await Read(f.Storage, "global:enrollment-v1", "cleanup:payload-v1");
             firstLast ??= cursor.GetString("EnrollmentLastKey");
@@ -390,7 +411,7 @@ public sealed partial class CleanupProcessTests
         Assert.Equal("time-budget", result.Summary.GetProperty("stopReason").GetString());
         Assert.True(result.Summary.GetProperty("incompleteCoverage").GetBoolean());
         Assert.InRange(result.Summary.GetProperty("elapsedMilliseconds").GetInt64(), 55_000, 65_000);
-        Assert.Equal(proxy.Requests.Count, result.Summary.GetProperty("tableRequests").GetInt32());
+        Assert.Equal(proxy.Requests.Count, result.Summary.GetProperty("sdkTableDispatches").GetInt32());
         Assert.InRange(proxy.Requests.Count, 1, 128);
         Assert.True(result.Summary.GetProperty("oldestObservedOverduePayloadAgeSeconds").ValueKind == JsonValueKind.Null);
     }

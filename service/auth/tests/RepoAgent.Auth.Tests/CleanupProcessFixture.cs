@@ -9,7 +9,7 @@ namespace RepoAgent.Auth.Tests;
 internal static class CleanupProcessFixture
 {
     internal static async Task<(int Exit, JsonElement Summary)> RunAsync(RevocationFixture storage,
-        string? endpoint = null, string epoch = RevocationFixture.Epoch)
+        string? endpoint = null, string epoch = RevocationFixture.Epoch, IReadOnlyDictionary<string, string>? environment = null)
     {
         var token = TestContext.Current.CancellationToken;
         var home = Directory.CreateTempSubdirectory("cleanup-conformance-");
@@ -34,6 +34,8 @@ internal static class CleanupProcessFixture
             start.Environment["Broker__Cleanup__DevelopmentConnectionString"] =
                 "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;" +
                 "AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;TableEndpoint=" + endpoint;
+            if (environment is not null)
+                foreach (var pair in environment) start.Environment[pair.Key] = pair.Value;
             using var child = Process.Start(start)!;
             var stdout = child.StandardOutput.ReadToEndAsync(token);
             var stderr = child.StandardError.ReadToEndAsync(token);
