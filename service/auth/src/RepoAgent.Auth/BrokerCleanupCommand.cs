@@ -17,9 +17,10 @@ internal static class BrokerCleanupCommand
         using var budget = new CleanupRequestBudget();
         BrokerOptions options;
         TableClient table;
+        IConfiguration configuration;
         try
         {
-            var configuration = new ConfigurationBuilder().AddEnvironmentVariables().Build();
+            configuration = new ConfigurationBuilder().AddEnvironmentVariables().Build();
             var connectionString = configuration["Broker:Cleanup:DevelopmentConnectionString"];
             var developmentStorage = connectionString is not null;
             if (developmentStorage && configuration["DOTNET_ENVIRONMENT"] != "Development")
@@ -58,7 +59,14 @@ internal static class BrokerCleanupCommand
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var cleanup = new BrokerCleanup(table, options, budget, TimeProvider.System);
         var exitCode = await cleanup.RunAsync(deadline.Token);
-        Console.WriteLine(JsonSerializer.Serialize(cleanup.Summary()));
+        var summary = JsonSerializer.SerializeToElement(cleanup.Summary());
+        Console.WriteLine(summary.GetRawText());
+        try
+        {
+            if (BrokerTelemetry.CreateOptions(configuration, options.ManagedIdentityClientId) is { } telemetry)
+                BrokerTelemetry.ExportCleanupOnce(summary, telemetry);
+        }
+        catch (Exception) { } // Optional telemetry never changes the CLI result or emits configuration details.
         return exitCode;
     }
 }

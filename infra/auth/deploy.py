@@ -14,6 +14,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import stat
+import uuid
+from datetime import date
 import time
 
 HERE = Path(__file__).resolve().parent
@@ -21,6 +24,9 @@ REPOSITORY_ID = "1426154477"
 OWNERSHIP = {"repositoryId": REPOSITORY_ID, "ownerId": "345029828", "managedBy": "repoagent-auth"}
 ACTIVATION = ("stage-plan", "stage-apply", "promote-staged", "stage-stop", "stage-resume")
 CLEANUP = ("cleanup-identity-plan", "cleanup-identity-apply", "cleanup-plan", "cleanup-apply")
+MONITORING = ("monitoring-plan", "monitoring-apply")
+INSIGHTS = "Microsoft.Insights/components"
+PUBLISHER = "3913510d-42f4-4e42-8a64-420c390055eb"
 CLEANUP_JOB = "Microsoft.App/jobs"
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -78,6 +84,7 @@ class Deployment:
         self.mode = mode
         self.activation = mode in ACTIVATION
         self.cleanup = mode in CLEANUP
+        self.monitoring = mode in MONITORING
         self.identity_only = mode.startswith("cleanup-identity-")
         self.isolated = self.activation and mode != "promote-staged"
         self.current = None
@@ -103,12 +110,15 @@ class Deployment:
         self.vault = required("AUTH_KEY_VAULT_NAME")
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{1,22}[A-Za-z0-9]", self.vault) or "--" in self.vault:
             raise DeploymentError("AUTH_KEY_VAULT_NAME must be 3-24 ASCII letters/digits/hyphens, start with a letter, end alphanumeric and contain no consecutive hyphens")
-        self.source = accepted_source() if self.activation or self.cleanup or os.environ.get("AUTH_EXPECTED_SOURCE_SHA") is not None else None
+        self.source = accepted_source() if self.activation or self.cleanup or self.monitoring or os.environ.get("AUTH_EXPECTED_SOURCE_SHA") is not None else None
         self.table = os.environ.get("AUTH_TABLE_NAME", "brokerstate")
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{2,62}", self.table):
             raise DeploymentError("AUTH_TABLE_NAME must be 3-63 ASCII alphanumeric characters starting with a letter")
         self.identity = {"clientId": None, "principalId": None}
         self.origin = None
+        if self.monitoring:
+            self.monitoring_configuration()
+            return
         if self.cleanup:
             self.cleanup_configuration()
             return
@@ -142,6 +152,121 @@ class Deployment:
                     raise DeploymentError(f"Image preflight attestation missing: {name}")
             self.params["image"] = image
 
+    def monitoring_configuration(self):
+        # The recipient enters only through an owner-only file, never argv/output.
+        filename = Path(required("AUTH_MONITORING_INPUT_FILE"))
+        with filename.open(encoding="utf-8") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise DeploymentError("Monitoring input must be an owner-only regular file")
+            inputs = json.load(stream)
+        if not isinstance(inputs, dict) or set(inputs) - {"recipient", "budgetAmount", "budgetStartDate"}:
+            raise DeploymentError("Invalid private monitoring fields")
+        recipient = inputs.get("recipient")
+        if not isinstance(recipient, str) or not re.fullmatch(r"[^\s@;]+@[^\s@;]+\.[^\s@;]+", recipient):
+            raise DeploymentError("Invalid monitoring recipient")
+        amount, start = inputs.get("budgetAmount", 0), inputs.get("budgetStartDate", "")
+        if type(amount) is not int or amount < 0 or (amount == 0 and start):
+            raise DeploymentError("Budget amount must be zero (omitted) or a positive billing-currency integer")
+        if amount and (not isinstance(start, str) or not re.fullmatch(r"\d{4}-\d{2}-01", start)
+                       or date.fromisoformat(start) < date(2017, 6, 1)):
+            raise DeploymentError("Budget start must be a valid first day of month")
+        enabled = os.environ.get("AUTH_MONITORING_ENABLE_ALERTS", "false")
+        if enabled not in ("true", "false"):
+            raise DeploymentError("Invalid monitoring alert selection")
+        self.params = dict(location=self.location, appName=self.app, recipient=recipient,
+                           budgetAmount=amount, budgetStartDate=start, enableAlerts=enabled == "true")
+        self.resources = [(INSIGHTS, self.app + "-insights", "2020-02-02", "auth-monitoring"),
+                          ("Microsoft.Insights/actionGroups", self.app + "-alerts", "2023-01-01", "auth-monitoring")]
+        if amount:
+            self.resources.append(("Microsoft.Consumption/budgets", self.app + "-monthly-budget", "2024-08-01", None))
+        if enabled == "true":
+            state = required("AUTH_JOB_FAILURE_STATE")
+            if not re.fullmatch(r"[A-Za-z]{1,32}", state):
+                raise DeploymentError("Expected the observed native Job failure state")
+            self.params["jobFailureState"] = state
+            self.resources.extend(("Microsoft.Insights/metricAlerts", self.app + "-" + suffix, "2018-03-01", "auth-monitoring")
+                                  for suffix in ("cleanup-execution-failed", "http-errors", "memory-pressure"))
+            self.resources.extend(("Microsoft.Insights/scheduledQueryRules", self.app + "-" + suffix, "2023-12-01", "auth-monitoring")
+                                  for suffix in ("cleanup-observation", "telemetry-volume"))
+
+    def monitoring_dependencies(self, grants=False):
+        for kind, suffix, version, role in ((RESOURCE_TYPES[1], "-logs", "2023-09-01", "auth-logs"),
+                                           (RESOURCE_TYPES[2], "-environment", "2025-01-01", "auth-environment")):
+            resource = self.az(["resource", "show", "--ids", self.resource_id(kind, self.app + suffix), "--api-version", version])
+            self.monitoring_owned(resource, kind, suffix, role)
+            properties = resource.get("properties", {})
+            if ((kind == RESOURCE_TYPES[1] and (properties.get("retentionInDays") != 30
+                    or properties.get("workspaceCapping", {}).get("dailyQuotaGb") != 0.1))
+                    or (kind == RESOURCE_TYPES[2] and (properties.get("appLogsConfiguration", {}).get("destination") != "none"
+                        or properties.get("appLogsConfiguration", {}).get("logAnalyticsConfiguration")))):
+                raise DeploymentError("Monitoring requires owned 30-day/0.1GB workspace and console destination none")
+        if self.monitoring and self.params["enableAlerts"]:
+            for kind, suffix, role in ((RESOURCE_TYPES[6], "", "auth-service"), (CLEANUP_JOB, "-cleanup", "auth-cleanup")):
+                resource = self.az(["resource", "show", "--ids", self.resource_id(kind, self.app + suffix), "--api-version", "2025-01-01"])
+                self.monitoring_owned(resource, kind, suffix, role)
+        if not grants:
+            return
+        insights_id = self.resource_id(INSIGHTS, self.app + "-insights")
+        insights = self.az(["resource", "show", "--ids", insights_id, "--api-version", "2020-02-02"])
+        self.monitoring_owned(insights, INSIGHTS, "-insights", "auth-monitoring")
+        properties = insights.get("properties", {})
+        if (properties.get("DisableLocalAuth") is not True
+                or str(properties.get("WorkspaceResourceId", "")).lower() != self.resource_id(RESOURCE_TYPES[1], self.app + "-logs").lower()):
+            raise DeploymentError("Monitoring requires AAD-only owned Insights/workspace binding")
+        connection = properties.get("ConnectionString", "")
+        parts = [part.split("=", 1) for part in connection.split(";") if part]
+        fields = dict(parts)
+        if (len(parts) != len(fields) or fields.get("InstrumentationKey") != properties.get("InstrumentationKey")
+                or not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", fields.get("InstrumentationKey", ""))
+                or not re.fullmatch(r"https://[a-z0-9.-]+\.in\.applicationinsights\.azure\.com/", fields.get("IngestionEndpoint", ""))
+                or set(fields) - {"InstrumentationKey", "IngestionEndpoint", "LiveEndpoint", "ApplicationId"}):
+            raise DeploymentError("Malformed owned Insights connection")
+        old = self.params.get("monitoringConnectionString")
+        if old is not None and old != connection:
+            raise DeploymentError("Insights connection changed during deployment")
+        self.params["monitoringConnectionString"] = connection
+        role_id = f"/subscriptions/{self.subscription}/providers/Microsoft.Authorization/roleDefinitions/{PUBLISHER}"
+        assignments = self.az(["role", "assignment", "list", "--scope", insights_id, "--all"], lists=True)
+        publishers = [a for a in assignments if str(a.get("roleDefinitionId", "")).lower() == role_id.lower()
+                      and str(a.get("scope", "")).lower() == insights_id.lower()]
+        expected = set()
+        for suffix, role in (("-runtime", "auth-runtime"), ("-cleanup", "auth-cleanup-identity")):
+            identity_id = self.resource_id(RESOURCE_TYPES[0], self.app + suffix)
+            identity = self.az(["resource", "show", "--ids", identity_id, "--api-version", "2023-01-31"])
+            self.monitoring_owned(identity, RESOURCE_TYPES[0], suffix, role)
+            principal = str(uuid.UUID(identity["properties"]["principalId"]))
+            assignment_name = str(uuid.uuid5(uuid.UUID("11fb06fb-712d-4ddd-98c7-e71bbd588830"), "-".join((insights_id, identity_id, role_id))))
+            expected.add((principal, assignment_name))
+        if len({principal for principal, _ in expected}) != 2 or len(publishers) != 2 or {(a.get("principalId"), a.get("name")) for a in publishers} != expected or any(
+                a.get("principalType") != "ServicePrincipal" or a.get("condition") for a in publishers):
+            raise DeploymentError("Exactly the two scoped deterministic Monitoring Metrics Publisher grants are required")
+
+    def monitoring_owned(self, resource, kind, suffix, role):
+        if (str(resource.get("id", "")).lower() != self.resource_id(kind, self.app + suffix).lower()
+                or str(resource.get("type", "")).lower() != kind.lower() or resource.get("location") != self.location
+                or any(resource.get("tags", {}).get(k) != v for k, v in {**OWNERSHIP, "role": role}.items())):
+            raise DeploymentError("Monitoring dependency identity/location/ownership mismatch")
+
+    def monitoring_budget(self, resource):
+        properties = resource.get("properties", {})
+        notifications = {f"actual{threshold}": dict(enabled=True, operator="GreaterThanOrEqualTo", threshold=threshold,
+                         thresholdType="Actual", contactEmails=[self.params["recipient"]], contactGroups=[], contactRoles=[])
+                         for threshold in (50, 80, 100)}
+        period = properties.get("timePeriod", {})
+        start = self.params["budgetStartDate"]
+        end = str(int(start[:4]) + 10) + start[4:]
+        if (properties.get("amount") != self.params["budgetAmount"] or properties.get("category") != "Cost"
+                or properties.get("timeGrain") != "Monthly" or properties.get("filter")
+                or period.get("startDate", "").removesuffix("T00:00:00Z") != start
+                or period.get("endDate", end).removesuffix("T00:00:00Z") != end
+                or properties.get("notifications") != notifications):
+            raise DeploymentError("Existing untaggable budget differs from the exact approved properties; refusing adoption")
+
+    def telemetry_env(self):
+        return {"APPLICATIONINSIGHTS_CONNECTION_STRING": self.params.get("monitoringConnectionString", ""),
+                "APPLICATIONINSIGHTS_STATSBEAT_DISABLED": "true"}
+
     def attest_cleanup(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts/delivery/auth-pipeline.py"), "attest"],
                                 capture_output=True, text=True, timeout=60)
@@ -174,7 +299,7 @@ class Deployment:
                                                  self.app + "-cleanup")
 
     def cleanup_env(self):
-        return {"Broker__TableEndpoint": f"https://{self.storage}.table.core.windows.net/",
+        return {**self.telemetry_env(), "Broker__TableEndpoint": f"https://{self.storage}.table.core.windows.net/",
                 "Broker__TableName": self.table, "Broker__DeploymentEpoch": self.params["deploymentEpoch"],
                 "Broker__ManagedIdentityClientId": self.identity["clientId"]}
 
@@ -222,7 +347,7 @@ class Deployment:
                 or container.get("resources") != {"cpu": 0.25, "memory": "0.5Gi"}
                 or any(key not in ("name", "image", "command", "args", "resources", "env", "probes", "volumeMounts") for key in container)
                 or container.get("probes") or container.get("volumeMounts")
-                or len(env) != 4 or any(set(item) != {"name", "value"} for item in env)
+                or len(env) != len(self.cleanup_env()) or any(set(item) != {"name", "value"} for item in env)
                 or {item["name"]: item["value"] for item in env} != self.cleanup_env()):
             raise DeploymentError("Cleanup command/container/environment differs")
         if not after_apply:
@@ -303,6 +428,8 @@ class Deployment:
 
     def inspect(self, verify_ingress=False, require_resources=False):
         self.current = None
+        if self.monitoring or (not self.foundation and not self.identity_only):
+            self.monitoring_dependencies(grants=not self.monitoring)
         logs = environment_logs = None
         group = self.az(["group", "show", "--name", self.group])
         if str(group.get("id", "")).lower() != self.scope.lower() or group.get("location") != self.location:
@@ -311,6 +438,8 @@ class Deployment:
             resource_id = self.resource_id(kind, name)
             resource = self.az(["resource", "show", "--ids", resource_id, "--api-version", version], allow_missing=True)
             if resource is None:
+                if self.monitoring and not require_resources:
+                    continue
                 if self.cleanup and not require_resources:
                     if self.identity_only and kind == RESOURCE_TYPES[0] and not any(self.identity.values()):
                         continue
@@ -327,6 +456,9 @@ class Deployment:
             # Table ARM resources cannot carry tags/metadata: ownership follows
             # the already-checked account and reserved exact Table ID. No Table
             # ACLs or neighboring tables are rewritten.
+            if kind == "Microsoft.Consumption/budgets":
+                self.monitoring_budget(resource)
+                continue
             table = kind.endswith("/tables")
             container = kind.endswith("/containers")
             if table:
@@ -337,8 +469,19 @@ class Deployment:
             expected = {**OWNERSHIP, "role": role}
             if not isinstance(tags, dict) or any(tags.get(key) != value for key, value in expected.items()):
                 raise DeploymentError(f"Ownership conflict for {name}; refusing adoption")
-            if not container and resource.get("location") != self.location:
+            if not container and resource.get("location") != ("global" if kind in ("Microsoft.Insights/actionGroups", "Microsoft.Insights/metricAlerts") else self.location):
                 raise DeploymentError(f"Resource location conflict for {name}")
+            if self.monitoring and kind == INSIGHTS:
+                properties = resource.get("properties", {})
+                if (properties.get("DisableLocalAuth") is not True or properties.get("IngestionMode") != "LogAnalytics"
+                        or str(properties.get("WorkspaceResourceId", "")).lower() != self.resource_id(RESOURCE_TYPES[1], self.app + "-logs").lower()):
+                    raise DeploymentError("Monitoring Insights binding/AAD differs")
+            if self.monitoring and kind == "Microsoft.Insights/actionGroups":
+                properties = resource.get("properties", {})
+                if (properties.get("enabled") is not True or properties.get("groupShortName") != "repoauth"
+                        or properties.get("emailReceivers") != [dict(name="operator", emailAddress=self.params["recipient"], useCommonAlertSchema=True)]
+                        or any(value for key, value in properties.items() if key.endswith("Receivers") and key != "emailReceivers")):
+                    raise DeploymentError("Monitoring action group differs from private approved destination")
             if self.cleanup and kind == RESOURCE_TYPES[1]:
                 logs = resource.get("properties", {})
             if self.cleanup and kind == CLEANUP_JOB:
@@ -386,9 +529,9 @@ class Deployment:
                     self.identity[key] = value
 
         if self.cleanup and (not isinstance(logs, dict) or not logs.get("customerId")
-                or logs.get("retentionInDays") != 30 or logs.get("workspaceCapping", {}).get("dailyQuotaGb") != 1
-                or not isinstance(environment_logs, dict) or environment_logs.get("destination") != "log-analytics"
-                or environment_logs.get("logAnalyticsConfiguration", {}).get("customerId") != logs["customerId"]):
+                or logs.get("retentionInDays") != 30 or logs.get("workspaceCapping", {}).get("dailyQuotaGb") != 0.1
+                or not isinstance(environment_logs, dict) or environment_logs.get("destination") != "none"
+                or environment_logs.get("logAnalyticsConfiguration")):
             raise DeploymentError("Cleanup requires the owned bounded log workspace/environment binding")
 
     def staged_template(self, template):
@@ -407,7 +550,7 @@ class Deployment:
             raise DeploymentError("Existing staging template differs from the accepted artifact/capacity")
         env = containers[0].get("env", [])
         values = {item["name"]: item.get("value") for item in env}
-        expected = {"Broker__BrokerOrigin": self.origin, "AZURE_CLIENT_ID": self.identity["clientId"],
+        expected = {**self.telemetry_env(), "Broker__BrokerOrigin": self.origin, "AZURE_CLIENT_ID": self.identity["clientId"],
                     "Broker__ManagedIdentityClientId": self.identity["clientId"],
                     "Auth__SigningKeyUri": self.params["signingKeyUri"],
                     "Auth__DataProtectionKeyUri": self.params["dataProtectionKeyUri"],
@@ -513,16 +656,17 @@ class Deployment:
         subprocess.run([str(HERE / "validate.sh")], check=True, stdout=sys.stderr)
         with tempfile.TemporaryDirectory(prefix="auth-deployment-") as directory:
             compiler = shutil.which(os.environ.get("BICEP_BIN", "bicep")) or str(Path.home() / ".azure/bin/bicep")
-            template_name = "cleanup" if self.cleanup else "main"
+            template_name = "monitoring" if self.monitoring else ("cleanup" if self.cleanup else "main")
             template = Path(directory) / (template_name + ".json")
             subprocess.run([compiler, "build", str(HERE / (template_name + ".bicep")), "--outfile", str(template)], check=True, stdout=sys.stderr)
-            from validate_arm import validate, validate_cleanup
-            (validate_cleanup if self.cleanup else validate)(template)
+            from validate_arm import validate, validate_cleanup, validate_monitoring
+            (validate_monitoring if self.monitoring else (validate_cleanup if self.cleanup else validate))(template)
             self.inspect()
             if self.origin is not None:
                 print(f"Broker origin: {self.origin}", file=sys.stderr)
             parameters = Path(directory) / "parameters.json"
             parameters.write_text(json.dumps({"parameters": {key: {"value": value} for key, value in self.params.items()}}), encoding="utf-8")
+            parameters.chmod(0o600)
             common = ["--resource-group", self.group, "--name", f"auth-{self.app}", "--mode", "Incremental",
                       "--template-file", str(template), "--parameters", "@" + str(parameters)]
             self.az(["deployment", "group", "validate", *common])
@@ -539,7 +683,7 @@ class Deployment:
                     raise DeploymentError("What-if contains a resource outside the owned manifest")
                 if change["changeType"] != "Ignore":
                     print(f"Plan: {change['changeType']} {change['resourceId']}", file=sys.stderr)
-            applied = self.mode in ("apply", "foundation-apply", "stage-apply", "promote-staged", "cleanup-identity-apply", "cleanup-apply")
+            applied = self.mode in ("apply", "foundation-apply", "stage-apply", "promote-staged", "cleanup-identity-apply", "cleanup-apply", "monitoring-apply")
             if applied:
                 self.inspect()  # Recheck after planning, immediately before writes.
                 if self.cleanup and not self.identity_only:
@@ -547,7 +691,15 @@ class Deployment:
                 result = self.az(["deployment", "group", "create", *common])
                 if not isinstance(result.get("properties"), dict) or result["properties"].get("provisioningState") != "Succeeded":
                     raise DeploymentError("Deployment did not report Succeeded; inspect Azure before retrying")
-                if self.cleanup:
+                if self.monitoring:
+                    self.inspect(require_resources=True)
+                    readback = self.az(["deployment", "group", "what-if", *common, "--no-pretty-print", "--result-format", "FullResourcePayloads"])
+                    observed = readback.get("changes", [])
+                    if (readback.get("status") != "Succeeded" or not isinstance(observed, list)
+                            or {str(c.get("resourceId", "")).lower() for c in observed if c.get("changeType") == "NoChange"} != allowed
+                            or any(c.get("changeType") not in ("NoChange", "Ignore") for c in observed)):
+                        raise DeploymentError("Monitoring apply properties unconfirmed; inspect before retrying")
+                elif self.cleanup:
                     try:
                         self.inspect(require_resources=True)
                     except (DeploymentError, OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as error:
@@ -577,6 +729,11 @@ class Deployment:
 
     def outputs(self, applied):
         from cost_plan import cleanup_capacity
+        if self.monitoring:
+            return {"operation": self.mode, "source": self.source, "applied": applied, "releaseAcceptance": False,
+                    "resources": [self.resource_id(kind, name) for kind, name, _, _ in self.resources],
+                    "budgetAmount": self.params["budgetAmount"], "billingCurrency": "subscription billing currency",
+                    "alertsEnabled": self.params["enableAlerts"], "hardSpendingCap": False}
         if self.cleanup:
             return {"operation": self.mode, "source": self.source, "image": self.params.get("image"),
                     "deploymentEpoch": self.params.get("deploymentEpoch"), "appName": self.app,
@@ -590,7 +747,7 @@ class Deployment:
                     "cleanupCapacityPlan": cleanup_capacity(), "applied": applied, "releaseAcceptance": False}
         endpoint = f"https://{self.storage}.table.core.windows.net/"
         configuration = {
-            "Broker__TableEndpoint": endpoint, "Broker__TableName": self.table,
+            **({} if self.foundation else self.telemetry_env()), "Broker__TableEndpoint": endpoint, "Broker__TableName": self.table,
             "Broker__BrokerOrigin": self.origin,
             "Broker__ManagedIdentityClientId": self.identity["clientId"],
             "Broker__RequestLimitPerMinute": self.params["requestLimitPerMinute"],
@@ -606,7 +763,7 @@ class Deployment:
                 "tableResourceId": self.resource_id(RESOURCE_TYPES[7], self.storage + "/default/" + self.table),
                 "runtimeConfiguration": configuration,
                 "capacityPlan": {"minReplicas": 1 if self.isolated else 0, "maxReplicas": 1, "cpu": 0.25, "memory": "0.5Gi",
-                                 "logRetentionDays": 30, "logDailyQuotaGb": 1,
+                                 "logRetentionDays": 30, "logDailyQuotaGb": 0.1, "consoleDestination": "none",
                                  "hardSpendingCap": False, "requestLimitsAreProcessLocal": True},
                 "cleanupCapacityPlan": cleanup_capacity(), "applied": applied,
                 **({"source": self.source, "image": self.params.get("image"), "isolated": self.isolated,
@@ -615,7 +772,7 @@ class Deployment:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("check", "plan", "apply", "foundation-check", "foundation-plan", "foundation-apply", "cost-plan", *ACTIVATION, *CLEANUP))
+    parser.add_argument("mode", choices=("check", "plan", "apply", "foundation-check", "foundation-plan", "foundation-apply", "cost-plan", *ACTIVATION, *CLEANUP, *MONITORING))
     args = parser.parse_args()
     try:
         print(json.dumps(Deployment(args.mode).run()))

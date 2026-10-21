@@ -6,6 +6,7 @@ param storageName string
 param tableName string
 param identityOnly bool
 param image string = ''
+param monitoringConnectionString string = ''
 param deploymentEpoch string = ''
 var ownership = { repositoryId: '1426154477', ownerId: '345029828', managedBy: 'repoagent-auth' }
 resource createdCleanupIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (identityOnly) {
@@ -39,6 +40,8 @@ resource job 'Microsoft.App/jobs@2025-01-01' = if (!identityOnly) {
         args: ['cleanup', '--once']
         resources: { cpu: json('0.25'), memory: '0.5Gi' }
         env: [
+          { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: monitoringConnectionString }
+          { name: 'APPLICATIONINSIGHTS_STATSBEAT_DISABLED', value: 'true' }
           #disable-next-line no-hardcoded-env-urls // Approved destination is Azure public cloud only.
           { name: 'Broker__TableEndpoint', value: 'https://${storageName}.table.core.windows.net/' }
           { name: 'Broker__TableName', value: tableName }

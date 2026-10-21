@@ -5,6 +5,7 @@ param appName string
 param storageName string
 param vaultName string
 param deployApp bool = false
+param monitoringConnectionString string = ''
 param staged bool = false
 param image string = ''
 param signingKeyUri string = ''
@@ -45,7 +46,7 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   properties: {
     sku: { name: 'PerGB2018' }
     retentionInDays: 30
-    workspaceCapping: { dailyQuotaGb: 1 }
+    workspaceCapping: { dailyQuotaGb: json('0.1') }
   }
 }
 
@@ -55,11 +56,7 @@ resource environment 'Microsoft.App/managedEnvironments@2025-01-01' = {
   tags: union(ownership, { role: 'auth-environment' })
   properties: {
     appLogsConfiguration: {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: logs.properties.customerId
-        sharedKey: logs.listKeys().primarySharedKey
-      }
+      destination: 'none'
     }
     workloadProfiles: [{ name: 'Consumption', workloadProfileType: 'Consumption' }]
   }
@@ -159,6 +156,8 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = if (deployApp) {
         image: image
         resources: { cpu: json('0.25'), memory: '0.5Gi' }
         env: [
+          { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: monitoringConnectionString }
+          { name: 'APPLICATIONINSIGHTS_STATSBEAT_DISABLED', value: 'true' }
           { name: 'ASPNETCORE_HTTP_PORTS', value: '8080' }
           { name: 'AZURE_CLIENT_ID', value: runtime.properties.clientId }
           { name: 'Auth__SigningKeyUri', value: signingKeyUri }
