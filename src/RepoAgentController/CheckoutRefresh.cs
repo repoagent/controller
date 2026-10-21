@@ -58,6 +58,9 @@ sealed class CheckoutRefresh : IAsyncDisposable
     }
     void Signal() { if (wake.CurrentCount == 0) try { wake.Release(); } catch (SemaphoreFullException) { } }
 
+    public long RepositoryId => checkout.RepositoryId;
+    public string DefaultRef => checkout.DefaultRef;
+
     public void Request()
     {
         lock (journalLock)

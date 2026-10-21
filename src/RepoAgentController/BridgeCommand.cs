@@ -116,7 +116,7 @@ public static class BridgeCommand
                         if (publicUrl is not null)
                         {
                             await new DiscussionWebhooks(github, bridge, statePath,
-                                new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval)))).Run(cancellationToken);
+                                new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), reconciliation).Run(cancellationToken);
                             return 0;
                         }
                         Log.Write("mode", $"polling interval-seconds={result.GetValue(interval)}");

@@ -18,6 +18,7 @@ internal sealed class ManagedCheckout : IDisposable
     readonly GitHubAppCredentials credentials;
     public string Owner => metadata.Text("owner");
     public long RepositoryId => repository.Id;
+    public string DefaultRef => "refs/heads/" + repository.Branch;
     ManagedCheckout(string root, FileStream lease, string record, JsonObject metadata,
         RepositoryCheckout repository, string git, GitHub github, GitHubAppCredentials credentials)
     {
