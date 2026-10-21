@@ -89,6 +89,7 @@ class CleanupProcessTests(unittest.TestCase):
         write = self.creates()[0]
         self.assertEqual(write['args'][write['args'].index('--mode') + 1], 'Incremental')
         self.assertEqual(write['parameters']['parameters']['identityOnly']['value'], identity_only)
+        self.assertEqual(write['parameters']['parameters']['storageName']['value'], deployment.STORAGE)
         self.assertEqual({item['type'] for item in write['template']['resources']},
                          {'Microsoft.App/jobs', 'Microsoft.ManagedIdentity/userAssignedIdentities'})
         return write['parameters']['parameters']
@@ -107,6 +108,8 @@ class CleanupProcessTests(unittest.TestCase):
         self.assert_single_write(True)
         output = json.loads(result.stdout)
         self.assertEqual((output['cleanupIdentityClientId'], output['cleanupIdentityPrincipalId']), (CLIENT, PRINCIPAL))
+        self.assertEqual(output['tableResourceId'], deployment.TABLE_ID)
+        self.assertEqual(output['tableEndpoint'], f'https://{deployment.STORAGE}.table.core.windows.net/')
         self.assertTrue(output['applied'])
         self.assertFalse(output['releaseAcceptance'])
         self.assertFalse(Path(self.env['IMAGE_JOURNAL']).exists())
@@ -123,12 +126,25 @@ class CleanupProcessTests(unittest.TestCase):
         self.assertEqual(params['image']['value'], activation.IMAGE)
         self.assertEqual(params['deploymentEpoch']['value'], self.env['AUTH_DEPLOYMENT_EPOCH'])
         output = json.loads(result.stdout)
+        self.assertEqual(output['tableResourceId'], deployment.TABLE_ID)
+        self.assertEqual(output['tableEndpoint'], f'https://{deployment.STORAGE}.table.core.windows.net/')
         self.assertTrue(output['applied'])
         self.assertFalse(output['releaseAcceptance'])
         self.assertEqual((output['cleanupJobId'], output['cleanupIdentityId']), (JOB_ID, IDENTITY_ID))
         self.assertEqual(output['cleanupIdentityClientId'], CLIENT)
         self.assertGreaterEqual(len(Path(self.env['IMAGE_JOURNAL']).read_text().splitlines()), 2)
         self.assertNotIn('runtimeConfiguration', output)
+
+    def test_invalid_selected_name_refuses_before_source_image_or_azure(self):
+        self.env['AUTH_KEY_VAULT_NAME'] = 'invalid--vault'
+        self.main = [self.env['GITHUB_SHA'], 'f' * 40]
+        result = self.operation('cleanup-apply')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('AUTH_KEY_VAULT_NAME', result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(self.calls, [])
+        self.assertFalse(Path(self.env['IMAGE_JOURNAL']).exists())
+        self.assertEqual(json.loads(Path(self.env['GIT_OBSERVATIONS']).read_text()), self.main)
 
     def test_signer_identity_is_refused_before_write(self):
         # C90-05: no signing env is necessary for a signer attachment to be unsafe.
