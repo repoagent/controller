@@ -1,6 +1,5 @@
 using System.Net.Http.Headers;
 using Azure.Data.Tables;
-using Azure.Identity;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Http.Features;
 using RepoAgent.Auth;
@@ -12,14 +11,13 @@ if (args.FirstOrDefault() == "cleanup")
 }
 
 var builder = WebApplication.CreateBuilder(args);
+DevelopmentSettings.Add(builder.Configuration, builder.Configuration, builder.Environment.EnvironmentName);
 BrokerTelemetry.AddHttp(builder);
-builder.Services.AddSingleton(services => BrokerOptions.Read(services.GetRequiredService<IConfiguration>()));
+builder.Services.AddSingleton(services => BrokerStorage.Options(
+    services.GetRequiredService<IConfiguration>(), builder.Environment.EnvironmentName));
 builder.Services.AddSingleton(services =>
 {
-    var options = services.GetRequiredService<BrokerOptions>();
-    var identity = options.ManagedIdentityClientId is { } clientId
-        ? ManagedIdentityId.FromUserAssignedClientId(clientId) : ManagedIdentityId.SystemAssigned;
-    return new TableClient(options.TableEndpoint, options.TableName, new ManagedIdentityCredential(identity),
+    return BrokerStorage.Create(services.GetRequiredService<IConfiguration>(), builder.Environment.EnvironmentName,
         new TableClientOptions
         {
             Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(3) },

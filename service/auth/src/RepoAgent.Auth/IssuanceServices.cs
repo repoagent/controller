@@ -1,3 +1,4 @@
+using Azure.Core;
 using Azure.Identity;
 using Azure.Storage.Blobs;
 using Azure.Security.KeyVault.Keys.Cryptography;
@@ -10,6 +11,14 @@ public static class IssuanceServices
     public static void Add(WebApplicationBuilder builder)
     {
         var configuration = builder.Configuration.GetSection("Auth");
+        Uri? developmentVault = null;
+        if (configuration["DevelopmentVaultUri"] is { } localVault)
+        {
+            developmentVault = HttpsUri(localVault);
+            if (!builder.Environment.IsDevelopment() || !developmentVault.IsLoopback
+                || developmentVault.AbsolutePath != "/")
+                throw new InvalidOperationException("Emulated Key Vault requires Development and a loopback HTTPS origin.");
+        }
         if (configuration["SigningKeyUri"] is null)
         {
             // Incomplete composition is supported; malformed supplied settings are not.
@@ -22,29 +31,48 @@ public static class IssuanceServices
         }
         var signing = KeyUri(configuration["SigningKeyUri"]);
         var wrapping = KeyUri(configuration["DataProtectionKeyUri"]);
-        var blob = HttpsUri(configuration["DataProtectionBlobUri"]);
+        var developmentStorage = configuration["DevelopmentBlobConnectionString"]
+            ?? BrokerStorage.DevelopmentConnection(builder.Configuration, builder.Environment.EnvironmentName);
+        if (developmentStorage is not null && !builder.Environment.IsDevelopment())
+            throw new InvalidOperationException("Development storage requires Development environment.");
+        var blob = developmentStorage is null ? HttpsUri(configuration["DataProtectionBlobUri"])
+            : new Uri(configuration["DataProtectionBlobUri"] ?? "", UriKind.Absolute);
         var application = configuration["DataProtectionApplicationName"];
         if (string.IsNullOrWhiteSpace(application) || application.Length > 128)
             throw new InvalidOperationException("Auth:DataProtectionApplicationName must identify the shared key ring.");
-        var options = BrokerOptions.Read(builder.Configuration);
+        var options = BrokerStorage.Options(builder.Configuration, builder.Environment.EnvironmentName);
         var identity = options.ManagedIdentityClientId is { } clientId
             ? ManagedIdentityId.FromUserAssignedClientId(clientId) : ManagedIdentityId.SystemAssigned;
-        var credential = new ManagedIdentityCredential(identity);
-        builder.Services.AddDataProtection().SetApplicationName(application)
-            .PersistKeysToAzureBlobStorage(new BlobClient(blob, credential, new BlobClientOptions
-            {
-                Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(3) },
-                Diagnostics = { IsLoggingContentEnabled = false }
-            })).ProtectKeysWithAzureKeyVault(wrapping, new KeyResolver(credential, new CryptographyClientOptions
-            {
-                Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(3) },
-                Diagnostics = { IsLoggingContentEnabled = false }
-            }));
-        builder.Services.AddSingleton(new CryptographyClient(signing, credential, new CryptographyClientOptions
+        TokenCredential credential = new ManagedIdentityCredential(identity);
+        if (developmentVault is not null)
+        {
+            if (signing.GetLeftPart(UriPartial.Authority) != developmentVault.GetLeftPart(UriPartial.Authority)
+                || wrapping.GetLeftPart(UriPartial.Authority) != developmentVault.GetLeftPart(UriPartial.Authority)
+                || builder.Configuration["AZURE_AUTHORITY_HOST"]?.TrimEnd('/') != developmentVault.AbsoluteUri.TrimEnd('/'))
+                throw new InvalidOperationException("Development keys and credential authority must use the local vault.");
+            credential = new EnvironmentCredential(new EnvironmentCredentialOptions
+            { AuthorityHost = developmentVault, DisableInstanceDiscovery = true });
+        }
+        var blobOptions = new BlobClientOptions
         {
             Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(3) },
             Diagnostics = { IsLoggingContentEnabled = false }
-        }));
+        };
+        var keyRing = developmentStorage is null ? new BlobClient(blob, credential, blobOptions)
+            : new BlobClient(developmentStorage, "data-protection", "keyring.xml", blobOptions);
+        if (developmentStorage is not null && (blob != keyRing.Uri || !blob.IsLoopback
+            || blob.UserInfo.Length != 0 || blob.Query.Length != 0 || blob.Fragment.Length != 0))
+            throw new InvalidOperationException("Development key ring must use the local storage emulator.");
+        CryptographyClientOptions CryptoOptions() => new()
+        {
+            DisableChallengeResourceVerification = developmentVault is not null,
+            Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(3) },
+            Diagnostics = { IsLoggingContentEnabled = false }
+        };
+        builder.Services.AddDataProtection().SetApplicationName(application)
+            .PersistKeysToAzureBlobStorage(keyRing)
+            .ProtectKeysWithAzureKeyVault(wrapping, new KeyResolver(credential, CryptoOptions()));
+        builder.Services.AddSingleton(new CryptographyClient(signing, credential, CryptoOptions()));
         builder.Services.AddSingleton(new GitHubIssuance(new HttpClient(new SocketsHttpHandler
         {
             AllowAutoRedirect = false, UseCookies = false, MaxConnectionsPerServer = 8,

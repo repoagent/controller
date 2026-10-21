@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Azure.Data.Tables;
-using Azure.Identity;
 
 namespace RepoAgent.Auth;
 
@@ -8,6 +7,23 @@ internal static class BrokerCleanupCommand
 {
     internal static async Task<int> RunAsync(string[] args)
     {
+        if (args is ["cleanup", "--watch"] && Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") == "Development")
+        {
+            using var stop = new CancellationTokenSource();
+            Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
+            using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1));
+            try
+            {
+                do
+                {
+                    var result = await RunAsync(["cleanup", "--once"]);
+                    if (result != 0) return result;
+                }
+                while (await timer.WaitForNextTickAsync(stop.Token));
+            }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+            return 0;
+        }
         if (args is not ["cleanup", "--once"])
         {
             Console.Error.WriteLine("Usage: cleanup --once");
@@ -20,35 +36,18 @@ internal static class BrokerCleanupCommand
         IConfiguration configuration;
         try
         {
-            configuration = new ConfigurationBuilder().AddEnvironmentVariables().Build();
-            var connectionString = configuration["Broker:Cleanup:DevelopmentConnectionString"];
-            var developmentStorage = connectionString is not null;
-            if (developmentStorage && configuration["DOTNET_ENVIRONMENT"] != "Development")
-                throw new InvalidOperationException("Development storage requires Development environment.");
-            options = BrokerOptions.Read(configuration, developmentStorage);
+            var builder = new ConfigurationBuilder().AddEnvironmentVariables();
+            var initial = builder.Build();
+            DevelopmentSettings.Add(builder, initial, initial["DOTNET_ENVIRONMENT"]);
+            configuration = builder.Build();
+            options = BrokerStorage.Options(configuration, initial["DOTNET_ENVIRONMENT"]);
             var clientOptions = new TableClientOptions
             {
                 Transport = budget,
                 Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(3) },
                 Diagnostics = { IsLoggingContentEnabled = false }
             };
-            if (developmentStorage)
-            {
-                if (!BrokerOptions.IsDevelopmentTableEndpoint(options.TableEndpoint))
-                    throw new InvalidOperationException("Development storage requires a loopback endpoint.");
-                table = new TableClient(connectionString, options.TableName, clientOptions);
-                var expected = new Uri(options.TableEndpoint.AbsoluteUri.TrimEnd('/') + "/" + options.TableName);
-                if (table.Uri != expected || !table.Uri.IsLoopback || table.Uri.UserInfo.Length != 0
-                    || table.Uri.Query.Length != 0 || table.Uri.Fragment.Length != 0)
-                    throw new InvalidOperationException("Development storage destination does not match.");
-            }
-            else
-            {
-                var identity = options.ManagedIdentityClientId is { } clientId
-                    ? ManagedIdentityId.FromUserAssignedClientId(clientId) : ManagedIdentityId.SystemAssigned;
-                table = new TableClient(options.TableEndpoint, options.TableName,
-                    new ManagedIdentityCredential(identity), clientOptions);
-            }
+            table = BrokerStorage.Create(configuration, initial["DOTNET_ENVIRONMENT"], clientOptions);
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or FormatException)
         {

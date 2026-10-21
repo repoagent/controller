@@ -21,6 +21,10 @@ public sealed class HealthReadinessTests(ITestOutputHelper testOutput)
     [InlineData("bad-origin", 0)]
     [InlineData("bad-signing", 0)]
     [InlineData("bad-partial-wrapping", 0)]
+    [InlineData("local-storage-production", 0)]
+    [InlineData("local-vault-production", 0)]
+    [InlineData("local-settings-production", 0)]
+    [InlineData("remote-development-storage", 0)]
     public Task Incomplete_or_malformed_configuration_is_not_ready(string scenario, int status) =>
         CheckApplicationAsync(scenario, (HttpStatusCode)status);
 
@@ -69,6 +73,14 @@ public sealed class HealthReadinessTests(ITestOutputHelper testOutput)
         if (scenario == "bad-origin") start.Environment["Broker__BrokerOrigin"] = "https://user:secret@broker.example.test/path";
         if (scenario == "bad-signing") start.Environment["Auth__SigningKeyUri"] = "https://vault.example.test/keys/unversioned";
         if (scenario == "bad-partial-wrapping") start.Environment["Auth__DataProtectionKeyUri"] = "http://invalid.test";
+        if (scenario == "local-storage-production") start.Environment["Broker__DevelopmentConnectionString"] = "UseDevelopmentStorage=true";
+        if (scenario == "local-vault-production") start.Environment["Auth__DevelopmentVaultUri"] = "https://localhost:4997";
+        if (scenario == "local-settings-production") start.Environment["Broker__DevelopmentSettingsFile"] = "does-not-exist.json";
+        if (scenario == "remote-development-storage")
+        {
+            start.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+            start.Environment["Broker__DevelopmentConnectionString"] = "UseDevelopmentStorage=true";
+        }
         using var process = Process.Start(start)!;
         var errors = process.StandardError.ReadToEndAsync(deadline.Token);
         var output = process.StandardOutput.ReadToEndAsync(deadline.Token);
