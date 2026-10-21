@@ -118,9 +118,10 @@ internal sealed class TelemetryServer : IAsyncDisposable
                 Console.Error.WriteLine($"native identity={identity} request={count}");
                 if (mode == "hang" || mode == "refresh" && count > 1) { await Task.Delay(Timeout.Infinite, stop.Token); return; }
                 if (mode == "slow") await Task.Delay(700, stop.Token);
+                // Remain valid during SDK parsing; the refresh case still requires a second identity request.
                 var payload = identity ? JsonSerializer.Serialize(new
                 {
-                    access_token = "synthetic-native-token", expires_on = DateTimeOffset.UtcNow.AddSeconds(mode == "refresh" ? 1 : 3600).ToUnixTimeSeconds().ToString(),
+                    access_token = "synthetic-native-token", expires_on = DateTimeOffset.UtcNow.AddSeconds(mode == "refresh" ? 60 : 3600).ToUnixTimeSeconds().ToString(),
                     resource = "https://monitor.azure.com", token_type = "Bearer", client_id = "11111111-1111-1111-1111-111111111111"
                 }) : "{\"itemsReceived\":8,\"itemsAccepted\":8,\"errors\":[]}";
                 var bytes = Encoding.UTF8.GetBytes(mode == "500" ? "{}" : payload);
