@@ -14,5 +14,8 @@ build=$(mktemp -d)
 trap 'rm -rf -- "$build"' EXIT
 "$compiler" build "$root/main.bicep" --outfile "$build/main.json"
 "$compiler" build "$root/runtime-rbac.bicep" --outfile "$build/runtime-rbac.json"
+"$compiler" build "$root/cleanup.bicep" --outfile "$build/cleanup.json"
+"$compiler" build "$root/cleanup-rbac.bicep" --outfile "$build/cleanup-rbac.json"
+python3 "$root/validate_arm.py" "$build/cleanup.json" cleanup
 python3 "$root/validate_arm.py" "$build/main.json"
 bash -n "$root/deploy.sh" "$root/validate.sh"

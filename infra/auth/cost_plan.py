@@ -67,3 +67,25 @@ def budget_plan(scope):
                               "Review a separately authorized budget deployment and notification plan"],
             "notification": {"thresholdType": "Actual", "operator": "GreaterThanOrEqualTo"},
             "hardSpendingCap": False}
+
+
+def cleanup_capacity():
+    """Nominal per-start arithmetic, not observed traffic or a daily spending cap."""
+    return {"cronUtc": "* * * * *", "nominalStartsPerDay": 1440,
+            "parallelism": 1, "replicaCompletionCount": 1, "replicaRetryLimit": 0,
+            "replicaTimeoutSeconds": 90, "cpu": 0.25, "memory": "0.5Gi",
+            "nominalReplicaSecondsPerDay": 129600, "nominalVcpuSecondsPerDay": 32400,
+            "nominalGiBSecondsPerDay": 64800, "logRetentionDays": 30, "logDailyQuotaGb": 1,
+            "processSeconds": 60, "sdkTableDispatches": 128, "sdkBatchDispatches": 32,
+            "logicalQueryPages": 16, "entitiesPerPage": 32, "turnAdmissionDispatches": 40,
+            "turnAdmissionBatches": 8, "nominalDailySdkTableDispatches": 184320,
+            "nominalDailySdkBatchDispatches": 46080,
+            "reviewedHttp11Envelope": {
+                "scope": "Azure.Core1.62.0/.NET10.0.13/direct HTTP1.x/no handler authentication",
+                "maxSendsPerSdkDispatch": 4, "calculatedTableSendsPerStart": 512,
+                "calculatedBatchSendsPerStart": 128, "nominalDailyCalculatedTableSends": 737280,
+                "nominalDailyCalculatedBatchSends": 184320,
+                "batchesIncludedInTotal": True, "measuredWireTraffic": False,
+                "executingRuntimeAttested": False, "excludes": "identity/DNS/TCP/TLS/intermediary work"},
+            "hardSpendingCap": False, "globalConcurrencyCap": False,
+            "proxyRequiredTableConnectivitySupported": False, "releaseAcceptance": False}

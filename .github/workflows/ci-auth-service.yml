@@ -5,7 +5,7 @@ on:
       operation:
         description: Select normal delivery or a guarded first-activation operation
         type: choice
-        options: [access-check, deploy, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume]
+        options: [access-check, deploy, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume, cleanup-identity-plan, cleanup-identity-apply, cleanup-plan, cleanup-apply]
         default: access-check
         required: true
       expected-source-sha:
@@ -99,7 +99,7 @@ jobs:
   verify-service:
     if: github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -183,7 +183,7 @@ jobs:
         run: python3 scripts/delivery/deploy-auth.py deploy
 
   activation:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && contains(fromJSON('["foundation-plan","foundation-apply","stage-plan","stage-apply","promote-staged","stage-stop","stage-resume"]'), inputs.operation)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && contains(fromJSON('["foundation-plan","foundation-apply","stage-plan","stage-apply","promote-staged","stage-stop","stage-resume","cleanup-identity-plan","cleanup-identity-apply","cleanup-plan","cleanup-apply"]'), inputs.operation)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -200,7 +200,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      - if: ${{ !startsWith(inputs.operation, 'foundation-') }}
+      - if: ${{ !startsWith(inputs.operation, 'foundation-') && !startsWith(inputs.operation, 'cleanup-identity-') }}
         run: sudo apt-get update && sudo apt-get install -y skopeo
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
@@ -212,7 +212,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$AUTH_OPERATION" in
-            foundation-plan|foundation-apply|stage-plan|stage-apply|promote-staged|stage-stop|stage-resume)
+            foundation-plan|foundation-apply|stage-plan|stage-apply|promote-staged|stage-stop|stage-resume|cleanup-identity-plan|cleanup-identity-apply|cleanup-plan|cleanup-apply)
               bash infra/auth/deploy.sh "$AUTH_OPERATION" ;;
             *) exit 1 ;;
           esac

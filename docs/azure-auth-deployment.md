@@ -171,3 +171,102 @@ Configured 1/1 is a per-revision target, not a global hard spend cap; maintenanc
 ## Bootstrap history
 
 An initial West Europe identity creation was rejected by Azure with `RequestDisallowedByAzure` because the region was not accepting new customers for this subscription. The final group and identity were created in Sweden Central. The superseded `rg-controller-auth` group and its temporary identity were deleted; the repository variables point to the final identity and group above. This records the observed failure, not a permanent statement about West Europe eligibility.
+
+## Cleanup identity bootstrap and scheduling
+
+These source routes preserve the exact main-only OIDC subject, Contributor scope, shared noncanceling delivery concurrency and all normal release gates. They exclude ordinary build/publication/deploy jobs and never set readiness flags. Source merge is not permission for live operations below. Use the accepted current-main source and the same anonymously attested public auth image; no rebuild or registry-secret handling is needed.
+
+1. With the owned foundation already present, inspect `cleanup-identity-plan`, then separately authorize `cleanup-identity-apply` using the existing workflow:
+
+   ```sh
+   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+     -f operation=cleanup-identity-plan -f expected-source-sha="$accepted_source"
+   # Only after reviewing this plan and authorizing the identity write:
+   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+     -f operation=cleanup-identity-apply -f expected-source-sha="$accepted_source"
+   ```
+
+2. Retain the actual `cleanupIdentityId`, client/principal IDs and exact Table resource ID. A separate authorized operator reviews/applies `infra/auth/cleanup-rbac.bicep` with the reported app/storage/Table parameters, checks exact scope/principal and role propagation. The workflow cannot grant roles. Establish access before starting the schedule; missing evidence is an unresolved operator checkpoint, not a new readiness variable or permission fallback.
+3. Keep the external epoch and existing app/Table names stable. Inspect `cleanup-plan`, then separately authorize `cleanup-apply`:
+
+   ```sh
+   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+     -f operation=cleanup-plan -f expected-source-sha="$accepted_source" -f image="$accepted_image"
+   # Apply immediately activates minute scheduling; review that cost and access first.
+   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+     -f operation=cleanup-apply -f expected-source-sha="$accepted_source" -f image="$accepted_image"
+   ```
+
+Successful ARM status alone is insufficient. Receipts require actual owned identity and exact Job readback, including Consumption, immutable desired image, four-variable allowlist, cleanup-only identity, command, fixed scheduling/capacity and absence of forbidden additions. Unconfirmed apply requires inspection before retry; a Job may already be running. An owned prior approved-repository digest can update to the new current-main-attested digest, but prior-image drift during planning fails. Changing epoch/identity or other nonconforming prior state is not an automatic update/repair. Restoring a Manual Job also resumes scheduling with the desired image and does not prove older executions drained.
+
+## Cleanup schedule suspension and drain
+
+This is a separately authorized operator procedure, not an automated lifecycle route or tested Azure drain proof. Verify installed CLI/extension support before use. Use the approved subscription/group and exact owned Job; preserve the recorded source/digest/epoch/identity and runtime shape from the deployment receipt. Record current execution IDs before switching the trigger, because history truncation is not proof of absence. No cursor deletion/reset or epoch change proves settlement.
+
+Capture `before.json` with `az resource show` at API2025-01-01. Inspect its ID/type/location/ownership tags, cleanup-only identity, desired digest/environment/epoch, command/environment allowlist and fixed runtime against the receipt. Reject nonconforming state. The following local construction copies only writable fields and changes only trigger configuration; it does not authorize the write:
+
+```sh
+job_id="/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$AZURE_RESOURCE_GROUP/providers/Microsoft.App/jobs/$AUTH_APP_NAME-cleanup"
+az resource show --ids "$job_id" --api-version 2025-01-01 \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --output json > before.json
+az containerapp job execution list --name "$AUTH_APP_NAME-cleanup" \
+  --resource-group "$AZURE_RESOURCE_GROUP" --subscription "$AZURE_SUBSCRIPTION_ID" --output json > executions-before.json
+jq '{"$schema":"https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  contentVersion:"1.0.0.0", resources:[{
+    type:"Microsoft.App/jobs", apiVersion:"2025-01-01", name:.name,
+    location:.location, tags:.tags, identity:.identity,
+    properties:{environmentId:.properties.environmentId,
+      workloadProfileName:.properties.workloadProfileName, template:.properties.template,
+      configuration:{triggerType:"Manual", replicaRetryLimit:0, replicaTimeout:90,
+        manualTriggerConfig:{parallelism:1,replicaCompletionCount:1}}}}]}' before.json > manual.json
+# Keep only the identity's writable type and resource-ID keys; strip read-only IDs.
+jq '.resources[0].identity |= {type:.type,
+  userAssignedIdentities:(.userAssignedIdentities | with_entries(.value={}))}' manual.json > manual-checked.json
+az deployment group validate --resource-group "$AZURE_RESOURCE_GROUP" \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --mode Incremental --template-file manual-checked.json
+az deployment group what-if --resource-group "$AZURE_RESOURCE_GROUP" \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --mode Incremental --template-file manual-checked.json \
+  --result-format FullResourcePayloads --no-pretty-print
+```
+
+Check the constructed resource's runtime template/environment/profile/identity/tags against `before.json`: only trigger configuration may differ, with scheduleTriggerConfig removed. Check what-if contains only the exact Job and only the reviewed trigger delta. Unresolved/extra changes require inspection; do not ignore them. Immediately re-read the full Job and compare with `before.json` before the separately authorized write. Any intervening change requires a new review. Keep other group writers fenced; a check/write sequence is not atomic.
+
+```sh
+az resource show --ids "$job_id" --api-version 2025-01-01 \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --output json > prewrite.json
+jq -S . before.json > before-sorted.json
+jq -S . prewrite.json > prewrite-sorted.json
+cmp before-sorted.json prewrite-sorted.json
+# Proceed only after the comparisons and exact what-if review succeed.
+az deployment group create --resource-group "$AZURE_RESOURCE_GROUP" \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --mode Incremental --template-file manual-checked.json
+az resource show --ids "$job_id" --api-version 2025-01-01 \
+  --subscription "$AZURE_SUBSCRIPTION_ID" --output json > after.json
+```
+
+Require actual Manual1/1/retry0/90s readback and unchanged template, environment, Consumption, identity and ownership. Failed/missing/mismatched readback leaves suspension UNCONFIRMED. Do not infer it from ARM success or invent a `job update --trigger-type` flag. The ordinary fixed Schedule apply reactivates runs.
+
+Now inspect every pre-switch and subsequently observed outstanding execution by its actual name. The exact inspection/stop/replica commands are:
+
+```sh
+az containerapp job execution show --name "$AUTH_APP_NAME-cleanup" \
+  --resource-group "$AZURE_RESOURCE_GROUP" --job-execution-name "$execution_name" \
+  --subscription "$AZURE_SUBSCRIPTION_ID"
+# Stop only a confirmed outstanding execution, repeat for each exact observed ID.
+az containerapp job stop --name "$AUTH_APP_NAME-cleanup" \
+  --resource-group "$AZURE_RESOURCE_GROUP" --job-execution-name "$execution_name" \
+  --subscription "$AZURE_SUBSCRIPTION_ID"
+az containerapp job replica list --name "$AUTH_APP_NAME-cleanup" \
+  --resource-group "$AZURE_RESOURCE_GROUP" --execution "$execution_name" \
+  --subscription "$AZURE_SUBSCRIPTION_ID"
+```
+
+Always specify `--execution`; omission selects latest, not all executions. The [replica command](https://learn.microsoft.com/en-us/cli/azure/containerapp/job/replica?view=azure-cli-latest) is a preview extension capability requiring CLI2.79.0 or later; verify the installed CLI/extension and actual response semantics. Within a bounded120-second observation, repeat execution listing, include delayed launches, require terminal execution states and zero actual replicas for each tracked execution. Unavailable/malformed/ambiguous observations, unresolved executions or timeout leave drain UNCONFIRMED and require inspection. An empty list alone is not an established overall fence. Stopping one execution never suspends future scheduling. No additional manual-start role or template override is authorized.
+
+Before restoring storage, fence cleanup AND HTTP at actual zero replicas, all old writers/signing, and require positive settlement/publication proofs, a fresh external epoch and repository approval. Do not reset cursors/epochs to infer those proofs. Existing backups/key retention remain separately owned. This source procedure needs real suspension/drain/restore acceptance before relying on it.
+
+## Cleanup acceptance remains open
+
+Bind evidence to each actual execution's image/configuration, not merely the Job's current template. Prohibit manual execution overrides during acceptance. Prove actual cleanup identity Table read/write/delete and denial on other tables/Blob/keys/signing; reviewed runtime/transport scope and auth-reissue accounting; real cadence,90s timeout/failures/overlap and durable per-stream throughput at supported retained populations/churn. With HTTP confirmed at zero actual replicas for24h, use authentic due/near-due/behind-cursor entries and physical reads to prove purge within the explicitly selected deadline while preserving unknown authority/audit clocks. Successful exit or sampled oldest age alone is insufficient. The [capacity counterexample and pending retention choice](auth-infrastructure.md#independent-cleanup-job) prevent claiming full-capacity24h cleanup from this schedule.
+
+Latest100 execution history covers only about100minutes at nominal minute cadence. Use the existing bounded logs for24h evidence and monitor their cap; missing/capped logs cannot mean success. Before production acceptance configure and test real alert delivery to an explicit operator destination: no summary5min, any failed/invariant execution or unknown deadline, backlog without cursor progress15min, cycle age warn6h/critical12h while validating the selected objective. Overdue age>0 requires inspection; null/incomplete samples are not healthy coverage. These are proposed live gates, not installed alert resources. Budget currency/amount/dates/recipients and log-cap monitoring remain required. Keep `AUTH_CLEANUP_READY=false` and #35/#28 open until the actual evidence exists.
