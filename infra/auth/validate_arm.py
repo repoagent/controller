@@ -14,7 +14,24 @@ def validate(path):
         raise ValueError("Template write set differs from the guarded resource manifest")
     app = next(resource for resource in resources if resource["type"] == "Microsoft.App/containerApps")
     container = app["properties"]["template"]["containers"][0]
-    scale = app["properties"]["template"]["scale"]
+    variables = template.get("variables", {})
+    if template["parameters"].get("staged") != {"type": "bool", "defaultValue": False}:
+        raise ValueError("Only fixed staged/release configurations are permitted")
+    for field, location, staged, release in (
+            ("configuration", app["properties"], "stagedConfiguration", "releaseConfiguration"),
+            ("scale", app["properties"]["template"], "stagedScale", "releaseScale")):
+        if location[field] != f"[if(parameters('staged'), variables('{staged}'), variables('{release}'))]":
+            raise ValueError("Template must select only the two approved configurations")
+    if variables["stagedConfiguration"] != {"activeRevisionsMode": "Single", "maxInactiveRevisions": 3}:
+        raise ValueError("Staging must have no ingress")
+    if variables["releaseConfiguration"] != {"activeRevisionsMode": "Single", "maxInactiveRevisions": 3,
+            "ingress": {"external": True, "allowInsecure": False, "targetPort": 8080, "transport": "http"}}:
+        raise ValueError("Release must retain public HTTPS ingress")
+    if variables["stagedScale"] != {"minReplicas": 1, "maxReplicas": 1, "rules": []}:
+        raise ValueError("Staging must have exactly one configured replica")
+    scale = variables["releaseScale"]
+    if scale.get("rules") != [{"name": "http", "http": {"metadata": {"concurrentRequests": "10"}}}]:
+        raise ValueError("Release HTTP scaling rule changed")
     logs = next(resource for resource in resources if resource["type"] == "Microsoft.OperationalInsights/workspaces")
     if (scale["minReplicas"], scale["maxReplicas"], container["resources"],
             logs["properties"]["retentionInDays"], logs["properties"]["workspaceCapping"]["dailyQuotaGb"]) != (
