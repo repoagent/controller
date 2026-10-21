@@ -44,6 +44,7 @@ if command == 'containerapp exec':
 if '--template-file' in args:
     record['template'] = json.loads(Path(args[args.index('--template-file') + 1]).read_text())
 if '--parameters' in args:
+    record['parameterMode'] = Path(args[args.index('--parameters') + 1].removeprefix('@')).stat().st_mode & 0o777
     record['parameters'] = json.loads(Path(args[args.index('--parameters') + 1].removeprefix('@')).read_text())
 def journal():
     with open(os.environ['AZ_DOUBLE_JOURNAL'], 'a') as stream:

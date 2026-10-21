@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 AUTH = Path(__file__).resolve().parents[1]
@@ -59,6 +60,35 @@ def owned_resources():
     result[APP_ID]['properties'] = {'environmentId': ENVIRONMENT_ID, 'configuration': {
         'ingress': {'external': True, 'fqdn': ORIGIN.removeprefix('https://')}}}
     return result
+
+
+CONNECTION = 'InstrumentationKey=22222222-2222-2222-2222-222222222222;IngestionEndpoint=https://test.in.applicationinsights.azure.com/'
+INSIGHTS_ID = SCOPE + '/providers/Microsoft.Insights/components/auth-test-insights'
+
+
+def monitoring_resources():
+    """Independent provider readbacks for the owned telemetry deployment boundary."""
+    ownership = dict(repositoryId='1426154477', ownerId='345029828', managedBy='repoagent-auth')
+    logs_id = SCOPE + '/providers/Microsoft.OperationalInsights/workspaces/auth-test-logs'
+    identity_id = SCOPE + '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-cleanup'
+    return {
+        logs_id: dict(id=logs_id, type='Microsoft.OperationalInsights/workspaces', location='swedencentral',
+            tags={**ownership, 'role': 'auth-logs'}, properties=dict(retentionInDays=30, workspaceCapping=dict(dailyQuotaGb=0.1))),
+        INSIGHTS_ID: dict(id=INSIGHTS_ID, type='Microsoft.Insights/components', location='swedencentral',
+            tags={**ownership, 'role': 'auth-monitoring'}, properties=dict(DisableLocalAuth=True,
+                WorkspaceResourceId=logs_id, InstrumentationKey='22222222-2222-2222-2222-222222222222', ConnectionString=CONNECTION)),
+        identity_id: dict(id=identity_id, type='Microsoft.ManagedIdentity/userAssignedIdentities', location='swedencentral',
+            tags={**ownership, 'role': 'auth-cleanup-identity'}, properties=dict(
+                clientId='22222222-3333-4444-5555-666666666666', principalId='bbbbbbbb-cccc-dddd-eeee-ffffffffffff')),
+    }
+
+
+def publisher_assignments():
+    role = '/subscriptions/' + SUBSCRIPTION + '/providers/Microsoft.Authorization/roleDefinitions/3913510d-42f4-4e42-8a64-420c390055eb'
+    return [dict(scope=INSIGHTS_ID, roleDefinitionId=role, principalType='ServicePrincipal', principalId=principal,
+        name=str(uuid.uuid5(uuid.UUID('11fb06fb-712d-4ddd-98c7-e71bbd588830'), '-'.join((INSIGHTS_ID, identity, role)))))
+        for identity, principal in ((SCOPE + '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-runtime', PRINCIPAL_ID),
+            (SCOPE + '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-cleanup', 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff'))]
 
 
 class DeploymentTimeoutTests(unittest.TestCase):
@@ -120,8 +150,10 @@ class DeploymentProcessTests(unittest.TestCase):
             'AUTH_IMAGE': 'ghcr.io/repoagent/auth-service@sha256:' + 'd' * 64,
             'AUTH_IMAGE_ROLE': 'auth-service', 'AUTH_IMAGE_NON_ROOT': 'true', 'AUTH_IMAGE_PUBLIC': 'true',
         })
-        self.scenario = {'group': {'id': SCOPE, 'location': 'swedencentral'},
+        self.scenario = {'responses': {'role assignment list': {'body': publisher_assignments()}}, 'group': {'id': SCOPE, 'location': 'swedencentral'},
                          'resources': owned_resources(), 'plan': {'status': 'Succeeded', 'changes': []}}
+        self.scenario['resources'].update(monitoring_resources())
+        self.scenario['resources'][ENVIRONMENT_ID]['properties']['appLogsConfiguration'] = dict(destination='none')
 
     def run_deploy(self, mode='apply'):
         Path(self.env['AZ_DOUBLE_SCENARIO']).write_text(json.dumps(self.scenario))
@@ -135,7 +167,7 @@ class DeploymentProcessTests(unittest.TestCase):
             self.assertIn('--subscription', args)
             self.assertEqual(args[args.index('--subscription') + 1], SUBSCRIPTION)
             command = tuple(args[:3] if args[0] == 'deployment' else args[:2])
-            self.assertIn(command, {('group', 'show'), ('resource', 'show'),
+            self.assertIn(command, {('group', 'show'), ('resource', 'show'), ('role', 'assignment'),
                 ('deployment', 'group', 'validate'), ('deployment', 'group', 'what-if'),
                 ('deployment', 'group', 'create')}, 'Ordinary deployment must never assign roles, read keys or apply budgets')
         return result
@@ -147,7 +179,7 @@ class DeploymentProcessTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn(message, result.stderr)
         self.assertEqual(self.creates(), [], 'Refusal must happen before a deployment write')
-        read_commands = {('group', 'show'), ('resource', 'show'),
+        read_commands = {('group', 'show'), ('resource', 'show'), ('role', 'assignment'),
                          ('deployment', 'group', 'validate'), ('deployment', 'group', 'what-if')}
         for call in self.calls:
             args = call['args']

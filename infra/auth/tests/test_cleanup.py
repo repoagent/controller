@@ -36,7 +36,7 @@ def ownership():
 
 
 def cleanup_job(epoch):
-    values = {'Broker__TableEndpoint': f'https://{deployment.STORAGE}.table.core.windows.net/',
+    values = {'APPLICATIONINSIGHTS_CONNECTION_STRING': deployment.CONNECTION, 'APPLICATIONINSIGHTS_STATSBEAT_DISABLED': 'true', 'Broker__TableEndpoint': f'https://{deployment.STORAGE}.table.core.windows.net/',
               'Broker__TableName': 'brokerstate', 'Broker__DeploymentEpoch': epoch,
               'Broker__ManagedIdentityClientId': CLIENT}
     return dict(id=JOB_ID, type='Microsoft.App/jobs', location='swedencentral',
@@ -66,9 +66,9 @@ class CleanupProcessTests(unittest.TestCase):
         self.scenario['resources'].pop(deployment.APP_ID)
         self.scenario['resources'][IDENTITY_ID] = cleanup_identity()
         self.scenario['resources'][LOG_ID]['properties'] = dict(customerId=WORKSPACE,
-            retentionInDays=30, workspaceCapping=dict(dailyQuotaGb=1))
+            retentionInDays=30, workspaceCapping=dict(dailyQuotaGb=0.1))
         self.scenario['resources'][deployment.ENVIRONMENT_ID]['properties']['appLogsConfiguration'] = dict(
-            destination='log-analytics', logAnalyticsConfiguration=dict(customerId=WORKSPACE))
+            destination='none')
         self.job = cleanup_job(self.env['AUTH_DEPLOYMENT_EPOCH'])
         self.scenario['postCreateResources'] = {JOB_ID: self.job}
 
@@ -77,7 +77,7 @@ class CleanupProcessTests(unittest.TestCase):
         self.scenario['plan'] = dict(status='Succeeded', changes=(changes if changes is not None else
             [dict(resourceId=active, changeType='Create')]))
         result = self.invoke(mode)
-        allowed = {('group', 'show'), ('resource', 'show'), ('deployment', 'group', 'validate'),
+        allowed = {('group', 'show'), ('resource', 'show'), ('role', 'assignment'), ('deployment', 'group', 'validate'),
                    ('deployment', 'group', 'what-if'), ('deployment', 'group', 'create')}
         for call in self.calls:
             args = call['args']
@@ -320,7 +320,7 @@ class CleanupProcessTests(unittest.TestCase):
         baseline = copy.deepcopy(self.scenario)
         for resource_id, path, value in (
                 (LOG_ID, ('properties', 'retentionInDays'), 90),
-                (deployment.ENVIRONMENT_ID, ('properties', 'appLogsConfiguration', 'logAnalyticsConfiguration', 'customerId'), 'foreign'),
+                (deployment.ENVIRONMENT_ID, ('properties', 'appLogsConfiguration', 'destination'), 'log-analytics'),
                 (IDENTITY_ID, ('properties', 'principalId'), 'malformed')):
             with self.subTest(resource_id=resource_id, path=path):
                 self.scenario = copy.deepcopy(baseline)
@@ -411,9 +411,9 @@ class CleanupCompiledContractTests(unittest.TestCase):
         self.assertIn(container['resources'], (dict(cpu=0.25, memory='0.5Gi'),
                                                dict(cpu="[json('0.25')]", memory='0.5Gi')))
         env = {entry['name']: entry for entry in container['env']}
-        self.assertEqual(len(container['env']), 4)
+        self.assertEqual(len(container['env']), 6)
         self.assertEqual(set(env), {'Broker__TableEndpoint', 'Broker__TableName',
-            'Broker__DeploymentEpoch', 'Broker__ManagedIdentityClientId'})
+            'Broker__DeploymentEpoch', 'Broker__ManagedIdentityClientId', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'APPLICATIONINSIGHTS_STATSBEAT_DISABLED'})
         self.assertTrue(all(set(entry) == {'name', 'value'} for entry in container['env']))
         self.assertIn("parameters('storageName')", env['Broker__TableEndpoint']['value'])
         self.assertIn('.table.core.windows.net/', env['Broker__TableEndpoint']['value'])

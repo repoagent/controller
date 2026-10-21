@@ -11,6 +11,16 @@ internal static class CleanupProcessFixture
     internal static async Task<(int Exit, JsonElement Summary)> RunAsync(RevocationFixture storage,
         string? endpoint = null, string epoch = RevocationFixture.Epoch, IReadOnlyDictionary<string, string>? environment = null)
     {
+        var result = await RunRawAsync(storage, endpoint, epoch, environment);
+        Assert.Empty(result.Stderr);
+        using var json = JsonDocument.Parse(result.Stdout);
+        return (result.Exit, json.RootElement.Clone());
+    }
+
+    internal static async Task<(int Exit, string Stdout, string Stderr)> RunRawAsync(RevocationFixture storage,
+        string? endpoint = null, string epoch = RevocationFixture.Epoch, IReadOnlyDictionary<string, string>? environment = null,
+        string[]? arguments = null)
+    {
         var token = TestContext.Current.CancellationToken;
         var home = Directory.CreateTempSubdirectory("cleanup-conformance-");
         try
@@ -23,7 +33,8 @@ internal static class CleanupProcessFixture
                 WorkingDirectory = home.FullName, RedirectStandardOutput = true,
                 RedirectStandardError = true, UseShellExecute = false
             };
-            foreach (var arg in new[] { typeof(Program).Assembly.Location, "cleanup", "--once" }) start.ArgumentList.Add(arg);
+            start.ArgumentList.Add(typeof(Program).Assembly.Location);
+            foreach (var arg in arguments ?? ["cleanup", "--once"]) start.ArgumentList.Add(arg);
             start.Environment.Clear();
             start.Environment["HOME"] = home.FullName;
             start.Environment["DOTNET_ENVIRONMENT"] = "Development";
@@ -41,10 +52,9 @@ internal static class CleanupProcessFixture
             var stderr = child.StandardError.ReadToEndAsync(token);
             try { await child.WaitForExitAsync(token).WaitAsync(TimeSpan.FromSeconds(75), token); }
             finally { if (!child.HasExited) child.Kill(entireProcessTree: true); }
-            Assert.True((await stderr).Length == 0, "Child must emit no raw errors or host logs.");
+            var error = await stderr;
             Assert.Empty(Directory.EnumerateFileSystemEntries(home.FullName, "*", SearchOption.AllDirectories));
-            using var json = JsonDocument.Parse(await stdout);
-            return (child.ExitCode, json.RootElement.Clone());
+            return (child.ExitCode, await stdout, error);
         }
         finally { home.Delete(recursive: true); }
     }

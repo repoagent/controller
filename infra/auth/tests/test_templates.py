@@ -149,7 +149,7 @@ class CompiledDeploymentContractTests(unittest.TestCase):
         self.assertEqual(compute['containers'][0]['resources'], {'cpu': "[json('0.25')]", 'memory': '0.5Gi'})
         logs = resource(template, 'Microsoft.OperationalInsights/workspaces')['properties']
         self.assertEqual(logs['retentionInDays'], 30)
-        self.assertEqual(logs['workspaceCapping']['dailyQuotaGb'], 1)
+        self.assertEqual(logs['workspaceCapping']['dailyQuotaGb'], "[json('0.1')]")
 
     def test_guard_refuses_capacity_drift_and_shared_key_reenablement(self):
         for field in ('replicas', 'cpu', 'memory', 'retention', 'logQuota', 'sharedKey'):
