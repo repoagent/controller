@@ -27,6 +27,8 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return string.IsNullOrWhiteSpace(text) ? null : JsonNode.Parse(text);
     }
 
+    internal sealed class CheckoutIdentityException(string message) : IOException(message);
+
     public async Task<RepositoryCheckout> CheckoutRepository(CancellationToken ct)
     {
         var value = JsonNode.Parse(await Api("GET", $"repos/{Repository}", null, ct)) ?? throw new IOException("Missing repository metadata");
@@ -40,7 +42,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
             branch.Any(c => char.IsControl(c) || char.IsWhiteSpace(c)) || branch.Contains("..", StringComparison.Ordinal) ||
             branch.IndexOfAny(['~', '^', ':', '?', '*', '[', '\\']) >= 0 || branch.Contains("@{", StringComparison.Ordinal) ||
             branch.Split('/').Any(part => part.Length == 0 || part.StartsWith('.') || part.EndsWith('.') || part.EndsWith(".lock", StringComparison.Ordinal)))
-            throw new IOException("Repository metadata does not match the approved checkout");
+            throw new CheckoutIdentityException("Repository metadata does not match the approved checkout");
         return new(id, name, remote, branch);
     }
 
