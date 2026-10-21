@@ -453,6 +453,9 @@ class GitProvider:
                 if host == 'api.github.com':
                     if self.command == 'GET' and self.path == '/repos/' + repository:
                         return self.reply(dict(id=provider.repository_id, full_name=repository, clone_url='https://github.com/' + repository + '.git', default_branch='main'))
+                    if self.command != 'POST' or self.path != '/graphql' or not body:
+                        print('GIT_PROVIDER_DENIED ' + json.dumps({'method': self.command, 'path': self.path}), flush=True)
+                        return self.reply({}, 403)
                     query = json.loads(body).get('query', '')
                     if 'discussions(' in query:
                         return self.reply({'data': {'repository': {'discussions': {'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
