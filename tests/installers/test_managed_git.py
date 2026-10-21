@@ -61,6 +61,29 @@ class ManagedGitTests(unittest.TestCase):
             finally:
                 fixture.close()
 
+    def test_helper_accepts_repeated_git_capabilities_but_rejects_duplicate_authority(self):
+        # Git's credential protocol allows array-valued extension attributes.
+        # The real clone transcript includes repeated capability[] before authority.
+        with tempfile.TemporaryDirectory(prefix='managed-helper-') as temporary:
+            cache = Path(temporary) / 'installation-token.json'
+            cache.write_text(json.dumps(dict(token='lease-A', repository='owner/project', profile='polling-clone',
+                expiresAt=(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).isoformat())))
+            cache.chmod(0o600)
+            extensions = 'capability[]=authtype\ncapability[]=state\n'
+            authority = 'protocol=https\nhost=github.com\npath=owner/project.git\n'
+
+            def invoke(record):
+                return subprocess.run(['dotnet', str(CONTROLLER), 'git-helper', str(cache), 'get'],
+                                      input=record, capture_output=True, text=True, timeout=15)
+
+            duplicate = invoke('protocol=https\n' + authority + '\n')
+            self.assertNotEqual(duplicate.returncode, 0)
+            self.assertEqual(duplicate.stdout, 'quit=true\n\n')
+            valid = invoke(extensions + authority + 'wwwauth[]=Basic realm="private fixture"\n\n')
+            self.assertEqual(valid.returncode, 0, 'Valid Git capability extensions must not deny approved authority')
+            self.assertTrue(valid.stdout == 'username=x-access-token\npassword=lease-A\n\n',
+                            'Helper must return only the current repository lease')
+
     def run_ok(self, command, environment):
         result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=40)
         # Avoid disclosing Authorization values even when a subprocess fails.
