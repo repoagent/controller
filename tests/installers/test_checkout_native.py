@@ -13,10 +13,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def native_config(root, home, discovery=False):
+def native_config(root, home, discovery=False, environment=None):
     """Observe the actual native layer; callers must acquire trust through production."""
     executable = os.environ.get('CHECKOUT_NATIVE', os.environ.get('CHECKOUT_REAL_NATIVE', shutil.which('codex')))
-    environment = dict(PATH=os.environ['PATH'], CODEX_HOME=str(home), LANG='C.UTF-8')
+    environment = dict(PATH=os.environ['PATH'], LANG='C.UTF-8') if environment is None else dict(environment)
+    environment['CODEX_HOME'] = str(home)
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen([executable, 'app-server'], cwd=root, env=environment,
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors)

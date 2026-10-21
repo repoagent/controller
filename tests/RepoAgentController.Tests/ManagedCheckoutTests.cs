@@ -28,6 +28,7 @@ public sealed class ManagedCheckoutTests
     [InlineData("partial")]
     [InlineData("reuse")]
     [InlineData("shutdown-leases")]
+    [InlineData("shutdown-forced")]
     [InlineData("trust-malformed")]
     [InlineData("dirty")]
     [InlineData("staged")]
@@ -136,6 +137,9 @@ public sealed class ManagedCheckoutTests
              child.stdin.close();child.wait();worker.join();sys.exit(child.returncode)
             if os.environ.get('CHECKOUT_SHUTDOWN_SIGNAL') and len(open(os.environ['CHECKOUT_CAPTURE']).readlines())==4:
              subprocess.run(command,check=True)
+             if os.environ.get('CHECKOUT_SHUTDOWN_PID'):
+              with open(os.environ['CHECKOUT_SHUTDOWN_PID'],'w') as pid:pid.write(str(os.getpid()))
+              os.close(1)
              with open(os.environ['CHECKOUT_SHUTDOWN_SIGNAL'],'w') as signal:signal.write('shutdown')
              with open(os.environ['CHECKOUT_SHUTDOWN_RELEASE']) as release:release.read()
              sys.exit(0)
@@ -171,7 +175,7 @@ public sealed class ManagedCheckoutTests
         {
             ["PATH"] = bin + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"),
             ["CHECKOUT_CAPTURE"] = capture, ["CHECKOUT_ORIGIN"] = origin,
-            ["CHECKOUT_TRANSPORT"] = null, ["CHECKOUT_DISCUSSION"] = null, ["CHECKOUT_CAS"] = null, ["CHECKOUT_SHUTDOWN_SIGNAL"] = null, ["CHECKOUT_SHUTDOWN_RELEASE"] = null,
+            ["CHECKOUT_TRANSPORT"] = null, ["CHECKOUT_DISCUSSION"] = null, ["CHECKOUT_CAS"] = null, ["CHECKOUT_SHUTDOWN_SIGNAL"] = null, ["CHECKOUT_SHUTDOWN_RELEASE"] = null, ["CHECKOUT_SHUTDOWN_PID"] = null,
             ["CHECKOUT_METADATA"] = metadataFile, ["CHECKOUT_CLONE_LOG"] = cloneLog,
             ["CHECKOUT_REAL_NATIVE"] = native, ["CODEX_HOME"] = home, ["CHECKOUT_REAL_GIT"] = realGit
         };
@@ -270,26 +274,43 @@ public sealed class ManagedCheckoutTests
                 Assert.True(requests[2]["params"]!["excludeTurns"]!.GetValue<bool>());
                 return; // Fake transport acknowledgement, never a genuine native turn or resume claim.
             }
-            if (scenario == "shutdown-leases")
+            if (scenario is "shutdown-leases" or "shutdown-forced")
             {
                 var signal = Path.Combine(fixture.Directory, "shutdown-signal");
                 var release = Path.Combine(fixture.Directory, "shutdown-release");
                 await Run("mkfifo", signal, release);
                 Environment.SetEnvironmentVariable("CHECKOUT_SHUTDOWN_SIGNAL", signal);
                 Environment.SetEnvironmentVariable("CHECKOUT_SHUTDOWN_RELEASE", release);
+                var pidFile = Path.Combine(fixture.Directory, "shutdown-pid");
+                if (scenario == "shutdown-forced") Environment.SetEnvironmentVariable("CHECKOUT_SHUTDOWN_PID", pidFile);
                 var observed = Task.Run(() => File.ReadAllText(signal));
                 var leader = Task.Run(Start);
                 Assert.Equal("shutdown", await observed.WaitAsync(TimeSpan.FromSeconds(20)));
+                using var rootProcess = scenario == "shutdown-forced" ? Process.GetProcessById(int.Parse(File.ReadAllText(pidFile))) : null;
                 try
                 {
+                    if (rootProcess is not null) Assert.False(rootProcess.HasExited);
                     var count = File.ReadAllLines(capture).Length;
                     Assert.Equal(1, await Start()); // Same StateStore lease while native shutdown is held.
                     args[args.IndexOf("--state") + 1] = Path.Combine(fixture.Directory, "competing-state.json");
                     Assert.Equal(1, await Start()); // Different state, same actual workspace lease.
                     Assert.Equal(count, File.ReadAllLines(capture).Length);
+                    if (rootProcess is not null)
+                    {
+                        Assert.False(rootProcess.HasExited); // Reader EOF does not end this real root process.
+                        Console.WriteLine($"forced-shutdown root={rootProcess.Id} exited={rootProcess.HasExited}");
+                        Assert.Equal(0, await leader.WaitAsync(TimeSpan.FromSeconds(10)));
+                        Assert.True(rootProcess.HasExited);
+                        Assert.Equal(0, await Start());
+                    }
                 }
-                finally { File.WriteAllText(release, "release"); }
-                Assert.Equal(0, await leader);
+                finally
+                {
+                    if (rootProcess is null) File.WriteAllText(release, "release");
+                    else if (!rootProcess.HasExited) { rootProcess.Kill(true); await rootProcess.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); }
+                    if (rootProcess is not null) await leader.WaitAsync(TimeSpan.FromSeconds(10));
+                }
+                Assert.Equal(0, await leader.WaitAsync(TimeSpan.FromSeconds(10)));
                 return;
             }
             if (scenario == "native")

@@ -350,10 +350,10 @@ USER 1000
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr + service_output.read_text() + json.dumps(events()))
         def checkout_proof():
             # Reuse genuine native read RPCs with only this container's isolated fixture environment.
-            helper = inspect.getsource(native_config).replace("environment = dict(PATH=os.environ['PATH'], CODEX_HOME=str(home), LANG='C.UTF-8')", "environment = dict(os.environ, CODEX_HOME=str(home))")
+            helper = inspect.getsource(native_config)
             script = "import json,os,select,shutil,subprocess,tempfile,time,hashlib,tomllib; from pathlib import Path\n" + helper + """
 root=Path('/workspace/repository'); home=Path('/data/credentials/codex')
-o=native_config(root,home,discovery=True)
+o=native_config(root,home,discovery=True,environment=dict(os.environ))
 layers=[x for x in o['layers'] if x['name']['type']=='project' and x['name']['dotCodexFolder']==str(root/'.codex')]
 assert len(layers)==1 and not layers[0].get('disabledReason') and o['config']['model_reasoning_effort']=='low'
 assert str(root/'AGENTS.md') in o['fixtureThread']['instructionSources']
