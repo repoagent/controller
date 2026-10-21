@@ -97,9 +97,9 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   windows-host-enrollment:
-    name: Host enrollment (windows-2025)
+    name: Host enrollment and guided installer (windows-2025)
     runs-on: windows-2025
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       REPOAGENT_TEST_WINDOWS_ROOT: LocalMachine
       PYTHONUTF8: '1'
@@ -111,13 +111,17 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
+      - name: Install the runtime configuration test dependency
+        run: python -m pip install --disable-pip-version-check PyYAML==6.0.3
       - name: Prepare the native executable test fixture
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: '10.0.x'
-      - name: Run all Windows host enrollment cases with fail-fast feedback
+      - name: Run Windows host enrollment and guided installer cases with fail-fast feedback
         shell: pwsh
         run: |
           $PSVersionTable.PSVersion.ToString()
           python -m unittest discover -s tests/installers -p test_host_enrollment.py -f -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests/installers -p test_guided_install.py -f -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
