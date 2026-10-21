@@ -120,6 +120,26 @@ class GuidedInstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+    def run_interactive_process(self, command, answers, environment=None):
+        if os.name == 'nt':
+            # Read-Host writes directly to the Win32 screen buffer, bypassing
+            # redirected stdout. The detached worker owns its console and still
+            # runs this exact public process with ordinary stdin/stdout pipes.
+            capture = subprocess.run([sys.executable, str(Path(__file__).with_name('windows_prompt_capture.py'))],
+                cwd=self.journey.directory, env=dict(self.environment, **(environment or {})),
+                input=json.dumps({'command': command, 'answers': answers}), capture_output=True,
+                text=True, encoding='utf-8', timeout=100, creationflags=subprocess.DETACHED_PROCESS)
+            self.assertEqual(capture.returncode, 0, capture.stdout + capture.stderr)
+            captured = json.loads(capture.stdout)
+            result = subprocess.CompletedProcess(command, captured['returncode'], captured['stdout'], captured['stderr'])
+            result.prompt_output = captured['console']
+        else:
+            result = subprocess.run(command, cwd=self.journey.directory,
+                env=dict(self.environment, **(environment or {})), input=answers,
+                capture_output=True, text=True, encoding='utf-8', timeout=90)
+            result.prompt_output = result.stdout
+        return result
+
     def run_guided(self, *, saved=False, apply=True, overrides=None, interactive=False, answers='', environment=None):
         options = {'Repository': 'example/project', 'BrokerOrigin': self.journey.origin,
                    'CodexAuthPath': str(self.auth), 'SkipBuild': None} if not saved else {}
@@ -138,19 +158,24 @@ class GuidedInstallTests(unittest.TestCase):
             command.append('-' + name)
             if value is not None:
                 command.append(str(value))
-        result = subprocess.run(command, cwd=self.journey.directory,
-            env=dict(self.environment, **(environment or {})), input=answers,
-            capture_output=True, text=True, encoding='utf-8', timeout=90)
+        if interactive:
+            result = self.run_interactive_process(command, answers, environment)
+        else:
+            result = subprocess.run(command, cwd=self.journey.directory,
+                env=dict(self.environment, **(environment or {})), input=answers,
+                capture_output=True, text=True, encoding='utf-8', timeout=90)
+            result.prompt_output = result.stdout
         state = json.loads(self.docker_state.read_text()) if self.docker_state.exists() else {}
         output = result.stdout + result.stderr
         secrets = ['GUIDED-FAKE-CODEX-CREDENTIAL', self.environment['GH_TOKEN'], 's' * 43]
         if (self.journey.state / 'recovery.json').exists():
             secrets.append(self.journey.read('recovery.json').get('secret'))
         for secret in filter(None, secrets):
-            self.assertNotIn(secret, output)
+            self.assertNotIn(secret, output + result.prompt_output)
         self.assertEqual(self.journey.errors, [], 'Broker fixture failed')
         print('GUIDED_CONFORMANCE ' + json.dumps({'test': self.id(), 'command': command,
             'returncode': result.returncode, 'output': output,
+            'promptOutput': result.prompt_output if interactive else None,
             'running': state.get('running', False), 'dockerEvents': state.get('events', []),
             'brokerRequests': [event['path'] for event in self.journey.events]}), flush=True)
         return result, state
@@ -215,16 +240,26 @@ class GuidedInstallTests(unittest.TestCase):
 
     def test_interactive_missing_repository_prompts_once_and_complete_values_never_prompt(self):
         before = snapshot(self.owned)
+        # An unrelated native prompt must be observed as itself, never as the
+        # expected installer text. This also rejects an empty capture oracle.
+        control = self.run_interactive_process(['pwsh', '-NoLogo', '-NoProfile', '-Command',
+            "Read-Host 'Fixture control prompt'"], 'control-input\n')
+        self.assertEqual(control.returncode, 0, control.stdout + control.stderr)
+        self.assertEqual(control.prompt_output.count('Fixture control prompt'), 1, control.prompt_output)
+        self.assertNotIn('Supply -Repository', control.prompt_output)
+        self.assertIn('control-input', control.stdout)
         result, _ = self.run_guided(apply=False, interactive=True,
             overrides={'Repository': False}, answers='example/project\n')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.count('Supply -Repository'), 1)
-        self.assertNotIn('Supply -BrokerOrigin', result.stdout)
-        self.assertNotIn('Supply -CodexAuthPath', result.stdout)
+        self.assertEqual(result.prompt_output.count('Supply -Repository'), 1, result.prompt_output)
+        self.assertIn('Repository: example/project;', result.stdout)
+        self.assertNotIn('Supply -BrokerOrigin', result.prompt_output)
+        self.assertNotIn('Supply -CodexAuthPath', result.prompt_output)
         self.assert_read_only(before)
         result, _ = self.run_guided(apply=False, interactive=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertNotIn('Supply -', result.stdout)
+        self.assertNotIn('Supply -', result.prompt_output)
+        self.assertIn('Repository: example/project;', result.stdout)
         self.assert_read_only(before)
 
     def test_unsupported_broker_profile_and_mode_stop_before_mutation(self):
