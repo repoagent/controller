@@ -31,6 +31,13 @@ CLEANUP_JOB = "Microsoft.App/jobs"
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def location_matches(actual, expected):
+    # Azure may return the approved region's canonical name or display name.
+    if expected == "swedencentral":
+        return actual in ("swedencentral", "Sweden Central")
+    return expected == "global" and actual == "global"
+
+
 def accepted_source():
     sha = required("AUTH_EXPECTED_SOURCE_SHA")
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -244,7 +251,7 @@ class Deployment:
 
     def monitoring_owned(self, resource, kind, suffix, role):
         if (str(resource.get("id", "")).lower() != self.resource_id(kind, self.app + suffix).lower()
-                or str(resource.get("type", "")).lower() != kind.lower() or resource.get("location") != self.location
+                or str(resource.get("type", "")).lower() != kind.lower() or not location_matches(resource.get("location"), self.location)
                 or any(resource.get("tags", {}).get(k) != v for k, v in {**OWNERSHIP, "role": role}.items())):
             raise DeploymentError("Monitoring dependency identity/location/ownership mismatch")
 
@@ -432,7 +439,7 @@ class Deployment:
             self.monitoring_dependencies(grants=not self.monitoring)
         logs = environment_logs = None
         group = self.az(["group", "show", "--name", self.group])
-        if str(group.get("id", "")).lower() != self.scope.lower() or group.get("location") != self.location:
+        if str(group.get("id", "")).lower() != self.scope.lower() or not location_matches(group.get("location"), self.location):
             raise DeploymentError("Azure resource group identity/location mismatch")
         for kind, name, version, role in self.resources:
             resource_id = self.resource_id(kind, name)
@@ -469,7 +476,7 @@ class Deployment:
             expected = {**OWNERSHIP, "role": role}
             if not isinstance(tags, dict) or any(tags.get(key) != value for key, value in expected.items()):
                 raise DeploymentError(f"Ownership conflict for {name}; refusing adoption")
-            if not container and resource.get("location") != ("global" if kind in ("Microsoft.Insights/actionGroups", "Microsoft.Insights/metricAlerts") else self.location):
+            if not container and not location_matches(resource.get("location"), "global" if kind in ("Microsoft.Insights/actionGroups", "Microsoft.Insights/metricAlerts") else self.location):
                 raise DeploymentError(f"Resource location conflict for {name}")
             if self.monitoring and kind == INSIGHTS:
                 properties = resource.get("properties", {})
