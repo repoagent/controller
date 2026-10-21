@@ -563,10 +563,12 @@ class CheckoutRefreshTests(unittest.TestCase):
                         self.assertTrue(json.loads(f.journal.read_text())['active'])
                         print('GAP clean-active restart=blocked persisted-active=true', flush=True)
                         continue
-                with self.controller(f):
+                f.provider.ref_status = 404
+                with self.controller(f, 'refresh-pending'):
                     if case == 'resume': f.provider.discussions[0]['body'] += ' cold resumed input'
                     else: f.provider.discussions = [self.discussion(1)]
                     request = self.rpc(f, 'thread/resume' if case == 'resume' else 'thread/start')
+                    f.provider.ref_status = None
                     initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
                     requests = len(f.provider.git_tokens)
                     target = self.publish(f)
