@@ -197,8 +197,11 @@ internal static class AppGitCredential
             var count = await Console.In.ReadAsync(buffer.AsMemory(), deadline.Token);
             if (count == 0 || buffer[0] == '\n')
             {
+                // Accept one CR only as the CRLF terminator, never inside a binding value.
+                if (count != 0 && line.Length > 0 && line[^1] == '\r') line.Length--;
                 if (line.Length == 0) break;
                 var text = line.ToString();
+                if (text.Any(char.IsControl)) throw new IOException();
                 var split = text.IndexOf('=');
                 if (split <= 0) throw new IOException();
                 var name = text[..split];
@@ -208,7 +211,7 @@ internal static class AppGitCredential
                 line.Clear();
                 if (count == 0) break;
             }
-            else if (buffer[0] != '\r') line.Append(buffer[0]);
+            else line.Append(buffer[0]);
         }
         using var locked = Lock(file);
         var lease = Read(file);
