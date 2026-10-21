@@ -77,7 +77,13 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
         var gate = await GateAsync(ledger, ct);
         ledger = await LedgerAsync(ledger.PartitionKey, ledger.RowKey, idempotencyId, generation, 8, ct);
         if (ledger is null) return;
-        if (ledger.GetBoolean("PendingCapacityReleased") == true) { await RetireAsync(ledger, gate, true, ct); return; }
+        if (ledger.GetBoolean("PendingCapacityReleased") == true)
+        {
+            if (gate.GetString("OwnerDeviceId") == Text(ledger, "DeviceId"))
+                await RecoverExpiredOwnerAsync(ledger, gate, ct);
+            else await RetireAsync(ledger, gate, true, ct);
+            return;
+        }
         if (ledger.ContainsKey("RetirementState")) throw new IssuanceDenied();
         if (Text(ledger, "PendingId") != Text(ledger, "RepositoryId") + "_" + idempotencyId) throw new IssuanceDenied();
         var pending = await ReadAsync(gate.PartitionKey, ledger.RowKey, ct);
@@ -119,6 +125,61 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
         Decrement(directory, "PendingCount");
         ledger["PendingCapacityReleased"] = true;
         await BrokerTable.SubmitAsync(table, [Action(quota), Action(directory), Action(ledger)], ct);
+    }
+
+    private async Task RecoverExpiredOwnerAsync(TableEntity ledger, TableEntity gate, CancellationToken ct)
+    {
+        var deadline = Date(ledger, "Deadline");
+        if (deadline > clock.GetUtcNow() || Text(ledger, "Epoch") != options.DeploymentEpoch
+            || Text(gate, "Epoch") != options.DeploymentEpoch
+            || gate.GetString("State") is not ("unacknowledged" or "closed")
+            || Number(gate, "OutstandingTokenCount") != 0 || gate.ContainsKey("VerifierAttempt")) return;
+        if (ledger.ContainsKey("RetirementState") || string.IsNullOrEmpty(gate.ETag.ToString())) throw new IssuanceDenied();
+        var pending = await ReadAsync(gate.PartitionKey, ledger.RowKey, ct) ?? throw new IssuanceDenied();
+        var device = await ReadAsync(gate.PartitionKey, "device:" + Text(ledger, "DeviceId"), ct) ?? throw new IssuanceDenied();
+        Bind(ledger, pending, true);
+        Bind(ledger, device, false);
+        // Acknowledgment is sticky. This rule never releases an owner that became active.
+        if (device.GetBoolean("Acknowledged") != false) return;
+        new GrantSnapshot(gate, device).RequireBinding(options);
+        if (pending.GetString("State") != "closed" || pending.GetBoolean("PendingCapacityReleased") != true
+            || Date(pending, "Deadline") != deadline || Date(device, "ExpiresAt") != deadline
+            || Text(device, "PendingId") != Text(ledger, "PendingId")
+            || Text(pending, "CompletionId") != Text(device, "CompletionId")
+            || Text(pending, "Marker") != Text(device, "Marker")
+            || Text(pending, "Repository") != Text(device, "Repository")
+            || Number(pending, "InstallationId") != Number(device, "InstallationId")
+            || Text(pending, "Profile") != Text(device, "Profile")
+            || Number(device, "OutstandingTokenCount") != 0
+            || (Text(gate, "State"), Text(device, "State")) is not (("unacknowledged", "unacknowledged") or ("closed", "revoked")))
+            throw new IssuanceDenied();
+        // Zero on the common gate is maintained only by positive issuance settlement.
+        // Pending release has its own durable proof and is not token settlement.
+        var release = await ReadAsync(gate.PartitionKey, "release:" + ledger.RowKey, ct) ?? throw new IssuanceDenied();
+        BindRelease(ledger, release);
+        var receiptKey = "revocation:" + Text(ledger, "DeviceId");
+        var receipt = await ReadAsync(gate.PartitionKey, receiptKey, ct);
+        var fresh = receipt is null;
+        if (receipt is not null)
+        {
+            foreach (var field in new[] { "RepositoryId", "DeviceId", "Epoch" })
+                if (Text(receipt, field) != Text(ledger, field)) throw new IssuanceDenied();
+            _ = Date(receipt, "RevokedAt");
+        }
+        receipt ??= new(gate.PartitionKey, receiptKey)
+        {
+            ["RepositoryId"] = Text(ledger, "RepositoryId"), ["DeviceId"] = Text(ledger, "DeviceId"),
+            ["Epoch"] = Text(ledger, "Epoch"), ["RevokedAt"] = clock.GetUtcNow()
+        };
+        receipt["OwnerReleasedAt"] = clock.GetUtcNow();
+        receipt["Reason"] = "expired-unacknowledged";
+        device["State"] = "revoked";
+        PayloadClock.FirstTerminal(device, deadline);
+        gate.Remove("OwnerDeviceId");
+        gate["State"] = "vacant";
+        // Fence the authorization records. The generation-bound release proof is immutable
+        // until gate-conditioned retirement, which cannot retire this completed enrollment.
+        await CommitAsync(gate, [Action(pending), Action(device), Action(receipt, fresh)], ct);
     }
 
     // Five bounded transactions: retiring, target deletion receipt, global proof,

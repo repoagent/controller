@@ -33,6 +33,8 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
         var device = await ReadAsync(partition, "device:" + deviceId, ct) ?? throw new IssuanceDenied(401);
         var snapshot = new GrantSnapshot(gate, device);
         if (snapshot.DeviceId != deviceId || partition != "repository:" + snapshot.RepositoryId) throw new IssuanceDenied();
+        // Retained old devices remain readable after owner recovery, but are no longer grants.
+        if (gate.GetString("OwnerDeviceId") != deviceId) throw new IssuanceDenied(401);
         snapshot.RequireBinding(options);
         return snapshot;
     }

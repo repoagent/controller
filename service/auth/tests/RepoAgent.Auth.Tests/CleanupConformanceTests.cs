@@ -105,7 +105,10 @@ public sealed partial class CleanupProcessTests
         {
             var result = await CleanupProcessFixture.RunAsync(f.Storage);
             Assert.Equal(0, result.Exit);
-            if (!result.Summary.GetProperty("incompleteCoverage").GetBoolean()) break;
+            AssertSdkAccounting(result.Summary);
+            var gate = await Read(f.Storage, RevocationFixture.Partition, "gate");
+            if (!result.Summary.GetProperty("incompleteCoverage").GetBoolean()
+                && (acknowledge || !gate.ContainsKey("OwnerDeviceId"))) break;
         }
         var after = await Read(f.Storage, RevocationFixture.Partition, key);
         Assert.False(after.ContainsKey("ProtectedCompletion"));
@@ -118,7 +121,15 @@ public sealed partial class CleanupProcessTests
             Assert.Equal(active.GetString("SecretHash"), preserved.GetString("SecretHash"));
             Assert.Equal(active.GetDateTimeOffset("LastActivityAt"), preserved.GetDateTimeOffset("LastActivityAt"));
         }
-        else Assert.False(preserved.ContainsKey("SecretHash"));
+        else
+        {
+            Assert.False(preserved.ContainsKey("SecretHash"));
+            Assert.Equal("revoked", preserved.GetString("State"));
+            var gate = await Read(f.Storage, RevocationFixture.Partition, "gate");
+            Assert.Equal("vacant", gate.GetString("State"));
+            Assert.False(gate.ContainsKey("OwnerDeviceId"));
+            Assert.Equal(deviceId, (await Read(f.Storage, gate.PartitionKey, "revocation:" + deviceId)).GetString("DeviceId"));
+        }
         foreach (var ledger in ledgers)
         {
             var attempt = await Read(f.Storage, RevocationFixture.Partition, ledger.GetString("AttemptRowKey")!);
