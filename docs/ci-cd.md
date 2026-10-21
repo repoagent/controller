@@ -42,58 +42,45 @@ Verify the archive checksum before extraction, then run `sha256sum -c SHA256SUMS
 
 ## Automatic auth-service delivery
 
-`Auth service CI` retains the existing manual access check and adds read-only PR verification plus automatic main delivery. Its paths cover `service/auth`, `infra/auth`, auth delivery scripts/tests/workflows and shared root MSBuild/NuGet files. Controller-only changes do not trigger auth delivery. The service tests, Bicep compiler and image/delivery checks run before publication. Infrastructure acceptance uses actual Azure deployments and resource inspection. Before changing a mission-critical environment, test Bicep in a separate staging or test environment in a real Azure region. PR jobs receive no publication or Azure credentials.
+Changes merged to `main` under `service/auth`, `infra/auth`, the auth delivery scripts/workflows or shared MSBuild/NuGet files trigger `Auth service CI`. Controller-only changes do not deploy auth. Pull requests run verification without publication or Azure credentials.
 
-The service implements repository-approved enrollment, installation-token issuance and renewal, self-revocation, and the independent `cleanup --once` command. `/health/ready` checks required service registrations without exercising GitHub, storage or signing. Source verification and a healthy response do not establish production acceptance. Missing acceptance or configuration still blocks normal publication/provisioning; the workflow does not substitute a healthy placeholder.
+Delivery verifies the .NET service against pinned Azurite and compiles Bicep, then builds one Linux amd64 image with the auth role, numeric nonroot user and full source-revision label. It publishes to the existing public GHCR package and anonymously verifies the resolved immutable digest. Publication has `packages: write` and no Azure token; deployment has `id-token: write` and no package write.
 
-After all prerequisites are accepted, trusted main jobs build a Linux amd64 service image, verify its role and numeric nonroot user, publish it and resolve an immutable digest. The Azure job anonymously verifies that digest, applies Incremental Bicep using Azure CLI, and checks the intended ready revision. Automatic delivery and manual rollback share a concurrency group. Publication has `packages: write` and no Azure token; deployment has `id-token: write` and no package write.
+The Azure job applies `main.bicep` in the existing resource group. Public deployment includes `cleanup.bicep`, so the API and scheduled cleanup Job receive the **same digest**. The script inspects both images, waits for the ready API revision and requests public `/health/live` and `/health/ready`. Cleanup runs independently so it can process expired records while HTTP scales to zero; it retains its separate Table-only identity.
 
-The source interface is `service/auth/global.json`, real nonzero-discovery `verify.sh` and `Dockerfile`. The build context contains only the auth service. The image declares `io.repoagent.role=auth-service`, port 8080, numeric nonzero USER, `/health/live` and `/health/ready`; it contains no App private key, host GitHub credential or Codex credential.
+Hosted lifecycle acceptance remains tracked in #35/#28. Manual READY variables do not block source publication or deployment, and a successful deployment does not establish the full GitHub enrollment/issuance journey.
 
-## Azure setup and acceptance gates
+## Azure configuration
 
-Reuse the exact resource group, subscription, identity and main-only OIDC subject in the [Azure deployment runbook](azure-auth-deployment.md). The auth jobs use **no GitHub environment**. Adding one changes the subject and requires matching federation before use. Azure login uses official OIDC exchange with repository variables, never a deployment client secret. Protect main and control workflow dispatch rights; the OIDC bootstrap does not establish branch protection.
+Reuse the subscription, resource group, identity and exact main-only OIDC subject in the [Azure deployment runbook](azure-auth-deployment.md). Auth jobs use no GitHub environment or Azure client secret. Deployment Contributor cannot grant roles or import keys. Existing keys, grants, Table quota initialization, restore epoch and monitoring are operator prerequisites and remain unchanged by ordinary code delivery.
 
 | Repository variable | Required value |
 | --- | --- |
 | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | Existing nonsecret deployment identity/target UUIDs from the runbook |
 | `AZURE_RESOURCE_GROUP`, `AZURE_LOCATION` | `rg-repoagent-controller-auth`, `swedencentral` |
-| `AUTH_APP_NAME` | Intended owned Container App |
-| `AUTH_STORAGE_ACCOUNT_NAME` | Required explicit storage account: 3–24 lowercase ASCII letters/digits; no default |
-| `AUTH_KEY_VAULT_NAME` | Required explicit vault: 3–24 ASCII letters/digits/hyphens, starts with a letter, ends alphanumeric, no consecutive hyphens; no default |
+| `AUTH_APP_NAME` | `repoagent-auth` |
+| `AUTH_STORAGE_ACCOUNT_NAME`, `AUTH_KEY_VAULT_NAME` | Existing owned storage account and vault |
 | `AUTH_IMAGE_REPOSITORY` | Exactly `ghcr.io/repoagent/controller-auth` |
-| `AUTH_DEPLOYMENT_READY` | `true` only after complete service/platform acceptance |
-| `AUTH_PROVIDER_READY`, `AUTH_STORAGE_READY`, `AUTH_CLEANUP_READY`, `AUTH_RUNTIME_ACCESS_READY` | Each `true` only after the corresponding real acceptance |
-| `AUTH_SIGNING_KEY_URI`, `AUTH_DATA_PROTECTION_KEY_URI` | Separate versioned `/keys/name/version` references in the owned vault |
+| `AUTH_SIGNING_KEY_URI`, `AUTH_DATA_PROTECTION_KEY_URI` | Separate pinned `/keys/name/version` references |
 | `AUTH_TABLE_NAME` | Dedicated broker Table; defaults to `brokerstate` |
-| `AUTH_DEPLOYMENT_EPOCH` | Required external restore-fencing epoch, 1–128 ASCII letters/digits, hyphen or underscore |
-| `AUTH_REQUEST_LIMIT_PER_MINUTE` | Optional: 120 by default, allowed 1–10000 |
-| `AUTH_CONCURRENT_REQUEST_LIMIT` | Optional: 8 by default, allowed 1–128 |
-| `AUTH_REQUEST_TIMEOUT_SECONDS` | Optional: 15 by default, allowed 1–60 |
+| `AUTH_DEPLOYMENT_EPOCH` | Existing external restore-fencing epoch; preserve outside Table backups |
+| `AUTH_REQUEST_LIMIT_PER_MINUTE` | Optional: default 120, allowed 1–10000 |
+| `AUTH_CONCURRENT_REQUEST_LIMIT` | Optional: default 8, allowed 1–128 |
+| `AUTH_REQUEST_TIMEOUT_SECONDS` | Optional: default 15, allowed 1–60 |
 
-The Table/runtime configuration above is implemented in the merged #55 infrastructure changes. The endpoint and managed-identity client ID derive from owned resources. There is no human GitHub OAuth client secret in the UI-free protocol. The approving operator's host GitHub CLI manages a direct repository Agent variable; controller runtime tokens cannot change it. No GitHub Environment or inherited organization variable supplies approval.
+The dedicated GHCR package must be public and allow repository Actions publication. Initial package visibility/access setup remains separate; each actual digest is anonymously verified before deployment. No personal registry token is required. No GitHub App private key, host GitHub credential or Codex credential enters the image or Bicep.
 
-Readiness flags are operator attestations, not automated proof. Keep them unset while requirements are incomplete. Real Azure managed-identity Table transactions and scoped denial, signing, GitHub authorization, cleanup, restore and the staged user journey remain required before enabling production delivery.
+For infrastructure changes, read current resource/module documentation, use latest registry module versions, compile locally, then deploy to Azure and inspect actual resources. These templates use direct resource declarations and a repository-local cleanup module. Before an environment becomes mission critical, use a separate staging/test environment in a real Azure region.
 
-The [infrastructure runbook](auth-infrastructure.md) owns foundation provisioning, guarded `deploy.sh check/apply`, and operator-only runtime roles. The existing deployment Contributor cannot assign RBAC. Automatic delivery never runs foundation modes, imports keys, grants roles or selects alert recipients. Preserve the external epoch outside Table backup. Ordinary main OIDC provisioning stays within the existing group and refuses conflicting ownership.
-
-The dedicated GHCR package must already exist, be public and grant this repository's Actions token access before automatic publication. Initial bootstrap/visibility configuration is separate. The publication preflight validates the client, tenant and subscription UUIDs before any infrastructure, registry or image provider calls. It checks `users/repoagent/packages/container/controller-auth`; repoagent is a user account. A variable alone cannot make a newly published private package public. See [GitHub Container registry access](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
-
-Anonymous digest inspection verifies Linux amd64, the auth role and numeric nonroot USER. Role labels prevent accidental controller selection; registry publishing authority and the approved digest establish trust. Private registry authentication is not implemented. No personal token is requested. Image role/nonroot/public attestations passed to Bicep are generated after these checks, not accepted as workflow inputs.
-
-## Manual access check, retry and rollback
+## Manual retry and rollback
 
 ```sh
+# Retry normal verification, publication and deployment from main.
+gh workflow run ci-auth-service.yml --ref main -f operation=deploy
+# Deploy or roll back both modes to a previously approved immutable image.
+gh workflow run deploy-auth.yml --ref main -f image=ghcr.io/repoagent/controller-auth@sha256:APPROVED_DIGEST
 # Existing outputs-only OIDC access check.
 gh workflow run ci-auth-service.yml --ref main -f operation=access-check
-# Full delivery retry after every prerequisite is accepted.
-gh workflow run ci-auth-service.yml --ref main -f operation=deploy
-# Existing-app rollback/redeploy; does not reapply infrastructure.
-gh workflow run deploy-auth.yml --ref main -f image=ghcr.io/repoagent/controller-auth@sha256:APPROVED_DIGEST
 ```
 
-The manual existing-app path runs the same dedicated-repository, anonymous OCI-config and numeric nonroot-user attestation as automatic delivery before any Azure update. It requires one container, Single revision mode, the exact resource ID and `repoagent-role=auth-service` tag. It updates only the named container image, leaving secrets, ingress and runtime identity alone. Inputs are process arguments, never shell code. Provider response bodies are captured rather than printed. It checks the configured digest and waits up to ten minutes for the latest ready revision.
-
-A failure may occur after publication or Azure changes. Inspect that stage and dispatch a previously accepted digest for rollback; rollback and cleanup are not automatic. Revision readiness does not prove the entire GitHub authorization journey.
-
-Validate YAML with actionlint, shell syntax with Bash, and execute the real local verification command. Actions are pinned to official commit references. Local packaging and process doubles prove build/orchestration behavior, not a GitHub Release, registry publication or deployed provider. Hosted release and Azure acceptance remain explicit until executed; local verification performs none of those writes.
+Automatic deployment and manual rollback share noncanceling delivery concurrency and the same Bicep/app health path. Deployment across the two resources is not atomic. On failure, inspect Azure's deployment and actual resource state before retrying; do not infer that a failed workflow made no changes. Rollback is explicit and re-applies current Bicep configuration with the selected older image.

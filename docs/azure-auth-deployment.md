@@ -6,7 +6,7 @@ The maintainer-operated [credential broker](../GLOSSARY.md) will run as an Azure
 
 Verified on 2026-10-21: the foundation is provisioned through the reviewed `main.bicep`: environment `repoagent-auth-environment`, log workspace `repoagent-auth-logs`, runtime identity `repoagent-auth-runtime`, storage account `repoagentauth` and vault `repoagent-auth-kv`. Signing and wrapping keys and narrowly scoped runtime grants are provisioned. The deployment identity `id-controller-auth-github` and its GitHub OIDC trust remain unchanged.
 
-No auth image, Container App, authentication endpoint or cleanup job is deployed; hosted acceptance remains open. Automatic verification, image publication and revision deployment source exists. Prior resource retirement is tracked separately and is not established by this foundation setup. Storage, signing and hosted acceptance requirements remain in the [operations research](research/2026-10-20-azure-auth-service-operations.md) and [existing security ADR](adr/0001-keep-the-shared-app-key-out-of-controller-installations.md).
+The public auth image, HTTPS Container App and minute-scheduled cleanup Job are deployed. On 2026-10-21, WSL requests to both public `/health/live` and `/health/ready` returned HTTP 200 at `https://repoagent-auth.livelydune-309701b4.swedencentral.azurecontainerapps.io`. Monitoring, the budget and verified operator email are configured; a native notification test succeeded. Full enrollment, controller handover and hosted lifecycle acceptance remain tracked in #35/#28. Prior resource retirement is tracked separately. Storage, signing and hosted acceptance requirements remain in the [operations research](research/2026-10-20-azure-auth-service-operations.md) and [existing security ADR](adr/0001-keep-the-shared-app-key-out-of-controller-installations.md).
 
 ## Azure and GitHub configuration
 
@@ -42,13 +42,13 @@ Azure Login exchanges the GitHub token for Azure access; this setup stores no Az
 
 ## Verification and delivery workflow
 
-[`ci-auth-service.yml`](../.github/workflows/ci-auth-service.yml), **Auth service CI**, verifies service and infrastructure changes on pull requests and `main`. Its full delivery path verifies the service against pinned Azurite, compiles Bicep, publishes an immutable auth image after the existing public-registry/readiness gates, applies guarded runtime infrastructure, and verifies the intended image and ready revision. Publication and deployment run only on `main`; deployment uses the existing branch OIDC identity with `contents: read` and `id-token: write`. No GitHub environment is introduced.
+[`ci-auth-service.yml`](../.github/workflows/ci-auth-service.yml), **Auth service CI**, verifies service and infrastructure changes on pull requests and `main`. When auth service, infrastructure or delivery sources are merged to `main`, it verifies the service against pinned Azurite, compiles Bicep, publishes one immutable public auth image, and applies Bicep to deploy **both the HTTP API and scheduled cleanup Job from that digest**. It checks both deployed images, the ready API revision, and public live/ready HTTP responses. Pull requests verify without publishing or deploying. Hosted lifecycle acceptance stays tracked in issues; manual `AUTH_*_READY` assertions do not block normal deployment. Publication and deployment run only on `main`; deployment uses the existing branch OIDC identity with `contents: read` and `id-token: write`. No GitHub environment is introduced.
 
 For infrastructure changes, read the current resource/module documentation, use the latest released registry module versions, and compile locally before pushing. These templates use direct resource declarations. GitHub jobs select the installed Bicep v0.48.1 executable explicitly. Verify infrastructure by deploying to Azure and inspecting the actual resources. Before an environment becomes mission critical, establish a separate staging or test environment in a real Azure region.
 
-Resource settings and references live in Bicep. `deploy.sh` selects the operation and passes inputs to Azure CLI. Image publication and application health checks remain separate delivery steps.
+Resource settings and references live in Bicep. `main.bicep` includes the local cleanup module for public deployment; staged and foundation deployments retain their existing scope. `deploy.sh` compiles and applies the selected template, then inspects Azure and checks HTTP health for a public deployment. The image publication helper handles Docker/OCI operations only; there is no separate imperative Python Azure deployer.
 
-Manual `operation=access-check` retains the original outputs-only [`verify-access.bicep`](../infra/auth/verify-access.bicep) check. It verifies the resource-group location and records an incremental deployment named `github-oidc-<run-id>-<attempt>`. Its success proves OIDC login and deployment access, not service provisioning or broker acceptance. Manual `operation=deploy` selects full delivery. [`deploy-auth.yml`](../.github/workflows/deploy-auth.yml) updates an existing app to an approved immutable digest for deployment or rollback, preserving its acceptance gate.
+Manual `operation=access-check` retains the original outputs-only [`verify-access.bicep`](../infra/auth/verify-access.bicep) check. It verifies the resource-group location and records an incremental deployment named `github-oidc-<run-id>-<attempt>`. Its success proves OIDC login and deployment access, not service provisioning or broker acceptance. Manual `operation=deploy` selects full delivery. [`deploy-auth.yml`](../.github/workflows/deploy-auth.yml) applies the same Bicep path to both modes using an approved immutable digest for deployment or rollback. Both workflows share noncanceling delivery concurrency.
 
 For a separately authorized access check:
 
@@ -107,7 +107,7 @@ The activation job has a 40-minute timeout. Azure CLI runs the actual Incrementa
      -f operation=bootstrap-publish -f expected-source-sha="$accepted_source"
    ```
 
-   The job has only contents-read/packages-write permissions, no Azure login or deployment dependency, and works with readiness flags false. It binds the full source SHA to checkout/workflow/current upstream main before verification and immediately before push. A final main check and registry push are not atomic. Registry credentials use stdin and private temporary storage removed on exit. No personal token is needed.
+   The job has only contents-read/packages-write permissions, no Azure login or deployment dependency, and does not require hosted acceptance assertions. It binds the full source SHA to checkout/workflow/current upstream main before verification and immediately before push. A final main check and registry push are not atomic. Registry credentials use stdin and private temporary storage removed on exit. No personal token is needed.
 
    The helper archives the entire actual commit into temporary storage, runs source/service verification there and builds only its `service/auth` context. Dirty/untracked local source is excluded. It checks role/nonroot/Linux-amd64/revision, pushes only the fixed repository and records the actual source/digest. It never calls Azure. Retain the Actions run URL/attempt and flushed `publicationComplete=false` receipt even when the job fails: a private first push is already a registry mutation, and an uncertain push/digest-resolution failure does not establish absence of a mutation.
 
@@ -120,7 +120,7 @@ The activation job has a 40-minute timeout. Azure CLI runs the actual Incrementa
 
    After resumed attestation and separate Actions-access verification, append both nonsecret evidence references to the original receipt. Do not rerun bootstrap merely to change its receipt status.
 
-6. Supply real nonsecret runtime configuration using the existing Actions variables (pinned distinct keys, epoch, stable app/Table configuration). Leave hosted flags unset/false. Review stage-plan, then separately authorize stage-apply:
+6. Supply real nonsecret runtime configuration using the existing Actions variables (pinned distinct keys, epoch, stable app/Table configuration). For optional isolated acceptance, review stage-plan and apply stage-apply:
 
    ```sh
    gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
@@ -129,16 +129,16 @@ The activation job has a 40-minute timeout. Azure CLI runs the actual Incrementa
      -f operation=stage-apply -f expected-source-sha="$accepted_source" -f image="$accepted_image"
    ```
 
-   Inspect the target before applying staging configuration. After deployment confirm absent ingress, the selected immutable image, runtime identity, canonical origin and min/max 1/1. Perform application and data-plane acceptance against that deployed service. Staging sets no READY assertion.
+   Inspect the target before applying staging configuration. After deployment confirm absent ingress, the selected immutable image, runtime identity, canonical origin and min/max 1/1. Perform application and data-plane acceptance against that deployed service. Staging does not establish hosted acceptance.
 7. Use the selected-console procedure below for actual runtime/provider/private-repository, storage/recovery and denial evidence. Verify independent cleanup #72 with HTTP stopped/zero replicas; a local suite/readiness 200 does not prove that. Stop the isolated replica while paused.
-8. Only after every corresponding evidence item exists, set `AUTH_PROVIDER_READY`, `AUTH_STORAGE_READY`, `AUTH_CLEANUP_READY`, `AUTH_RUNTIME_ACCESS_READY` and `AUTH_DEPLOYMENT_READY` truthfully, then promote the *same digest*:
+8. To expose the optional staged deployment, promote the *same digest*. This deploys the API and cleanup together; deployment health does not establish the remaining lifecycle evidence:
 
    ```sh
    gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
      -f operation=promote-staged -f expected-source-sha="$accepted_source" -f image="$accepted_image"
    ```
 
-   Promotion requires the current owned no-ingress staging app with that artifact and all release flags. It uses guarded full apply and public rollout/origin checks, restoring HTTPS/min 0/max 1 without rebuild. A newly built CI digest is a subsequent release with its own acceptance. Prove public TLS/cold start, bounded enrollment/recovery/ack, issuance/renewal, withdrawal/revocation/token settlement, rollback and selected-private-repository binding. Native Windows/Docker Desktop remains separately owned acceptance.
+   Promotion requires the current owned no-ingress staging app with that artifact. It uses guarded full apply and public rollout/origin checks, restoring HTTPS/min 0/max 1 without rebuild. A newly built CI digest is a subsequent release with its own acceptance. Prove public TLS/cold start, bounded enrollment/recovery/ack, issuance/renewal, withdrawal/revocation/token settlement, rollback and selected-private-repository binding. Native Windows/Docker Desktop remains separately owned acceptance.
 
 ## Selected console and private runtime evidence
 
@@ -184,7 +184,7 @@ An initial West Europe identity creation was rejected by Azure with `RequestDisa
 
 ## Cleanup identity bootstrap and scheduling
 
-These source routes preserve the exact main-only OIDC subject, Contributor scope, shared noncanceling delivery concurrency and all normal release gates. They exclude ordinary build/publication/deploy jobs and never set readiness flags. Source merge is not permission for live operations below. Use the accepted current-main source and the same anonymously attested public auth image; no rebuild or registry-secret handling is needed.
+These source routes preserve the exact main-only OIDC subject, Contributor scope, shared noncanceling delivery concurrency and the normal service verification and anonymous image checks. They exclude ordinary build/publication/deploy jobs. Source merge is not permission for live operations below. Use the accepted current-main source and the same anonymously attested public auth image; no rebuild or registry-secret handling is needed.
 
 1. With the owned foundation already present, inspect `cleanup-identity-plan`, then separately authorize `cleanup-identity-apply` using the existing workflow:
 
@@ -277,7 +277,7 @@ Before restoring storage, fence cleanup AND HTTP at actual zero replicas, all ol
 
 Bind evidence to each actual execution's image/configuration, not merely the Job's current template. Prohibit manual execution overrides during acceptance. Prove actual cleanup identity Table read/write/delete and denial on other tables/Blob/keys/signing; reviewed runtime/transport scope and auth-reissue accounting; real cadence,90s timeout/failures/overlap and durable per-stream throughput at supported retained populations/churn. With HTTP confirmed at zero actual replicas for24h, use authentic due/near-due/behind-cursor entries and physical reads to prove 24-hour eligibility followed by successful bounded cleanup visits, preserving original clocks, immediate expiry/authorization denial and unknown authority/audit evidence. Successful exit or sampled oldest age alone is insufficient. The [selected eligibility policy and capacity counterexample](auth-infrastructure.md#independent-cleanup-job) promise no maximum physical-deletion lag; monitor failures/backlog and require operator follow-up.
 
-Latest100 execution history covers only about100minutes at nominal minute cadence. Use the bounded aggregate monitoring below and separate operator evidence for24h acceptance; persisted console summaries are disabled and missing/capped telemetry cannot mean success. Before production acceptance configure and test real alert delivery to an explicit operator destination: no summary5min, any failed/invariant execution or unknown deadline, backlog without cursor progress15min, cycle age warn6h/critical12h while validating the selected objective. Overdue age>0 requires inspection; null/incomplete samples are not healthy coverage. These are proposed live gates, not installed alert resources. Budget currency/amount/dates/recipients and log-cap monitoring remain required. Keep `AUTH_CLEANUP_READY=false` and #35/#28 open until the actual evidence exists.
+Latest100 execution history covers only about100minutes at nominal minute cadence. Use the bounded aggregate monitoring below and separate operator evidence for24h acceptance; persisted console summaries are disabled and missing/capped telemetry cannot mean success. Before production acceptance configure and test real alert delivery to an explicit operator destination: no summary5min, any failed/invariant execution or unknown deadline, backlog without cursor progress15min, cycle age warn6h/critical12h while validating the selected objective. Overdue age>0 requires inspection; null/incomplete samples are not healthy coverage. Inspect the installed five monitoring rules and retain separate evidence for any lifecycle behavior they cannot establish. Budget currency/amount/dates/recipients and log-cap monitoring remain required. Keep #35/#28 open until the actual lifecycle evidence exists; ordinary code deployment continues independently.
 
 
 ## Low-volume monitoring deployment
@@ -294,4 +294,4 @@ Runtime and cleanup Bicep reference the existing Insights connection directly. B
 
 After the app/Job exist, set the private parameters `enableAlerts=true` and `jobFailureState` to the observed native failure-state value, then deploy again. The five rules cover Job failures, HTTP5xx, memory pressure, cleanup observations and telemetry volume. Verify actual metrics/KQL, dimensions, notification delivery/resolution and scale-to-zero in Azure. Six-hour cleanup cycle observations trigger investigation; twelve hours warrants urgent follow-up.
 
-The user's nominal budget is20USD/month; verified subscription billing currency is EUR and root selected18EUR/month (about20.19USD at the dated2026-10-20 reference). Source accepts a generic amount and no currency/FX parameter. Monthly Actual50/80/100% notifications use Azure's ten-year default when endDate is omitted. This budget has not been applied by source work. Budget alerts, workspace caps and replica limits notify or constrain particular resources; they do not guarantee total spending or stop all charges. Console persistence is disabled; sensitive original cleanup JSON is not a cloud log-retention mechanism.
+The user's nominal budget is20USD/month; verified subscription billing currency is EUR and root selected18EUR/month (about20.19USD at the dated2026-10-20 reference). Source accepts a generic amount and no currency/FX parameter. Monthly Actual50/80/100% notifications use Azure's ten-year default when endDate is omitted. The 18EUR/month budget was applied on 2026-10-21. Budget alerts, workspace caps and replica limits notify or constrain particular resources; they do not guarantee total spending or stop all charges. Console persistence is disabled; sensitive original cleanup JSON is not a cloud log-retention mechanism.

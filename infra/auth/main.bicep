@@ -187,6 +187,21 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = if (deployApp) {
   }
 }
 
+// The API and scheduled cleanup are two modes of the same released image.
+module cleanup 'cleanup.bicep' = if (deployApp && !staged) {
+  name: 'auth-cleanup'
+  params: {
+    location: location
+    appName: appName
+    storageName: storageName
+    tableName: tableName
+    identityOnly: false
+    image: image
+    deploymentEpoch: deploymentEpoch
+  }
+  dependsOn: [environment, brokerTable]
+}
+
 output appName string = appName
 output runtimeIdentityId string = runtime.id
 output keyVaultName string = vault.name
