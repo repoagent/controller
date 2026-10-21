@@ -167,7 +167,7 @@ public sealed class CloneEnrollmentContractTests
             .Select(p => new KeyValuePair<string, string>(p.Name, p.Value.GetString()!)).OrderBy(p => p.Key));
     }
 
-    private static void ConfigureGitHub(EnrollmentFixture f, string profile)
+    internal static void ConfigureGitHub(EnrollmentFixture f, string profile)
     {
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
         var agent = f.GitHub.Before!;

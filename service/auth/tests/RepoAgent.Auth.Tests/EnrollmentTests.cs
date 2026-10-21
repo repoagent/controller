@@ -91,6 +91,7 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
     public RevocationFixture Storage { get; } = new();
     public IssuanceClock Clock { get; } = new();
     public GitHubTransport GitHub { get; } = new();
+    public SigningTransport Signing { get; } = new();
     private readonly DirectoryInfo keys = new(Path.Combine(Path.GetTempPath(), "enrollment-keys-" + Guid.NewGuid().ToString("N")));
     public IDataProtectionProvider Protection => DataProtectionProvider.Create(keys);
     private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> host = null!;
@@ -122,7 +123,7 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
             services.AddSingleton(Protection);
             services.AddSingleton(limits);
             services.AddSingleton(new GitHubIssuance(new HttpClient(GitHub), Clock));
-            services.AddSingleton(new AppJwtSigner(new SigningTransport(), Clock));
+            services.AddSingleton(new AppJwtSigner(Signing, Clock));
             services.AddSingleton<IssuanceStore>(); services.AddSingleton<InstallationTokenIssuer>();
             services.AddSingleton<EnrollmentStore>(); services.AddSingleton<EnrollmentService>();
         }));

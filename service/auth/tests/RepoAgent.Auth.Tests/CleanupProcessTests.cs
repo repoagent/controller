@@ -7,7 +7,7 @@ using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed class CleanupProcessTests(ITestOutputHelper output)
+public sealed partial class CleanupProcessTests(ITestOutputHelper output)
 {
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
