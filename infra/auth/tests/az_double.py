@@ -17,8 +17,11 @@ if '--parameters' in args:
 with open(os.environ['AZ_DOUBLE_JOURNAL'], 'a') as journal:
     journal.write(json.dumps(record) + '\n')
 
-command = ' '.join(args[:3]) if args[0] == 'deployment' else ' '.join(args[:2])
+command = ' '.join(args[:3]) if args[0] == 'deployment' or args[:2] in (['containerapp', 'revision'], ['containerapp', 'replica']) else ' '.join(args[:2])
 response = scenario.get('responses', {}).get(command)
+if isinstance(response, list):
+    response = response.pop(0)
+    Path(os.environ['AZ_DOUBLE_SCENARIO']).write_text(json.dumps(scenario))
 if response is None:
     if command == 'group show':
         response = {'body': scenario['group']}
@@ -30,14 +33,24 @@ if response is None:
         response = {'body': {'properties': {'provisioningState': 'Succeeded'}}}
     elif command == 'deployment group what-if':
         response = {'body': scenario['plan']}
+        if 'postPlanResources' in scenario:
+            scenario['resources'].update(scenario['postPlanResources'])
+            Path(os.environ['AZ_DOUBLE_SCENARIO']).write_text(json.dumps(scenario))
     elif command == 'deployment group create':
         if 'postCreateResources' in scenario:
             scenario['resources'].update(scenario['postCreateResources'])
             Path(os.environ['AZ_DOUBLE_SCENARIO']).write_text(json.dumps(scenario))
         response = {'body': {'properties': {'provisioningState': 'Succeeded'}}}
+    elif command == 'containerapp show':
+        response = {'body': scenario['resources'][scenario['appId']]}
     else:
         response = {'error': 'Unsupported Azure command: ' + command, 'code': 99}
 if 'error' in response:
     print(response['error'], file=sys.stderr)
     sys.exit(response.get('code', 1))
-print(response['raw'] if 'raw' in response else json.dumps(response['body']))
+body = response.get('body')
+if '--query' in args:
+    sys.path.insert(0, os.environ['TEST_JMESPATH_DIRECTORY'])
+    import jmespath
+    body = jmespath.search(args[args.index('--query') + 1], body)
+print(response['raw'] if 'raw' in response else json.dumps(body))

@@ -262,6 +262,18 @@ class AuthPipelineCliTests(unittest.TestCase):
         self.assertEqual(([call['argv'] for call in calls], output), ([ATTEST], 'existing=value\n'))
         self.assertNotIn(CANARY, result.stdout + result.stderr + output)
 
+    def test_attest_requires_full_expected_sha_and_an_image_revision_when_binding_source(self):
+        for expected, revision in (('', SHA), (SHA[:12], SHA), ('main', SHA), (SHA, None)):
+            with self.subTest(expected=expected, revision=revision):
+                labels = {'io.repoagent.role': 'auth-service'}
+                if revision is not None:
+                    labels['org.opencontainers.image.revision'] = revision
+                image = remote_image(config=dict(Labels=labels, User='10001'))
+                result, calls, output, _ = self.invoke(
+                    'attest', [step(ATTEST, image)], environment={'AUTH_EXPECTED_SOURCE_SHA': expected})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(([call['argv'] for call in calls], output), ([ATTEST], 'existing=value\n'))
+
     def test_workflow_login_transports_token_only_through_stdin(self):
         # Execute the actual shell step; do not duplicate or assert workflow YAML.
         login = next(line.partition('run: ')[2] for line in WORKFLOW.read_text().splitlines()
