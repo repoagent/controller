@@ -219,7 +219,9 @@ sealed class Codex : IAsyncDisposable
             if (Interlocked.Exchange(ref closing, 1) != 0) return;
             try
             {
-                if (credentialLost.IsCancellationRequested) Terminate();
+                // Broker teardown always ends the tree, including bootstrap/reload and normal exit.
+                // Checking only IsCancellationRequested before EOF leaves a concurrent-loss gap.
+                if (credentialLost.CanBeCanceled) Terminate();
                 else process.StandardInput.Close();
                 try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
                 catch (TimeoutException) { Terminate(); await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }

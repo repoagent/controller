@@ -16,7 +16,7 @@ public sealed class GitHubAppCredentials : IDisposable
 
     public string AgentLogin => appSlug.Length == 0 ? "" : appSlug + "[bot]";
     public string TokenFile { get; }
-    public CancellationToken BrokerCredentialLost => brokerCredentialLost.Token;
+    public CancellationToken BrokerCredentialLost => source is BrokerTokenSource ? brokerCredentialLost.Token : CancellationToken.None;
     internal long? RepositoryId => source.RepositoryId;
 
     public GitHubAppCredentials(HttpClient http, string appId, string privateKeyPath, string repository,

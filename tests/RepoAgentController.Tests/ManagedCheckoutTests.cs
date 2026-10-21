@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Security.Cryptography;
 using RepoAgentController;
@@ -73,6 +75,11 @@ public sealed class ManagedCheckoutTests
             .Select(path => Path.GetFullPath(Path.Combine(path, "git"))).First(File.Exists);
         // Git, durable files and native are real; only GitHub transport is replaced.
         using var fixture = new BrokerAuthenticationTests.Fixture(clone: clone);
+        // Graceful shutdown belongs to explicit own-App mode; broker teardown always ends the tree before EOF.
+        using var ownKey = scenario.StartsWith("shutdown-", StringComparison.Ordinal) ? RSA.Create(2048) : null;
+        using var ownApp = ownKey is null ? null : new HttpClient(new GracefulOwnAppProvider());
+        var ownKeyFile = Path.Combine(fixture.Directory, "own-app.pem");
+        if (ownKey is not null) File.WriteAllText(ownKeyFile, ownKey.ExportRSAPrivateKeyPem());
         var origin = Path.Combine(fixture.Directory, "origin");
         var workspace = Path.Combine(fixture.Directory, "workspace");
         Directory.CreateDirectory(workspace);
@@ -210,7 +217,12 @@ public sealed class ManagedCheckoutTests
                 "--workspace", workspace, "--once" };
             if (clone) args.Add("--clone");
             if (checkAuth) args.Add("--check-auth");
-            async Task<int> Start() => await BridgeCommand.Run(args.ToArray(), fixture.Http, fixture.Gh);
+            if (ownKey is not null)
+            {
+                args.RemoveRange(args.IndexOf("--broker-url"), 4);
+                args.AddRange(["--private-key", ownKeyFile]);
+            }
+            async Task<int> Start() => await BridgeCommand.Run(args.ToArray(), ownKey is null ? fixture.Http : ownApp, fixture.Gh);
             if (scenario.StartsWith("metadata-", StringComparison.Ordinal))
             {
                 var field = scenario switch { "metadata-id" => "id", "metadata-name" => "full_name", "metadata-url" => "clone_url", _ => "default_branch" };
@@ -381,6 +393,29 @@ public sealed class ManagedCheckoutTests
             else Assert.False(File.Exists(capture));
         }
         finally { foreach (var pair in previous) Environment.SetEnvironmentVariable(pair.Key, pair.Value); }
+    }
+
+    // Only upstream App responses are controlled; native shutdown and both ownership leases stay real.
+    sealed class GracefulOwnAppProvider : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Assert.Equal("api.github.com", request.RequestUri!.Host);
+            var permissions = new { discussions = "write", contents = "read" };
+            object body = request.RequestUri.AbsolutePath switch
+            {
+                "/app" => new { id = 123, slug = "test-app" },
+                "/repos/owner/repository/installation" => new { id = 234, app_id = 123, permissions },
+                "/app/installations/234/access_tokens" => new
+                {
+                    token = "opaque-token-own-app", expires_at = DateTimeOffset.UtcNow.AddHours(1),
+                    repository_selection = "selected", permissions,
+                    repositories = new[] { new { id = 345, full_name = "owner/repository" } }
+                },
+                _ => throw new InvalidOperationException("Unexpected own-App request")
+            };
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(body)) });
+        }
     }
 
     static SortedDictionary<string, string> Snapshot(string root)
