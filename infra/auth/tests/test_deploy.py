@@ -4,6 +4,7 @@ Run: python3 -m unittest discover -s infra/auth/tests -v
 These prove deployment orchestration, not Azure provisioning or RBAC behavior.
 """
 import copy
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,14 +12,15 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 AUTH = Path(__file__).resolve().parents[1]
 SUBSCRIPTION = '46f7e5d6-05f3-435b-8089-6c63a203dbfa'
 GROUP = 'rg-repoagent-controller-auth'
 SCOPE = f'/subscriptions/{SUBSCRIPTION}/resourceGroups/{GROUP}'
-# Fixed fixture names calculated independently for the approved target/auth-test.
-VAULT = 'ra-0d59e18d5f921c41-kv'
-STORAGE = 'ra0d59e18d5f921c41dp'
+# Explicit operator-selected fixtures, independent of deployment name selection.
+VAULT = 'auth-readable-kv'
+STORAGE = 'authreadablestate'
 TABLE_ID = f'{SCOPE}/providers/Microsoft.Storage/storageAccounts/{STORAGE}/tableServices/default/tables/brokerstate'
 DOMAIN = 'gentle-field-123.swedencentral.azurecontainerapps.io'
 ORIGIN = 'https://auth-test.' + DOMAIN
@@ -59,6 +61,42 @@ def owned_resources():
     return result
 
 
+class DeploymentTimeoutTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('auth_deploy', AUTH / 'deploy.py')
+        self.deploy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.deploy)
+        configuration = {'AZURE_SUBSCRIPTION_ID': SUBSCRIPTION, 'AZURE_RESOURCE_GROUP': GROUP,
+                         'AZURE_LOCATION': 'swedencentral', 'AUTH_APP_NAME': 'auth-test',
+                         'AUTH_STORAGE_ACCOUNT_NAME': STORAGE,
+                         'AUTH_KEY_VAULT_NAME': VAULT}
+        with patch.dict(os.environ, configuration, clear=True):
+            self.deployment = self.deploy.Deployment('foundation-apply')
+        self.process = subprocess.CompletedProcess(['az'], 0, stdout='{}', stderr='')
+
+    def test_deployment_create_allows_twenty_minutes(self):
+        with patch.object(self.deploy.subprocess, 'run', return_value=self.process) as run:
+            self.assertEqual(self.deployment.az(['deployment', 'group', 'create']), {})
+        self.assertEqual(run.call_args.kwargs['timeout'], 1200)
+
+    def test_queries_validation_and_what_if_keep_two_minute_timeout(self):
+        for command in (['group', 'show'], ['deployment', 'group', 'validate'],
+                        ['deployment', 'group', 'what-if']):
+            with self.subTest(command=command):
+                with patch.object(self.deploy.subprocess, 'run', return_value=self.process) as run:
+                    self.assertEqual(self.deployment.az(command), {})
+                self.assertEqual(run.call_args.kwargs['timeout'], 120)
+
+    def test_operation_deadline_takes_precedence_for_create_and_query(self):
+        self.deployment.deadline = 150
+        with patch.object(self.deploy.time, 'monotonic', return_value=100):
+            for command in (['deployment', 'group', 'create'], ['group', 'show']):
+                with self.subTest(command=command):
+                    with patch.object(self.deploy.subprocess, 'run', return_value=self.process) as run:
+                        self.assertEqual(self.deployment.az(command), {})
+                    self.assertEqual(run.call_args.kwargs['timeout'], 50)
+
+
 class DeploymentProcessTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -73,6 +111,7 @@ class DeploymentProcessTests(unittest.TestCase):
             'AZ_DOUBLE_JOURNAL': str(self.directory / 'journal.jsonl'),
             'AZURE_SUBSCRIPTION_ID': SUBSCRIPTION, 'AZURE_RESOURCE_GROUP': GROUP,
             'AZURE_LOCATION': 'swedencentral', 'AUTH_APP_NAME': 'auth-test',
+            'AUTH_STORAGE_ACCOUNT_NAME': STORAGE, 'AUTH_KEY_VAULT_NAME': VAULT,
             'AUTH_PROVIDER_READY': 'true', 'AUTH_STORAGE_READY': 'true',
             'AUTH_CLEANUP_READY': 'true', 'AUTH_RUNTIME_ACCESS_READY': 'true',
             'AUTH_SIGNING_KEY_URI': f'https://{VAULT}.vault.azure.net/keys/signing/' + 'a' * 32,
@@ -190,13 +229,36 @@ class DeploymentProcessTests(unittest.TestCase):
         self.assertFalse(json.loads(result.stdout)['applied'])
         self.assertEqual(self.calls, [])
 
-    def test_foundation_check_discovers_names_without_runtime_configuration_or_azure(self):
+    def test_foundation_check_preserves_selected_names_without_runtime_configuration_or_azure(self):
         self.env = {key: value for key, value in self.env.items()
-                    if not key.startswith('AUTH_') or key == 'AUTH_APP_NAME'}
-        result = self.run_deploy('foundation-check')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)['keyVaultName'], VAULT)
-        self.assertEqual(self.calls, [])
+                    if not key.startswith('AUTH_') or key in ('AUTH_APP_NAME', 'AUTH_STORAGE_ACCOUNT_NAME', 'AUTH_KEY_VAULT_NAME')}
+        for storage, vault in (('abc', 'AbC'), ('readablestorageaccount12', 'Readable-Auth-Vault-1234')):
+            with self.subTest(storage=storage, vault=vault):
+                self.env.update(AUTH_STORAGE_ACCOUNT_NAME=storage, AUTH_KEY_VAULT_NAME=vault)
+                result = self.run_deploy('foundation-check')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                output = json.loads(result.stdout)
+                self.assertEqual(self.calls, [])
+                self.assertEqual(output['keyVaultName'], vault)
+                self.assertEqual(output['tableResourceId'],
+                                 f'{SCOPE}/providers/Microsoft.Storage/storageAccounts/{storage}/tableServices/default/tables/brokerstate')
+                self.assertEqual(output['tableEndpoint'], f'https://{storage}.table.core.windows.net/')
+                self.assertEqual(output['dataProtectionBlobUri'], f'https://{storage}.blob.core.windows.net/data-protection/keyring.xml')
+
+    def test_missing_or_invalid_selected_names_refuse_before_azure(self):
+        cases = {
+            'AUTH_STORAGE_ACCOUNT_NAME': (None, '', 'ab', 'a' * 25, 'Uppercase', 'has-hyphen', 'punct!', 'éclair', ' abc', 'abc ', '   '),
+            'AUTH_KEY_VAULT_NAME': (None, '', 'ab', 'a' * 25, '1vault', '-vault', 'vault-', 'va--ult', 'punct!', 'éclair', ' abc', 'abc ', '   '),
+        }
+        original = self.env.copy()
+        for name, values in cases.items():
+            for value in values:
+                with self.subTest(name=name, value=value):
+                    self.env = {**original, name: value} if value is not None else {key: item for key, item in original.items() if key != name}
+                    result = self.run_deploy('foundation-check')
+                    self.assert_refused(result, name)
+                    self.assertEqual(result.stdout, '')
+                    self.assertEqual(self.calls, [])
 
     def test_foundation_can_create_missing_resources_incrementally(self):
         self.scenario['resources'] = {}
@@ -220,6 +282,8 @@ class DeploymentProcessTests(unittest.TestCase):
             self.assertEqual(args[args.index('--mode') + 1], 'Incremental')
             self.assertEqual(args[args.index('--resource-group') + 1], GROUP)
             self.assertEqual(call['parameters']['parameters']['deployApp']['value'], deploy_app)
+            self.assertEqual(call['parameters']['parameters']['storageName']['value'], STORAGE)
+            self.assertEqual(call['parameters']['parameters']['vaultName']['value'], VAULT)
 
     def test_same_owned_runtime_apply_preserves_unrelated_resources(self):
         unrelated = f'{SCOPE}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/id-controller-auth-github'
@@ -415,7 +479,7 @@ class DeploymentProcessTests(unittest.TestCase):
 
     def test_cost_plan_lists_missing_choices_without_runtime_gates_or_azure(self):
         self.env = {key: value for key, value in self.env.items()
-                    if not key.startswith('AUTH_') or key == 'AUTH_APP_NAME'}
+                    if not key.startswith('AUTH_') or key in ('AUTH_APP_NAME', 'AUTH_STORAGE_ACCOUNT_NAME', 'AUTH_KEY_VAULT_NAME')}
         result = self.run_deploy('cost-plan')
         self.assertEqual(result.returncode, 0, result.stderr)
         output = json.loads(result.stdout)

@@ -13,7 +13,7 @@ import unittest
 
 import test_deploy as deployment_tests
 from test_deploy import (AUTH, SCOPE, APP_ID, ENVIRONMENT_ID,
-                         CLIENT_ID, ORIGIN, STORAGE, SUBSCRIPTION)
+                         CLIENT_ID, ORIGIN, STORAGE, SUBSCRIPTION, TABLE_ID, VAULT)
 
 sys.path.insert(0, str(AUTH.parents[1] / 'scripts/delivery'))
 from test_deploy_auth import jmespath_directory
@@ -136,6 +136,17 @@ class ActivationProcessTests(unittest.TestCase):
                         self.assertFalse(call['parameters']['parameters']['deployApp']['value'])
                 self.assertFalse(Path(self.env['IMAGE_JOURNAL']).exists())
 
+    def test_invalid_selected_name_refuses_before_source_image_or_azure(self):
+        self.env['AUTH_STORAGE_ACCOUNT_NAME'] = 'Invalid-storage'
+        self.main = [self.env['GITHUB_SHA'], 'f' * 40]
+        result = self.invoke('stage-apply')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('AUTH_STORAGE_ACCOUNT_NAME', result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(self.calls, [])
+        self.assertFalse(Path(self.env['IMAGE_JOURNAL']).exists())
+        self.assertEqual(json.loads(Path(self.env['GIT_OBSERVATIONS']).read_text()), self.main)
+
     def test_actual_workflow_shell_refuses_unknown_and_injected_operations(self):
         for operation in ('apply', 'deploy', 'stage-apply; touch injected', '$(touch injected)', ''):
             with self.subTest(operation=operation):
@@ -202,6 +213,11 @@ class ActivationProcessTests(unittest.TestCase):
                 parameters = self.creates()[0]['parameters']['parameters']
                 self.assertTrue(parameters['staged']['value'])
                 self.assertEqual(parameters['image']['value'], IMAGE)
+                self.assertEqual(parameters['storageName']['value'], STORAGE)
+                self.assertEqual(parameters['vaultName']['value'], VAULT)
+                self.assertEqual(output['keyVaultName'], VAULT)
+                self.assertEqual(output['tableResourceId'], TABLE_ID)
+                self.assertEqual(output['dataProtectionBlobUri'], f'https://{STORAGE}.blob.core.windows.net/data-protection/keyring.xml')
 
     def test_stage_apply_requires_fresh_app_readback_after_first_or_repeated_creation(self):
         baseline = copy.deepcopy(self.scenario)
@@ -579,6 +595,11 @@ class ActivationProcessTests(unittest.TestCase):
 
 
 class ActivationWorkflowConfigurationTests(unittest.TestCase):
+    def test_selected_names_are_forwarded_from_required_repository_variables(self):
+        environment = re.search(r'(?ms)^env:\n(.*?)(?=^\S)', WORKFLOW.read_text())[1]
+        for name in ('AUTH_STORAGE_ACCOUNT_NAME', 'AUTH_KEY_VAULT_NAME'):
+            self.assertRegex(environment, r'(?m)^  ' + name + r': \$\{\{ vars\.' + name + r' \}\}\s*$')
+
     def test_activation_uses_existing_branch_oidc_scope_and_excludes_normal_jobs(self):
         workflow = WORKFLOW.read_text()
         activation = workflow.split('\n  activation:\n', 1)[1]

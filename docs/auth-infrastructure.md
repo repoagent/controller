@@ -11,13 +11,13 @@
 | `${AUTH_APP_NAME}-runtime` | Separate user-assigned identity, no deployment authority |
 | `${AUTH_APP_NAME}-logs` | 30-day retention and 1 GB/day Log Analytics ingestion quota |
 | `${AUTH_APP_NAME}-environment` | Container Apps Consumption profile |
-| Deterministic `ra…dp` StorageV2 account | Standard_LRS, HTTPS/TLS 1.2, no shared-key access or anonymous Blob access; Azure identity authentication |
+| `${AUTH_STORAGE_ACCOUNT_NAME}` StorageV2 account | Standard_LRS, HTTPS/TLS 1.2, no shared-key access or anonymous Blob access; Azure identity authentication |
 | `data-protection` Blob container | Separate durable key ring at `keyring.xml`; no lifecycle expiration |
 | `${AUTH_TABLE_NAME}` under default Table service | Dedicated broker state; default `brokerstate`; application does not create tables |
-| Deterministic `ra-…-kv` Key Vault | Empty, RBAC-enabled, 90-day soft delete and purge protection |
+| `${AUTH_KEY_VAULT_NAME}` Key Vault | Empty, RBAC-enabled, 90-day soft delete and purge protection |
 | `${AUTH_APP_NAME}` in runtime modes | Immutable image, HTTPS ingress on 8080, managed identity, startup/liveness/readiness probes, Single revision mode, minimum 0/maximum 1 replica, 0.25 CPU/0.5Gi memory |
 
-Storage/vault names use 16 hex characters of SHA-256 over the group resource ID plus `/` and app name. `foundation-check` discovers these names locally. Name collisions elsewhere fail ARM validation; the tooling never adopts or renames to evade a collision. Keep the app, managed environment and Table names stable; changing them selects different state rather than migrating it.
+Storage and vault names are required explicit configuration in every deployment mode, including cleanup. `foundation-check` validates the selected names and reports their references locally. These names are globally unique; collisions fail without choosing another name or adopting foreign resources. Existing deployments must supply their current names explicitly before using this source. Changing names requires a separately planned operator cutover: it does not migrate or delete data, or prove old storage empty. Keep the app, managed environment, storage, vault and Table names stable.
 
 The endpoints use public Azure networking and authenticated data access. Anonymous Blob denial does not mean private networking. Public ingress can incur request, storage and network charges. Process-local request bounds, configured compute/log capacity and delayed spending alerts are distinct controls; none is a hard spending cap. Log ingestion quota may suppress diagnostics. Logs must exclude credentials, request bodies and sensitive enrollment data. Maximum one replica does not serialize authorization or establish a global quota; rollout overlap can exist.
 
@@ -31,10 +31,14 @@ python3 -m unittest discover -s infra/auth/tests -v
 export AZURE_SUBSCRIPTION_ID=46f7e5d6-05f3-435b-8089-6c63a203dbfa
 export AZURE_RESOURCE_GROUP=rg-repoagent-controller-auth
 export AZURE_LOCATION=swedencentral
-export AUTH_APP_NAME=controller-auth
+export AUTH_APP_NAME=repoagent-auth
+export AUTH_STORAGE_ACCOUNT_NAME=repoagentauth
+export AUTH_KEY_VAULT_NAME=repoagent-auth-kv
 infra/auth/deploy.sh foundation-check
 infra/auth/deploy.sh cost-plan
 ```
+
+`AUTH_STORAGE_ACCOUNT_NAME` must be 3–24 lowercase ASCII letters/digits. `AUTH_KEY_VAULT_NAME` must be 3–24 ASCII letters/digits/hyphens, start with a letter, end with a letter/digit and contain no consecutive hyphens. Both are required without defaults; missing, empty or invalid values fail before the helper calls GitHub, image attestation or Azure. Examples select names; they do not reserve them or authorize a cutover.
 
 `AUTH_APP_NAME` must be 3–22 lowercase letters/digits/hyphens, start with a letter, end with a letter/digit and contain no consecutive hyphens. `AUTH_TABLE_NAME` must be 3–63 ASCII alphanumerics starting with a letter. Omitted Table name defaults to `brokerstate`; explicit empty input is invalid.
 
