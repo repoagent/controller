@@ -25,6 +25,16 @@ def snapshot(directory):
             for path in directory.rglob('*') if path.is_file()}
 
 
+def readonly_lifecycle_inspection(event):
+    """Exact approved Apply-only transport; extra options or mounts remain effects."""
+    expected = ['run', '--rm', '-i', '--network', 'none', '--user', '1000',
+        '--mount', f'type=bind,src={ROOT / "container/local-lifecycle.py"},dst=/source/local-lifecycle.py,readonly',
+        '--mount', 'type=volume,src=repoagent-guided-red-enrollment,dst=/data/enrollment,readonly',
+        '--mount', 'type=volume,src=repoagent-guided-red-config,dst=/data/config,readonly',
+        '--entrypoint', '/usr/bin/python3', IMAGE, '-E', '/source/local-lifecycle.py', 'inspect']
+    return event == expected
+
+
 def mutating_docker_commands(events):
     # A run creates a container even for queries such as `get` or `versions`.
     return [event for event in events if event[0] in
@@ -37,10 +47,6 @@ class GuidedInstallTests(unittest.TestCase):
     def setUpClass(cls):
         # Existing fixture setup builds only native executable transport shims.
         host.HostEnrollmentTests.setUpClass.__func__(cls)
-        gh_build = cls.fixture_build
-        runtime.PrivateRuntimeTests.setUpClass.__func__(cls)
-        cls.docker_build = cls.fixture_build
-        cls.fixture_build = gh_build
 
     def setUp(self, profile='polling'):
         self.journey = host.EnrollmentJourney(self, variable='APPROVED_CONTROLLER', profile=profile)
@@ -72,6 +78,7 @@ class GuidedInstallTests(unittest.TestCase):
         self.environment = dict(self.journey.environment,
             REPOAGENT_IMAGE=IMAGE, CODEX_HOME=str(self.owned / 'unused-codex-home'),
             INSTALLER_DOCKER_STATE=str(self.docker_state),
+            INSTALLER_DOCKER_LEGACY_ABSENT_MARKER='1',
             INSTALLER_DOCKER_REAL_CONFIGURE=str(ROOT / 'container'),
             INSTALLER_DOCKER_PYTHON=sys.executable,
             INSTALLER_DOCKER_FIXTURE=str(Path(__file__).with_name('docker_fixture.py').resolve()))
@@ -170,7 +177,7 @@ class GuidedInstallTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('fresh instance', result.stdout + result.stderr)
             self.assertEqual(snapshot(self.owned), before)
-            self.assertEqual(mutating_docker_commands(state['events'][count:]), [])
+            self.assertEqual(mutating_docker_commands(event for event in state['events'][count:] if not readonly_lifecycle_inspection(event)), [])
             self.assertEqual(len(self.journey.events), requests)
 
     def test_context_question_defaults_no_only_when_fresh_input_prompting_is_needed(self):
@@ -300,7 +307,7 @@ class GuidedInstallTests(unittest.TestCase):
             environment={'REPOAGENT_IMAGE': 'ambient-tag-that-must-not-replace-saved-image'})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(state['running'])
-        self.assertFalse(any('--entrypoint' in event and '/usr/bin/python3' in event
+        self.assertFalse(any('--entrypoint' in event and '/usr/bin/python3' in event and not readonly_lifecycle_inspection(event)
                              for event in state['events'][before:]))
         self.assertEqual(state['containers']['repoagent-guided-red']['Image'], IMAGE)
         self.assertEqual(self.journey.read('enrollment.json'), enrollment)
@@ -421,7 +428,7 @@ class GuidedInstallTests(unittest.TestCase):
         result, state = self.run_guided(saved=True, overrides={'ApprovalVariable': 'DIFFERENT_APPROVAL'})
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(snapshot(self.owned), before)
-        self.assertEqual(mutating_docker_commands(state['events'][count:]), [])
+        self.assertEqual(mutating_docker_commands(event for event in state['events'][count:] if not readonly_lifecycle_inspection(event)), [])
         self.assertFalse(state['running'])
         result, state = self.run_guided(saved=True, overrides={'Instance': 'different-instance'})
         self.assertNotEqual(result.returncode, 0)
@@ -625,7 +632,7 @@ class GuidedInstallTests(unittest.TestCase):
         self.assertEqual(before['history-sentinel.jsonl'], snapshot(self.owned)['history-sentinel.jsonl'])
         self.assertEqual(before['config.toml'], snapshot(self.owned)['config.toml'])
         self.assertEqual(before['auth.json'], snapshot(self.owned)['auth.json'])
-        bind_mounts = [event[index + 1] for event in state['events'] for index, argument in enumerate(event[:-1])
+        bind_mounts = [event[index + 1] for event in state['events'] if not readonly_lifecycle_inspection(event) for index, argument in enumerate(event[:-1])
                        if argument == '--mount' and 'type=bind' in event[index + 1]]
         self.assertEqual(bind_mounts, [f'type=bind,src={self.auth},dst=/run/secrets/codex-auth.json,readonly'])
         self.assertNotIn('--env', commands)

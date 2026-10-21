@@ -17,7 +17,7 @@ Existing own-App options remain available with -Authentication OwnApp.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Install', 'Enroll', 'Revoke')][string]$Action = 'Install',
+    [ValidateSet('Install', 'Enroll', 'Revoke', 'Uninstall')][string]$Action = 'Install',
     [ValidateSet('Broker', 'OwnApp')][string]$Authentication,
     [string]$BrokerOrigin,
     [string]$StateDirectory,
@@ -36,6 +36,7 @@ param(
     [string[]]$BuildArg = @(),
     [string]$Repository,
     [string]$AppId,
+    [string]$DeviceId,
     [string]$KeyPath,
     [string]$CodexAuthPath,
     [string]$Instance = $(if ($env:REPOAGENT_INSTANCE) { $env:REPOAGENT_INSTANCE } else { 'default' }),
@@ -56,6 +57,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+if ($Action -in @('Install','Enroll')) {
+    $selectedState = if ($StateDirectory) { $StateDirectory } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) ".repoagent/instances/$Instance" }
+    if (Test-Path -LiteralPath (Join-Path $selectedState 'lifecycle.json')) { throw 'Selected instance is disabled or has unresolved lifecycle intent; use inspection or Uninstall retry.' }
+    if ($Apply) {
+        Import-Module "$PSScriptRoot/scripts/local-runtime.psm1" -DisableNameChecking
+        $null = Initialize-LocalRuntime $Instance $(if ($env:REPOAGENT_IMAGE) { $env:REPOAGENT_IMAGE } else { 'repoagent:local' })
+        Assert-LocalRuntimeAction $Action @()
+    }
+}
 if ($Action -eq 'Enroll') {
     if ($GitHubEnvironment -or $ExpectedEnvironmentId) { throw 'Enroll uses a repository Agent variable; Environment inputs are only for explicit legacy revoke.' }
     $enrollOptions = @{}
@@ -72,6 +82,17 @@ if ($Action -eq 'Revoke') {
         -ExpectedEnvironmentId $ExpectedEnvironmentId -ApprovalStatePath $ApprovalStatePath `
         -EnrollmentFile $EnrollmentFile -Apply:$Apply -NonInteractive:$NonInteractive
     exit $LASTEXITCODE
+}
+if ($Action -eq 'Uninstall') {
+    Import-Module "$PSScriptRoot/scripts/local-runtime.psm1" -DisableNameChecking
+    try {
+        $options = @{} + $PSBoundParameters
+        $options.Instance = $Instance
+        $outcome = Invoke-LocalUninstall $options
+        $outcome | ConvertTo-Json -Depth 8 -Compress
+        if ($outcome.result -eq 'partial') { exit 1 }
+        exit 0
+    } catch { Write-Warning 'Selected uninstall is unconfirmed. Preserve state and inspect ownership/binding before retrying.'; exit 1 }
 }
 $provided = $PSBoundParameters
 $cli = Join-Path $PSScriptRoot 'repoagent.ps1'

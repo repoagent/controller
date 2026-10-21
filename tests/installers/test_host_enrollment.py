@@ -1,4 +1,4 @@
-"""Public PowerShell enrollment; GitHub is replaced only at its executable boundary.
+"""Public PowerShell enrollment; GitHub and Docker use executable transport doubles.
 
 Linux execution does not establish native Windows or real broker acceptance.
 """
@@ -17,6 +17,8 @@ import threading
 import time
 import unittest
 
+import test_private_runtime as runtime
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -26,7 +28,7 @@ class LostResponse(Exception):
 
 
 class EnrollmentJourney:
-    """Real process/TLS/filesystem; only GitHub and the broker are external doubles."""
+    """Real process/TLS/filesystem; GitHub, Docker and broker are external doubles."""
     def __init__(self, case, *, variable='TEAM_CONTROLLER_APPROVAL', fault=None, profile='polling'):
         self.case, self.variable, self.fault, self.profile = case, variable, fault, profile
         self.clone = profile.endswith('-clone')
@@ -44,6 +46,13 @@ class EnrollmentJourney:
             policyVersion='repository-agent-clone-approval-v2' if self.clone else 'repository-agent-approval-v2', epoch='test-epoch', variable=variable), separators=(',', ':'))
         for artifact in case.fixture_build.iterdir():
             shutil.copy2(artifact, self.directory / artifact.name)
+        if case.native:
+            for artifact in case.docker_build.iterdir():
+                shutil.copy2(artifact, self.directory / artifact.name)
+        else:
+            docker = self.directory / 'docker'
+            shutil.copyfile(Path(__file__).with_name('docker_fixture.py'), docker)
+            docker.chmod(0o755)
         openssl = shutil.which('openssl')
         if not openssl and os.name == 'nt':
             candidate = Path('C:/Program Files/Git/usr/bin/openssl.exe')
@@ -148,7 +157,13 @@ class EnrollmentJourney:
             SSL_CERT_FILE=str(cert), HOST_ENROLLMENT_GH_MODEL=str(self.model), REVOKE_GH_LOG=str(self.log),
             REVOKE_GH_PYTHON=sys.executable,
             REVOKE_GH_FIXTURE=str(Path(__file__).with_name('gh_fixture.py').resolve()),
+            INSTALLER_DOCKER_STATE=str(self.directory / 'docker-state.json'),
+            INSTALLER_DOCKER_PYTHON=sys.executable,
+            INSTALLER_DOCKER_FIXTURE=str(Path(__file__).with_name('docker_fixture.py').resolve()),
             GH_TOKEN='HOST-CREDENTIAL-MUST-STAY-ON-HOST', PYTHONUTF8='1')
+        self.environment.pop('INSTALLER_DOCKER_LEGACY_ABSENT_MARKER', None)
+        case.assertEqual(Path(shutil.which('docker', path=self.environment['PATH'])).resolve(),
+                         (self.directory / ('docker.exe' if os.name == 'nt' else 'docker')).resolve())
 
     def read(self, name):
         return json.loads((self.state / name).read_text(encoding='utf-8-sig'))
@@ -295,6 +310,10 @@ class HostEnrollmentTests(unittest.TestCase):
                                 cwd=build, capture_output=True, text=True, encoding='utf-8', timeout=120)
         if result.returncode:
             raise RuntimeError('Native gh fixture build failed:\n' + result.stdout + result.stderr)
+        gh_build = cls.fixture_build
+        runtime.PrivateRuntimeTests.setUpClass.__func__(cls)
+        cls.docker_build = cls.fixture_build
+        cls.fixture_build = gh_build
 
     def test_preview_identifies_selected_repository_agent_variable_without_mutations(self):
         with tempfile.TemporaryDirectory(prefix='enrollment preview ') as temporary:

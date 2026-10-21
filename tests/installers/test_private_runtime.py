@@ -84,6 +84,7 @@ class PrivateRuntimeTests(unittest.TestCase):
             PATH=str(self.directory) + os.pathsep + os.environ['PATH'],
             REPOAGENT_INSTANCE=INSTANCE, REPOAGENT_IMAGE=IMAGE,
             INSTALLER_DOCKER_STATE=str(self.state_path),
+            INSTALLER_DOCKER_LEGACY_ABSENT_MARKER='1',
             INSTALLER_DOCKER_REAL_CONFIGURE=str(ROOT / 'container'),
             INSTALLER_DOCKER_PYTHON=sys.executable,
             INSTALLER_DOCKER_FIXTURE=str(Path(__file__).with_name('docker_fixture.py').resolve()),
@@ -145,6 +146,12 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
     def state(self):
         return json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
 
+    def assert_only_discovery(self):
+        state = self.state()
+        self.assertFalse(state.get('volumes') or state.get('containers') or state.get('settings') or state.get('authenticated'))
+        allowed = (['container', 'ls'], ['volume', 'ls'], ['image', 'inspect'], ['volume', 'inspect'], ['container', 'inspect'])
+        self.assertTrue(all(event[:2] in allowed for event in state.get('events', [])), state)
+
     def configure(self, *additional, success=True):
         return self.invoke('configure', '--repository', 'owner/repository', '--app-id', '123',
             '--broker-url', BROKER, '--enrollment-file', str(self.enrollment), *additional, success=success)
@@ -204,7 +211,7 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
                         ('--broker-url', BROKER, '--enrollment-file', str(self.enrollment), '--key-path', '/unused.pem')]:
             with self.subTest(options=options):
                 self.invoke('configure', '--repository', 'owner/repository', '--app-id', '123', *options, success=False)
-                self.assertFalse(self.state())
+                self.assert_only_discovery()
 
     def test_abbreviated_broker_options_cannot_mount_or_configure_foreign_volumes(self):
         volumes = {NAME + '-' + storage: {'Labels': None, 'foreignCanary': 'preserve-me'}
@@ -222,7 +229,7 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
         self.assertFalse(any(event[0] in ('run', 'rm', 'stop') or event[:2] == ['volume', 'create']
                              for event in state['events']))
 
-    def test_private_source_rejections_happen_before_docker(self):
+    def test_private_source_rejections_happen_before_effects(self):
         if os.name == 'nt':
             variants = ('broad-file', 'broad-parent', 'inherited-file')
         else:
@@ -246,7 +253,7 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
                 else:
                     self.enrollment.write_bytes(b'x' * 65537)
                 self.configure(success=False)
-                self.assertFalse(self.state())
+                self.assert_only_discovery()
                 if os.name == 'nt':
                     self.set_windows_private_acl(self.private, directory=True)
                     self.set_windows_private_acl(self.enrollment)
@@ -260,7 +267,7 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
                     self.enrollment.write_bytes(original)
 
     @unittest.skipUnless(os.name == 'nt', 'Native Windows effective ancestor DACL case')
-    def test_private_source_with_effective_unsafe_ancestor_is_rejected_before_docker(self):
+    def test_private_source_with_effective_unsafe_ancestor_is_rejected_before_effects(self):
         ancestor = self.private / 'controlled unsafe ancestor'
         ancestor.mkdir()
         parent = ancestor / 'private parent'
@@ -277,7 +284,7 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
             self.set_windows_private_acl(ancestor, directory=True, dangerous=True)
             self.invoke('configure', '--repository', 'owner/repository', '--app-id', '123',
                 '--broker-url', BROKER, '--enrollment-file', str(source), success=False)
-            self.assertFalse(self.state(), 'Unsafe ancestry must fail before any Docker command')
+            self.assert_only_discovery()
         finally:
             self.set_windows_private_acl(ancestor, directory=True)
 

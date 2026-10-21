@@ -31,123 +31,16 @@ function Invoke-Docker {
     if ($LASTEXITCODE -ne 0) { throw "Docker failed (exit $LASTEXITCODE). See the output above." }
 }
 
-function Get-Resource([string]$Kind, [string]$Name) {
-    $names = if ($Kind -eq 'volume') {
-        @(Invoke-Docker volume ls --filter "name=^$Name`$" --format '{{.Name}}')
-    } else {
-        @(Invoke-Docker container ls -a --filter "name=^/$Name`$" --format '{{.Names}}')
-    }
-    if ($names -notcontains $Name) { return $null }
-    if ($Kind -eq 'volume') {
-        return @{ Labels = (Invoke-Docker volume inspect --format '{{json .Labels}}' $Name | ConvertFrom-Json -AsHashtable) }
-    }
-    # Deliberately exclude environment variables and unrelated container settings.
-    $format = '{"Image":{{json .Image}},"User":{{json .Config.User}},"Entrypoint":{{json .Config.Entrypoint}},"Cmd":{{json .Config.Cmd}},"Labels":{{json .Config.Labels}},"Mounts":{{json .Mounts}},"Running":{{json .State.Running}}}'
-    return (Invoke-Docker container inspect --format $format $Name | ConvertFrom-Json -AsHashtable)
+Import-Module "$PSScriptRoot/scripts/local-runtime.psm1" -DisableNameChecking
+function Initialize-Identity([bool]$ConfigureBroker = $false, [bool]$Create = $false) {
+    $context = Initialize-LocalRuntime $instance $image $ConfigureBroker $Create
+    $script:brokerMode = $context.Managed
+    $script:image = $context.Image
+    $script:existingContainer = $context.Container
 }
-
-function Assert-Owned($Resource, [string]$Storage) {
-    $labels = $Resource.Labels
-    if (-not $labels -or $labels['io.repoagent.owner'] -ne 'private-runtime-v1' -or
-        $labels['io.repoagent.instance'] -ne $instance -or $labels['io.repoagent.storage'] -ne $Storage -or
-        $labels['io.repoagent.image'] -cnotmatch '^sha256:[a-f0-9]{64}$') {
-        throw 'Conflicting or legacy resource: choose a fresh REPOAGENT_INSTANCE. No resources were adopted or removed.'
-    }
-}
-
-function Get-OwnershipArguments([string]$Storage) {
-    return @('--label', 'io.repoagent.owner=private-runtime-v1', '--label', "io.repoagent.instance=$instance",
-        '--label', "io.repoagent.storage=$Storage", '--label', "io.repoagent.image=$script:image")
-}
-
-function Initialize-Identity([bool]$ConfigureBroker = $false) {
-    $script:existingContainer = Get-Resource container $containerName
-    $resources = @{}
-    foreach ($storage in $storageNames + @('enrollment')) {
-        $resources[$storage] = Get-Resource volume "$containerName-$storage"
-    }
-    $script:brokerMode = $ConfigureBroker
-    foreach ($resource in @($resources.Values) + @($script:existingContainer)) {
-        if ($resource -and $resource.Labels -and $resource.Labels['io.repoagent.owner'] -eq 'private-runtime-v1') { $script:brokerMode = $true }
-    }
-    if (-not $script:brokerMode) { return }
-    $pinned = $null
-    # Complete the conflict scan before creating or mounting anything.
-    foreach ($storage in $storageNames + @('enrollment', 'container')) {
-        $resource = if ($storage -eq 'container') { $script:existingContainer } else { $resources[$storage] }
-        if ($resource) {
-            Assert-Owned $resource $storage
-            $resourceImage = $resource.Labels['io.repoagent.image']
-            if ($pinned -and $pinned -ne $resourceImage) { throw 'Instance image metadata conflicts; resolve manually.' }
-            $pinned = $resourceImage
-        }
-    }
-    if (-not $pinned) {
-        $pinned = Invoke-Docker image inspect --format '{{.Id}}' $image
-        if ($pinned -cnotmatch '^sha256:[a-f0-9]{64}$') { throw 'Select an existing immutable controller image.' }
-    }
-    $script:image = $pinned
-    $role = Invoke-Docker image inspect --format '{{index .Config.Labels "io.repoagent.role"}}:{{.Config.User}}' $image
-    if ($role -ne 'controller:1000') { throw 'Selected image must be a UID1000 controller image.' }
-    foreach ($storage in $storageNames + @('enrollment')) {
-        if (-not $resources[$storage]) {
-            if (-not $ConfigureBroker) { throw 'Incomplete broker instance: rerun broker configure to create missing owned storage.' }
-        }
-    }
-    if ($script:existingContainer) { Assert-CompatibleContainer }
-    if ($ConfigureBroker) {
-        foreach ($storage in $storageNames + @('enrollment')) {
-            if (-not $resources[$storage]) {
-                $labels = Get-OwnershipArguments $storage
-                Invoke-Docker volume create @labels "$containerName-$storage" | Out-Null
-                $created = Get-Resource volume "$containerName-$storage"
-                Assert-Owned $created $storage
-                if ($created.Labels['io.repoagent.image'] -ne $image) { throw 'Volume identity changed while creating.' }
-            }
-        }
-    }
-}
-
-function Assert-CompatibleContainer {
-    $existing = $script:existingContainer
-    if (-not $existing) { return }
-    if ($script:brokerMode) { Assert-Owned $existing 'container' }
-    $expectedImage = Invoke-Docker image inspect --format '{{.Id}}' $image
-    $role = Invoke-Docker image inspect --format '{{index .Config.Labels "io.repoagent.role"}}:{{.Config.User}}' $expectedImage
-    if ($role -ne 'controller:1000' -or $existing.Image -ne $expectedImage -or $existing.User -ne '1000' -or
-        @($existing.Entrypoint).Count -ne 3 -or
-        -not [StringComparer]::Ordinal.Equals($existing.Entrypoint[0], '/usr/bin/python3') -or
-        -not [StringComparer]::Ordinal.Equals($existing.Entrypoint[1], '-E') -or
-        -not [StringComparer]::Ordinal.Equals($existing.Entrypoint[2], '/opt/repoagent/runtime.py') -or
-        @($existing.Cmd).Count -ne 1 -or -not [StringComparer]::Ordinal.Equals($existing.Cmd[0], 'start')) {
-        throw 'Existing container differs from the selected controller image/start configuration. Resolve it manually.'
-    }
-    # Container destinations and Docker volume names use Linux identity on every host.
-    $expected = [Collections.Hashtable]::new([StringComparer]::Ordinal)
-    foreach ($storage in $storageNames) {
-        $destination = if ($storage -eq 'workspace') { '/workspace' } else { "/data/$storage" }
-        $expected[$destination] = @{ Type = 'volume'; Name = "$containerName-$storage"; RW = ($storage -ne 'config') }
-    }
-    if ($script:brokerMode) {
-        $expected['/data/enrollment'] = @{ Type = 'volume'; Name = "$containerName-enrollment"; RW = $false }
-    } else {
-        $key = Invoke-Config get keyPath
-        if (-not $key) { throw 'Saved direct configuration is missing its PEM path; resolve manually.' }
-        # Match Get-FileMount, including Windows short-name expansion.
-        $resolvedKey = (Resolve-Path -LiteralPath $key).ProviderPath
-        $expected['/run/secrets/github-app.pem'] = @{ Type = 'bind'; Source = $resolvedKey; RW = $false }
-    }
-    if (@($existing.Mounts).Count -ne $expected.Count) { throw 'Existing container has unexpected mounts; resolve manually.' }
-    $hostPathComparer = if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase } else { [StringComparer]::Ordinal }
-    foreach ($mount in $existing.Mounts) {
-        $wanted = $expected[$mount.Destination]
-        if (-not $wanted -or $mount.Type -ne $wanted.Type -or $mount.RW -ne $wanted.RW -or
-            ($wanted.Type -eq 'volume' -and -not [StringComparer]::Ordinal.Equals($mount.Name, $wanted.Name)) -or
-            ($wanted.Type -eq 'bind' -and -not $hostPathComparer.Equals($mount.Source, $wanted.Source))) {
-            throw 'Existing container has incompatible mounts; resolve manually.'
-        }
-        $expected.Remove($mount.Destination)
-    }
+function Test-CompatibleRuntime {
+    $key = if (-not $brokerMode -and $existingContainer) { Invoke-Config get keyPath } else { '' }
+    Assert-CompatibleContainer $key
 }
 
 function Get-CredentialMount {
@@ -186,7 +79,9 @@ function Import-Enrollment([byte[]]$Bytes) {
 }
 
 function Invoke-Config {
-    Invoke-Docker run --rm --init @volumeArguments $image @args
+    $mounts = if ($brokerMode -and $Command -in @('get', 'state', 'versions', 'skills') -and @($CommandArguments)[0] -ne 'install') { @($volumeArguments | ForEach-Object { if ($_ -like 'type=volume,*') { $_ + ',readonly' } else { $_ } }) } else { $volumeArguments }
+    $network = if ($brokerMode -and $Command -in @('get', 'state', 'versions', 'skills') -and @($CommandArguments)[0] -ne 'install') { @('--network', 'none') } else { @() }
+    Invoke-Docker run --rm --init @network @mounts $image @args
 }
 
 function Test-AgentRunning {
@@ -212,10 +107,10 @@ function Get-KeyMount {
 }
 
 function Start-Agent {
-    Assert-CompatibleContainer
+    Test-CompatibleRuntime
     if (Test-AgentRunning) { Write-Host "$containerName is already running."; return }
     $keyMount = Get-CredentialMount
-    if ($script:existingContainer) { Invoke-Docker rm $containerName | Out-Null }
+    if ($script:existingContainer) { if ($brokerMode) { Remove-LocalRuntime } else { Invoke-Docker rm $containerName | Out-Null } }
     $networkArguments = @()
     if ((Invoke-Config get mode) -eq 'fixed-url') {
         $port = Invoke-Config get listenPort
@@ -236,6 +131,12 @@ function Start-Agent {
     & docker logs $containerName
     Invoke-Docker stop --timeout 20 $containerName
     throw 'Startup did not become ready within ten minutes; container stopped.'
+}
+
+if ($Command -notin @('help', 'build', 'setup')) {
+    $prepare = $Command -eq 'configure' -and @($CommandArguments | Where-Object { $_ -match '^--broker-url(=|$)' }).Count -gt 0
+    Initialize-Identity $prepare
+    Assert-LocalRuntimeAction $Command $CommandArguments
 }
 
 # Validate private input before creating any resources. Only the native consumer
@@ -284,7 +185,7 @@ if ($Command -eq 'configure') {
     Import-Module "$PSScriptRoot/scripts/private-file.psm1"
     $privateBytes = Read-PrivateFileBytes $CommandArguments[0]
 }
-if ($Command -notin @('help', 'build', 'setup')) { Initialize-Identity $configureBroker }
+if ($Command -notin @('help', 'build', 'setup')) { Initialize-Identity $configureBroker ($Command -eq 'configure') }
 if ($Command -eq 'configure' -and $brokerMode -and -not $configureBroker) { throw 'Broker instances require broker configuration; use a fresh instance for direct App mode.' }
 
 switch ($Command) {
@@ -317,10 +218,10 @@ switch ($Command) {
         $copyAuth = "import json,pathlib; p=pathlib.Path('/run/secrets/codex-auth.json'); json.loads(p.read_text()); d=pathlib.Path('/data/credentials/codex/auth.json'); d.write_bytes(p.read_bytes()); d.chmod(0o600)"
         Invoke-Docker run --rm --init @volumeArguments @authMount --entrypoint /usr/bin/python3 $image -c $copyAuth
     }
-    'check' { Assert-Stopped; Assert-CompatibleContainer; $keyMount = Get-CredentialMount; Invoke-Docker run --rm --init @runtimeVolumes @keyMount $image check }
+    'check' { Assert-Stopped; Test-CompatibleRuntime; $keyMount = Get-CredentialMount; Invoke-Docker run --rm --init @runtimeVolumes @keyMount $image check }
     'start' { Start-Agent }
-    'stop' { Assert-CompatibleContainer; Invoke-Docker stop --timeout 20 $containerName }
-    'restart' { Assert-CompatibleContainer; Invoke-Docker stop --timeout 20 $containerName; Start-Agent }
+    'stop' { if ($brokerMode) { Stop-LocalRuntime } else { Test-CompatibleRuntime; Invoke-Docker stop --timeout 20 $containerName } }
+    'restart' { if ($brokerMode) { Stop-LocalRuntime } else { Test-CompatibleRuntime; Invoke-Docker stop --timeout 20 $containerName }; Start-Agent }
     'logs' { Invoke-Docker logs $containerName @CommandArguments }
     'versions' { Invoke-Config versions }
     'state' { Invoke-Config state }

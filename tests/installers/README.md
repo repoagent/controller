@@ -45,3 +45,19 @@ and immutable image must survive. There is no blanket test retry, quota increase
 TLS bypass or live provider access. The test cleans only its generated containers,
 volumes, table and image tags. Native Windows Desktop, real authenticated Codex and
 live GitHub authority remain separate acceptance gates.
+
+`test_local_lifecycle.py` covers public preview/selection failures, legacy Bash
+refusal and credential-free Revoke. Pre-existing managed process journeys explicitly
+assume an absent marker through a fixed read-only Docker inspect response; they do
+not prove helper parsing, disable enforcement or cleanup. Other lifecycle helper
+operations cannot succeed through that fixture shortcut. Legacy direct Bash
+journeys explicitly supply Docker's rendered unlabeled-owner sentinel.
+
+Run `test_local_lifecycle_assembled.py` with
+`REPOAGENT_LOCAL_LIFECYCLE_IMAGE` set to an existing tagged local immutable controller
+image whose runtime hash matches the source. It derives a minimal network-disabled
+fixture layer that replaces only start with credential-free readiness/wait; real
+configure/import/get and the unchanged host-carried helper use actual Docker and
+UID1000 volumes. Generated resources are removed even on assertion failure. This
+proves local lifecycle behavior with a controlled runtime, not native-controller,
+provider or Windows Docker Desktop acceptance. No image is pulled or published.

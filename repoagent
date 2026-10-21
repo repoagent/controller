@@ -67,6 +67,23 @@ start() {
   echo 'Startup did not become ready within ten minutes; container stopped.' >&2
   return 1
 }
+if [[ ${1:-help} != help && ${1:-help} != build ]]; then
+  for resource in container config credentials workspace history state tools enrollment; do
+    kind=volume; target=$name-$resource; pattern="^$target$"
+    [[ $resource != container ]] || { kind=container; target=$name; pattern="^/$name$"; }
+    if [[ $kind == container ]]; then
+      found=$(docker container ls -a --filter "name=$pattern" --format '{{.Names}}')
+      template='{{if eq (index .Config.Labels "io.repoagent.owner") "private-runtime-v1"}}managed{{else}}direct{{end}}'
+    else
+      found=$(docker volume ls --filter "name=$pattern" --format '{{.Name}}')
+      template='{{if eq (index .Labels "io.repoagent.owner") "private-runtime-v1"}}managed{{else}}direct{{end}}'
+    fi
+    [[ -n $found ]] || continue
+    [[ $found == "$target" ]] || { echo 'Unexpected Docker discovery; refusing effects.' >&2; exit 1; }
+    ownership=$(docker "$kind" inspect --format "$template" "$target")
+    [[ $ownership == direct ]] || { echo 'Managed or unverified instance: use repoagent.ps1 for lifecycle operations.' >&2; exit 1; }
+  done
+fi
 case "${1:-help}" in
   build)
     shift; exec bash "$root/scripts/build-image.sh" "$@" ;;

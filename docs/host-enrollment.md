@@ -2,6 +2,10 @@
 
 Run the installer from a trusted checkout. Enrollment requires **PowerShell 7.4 or later**, an authenticated host **GitHub CLI (`gh`)**, and the broker operator's canonical HTTPS origin. The host writes one direct repository Agent variable; it creates no deployment Environment and performs no broker browser sign-in. Its GitHub credential stays in gh, outside the broker, controller and image.
 
+Public `-Action Enroll -Apply` also requires the Docker CLI and a working local
+engine to check the selected instance’s disable state. Enroll preview and
+standalone `-Action Revoke` do not require Docker.
+
 ```powershell
 # Read-only preview: no GitHub/broker writes or private state allocation.
 ./install.ps1 -Action Enroll -Repository owner/project `
