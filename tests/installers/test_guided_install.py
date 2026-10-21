@@ -72,6 +72,7 @@ class GuidedInstallTests(unittest.TestCase):
         self.environment = dict(self.journey.environment,
             REPOAGENT_IMAGE=IMAGE, CODEX_HOME=str(self.owned / 'unused-codex-home'),
             INSTALLER_DOCKER_STATE=str(self.docker_state),
+            INSTALLER_DOCKER_LEGACY_ABSENT_MARKER='1',
             INSTALLER_DOCKER_REAL_CONFIGURE=str(ROOT / 'container'),
             INSTALLER_DOCKER_PYTHON=sys.executable,
             INSTALLER_DOCKER_FIXTURE=str(Path(__file__).with_name('docker_fixture.py').resolve()))

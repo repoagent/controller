@@ -35,11 +35,20 @@ def finish(code=0, output=''):
     sys.exit(code)
 
 
+def container_name(reference):
+    return next((name for name, value in containers.items() if value.get('Id') == reference), reference)
+
+
 command = arguments[0]
+if command in ('container', 'volume') and arguments[1] == 'ls' and 'INSTALLER_DOCKER_DISCOVERY_OUTPUT' in os.environ:
+    finish(int(os.environ.get('INSTALLER_DOCKER_DISCOVERY_EXIT', '0')), os.environ['INSTALLER_DOCKER_DISCOVERY_OUTPUT'])
+if command in ('container', 'volume') and arguments[1] == 'inspect' and 'INSTALLER_DOCKER_OWNER_OUTPUT' in os.environ and '{{if eq' in arguments[3]:
+    finish(output=os.environ['INSTALLER_DOCKER_OWNER_OUTPUT'])
 if command == 'info':
     finish(output=os.environ.get('INSTALLER_DOCKER_OS', 'linux'))
 if command == 'inspect':
-    finish(output='true' if state['running'] else 'false')
+    selected = containers.get(container_name(arguments[-1]))
+    finish(output='true' if (selected.get('Running', False) if selected else state['running'] and not containers) else 'false')
 if command in ('container', 'volume') and arguments[1] == 'ls':
     expression = option_values('--filter')[0].removeprefix('name=')
     names = containers if command == 'container' else volumes
@@ -53,7 +62,7 @@ if command == 'volume' and arguments[1] == 'create':
     volumes.setdefault(name, {'Labels': labels})
     finish(output=name)
 if command == 'container' and arguments[1] == 'inspect':
-    name = arguments[-1]
+    name = container_name(arguments[-1])
     finish(0 if name in containers else 1, json.dumps(containers.get(name)))
 if command == 'build':
     context = Path(arguments[-1])
@@ -79,13 +88,13 @@ if command == 'tag':
         os.environ.get('INSTALLER_DOCKER_TAG_ID_RESPONSE', source))
     finish()
 if command == 'rm':
-    containers.pop(arguments[-1], None)
+    containers.pop(container_name(arguments[-1]), None)
     state['running'] = False
     finish()
 if command == 'stop':
     state['running'] = False
-    if arguments[-1] in containers:
-        containers[arguments[-1]]['Running'] = False
+    if container_name(arguments[-1]) in containers:
+        containers[container_name(arguments[-1])]['Running'] = False
     finish()
 if command == 'logs':
     finish(output='2026-10-20T00:00:00Z ready repository=example/project actor=example[bot] mode=polling')
@@ -148,6 +157,10 @@ if image.startswith('python@sha256:') and operation[:1] == ['/source/scripts/com
     finish(result.returncode)
 if options.get('--entrypoint') == 'sh':
     finish(1 if os.environ.get('INSTALLER_UNREADABLE_KEY') else 0)
+if '/source/local-lifecycle.py' in operation:
+    if operation[-1] == 'inspect' and os.environ.get('INSTALLER_DOCKER_LEGACY_ABSENT_MARKER') == '1':
+        finish(output='{"marker":null}')
+    finish(2, 'Actual lifecycle helper transport required')
 if options.get('--entrypoint') in ('python3', '/usr/bin/python3'):
     if os.environ.get('INSTALLER_DOCKER_FAIL_OPERATION') == 'import-codex-auth':
         finish(1, 'Controlled external credential import failure')
@@ -214,7 +227,7 @@ if operation[0] == 'start':
         parts = dict(part.split('=', 1) for part in mount.split(',') if '=' in part)
         description.append({'Type': parts['type'], 'Name': parts['src'] if parts['type'] == 'volume' else '',
                             'Source': parts['src'], 'Destination': parts['dst'], 'RW': 'readonly' not in mount.split(',')})
-    containers[options['--name']] = {'Image': image_id(image), 'User': '1000',
+    containers[options['--name']] = {'Id': hashlib.sha256((options['--name'] + str(len(state['events']))).encode()).hexdigest(), 'Image': image_id(image), 'User': '1000',
         'Entrypoint': ['/usr/bin/python3', '-E', '/opt/repoagent/runtime.py'], 'Cmd': ['start'],
         'Labels': labels, 'Mounts': description, 'Running': True}
     finish(output=options['--name'])

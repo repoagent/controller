@@ -50,7 +50,8 @@ class InstallerTests(unittest.TestCase):
             state_path.write_text(json.dumps(state))
         environment = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ['PATH'],
                            CODEX_HOME=str(codex), REPOAGENT_INSTANCE='default',
-                           INSTALLER_DOCKER_STATE=str(state_path))
+                           # These legacy direct-mode journeys assume Docker's unlabeled-owner query result.
+                           INSTALLER_DOCKER_STATE=str(state_path), INSTALLER_DOCKER_OWNER_OUTPUT='direct')
         environment.update(extra_env or {})
         if shell == 'bash':
             command = ['bash', str(ROOT / 'install.sh'), '--app-id', '123456', '--key-path', str(key), '--instance', 'sample']
