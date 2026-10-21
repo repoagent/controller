@@ -453,6 +453,10 @@ class GitProvider:
                 if host == 'api.github.com':
                     if self.command == 'GET' and self.path == '/repos/' + repository:
                         return self.reply(dict(id=provider.repository_id, full_name=repository, clone_url='https://github.com/' + repository + '.git', default_branch='main'))
+                    if self.command == 'GET' and self.path == '/repos/' + repository + '/git/ref/heads/main':
+                        sha = subprocess.run(['git', '--git-dir', str(target), 'rev-parse', 'refs/heads/main'],
+                                             check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+                        return self.reply(dict(ref='refs/heads/main', object=dict(type='commit', sha=sha)))
                     if self.command != 'POST' or self.path != '/graphql' or not body:
                         print('GIT_PROVIDER_DENIED ' + json.dumps({'method': self.command, 'path': self.path}), flush=True)
                         return self.reply({}, 403)
