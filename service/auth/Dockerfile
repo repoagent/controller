@@ -9,6 +9,9 @@ RUN dotnet publish src/RepoAgent.Auth/RepoAgent.Auth.csproj --configuration Rele
     --no-restore --output /publish /p:UseAppHost=false
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0.13
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl jq \
+    && rm -rf /var/lib/apt/lists/*
 LABEL io.repoagent.role="auth-service"
 WORKDIR /app
 COPY --from=build /publish ./

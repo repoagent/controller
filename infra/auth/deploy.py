@@ -272,6 +272,7 @@ class Deployment:
 
     def staged_template(self, template):
         containers = template.get("containers", [])
+        rules = template.get("scale", {}).get("rules")
         if (len(containers) != 1 or containers[0].get("name") != "auth-service"
                 or containers[0].get("image") != self.params["image"]
                 or any(containers[0].get(key) for key in ("command", "args", "volumeMounts"))
@@ -281,7 +282,7 @@ class Deployment:
                 or template.get("initContainers", [])
                 or template.get("scale", {}).get("minReplicas") != 1
                 or template.get("scale", {}).get("maxReplicas") != 1
-                or template.get("scale", {}).get("rules", []) != []):
+                or (rules is not None and rules != [])):
             raise DeploymentError("Existing staging template differs from the accepted artifact/capacity")
         env = containers[0].get("env", [])
         values = {item["name"]: item.get("value") for item in env}
@@ -301,9 +302,11 @@ class Deployment:
     def staged_app(self, app):
         properties, identity = app.get("properties", {}), app.get("identity", {})
         config = properties.get("configuration", {})
+        dapr = config.get("dapr")
         if (config.get("ingress") is not None or config.get("activeRevisionsMode") != "Single"
                 or config.get("maxInactiveRevisions") != 3 or config.get("secrets", []) or config.get("registries", [])
-                or config.get("dapr", {}).get("enabled", False) or properties.get("workloadProfileName") != "Consumption"
+                or (dapr is not None and (not isinstance(dapr, dict) or dapr.get("enabled", False) is not False))
+                or properties.get("workloadProfileName") != "Consumption"
                 or properties.get("environmentId", "").lower() != self.resource_id(RESOURCE_TYPES[2], self.app + "-environment").lower()
                 or identity.get("type") != "UserAssigned"
                 or [key.lower() for key in identity.get("userAssignedIdentities", {})] != [self.resource_id(RESOURCE_TYPES[0], self.app + "-runtime").lower()]):

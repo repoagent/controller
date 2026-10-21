@@ -203,6 +203,79 @@ class ActivationProcessTests(unittest.TestCase):
                 self.assertTrue(parameters['staged']['value'])
                 self.assertEqual(parameters['image']['value'], IMAGE)
 
+    def test_stage_readback_accepts_provider_null_dapr_and_null_rules_independently(self):
+        baseline = copy.deepcopy(self.scenario)
+        for field in ('dapr', 'rules'):
+            with self.subTest(field=field):
+                self.scenario = copy.deepcopy(baseline)
+                app = self.scenario['resources'].pop(APP_ID)
+                if field == 'dapr':
+                    app['properties']['configuration']['dapr'] = None
+                else:
+                    app['properties']['template']['scale']['rules'] = None
+                self.scenario['postCreateResources'] = {APP_ID: app}
+                result = self.invoke('stage-apply')
+                self.assertEqual(len(self.creates()), 1, 'Valid first staging must reach creation')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(json.loads(result.stdout)['isolated'])
+
+    def test_nullable_provider_configuration_remains_eligible_for_stop_and_resume(self):
+        self.env['AUTH_STAGE_REVISION'] = REVISION
+        baseline = copy.deepcopy(self.scenario)
+        for field in ('dapr', 'rules'):
+            for mode in ('stage-stop', 'stage-resume'):
+                with self.subTest(field=field, mode=mode):
+                    self.scenario = copy.deepcopy(baseline)
+                    app = self.scenario['resources'][APP_ID]
+                    if field == 'dapr':
+                        app['properties']['configuration']['dapr'] = None
+                    else:
+                        app['properties']['template']['scale']['rules'] = None
+                        self.scenario['responses']['containerapp revision show']['body']['properties']['template']['scale']['rules'] = None
+                    if mode == 'stage-resume':
+                        self.scenario['responses']['containerapp revision list']['body'][0]['properties']['active'] = True
+                        self.scenario['responses']['containerapp replica list']['body'] = [{'name': 'new-replica'}]
+                    result = self.invoke(mode)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    action = 'deactivate' if mode == 'stage-stop' else 'activate'
+                    mutations = [call['args'] for call in self.calls
+                                 if call['args'][:3] in (['containerapp', 'revision', 'activate'],
+                                                        ['containerapp', 'revision', 'deactivate'])]
+                    self.assertEqual(len(mutations), 1)
+                    self.assertEqual(mutations[0][:3], ['containerapp', 'revision', action])
+                    self.assertEqual(mutations[0][mutations[0].index('--revision') + 1], REVISION)
+                    lists = [call['args'] for call in self.calls if call['args'][:3] == ['containerapp', 'revision', 'list']]
+                    self.assertTrue(lists)
+                    self.assertTrue(all('--all' in args for args in lists))
+                    output = json.loads(result.stdout)
+                    if mode == 'stage-stop':
+                        self.assertTrue(output['shutdownConfirmed'])
+                        replicas = [call['args'] for call in self.calls if call['args'][:3] == ['containerapp', 'replica', 'list']]
+                        self.assertEqual([args[args.index('--revision') + 1] for args in replicas], [REVISION])
+                    else:
+                        self.assertEqual(output['replica'], 'new-replica')
+                        self.assert_exec_processes_released()
+
+    def test_staging_optional_configuration_acceptance_is_narrow_and_never_mutates_invalid(self):
+        baseline = copy.deepcopy(self.scenario)
+        cases = [('dapr', value, valid) for value, valid in (
+            ({}, True), ({'enabled': False}, True), ({'enabled': True}, False),
+            (False, False), (0, False), ('', False), ([], False),
+            ({'enabled': 0}, False), ({'enabled': None}, False), ({'enabled': 'false'}, False))]
+        cases += [('rules', value, valid) for value, valid in (
+            ([], True), ([{}], False), ({}, False), (False, False), ('', False))]
+        for field, value, valid in cases:
+            with self.subTest(field=field, value=value):
+                self.scenario = copy.deepcopy(baseline)
+                props = self.scenario['resources'][APP_ID]['properties']
+                target = props['configuration'] if field == 'dapr' else props['template']['scale']
+                target[field] = value
+                result = self.invoke('stage-plan' if valid else 'stage-apply')
+                self.assertEqual(self.creates(), [])
+                self.assertFalse(any(call['args'][:3] in (
+                    ['containerapp', 'revision', 'activate'], ['containerapp', 'revision', 'deactivate']) for call in self.calls))
+                self.assertEqual(result.returncode == 0, valid, result.stderr)
+
     def test_public_or_internal_ingress_refuses_before_create(self):
         self.env['AUTH_STAGE_REVISION'] = REVISION
         for external in (True, False):
