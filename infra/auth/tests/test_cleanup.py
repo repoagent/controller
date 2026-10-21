@@ -135,6 +135,29 @@ class CleanupProcessTests(unittest.TestCase):
         self.assertGreaterEqual(len(Path(self.env['IMAGE_JOURNAL']).read_text().splitlines()), 2)
         self.assertNotIn('runtimeConfiguration', output)
 
+    def test_monitoring_endpoint_and_exact_publishers_are_required_before_job_writes(self):
+        baseline = copy.deepcopy(self.scenario)
+        for endpoint in ('http://test.in.applicationinsights.azure.com/', 'https://foreign.example.test/',
+                         'https://test.in.applicationinsights.azure.com/private'):
+            with self.subTest(endpoint=endpoint):
+                self.scenario = copy.deepcopy(baseline)
+                self.scenario['resources'][deployment.INSIGHTS_ID]['properties']['ConnectionString'] = (
+                    'InstrumentationKey=22222222-2222-2222-2222-222222222222;IngestionEndpoint=' + endpoint)
+                result = self.operation('cleanup-apply')
+                self.assertNotEqual(result.returncode, 0); self.assertEqual(self.creates(), [])
+                self.assertIn('Malformed owned Insights connection', result.stderr)
+        for defect in ('missing', 'wrong-scope', 'wrong-principal', 'extra'):
+            with self.subTest(publishers=defect):
+                self.scenario = copy.deepcopy(baseline)
+                grants = self.scenario['responses']['role assignment list']['body']
+                if defect == 'missing': grants.pop()
+                elif defect == 'wrong-scope': grants[0]['scope'] += '/foreign'
+                elif defect == 'wrong-principal': grants[0]['principalId'] = 'cccccccc-dddd-eeee-ffff-000000000000'
+                else: grants.append(copy.deepcopy(grants[0]))
+                result = self.operation('cleanup-apply')
+                self.assertNotEqual(result.returncode, 0); self.assertEqual(self.creates(), [])
+                self.assertIn('Exactly the two scoped deterministic', result.stderr)
+
     def test_invalid_selected_name_refuses_before_source_image_or_azure(self):
         self.env['AUTH_KEY_VAULT_NAME'] = 'invalid--vault'
         self.main = [self.env['GITHUB_SHA'], 'f' * 40]
@@ -354,7 +377,7 @@ class CleanupProcessTests(unittest.TestCase):
             sdkBatchDispatches=32, logicalQueryPages=16, turnAdmissionDispatches=40, turnAdmissionBatches=8,
             nominalDailySdkTableDispatches=184320, nominalDailySdkBatchDispatches=46080,
             nominalReplicaSecondsPerDay=129600, nominalVcpuSecondsPerDay=32400, nominalGiBSecondsPerDay=64800,
-            logRetentionDays=30, logDailyQuotaGb=1, hardSpendingCap=False, globalConcurrencyCap=False)
+            logRetentionDays=30, logDailyQuotaGb=0.1, hardSpendingCap=False, globalConcurrencyCap=False)
         self.assertEqual({key: plan[key] for key in expected}, expected)
         envelope = plan['reviewedHttp11Envelope']
         self.assertEqual([envelope[key] for key in ('maxSendsPerSdkDispatch', 'calculatedTableSendsPerStart',

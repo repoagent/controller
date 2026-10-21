@@ -339,7 +339,10 @@ class DeploymentProcessTests(unittest.TestCase):
 
     def test_runtime_refuses_missing_foundation(self):
         self.scenario['resources'] = {}
-        self.assert_refused(self.run_deploy(), 'Runtime requires existing foundation')
+        result = self.run_deploy()
+        self.assert_refused(result, 'not-found')
+        self.assertEqual(result.stdout, '')
+        self.assertTrue(any(call.get('responseCode') == 3 for call in self.calls))
 
     def test_conflicting_ownership_including_container_metadata_refuses_adoption(self):
         baseline = copy.deepcopy(self.scenario)
@@ -353,7 +356,9 @@ class DeploymentProcessTests(unittest.TestCase):
                     target['properties']['metadata']['repositoryId'] = 'other-repository'
                 else:
                     target['tags']['ownerId'] = 'other-owner'
-                self.assert_refused(self.run_deploy(), 'Ownership conflict')
+                result = self.run_deploy()
+                self.assert_refused(result, 'Auth deployment refused')
+                self.assertIn('ownership', result.stderr.lower())
 
     def test_azure_failures_never_become_resource_absence(self):
         responses = [({'error': '(AuthorizationFailed) sensitive-server-body'}, 'forbidden'),
@@ -385,7 +390,7 @@ class DeploymentProcessTests(unittest.TestCase):
                          {'body': {'properties': {'provisioningState': 'Failed'}}},
                          {'body': {'properties': []}}):
             with self.subTest(response=response):
-                self.scenario['responses'] = {'deployment group create': response}
+                self.scenario['responses']['deployment group create'] = response
                 result = self.run_deploy()
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(len(self.creates()), 1)
@@ -398,6 +403,7 @@ class DeploymentProcessTests(unittest.TestCase):
         output = json.loads(result.stdout)
         self.assertEqual(output['tableResourceId'], TABLE_ID)
         self.assertEqual(output['runtimeConfiguration'], {
+            'APPLICATIONINSIGHTS_CONNECTION_STRING': '', 'APPLICATIONINSIGHTS_STATSBEAT_DISABLED': 'true',
             'Broker__BrokerOrigin': None,
             'Broker__TableEndpoint': f'https://{STORAGE}.table.core.windows.net/',
             'Broker__TableName': 'brokerstate', 'Broker__ManagedIdentityClientId': None,
@@ -426,6 +432,7 @@ class DeploymentProcessTests(unittest.TestCase):
         self.assertEqual(output['runtimeIdentityClientId'], CLIENT_ID)
         self.assertEqual(output['runtimeIdentityPrincipalId'], PRINCIPAL_ID)
         self.assertEqual(output['runtimeConfiguration'], {
+            'APPLICATIONINSIGHTS_CONNECTION_STRING': CONNECTION, 'APPLICATIONINSIGHTS_STATSBEAT_DISABLED': 'true',
             'Broker__BrokerOrigin': ORIGIN,
             'Broker__TableEndpoint': f'https://{STORAGE}.table.core.windows.net/',
             'Broker__TableName': 'PilotState42', 'Broker__ManagedIdentityClientId': CLIENT_ID,
@@ -502,7 +509,10 @@ class DeploymentProcessTests(unittest.TestCase):
                            {'clientId': CLIENT_ID, 'principalId': 'not-a-uuid'}):
             with self.subTest(properties=properties):
                 self.scenario['resources'][identity_id]['properties'] = properties
-                self.assert_refused(self.run_deploy('plan'), 'malformed runtime identity')
+                result = self.run_deploy('plan')
+                self.assert_refused(result, 'Auth deployment refused')
+                self.assertEqual(result.stdout, '')
+                self.assertTrue(any(call['args'][:2] == ['resource', 'show'] and identity_id in call['args'] for call in self.calls))
 
     def budget_file(self, inputs):
         filename = self.directory / 'budget.json'
@@ -530,8 +540,8 @@ class DeploymentProcessTests(unittest.TestCase):
         self.assertEqual(output['runtimeConfiguration']['Broker__RequestTimeoutSeconds'], 15)
         self.assertEqual(output['capacityPlan'], {
             'minReplicas': 0, 'maxReplicas': 1, 'cpu': 0.25, 'memory': '0.5Gi',
-            'logRetentionDays': 30, 'logDailyQuotaGb': 1, 'hardSpendingCap': False,
-            'requestLimitsAreProcessLocal': True})
+            'logRetentionDays': 30, 'logDailyQuotaGb': 0.1, 'hardSpendingCap': False,
+            'consoleDestination': 'none', 'requestLimitsAreProcessLocal': True})
         self.assertEqual(self.calls, [])
         self.env['AUTH_REQUEST_LIMIT_PER_MINUTE'] = '10001'
         self.assert_refused(self.run_deploy('cost-plan'), 'AUTH_REQUEST_LIMIT_PER_MINUTE')
@@ -557,7 +567,9 @@ class DeploymentProcessTests(unittest.TestCase):
                 self.assertEqual(output['runtimeConfiguration']['Broker__RequestLimitPerMinute'], 321)
                 self.assertEqual(output['runtimeConfiguration']['Broker__ConcurrentRequestLimit'], 13)
                 self.assertEqual(output['runtimeConfiguration']['Broker__RequestTimeoutSeconds'], 31)
-                self.assertEqual(budget['inputs'], inputs)
+                self.assertEqual(budget['inputs'], {key: value for key, value in inputs.items() if key != 'contactEmails'})
+                for recipient in notifications.get('contactEmails', []):
+                    self.assertNotIn(recipient, result.stdout + result.stderr)
                 self.assertEqual(budget['missingInputs'], [])
                 self.assertEqual(budget['schema'], 'Microsoft.Consumption/budgets@2024-08-01')
                 self.assertEqual(budget['notification'], {'thresholdType': 'Actual', 'operator': 'GreaterThanOrEqualTo'})

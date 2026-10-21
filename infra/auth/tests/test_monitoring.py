@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import stat
 import subprocess
 import tempfile
 import unittest
@@ -60,13 +59,18 @@ class MonitoringTemplates(unittest.TestCase):
             ('memory-pressure', 'WorkingSetBytes', 'Average', 'GreaterThan', 429496729, 'PT15M')])
         self.assertEqual([(r['suffix'], r['column'], r['threshold'], r['frequency'], r['window']) for r in queries], [
             ('cleanup-observation', 'Alert', 0, 'PT5M', 'PT15M'), ('telemetry-volume', 'Bytes', 50000000, 'PT15M', 'P1D')])
+        self.assertEqual(metrics[0]['dimensions'], [dict(name='state', operator='Include', values=["[parameters('jobFailureState')]"])])
+        self.assertEqual(metrics[1]['dimensions'], [dict(name='statusCodeCategory', operator='Include', values=['5xx'])])
+        self.assertEqual(metrics[2]['dimensions'], [])
+        action = "[resourceId('Microsoft.Insights/actionGroups', format('{0}-alerts', parameters('appName')))]"
         for kind in ('Microsoft.Insights/metricAlerts', 'Microsoft.Insights/scheduledQueryRules'):
             rule = templates.resource(template, kind)
             self.assertEqual(rule['condition'], "[parameters('enableAlerts')]")
             criterion, = rule['properties']['criteria']['allOf']
-            self.assertNotIn('dimensions', criterion) if kind.endswith('scheduledQueryRules') else None
+            if kind.endswith('scheduledQueryRules'):
+                self.assertNotIn('dimensions', criterion)
             self.assertNotIn('overrideQueryTimeRange', rule['properties'])
-            self.assertTrue(rule['properties']['actions'])
+            self.assertEqual(rule['properties']['actions'], dict(actionGroups=[action]) if kind.endswith('scheduledQueryRules') else [dict(actionGroupId=action)])
         # Query execution and actual AppMetrics.Max mapping are root-hosted gates.
 
     def test_exact_scoped_publishers_and_only_two_cleanup_environment_additions(self):
@@ -74,7 +78,9 @@ class MonitoringTemplates(unittest.TestCase):
         assignments = rbac['resources']
         self.assertEqual(len(assignments), 2)
         self.assertEqual({r['type'] for r in assignments}, {'Microsoft.Authorization/roleAssignments'})
-        self.assertEqual(len({r['properties']['principalId'] for r in assignments}), 2)
+        self.assertEqual({r['properties']['principalId'] for r in assignments}, {
+            "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-" + suffix + "', parameters('appName'))), '2023-01-31').principalId]"
+            for suffix in ('runtime', 'cleanup')})
         for r in assignments:
             self.assertEqual(r['scope'], "[resourceId('Microsoft.Insights/components', format('{0}-insights', parameters('appName')))]")
             self.assertEqual(r['properties']['principalType'], 'ServicePrincipal')

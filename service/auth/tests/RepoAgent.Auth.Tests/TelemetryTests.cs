@@ -52,11 +52,14 @@ public sealed class TelemetryTests(ITestOutputHelper output)
         if (cursor is not null) Assert.Equal(cursor.Value, values["cursor_age_max_seconds"]); else Assert.DoesNotContain("cursor_age_max_seconds", values.Keys);
         if (cycle is not null) Assert.Equal(cycle.Value, values["cycle_age_max_seconds"]); else Assert.DoesNotContain("cycle_age_max_seconds", values.Keys);
         if (overdue is not null) Assert.Equal(overdue.Value, values["overdue_payload_age_max_seconds"]); else Assert.DoesNotContain("overdue_payload_age_max_seconds", values.Keys);
+        foreach (var e in capture.Envelopes.Where(e => e.GetProperty("data").GetProperty("baseData").GetProperty("metrics")[0].GetProperty("name").GetString() == "_OTELRESOURCE_"))
+            Assert.Equal(new[] { "service.instance.id", "service.name" }, e.GetProperty("data").GetProperty("baseData").GetProperty("properties").EnumerateObject().Select(p => p.Name).Order());
         foreach (var e in capture.Envelopes.Where(e => e.GetProperty("data").GetProperty("baseData").GetProperty("metrics")[0].GetProperty("name").GetString() != "_OTELRESOURCE_"))
         {
             var data = e.GetProperty("data").GetProperty("baseData");
             Assert.True(!data.TryGetProperty("properties", out var properties) || !properties.EnumerateObject().Any());
             Assert.Equal("repoagent-auth-cleanup", e.GetProperty("tags").GetProperty("ai.cloud.role").GetString());
+            Assert.Equal("repoagent-auth-cleanup", e.GetProperty("tags").GetProperty("ai.cloud.roleInstance").GetString());
         }
         output.WriteLine(JsonSerializer.Serialize(values));
     }
@@ -84,11 +87,15 @@ public sealed class TelemetryTests(ITestOutputHelper output)
         {
             services.PostConfigure<AzureMonitorExporterOptions>(o =>
             {
-                Assert.Equal(0.01f, o.SamplingRatio); Assert.Null(o.TracesPerSecond);
-                Assert.False(o.EnableTraceBasedLogsSampler); Assert.True(o.DisableOfflineStorage);
-                Assert.False(o.EnableLiveMetrics); Assert.False(o.EnableStandardMetrics); Assert.False(o.EnablePerformanceCounters);
-                Assert.Equal(0, o.Retry.MaxRetries); Assert.Equal(TimeSpan.FromSeconds(1), o.Retry.NetworkTimeout);
-                o.Credential = new TelemetryCapture.CaptureCredential(); o.Transport = new HttpClientTransport(exportClient); o.SamplingRatio = ratio;
+                if (scenario == "matched")
+                {
+                    Assert.Equal(0.01f, o.SamplingRatio); Assert.Null(o.TracesPerSecond);
+                    Assert.False(o.EnableTraceBasedLogsSampler); Assert.True(o.DisableOfflineStorage);
+                    Assert.False(o.EnableLiveMetrics); Assert.False(o.EnableStandardMetrics); Assert.False(o.EnablePerformanceCounters);
+                    Assert.Equal(0, o.Retry.MaxRetries); Assert.Equal(TimeSpan.FromSeconds(1), o.Retry.NetworkTimeout);
+                }
+                var transport = new HttpClientTransport(exportClient);
+                o.Credential = TelemetryCapture.Credential(transport); o.Transport = transport; o.SamplingRatio = ratio;
             });
             services.AddSingleton<IStartupFilter, HostileLogging>();
         }));
@@ -117,7 +124,7 @@ public sealed class TelemetryTests(ITestOutputHelper output)
         var envelopes = capture.Envelopes.ToArray(); Assert.NotEmpty(envelopes); output.WriteLine(JsonSerializer.Serialize(envelopes));
         foreach (var envelope in envelopes)
         {
-            foreach (var secret in new[] { "private-", "PrivateStackSentinel", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "127.0.0.1", "localhost" }) Assert.DoesNotContain(secret, envelope.GetRawText());
+            foreach (var secret in new[] { "private-", "PrivateStackSentinel", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "127.0.0.1", "localhost" }) Assert.All(Strings(envelope), value => Assert.DoesNotContain(secret, value));
             var tags = envelope.GetProperty("tags");
             Assert.Equal("repoagent-auth", tags.GetProperty("ai.cloud.role").GetString()); Assert.Equal("repoagent-auth", tags.GetProperty("ai.cloud.roleInstance").GetString());
             Assert.DoesNotContain(tags.EnumerateObject(), p => p.Name.StartsWith("ai.user", StringComparison.Ordinal) || p.Name.StartsWith("ai.session", StringComparison.Ordinal) || p.Name == "ai.location.ip");
@@ -127,9 +134,37 @@ public sealed class TelemetryTests(ITestOutputHelper output)
         Assert.True(logs.Length >= 5);
         Assert.True(logs.Count(e => e.GetProperty("data").GetProperty("baseData").GetProperty("message").GetString() == "Broker warning") >= 5);
         Assert.All(logs, e => Assert.Contains(e.GetProperty("data").GetProperty("baseData").GetProperty("message").GetString(), new[] { "Broker warning", "Broker error" }));
+        foreach (var log in logs.Select(e => e.GetProperty("data").GetProperty("baseData")))
+        {
+            Assert.Contains(log.GetProperty("severityLevel").GetString(), new[] { "Warning", "Error", "Critical" });
+            Assert.All(log.GetProperty("properties").EnumerateObject(), p => Assert.Contains(p.Name, new[] { "event.id", "origin", "CategoryName", "EventId" }));
+        }
+        var warnings = logs.Where(e => e.GetProperty("data").GetProperty("baseData").GetProperty("properties").GetProperty("origin").GetString() == "broker").ToArray();
+        Assert.Equal(5, warnings.Length);
+        foreach (var warning in warnings)
+        {
+            var tags = warning.GetProperty("tags");
+            Assert.True(tags.TryGetProperty("ai.operation.id", out var trace), "Warning must retain broker-owned correlation.");
+            Assert.True(tags.TryGetProperty("ai.operation.parentId", out var parent), "Warning must retain its broker-owned server span.");
+            Assert.Equal(32, trace.GetString()!.Length); Assert.Equal(16, parent.GetString()!.Length);
+        }
+        foreach (var request in requests)
+            Assert.Contains(warnings, warning => warning.GetProperty("tags").GetProperty("ai.operation.id").GetString() == request.GetProperty("tags").GetProperty("ai.operation.id").GetString()
+                && warning.GetProperty("tags").GetProperty("ai.operation.parentId").GetString() == request.GetProperty("data").GetProperty("baseData").GetProperty("id").GetString());
         Assert.DoesNotContain(envelopes, e => e.GetProperty("data").GetProperty("baseType").GetString() is "RemoteDependencyData" or "ExceptionData");
         if (ratio == 0 || scenario == "unexpected-event") Assert.Empty(requests);
-        else { Assert.Equal(3, requests.Length); Assert.All(requests, e => Assert.Equal(requestName, e.GetProperty("data").GetProperty("baseData").GetProperty("name").GetString())); }
+        else
+        {
+            Assert.Equal(3, requests.Length);
+            foreach (var e in requests)
+            {
+                var data = e.GetProperty("data").GetProperty("baseData");
+                Assert.Equal(requestName, data.GetProperty("name").GetString());
+                Assert.Equal(scenario == "unmatched" ? "404" : "401", data.GetProperty("responseCode").GetString());
+                Assert.True(TimeSpan.Parse(data.GetProperty("duration").GetString()!) >= TimeSpan.Zero);
+                Assert.True(e.GetProperty("time").GetDateTimeOffset() > DateTimeOffset.UnixEpoch);
+            }
+        }
 
     }
     [Fact]
@@ -176,6 +211,14 @@ public sealed class TelemetryTests(ITestOutputHelper output)
         var counts = (identity.Count, ingestion.Count); await Task.Delay(250, Token); Assert.Equal(counts, (identity.Count, ingestion.Count));
         Assert.Empty(directory.EnumerateFileSystemInfos("*", SearchOption.AllDirectories)); directory.Delete(true);
     }
+    private static IEnumerable<string> Strings(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.String) yield return value.GetString()!;
+        else if (value.ValueKind == JsonValueKind.Object)
+            foreach (var property in value.EnumerateObject()) foreach (var text in Strings(property.Value)) yield return text;
+        else if (value.ValueKind == JsonValueKind.Array)
+            foreach (var item in value.EnumerateArray()) foreach (var text in Strings(item)) yield return text;
+    }
     private async Task RunChild(string method, string key, string value, int seconds)
     {
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
@@ -207,13 +250,14 @@ public sealed class TelemetryTests(ITestOutputHelper output)
                 }
                 logger.LogInformation("private-info"); logger.LogDebug("private-debug");
                 try { PrivateStackSentinel(); }
-                catch (InvalidOperationException ex) { logger.LogWarning(ex, "private-body {Secret}", "private-state"); }
+                catch (InvalidOperationException ex) { logger.LogWarning(new EventId(7, "private-event-name"), ex, "private-body {Secret}", "private-state"); }
                 using var server = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0); server.Start();
                 using var dependency = new HttpClient(new HttpClientHandler { UseProxy = false });
                 var send = dependency.GetAsync("http://" + server.LocalEndpoint + "/private-dependency", context.RequestAborted);
                 using var connection = await server.AcceptTcpClientAsync(context.RequestAborted);
                 await connection.GetStream().WriteAsync("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"u8.ToArray(), context.RequestAborted);
                 using var response = await send;
+                Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
                 await run(context);
             });
             next(app);

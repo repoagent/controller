@@ -8,16 +8,36 @@ using System.Text;
 using System.Text.Json;
 using Azure.Core;
 using Azure.Core.Pipeline;
+using Azure.Identity;
 using Azure.Monitor.OpenTelemetry.Exporter;
 
 namespace RepoAgent.Auth.Tests;
 
-// Replace only the remote ingestion boundary; retain final SDK serialization.
+// Remote identity/ingestion responses; retain the real SDK credential and final serialization.
 internal sealed class TelemetryCapture : HttpMessageHandler
 {
     internal readonly ConcurrentQueue<JsonElement> Envelopes = new();
+    private readonly string? previousEndpoint = Environment.GetEnvironmentVariable("IDENTITY_ENDPOINT");
+    private readonly string? previousHeader = Environment.GetEnvironmentVariable("IDENTITY_HEADER");
+    internal TelemetryCapture()
+    {
+        Environment.SetEnvironmentVariable("IDENTITY_ENDPOINT", "http://127.0.0.1/identity");
+        Environment.SetEnvironmentVariable("IDENTITY_HEADER", "synthetic-capture-header");
+    }
+    protected override void Dispose(bool disposing)
+    {
+        Environment.SetEnvironmentVariable("IDENTITY_ENDPOINT", previousEndpoint);
+        Environment.SetEnvironmentVariable("IDENTITY_HEADER", previousHeader);
+        base.Dispose(disposing);
+    }
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
     {
+        if (request.RequestUri!.Scheme == "http")
+            return new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(new
+            {
+                access_token = "synthetic-capture-token", expires_in = "3600", expires_on = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds().ToString(),
+                resource = "https://monitor.azure.com", token_type = "Bearer", client_id = "11111111-1111-1111-1111-111111111111"
+            }), Encoding.UTF8, "application/json") };
         foreach (var line in (await request.Content!.ReadAsStringAsync(token)).Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             using var json = JsonDocument.Parse(line);
@@ -29,16 +49,19 @@ internal sealed class TelemetryCapture : HttpMessageHandler
     }
     internal const string ConnectionForCli = "InstrumentationKey=22222222-2222-2222-2222-222222222222;IngestionEndpoint=https://test.in.applicationinsights.azure.com/";
     internal readonly string Connection = $"InstrumentationKey={Guid.NewGuid()};IngestionEndpoint=https://local.in.applicationinsights.azure.com/";
-    internal AzureMonitorExporterOptions Options(HttpClient client) => new()
+    internal AzureMonitorExporterOptions Options(HttpClient client)
     {
-        ConnectionString = Connection, Credential = new CaptureCredential(), Transport = new HttpClientTransport(client),
-        DisableOfflineStorage = true, EnableLiveMetrics = false, EnableStandardMetrics = false, EnablePerformanceCounters = false
-    };
-    internal sealed class CaptureCredential : TokenCredential
-    {
-        public override AccessToken GetToken(TokenRequestContext context, CancellationToken token) => new("synthetic", DateTimeOffset.UtcNow.AddHours(1));
-        public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext context, CancellationToken token) => ValueTask.FromResult(GetToken(context, token));
+        var transport = new HttpClientTransport(client);
+        return new()
+        {
+            ConnectionString = Connection, Credential = Credential(transport), Transport = transport,
+            DisableOfflineStorage = true, EnableLiveMetrics = false, EnableStandardMetrics = false, EnablePerformanceCounters = false
+        };
     }
+    internal static TokenCredential Credential(HttpClientTransport transport) => new ManagedIdentityCredential(
+        new ManagedIdentityCredentialOptions(ManagedIdentityId.FromUserAssignedClientId("11111111-1111-1111-1111-111111111111"))
+        { Transport = transport, Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(1) } });
+
 }
 
 // Finite native TCP/TLS endpoints. Trust is restricted to one fixture certificate.

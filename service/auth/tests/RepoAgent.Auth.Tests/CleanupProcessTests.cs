@@ -212,7 +212,10 @@ public sealed partial class CleanupProcessTests(ITestOutputHelper output)
             ["Broker__ManagedIdentityClientId"] = "11111111-1111-1111-1111-111111111111",
             ["IDENTITY_ENDPOINT"] = $"http://127.0.0.1:{identity.Port}/token", ["IDENTITY_HEADER"] = "synthetic-cli"
         };
-        string[]? schema = null;
+        var schema = new[] { "processedAllocations", "deletedRowsObserved", "payloadFieldsRemovedObserved", "unsettledAllocationsObserved", "failures", "conflicts",
+            "incompleteCoverage", "stopReason", "logicalQueryPages", "sdkTableDispatches", "sdkBatchDispatches", "reviewedHttp11Envelope", "elapsedMilliseconds",
+            "oldestObservedOverduePayloadAt", "oldestObservedOverduePayloadAgeSeconds", "unknownDeadlineCount", "cursorAndCycleAges" }.Order().ToArray();
+        JsonElement? baseline = null;
         foreach (var mode in new[] { "disabled", "malformed", "unavailable", "table-failure" })
         {
             await using var storage = new RevocationFixture(); await storage.InitializeAsync();
@@ -224,7 +227,13 @@ public sealed partial class CleanupProcessTests(ITestOutputHelper output)
             var result = await CleanupProcessFixture.RunAsync(storage, proxy.Endpoint, environment: environment);
             Assert.Equal(mode == "table-failure" ? 1 : 0, result.Exit);
             var properties = result.Summary.EnumerateObject().Select(p => p.Name).Order().ToArray();
-            schema ??= properties; Assert.Equal(schema, properties);
+            Assert.Equal(schema, properties);
+            if (mode != "table-failure")
+            {
+                baseline ??= result.Summary;
+                foreach (var field in new[] { "processedAllocations", "deletedRowsObserved", "payloadFieldsRemovedObserved", "unsettledAllocationsObserved", "failures", "conflicts", "logicalQueryPages", "sdkTableDispatches", "sdkBatchDispatches" })
+                    Assert.Equal(baseline.Value.GetProperty(field).GetInt32(), result.Summary.GetProperty(field).GetInt32());
+            }
             AssertSdkAccounting(result.Summary);
             Assert.InRange(proxy.Requests.Count, 1, result.Summary.GetProperty("reviewedHttp11Envelope").GetProperty("tableRequestUpperBound").GetInt32());
             Assert.DoesNotContain(proxy.Requests, r => r.Path.Contains("blob", StringComparison.OrdinalIgnoreCase) || r.Path.Contains("keys", StringComparison.OrdinalIgnoreCase));

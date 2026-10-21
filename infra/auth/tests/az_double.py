@@ -18,7 +18,7 @@ import tty
 args = sys.argv[1:]
 scenario = json.loads(Path(os.environ['AZ_DOUBLE_SCENARIO']).read_text())
 record = {'args': args}
-command = ' '.join(args[:3]) if args[0] == 'deployment' or args[:2] in (['containerapp', 'revision'], ['containerapp', 'replica']) else ' '.join(args[:2])
+command = ' '.join(args[:3]) if args[0] == 'deployment' or args[:2] in (['containerapp', 'revision'], ['containerapp', 'replica'], ['role', 'assignment']) else ' '.join(args[:2])
 terminal_error = None
 if command == 'containerapp exec':
     # Azure CLI's Unix exec transport requires terminal stdin even in CI.

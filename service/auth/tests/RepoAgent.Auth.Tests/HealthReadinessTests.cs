@@ -39,7 +39,11 @@ public sealed class HealthReadinessTests(ITestOutputHelper testOutput)
         };
         start.ArgumentList.Add(typeof(Program).Assembly.Location);
         start.ArgumentList.Add("--urls");
-        start.ArgumentList.Add("http://127.0.0.1:0");
+        using var reservation = new TcpListener(IPAddress.Loopback, 0);
+        reservation.Start();
+        var address = "http://" + reservation.LocalEndpoint;
+        reservation.Stop();
+        start.ArgumentList.Add(address);
         foreach (var (name, value) in new Dictionary<string, string>
         {
             ["ASPNETCORE_ENVIRONMENT"] = "Production",
@@ -67,33 +71,31 @@ public sealed class HealthReadinessTests(ITestOutputHelper testOutput)
         if (scenario == "bad-partial-wrapping") start.Environment["Auth__DataProtectionKeyUri"] = "http://invalid.test";
         using var process = Process.Start(start)!;
         var errors = process.StandardError.ReadToEndAsync(deadline.Token);
-        var output = new StringBuilder();
+        var output = process.StandardOutput.ReadToEndAsync(deadline.Token);
         try
         {
-            string? address = null;
-            while (await process.StandardOutput.ReadLineAsync(deadline.Token) is { } line)
-            {
-                output.AppendLine(line);
-                const string listening = "Now listening on: ";
-                var offset = line.IndexOf(listening, StringComparison.Ordinal);
-                if (offset < 0) continue;
-                address = line[(offset + listening.Length)..].Trim();
-                break;
-            }
+            using var client = new HttpClient(new HttpClientHandler { UseProxy = false }) { BaseAddress = new Uri(address) };
             if ((int)expected == 0)
             {
-                Assert.Null(address);
                 await process.WaitForExitAsync(deadline.Token);
                 Assert.NotEqual(0, process.ExitCode);
+                await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync("/health/live", deadline.Token));
                 return;
             }
-            if (address is null)
-                Assert.Fail($"Application did not start. {output} {await errors}");
-            using var client = new HttpClient { BaseAddress = new Uri(address!) };
-            using var live = await client.GetAsync("/health/live", deadline.Token);
-            Assert.Equal(HttpStatusCode.OK, live.StatusCode);
-            await AssertGenericResponseAsync(live);
-            // Normal hosted Data Protection preload has completed before Kestrel reports listening.
+            // Observe the real HTTP listener, independently of the configured log level.
+            while (true)
+            {
+                if (process.HasExited) Assert.Fail($"Application exited before liveness. {await output} {await errors}");
+                try
+                {
+                    using var live = await client.GetAsync("/health/live", deadline.Token);
+                    Assert.Equal(HttpStatusCode.OK, live.StatusCode);
+                    await AssertGenericResponseAsync(live);
+                    break;
+                }
+                catch (HttpRequestException) { await Task.Delay(25, deadline.Token); }
+            }
+            // Normal hosted Data Protection preload has completed before Kestrel serves liveness.
             var startupRequests = Volatile.Read(ref outboundRequests);
             if (scenario is null or "missing-origin") Assert.True(startupRequests > 0);
             for (var repeat = 0; repeat < 3; repeat++) await ProbeAsync();
@@ -120,9 +122,9 @@ public sealed class HealthReadinessTests(ITestOutputHelper testOutput)
         }
         finally
         {
-            testOutput.WriteLine(output.ToString());
             if (!process.HasExited) process.Kill(entireProcessTree: true);
             await process.WaitForExitAsync(CancellationToken.None);
+            if (output.IsCompletedSuccessfully) testOutput.WriteLine(await output);
             await deadline.CancelAsync();
             identity.Stop();
             try { await identityRequests; }

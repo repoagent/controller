@@ -254,7 +254,9 @@ class ActivationProcessTests(unittest.TestCase):
 
     def test_foundation_apply_requires_every_manifest_resource_freshly_present(self):
         baseline = copy.deepcopy(self.scenario)
-        resources = [resource_id for resource_id in baseline['resources'] if resource_id != APP_ID]
+        resources = [resource_id for resource_id, value in baseline['resources'].items()
+                     if resource_id != APP_ID and resource_id != deployment_tests.INSIGHTS_ID
+                     and value.get('tags', {}).get('role') != 'auth-cleanup-identity']
         identity = SCOPE + '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-runtime'
         self.assertIn(identity, resources)
         for missing in (None, identity, *(resource_id for resource_id in resources if resource_id != identity)):
