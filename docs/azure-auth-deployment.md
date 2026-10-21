@@ -6,7 +6,7 @@ The maintainer-operated [credential broker](../GLOSSARY.md) will run as an Azure
 
 Verified on 2026-10-20: the resource group contains one user-assigned managed identity, `id-controller-auth-github`. GitHub Actions can authenticate as this identity using OIDC and execute resource-group Bicep deployments. The subscription has `Microsoft.ManagedIdentity` and `Microsoft.App` registered.
 
-The Container App, its environment, image registry, runtime identity, durable store and signing-key resources have not been provisioned. There is no deployed authentication endpoint or automatic image/revision deployment yet. Storage, signing and hosted acceptance requirements remain in the [operations research](research/2026-10-20-azure-auth-service-operations.md) and [existing security ADR](adr/0001-keep-the-shared-app-key-out-of-controller-installations.md).
+The Container App, its environment, image registry, runtime identity, durable store and signing-key resources have not been provisioned. There is no deployed authentication endpoint. Automatic verification, image publication and revision deployment source already exists; live provisioning and acceptance remain unperformed. Storage, signing and hosted acceptance requirements remain in the [operations research](research/2026-10-20-azure-auth-service-operations.md) and [existing security ADR](adr/0001-keep-the-shared-app-key-out-of-controller-installations.md).
 
 ## Azure and GitHub configuration
 
@@ -40,16 +40,16 @@ The subject includes the permanent GitHub owner and repository IDs returned by t
 
 Azure Login exchanges the GitHub token for Azure access; this setup stores no Azure client secret in GitHub. Keep this deployment identity separate from the future broker runtime identity and its signing/data permissions.
 
-## Verification workflow
+## Verification and delivery workflow
 
-[`ci-auth-service.yml`](../.github/workflows/ci-auth-service.yml), displayed as **Auth service CI**, is currently a manually dispatched access check. Its job runs only on `main`, grants `contents: read` and `id-token: write`, and uses Azure Login with the repository variables above. It checks the resource group's location, then executes an incremental deployment of [`verify-access.bicep`](../infra/auth/verify-access.bicep).
+[`ci-auth-service.yml`](../.github/workflows/ci-auth-service.yml), **Auth service CI**, verifies service and infrastructure changes on pull requests and `main`. Its full delivery path verifies the service against pinned Azurite, compiles and tests Bicep, publishes an immutable auth image after the existing public-registry/readiness gates, applies guarded runtime infrastructure, and verifies the intended image and ready revision. Publication and deployment run only on `main`; deployment uses the existing branch OIDC identity with `contents: read` and `id-token: write`. No GitHub environment is introduced.
 
-The Bicep template declares no resources. It outputs the resource-group ID and location, leaving a deployment record named `github-oidc-<run-id>-<attempt>`. A successful run proves GitHub OIDC login and resource-group deployment access; it does not prove Container App provisioning, image publication, revision rollout or broker behavior.
+Manual `operation=access-check` retains the original outputs-only [`verify-access.bicep`](../infra/auth/verify-access.bicep) check. It verifies the resource-group location and records an incremental deployment named `github-oidc-<run-id>-<attempt>`. Its success proves OIDC login and deployment access, not service provisioning or broker acceptance. Manual `operation=deploy` selects full delivery. [`deploy-auth.yml`](../.github/workflows/deploy-auth.yml) updates an existing app to an approved immutable digest for deployment or rollback, preserving its acceptance gate.
 
-Run it again from an authenticated GitHub CLI:
+For a separately authorized access check:
 
 ```sh
-gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main
+gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main -f operation=access-check
 gh run list --repo repoagent/controller --workflow ci-auth-service.yml --limit 5
 gh run watch <run-id> --repo repoagent/controller --exit-status
 ```
@@ -78,9 +78,9 @@ The host needs GitHub-authorized Agent-variable write access; only the broker's 
 
 The guarded Bicep foundation, runtime gates, operator-only permission template and local verification commands are documented in [authentication infrastructure](auth-infrastructure.md). They are source artifacts; no foundation or runtime apply has been performed.
 
-The intended delivery flow is to test and build the authentication service when its code or deployment configuration changes on `main`, publish an immutable image, deploy the required resources with Bicep into the existing resource group, and deploy and verify a Container App revision. Reuse this OIDC login and resource-group boundary. The manual bootstrap workflow is the current access check, not that delivery pipeline.
+The automatic delivery source described above reuses the OIDC login and resource-group boundary. Its existing public image and hosted-readiness prerequisites still gate first activation; this runbook does not claim a staged activation path is delivered. Source scripts and local verification are not cloud evidence.
 
-Implement the service resources, runtime permissions, image publication, rollout/rollback and hosted acceptance before reporting the service as available. The existing [delivery slices](research/2026-10-20-auth-delivery-slices.md#delivery-sequence-and-exit-criteria) and operations research retain those requirements; this bootstrap does not settle their open storage or authorization decisions.
+Provision resources and runtime permissions through separately authorized operations, then prove image publication, rollout/rollback and hosted acceptance before reporting the service as available. The existing [delivery slices](research/2026-10-20-auth-delivery-slices.md#delivery-sequence-and-exit-criteria) and operations research retain those requirements; this bootstrap does not settle their open storage or authorization decisions.
 
 ## Bootstrap history
 

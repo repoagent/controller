@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -19,6 +20,34 @@ def resource(template, kind):
     if len(matches) != 1:
         raise AssertionError(f'Expected one {kind}, got {len(matches)}')
     return matches[0]
+
+
+def owned_origin_expression(template, expression):
+    """Normalize only the origin's variable, interpolation and concatenation spellings."""
+    def expand(value):
+        value = value.removeprefix('[').removesuffix(']')
+        for _ in range(len(template.get('variables', {})) + 1):
+            expanded = re.sub(r"variables\('([^']+)'\)",
+                              lambda match: template['variables'][match[1]].removeprefix('[').removesuffix(']'), value)
+            if expanded == value:
+                if "variables(" in expanded:
+                    raise AssertionError('Unresolved origin variable')
+                return expanded
+            value = expanded
+        raise AssertionError('Cyclic origin variables')
+
+    def environment_name(value):
+        return expand(value).replace("format('{0}-environment', parameters('appName'))",
+                                     "concat(parameters('appName'), '-environment')")
+
+    environment = resource(template, 'Microsoft.App/managedEnvironments')
+    expression = environment_name(expression)
+    owned_domain = (r"reference\(resourceId\('Microsoft.App/managedEnvironments', "
+                    + re.escape(environment_name(environment['name']))
+                    + r"\), '[^']+'\)\.defaultDomain")
+    expression = re.sub(owned_domain, 'OWNED_ENVIRONMENT_DOMAIN', expression)
+    return expression.replace("format('https://{0}.{1}', parameters('appName'), OWNED_ENVIRONMENT_DOMAIN)",
+                              "concat('https://', parameters('appName'), '.', OWNED_ENVIRONMENT_DOMAIN)")
 
 
 class CompiledDeploymentContractTests(unittest.TestCase):
@@ -57,12 +86,24 @@ class CompiledDeploymentContractTests(unittest.TestCase):
         self.assertFalse(any(item['type'].startswith('Microsoft.Authorization/') for item in template['resources']))
         self.assertFalse(any(item['type'].startswith('Microsoft.Consumption/') for item in template['resources']))
 
+    def test_runtime_origin_binds_owned_environment_domain_and_is_output(self):
+        template = self.templates['main']
+        app = resource(template, 'Microsoft.App/containerApps')
+        env = {entry['name']: entry['value']
+               for entry in app['properties']['template']['containers'][0]['env']}
+        self.assertIn('Broker__BrokerOrigin', env)
+        self.assertEqual(app['name'], "[parameters('appName')]")
+        expected = "concat('https://', parameters('appName'), '.', OWNED_ENVIRONMENT_DOMAIN)"
+        for expression in (env['Broker__BrokerOrigin'], template['outputs']['brokerOrigin']['value']):
+            self.assertEqual(owned_origin_expression(template, expression), expected)
+
     def test_container_binds_exact_production_table_identity_epoch_and_http_options(self):
         template = self.templates['main']
         app = resource(template, 'Microsoft.App/containerApps')
         container = app['properties']['template']['containers'][0]
         env = {entry['name']: entry['value'] for entry in container['env']}
         self.assertEqual({name: value for name, value in env.items() if name.startswith('Broker__')}, {
+            'Broker__BrokerOrigin': env['Broker__BrokerOrigin'],
             'Broker__TableEndpoint': "[reference(resourceId('Microsoft.Storage/storageAccounts', parameters('storageName')), '2023-05-01').primaryEndpoints.table]",
             'Broker__TableName': "[parameters('tableName')]",
             'Broker__DeploymentEpoch': "[parameters('deploymentEpoch')]",
