@@ -4,9 +4,9 @@ The maintainer-operated [credential broker](../GLOSSARY.md) will run as an Azure
 
 ## Current state
 
-Verified on 2026-10-20: the resource group contains one user-assigned managed identity, `id-controller-auth-github`. GitHub Actions can authenticate as this identity using OIDC and execute resource-group Bicep deployments. The subscription has `Microsoft.ManagedIdentity` and `Microsoft.App` registered.
+Verified on 2026-10-21: the foundation is provisioned through the reviewed `main.bicep`: environment `repoagent-auth-environment`, log workspace `repoagent-auth-logs`, runtime identity `repoagent-auth-runtime`, storage account `repoagentauth` and vault `repoagent-auth-kv`. Signing and wrapping keys and narrowly scoped runtime grants are provisioned. The deployment identity `id-controller-auth-github` and its GitHub OIDC trust remain unchanged.
 
-The Container App, its environment, image registry, runtime identity, durable store and signing-key resources have not been provisioned. There is no deployed authentication endpoint. Automatic verification, image publication and revision deployment source already exists; live provisioning and acceptance remain unperformed. Storage, signing and hosted acceptance requirements remain in the [operations research](research/2026-10-20-azure-auth-service-operations.md) and [existing security ADR](adr/0001-keep-the-shared-app-key-out-of-controller-installations.md).
+No auth image, Container App, authentication endpoint or cleanup job is deployed; hosted acceptance remains open. Automatic verification, image publication and revision deployment source exists. Prior resource retirement is tracked separately and is not established by this foundation setup. Storage, signing and hosted acceptance requirements remain in the [operations research](research/2026-10-20-azure-auth-service-operations.md) and [existing security ADR](adr/0001-keep-the-shared-app-key-out-of-controller-installations.md).
 
 ## Azure and GitHub configuration
 
@@ -83,7 +83,7 @@ The existing workflow has one shared main-only activation route: `foundation-pla
 The deployment helper allows `az deployment group create` up to 20 minutes within the existing 40-minute activation job; ordinary Azure queries retain their 120-second limit. An explicit operation deadline takes precedence over either allowance. A subprocess timeout leaves the resource operation unconfirmed: ARM may continue after the CLI exits. Inspect the actual ARM deployment state before deciding whether to retry; the helper does not automatically retry or assume rollback.
 
 1. Select and retain stable `AUTH_APP_NAME`, required `AUTH_STORAGE_ACCOUNT_NAME` and `AUTH_KEY_VAULT_NAME`, dedicated Table name, external restore epoch and distinct signing/wrapping key names. Supply the names as repository variables for the workflow and environment variables for local commands, using the [naming constraints](auth-infrastructure.md#guarded-entrypoints). Inspect the selected destination/configuration with authorized operator access; establish cost, cleanup and recovery ownership. Local `infra/auth/deploy.sh foundation-check` validates the selected names and reports references without Azure calls. Existing deployments must explicitly retain their current names; changing destinations needs a separate operator cutover and never establishes that old data is empty. Global name collisions fail without fallback or adoption.
-2. Plan/apply foundation through the working OIDC route (the available local Azure session cannot select this subscription):
+2. Plan/apply foundation through the working OIDC route:
 
    ```sh
    gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
