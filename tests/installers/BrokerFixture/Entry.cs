@@ -56,7 +56,7 @@ internal static class Entry
             // Restart never creates, seeds, resets or blesses an existing table.
             Record(new { activation="resume-existing-fixture-table", tableName });
         } else throw new InvalidOperationException("Explicit fixture table lifecycle required.");
-        var origin = "https://localhost:" + port;
+        var origin = Environment.GetEnvironmentVariable("HOST_ENROLLMENT_FIXTURE_ORIGIN") ?? "https://localhost:" + port;
         var github = new GitHubBoundary();
         await using var factory = new BrokerFactory().WithWebHostBuilder(builder =>
         {
@@ -76,7 +76,8 @@ internal static class Entry
             });
         });
         using var certificate = X509CertificateLoader.LoadPkcs12FromFile(Path.Combine(DirectoryPath,"cert.pfx"), "test-only");
-        factory.UseKestrel(options => options.Listen(IPAddress.Loopback, port, listen => listen.UseHttps(certificate)));
+        var bind = Environment.GetEnvironmentVariable("HOST_ENROLLMENT_FIXTURE_BIND") is { } address ? IPAddress.Parse(address) : IPAddress.Loopback;
+        factory.UseKestrel(options => options.Listen(bind, port, listen => listen.UseHttps(certificate)));
         factory.StartServer();
         Console.WriteLine("READY"); Console.Out.Flush();
         var command = await Console.In.ReadLineAsync();
@@ -110,7 +111,7 @@ internal sealed class Observation : IStartupFilter
                 if (!File.Exists(fault)) { File.WriteAllText(fault,"observed"); Entry.Record(new { path, status=0, receiptBeforeAck=true }); context.Abort(); return; }
             }
             await following();
-            Entry.Record(new { path, status=context.Response.StatusCode });
+            Entry.Record(new { path, status=context.Response.StatusCode, retryAfter=context.Response.Headers.RetryAfter.ToString() });
             if (path.EndsWith("/installation-token") || path.EndsWith("/completion") || path.EndsWith("/acknowledgment")) {
                 var table = context.RequestServices.GetRequiredService<TableClient>();
                 foreach (var partition in new[] { "global:issuance-v1", "repository:123" }) {
@@ -119,10 +120,14 @@ internal sealed class Observation : IStartupFilter
                         observedAt=DateTimeOffset.UtcNow, counters=quota.Value.Where(p=>p.Key is "Window" or "Admissions" or "Reads" or "Signs" or "Mints" or "Slots").ToDictionary(p=>p.Key,p=>p.Value) });
                 }
             }
-            if (context.Response.StatusCode == 429 && path.EndsWith("/completion")) {
-                var pendingId = path.Split('/')[3];
-                var parts = pendingId.Split('_', 2);
+            if (context.Response.StatusCode == 429 && (path.EndsWith("/completion") || path.EndsWith("/acknowledgment"))) {
                 var table = context.RequestServices.GetRequiredService<TableClient>();
+                var pendingId = path.Split('/')[3];
+                if (path.EndsWith("/acknowledgment")) {
+                    var locator = (await table.GetEntityAsync<TableEntity>("locator:" + pendingId, "locator")).Value;
+                    pendingId = locator.GetString("PendingId") ?? throw new InvalidOperationException("Missing acknowledged device locator.");
+                }
+                var parts = pendingId.Split('_', 2);
                 var row = (await table.GetEntityAsync<TableEntity>("repository:"+parts[0], "pending:"+parts[1])).Value;
                 using var recovery = JsonDocument.Parse(File.ReadAllText(Path.Combine(state,"recovery.json")));
                 Entry.Record(new { floorObservation=true, arrivedAt,

@@ -58,7 +58,8 @@ class InstallerTests(unittest.TestCase):
                 command.append('--non-interactive')
         else:
             command = ['pwsh', '-NoLogo', '-NoProfile', '-File', str(ROOT / 'install.ps1'),
-                       '-AppId', '123456', '-KeyPath', str(key), '-Instance', 'sample']
+                       '-AppId', '123456', '-KeyPath', str(key), '-Instance', 'sample',
+                       '-StateDirectory', str(directory / 'private-state'), '-Apply']
             if not prompt_for_repository:
                 command += ['-Repository', 'example/project']
             if not interactive:
@@ -67,6 +68,21 @@ class InstallerTests(unittest.TestCase):
         answers = ''
         if interactive:
             answers = ('\n' if shell == 'bash' else '') + ('example/project\n' if prompt_for_repository else '') + '\n' * 24
+        if shell != 'bash' and state and state.get('settings'):
+            # Arrange persisted launch choices through the public installer, not
+            # a hand-authored launch schema or a container-only get stub.
+            saved_command = list(command)
+            if '-NoStart' not in saved_command:
+                saved_command.append('-NoStart')
+            names = {'mode': 'Mode', 'publicUrl': 'PublicUrl', 'listenPort': 'ListenPort',
+                     'reconcileInterval': 'ReconcileInterval', 'model': 'Model',
+                     'toolUpdates': 'ToolUpdates', 'webSearch': 'WebSearch', 'mentionUser': 'MentionUser'}
+            for field, name in names.items():
+                if field in state['settings']:
+                    saved_command += ['-' + name, str(state['settings'][field])]
+            arranged = subprocess.run(saved_command, input='', text=True, capture_output=True,
+                env=environment, cwd=directory, timeout=30)
+            self.assertEqual(arranged.returncode, 0, arranged.stdout + arranged.stderr)
         result = subprocess.run(command, input=answers, text=True,
                                 capture_output=True, env=environment, cwd=directory, timeout=30)
         observed = json.loads(state_path.read_text()) if state_path.exists() else None
@@ -104,7 +120,8 @@ class InstallerTests(unittest.TestCase):
             with self.subTest(shell=shell):
                 flags = ['--skip-build', '--device-login'] if shell == 'bash' else ['-SkipBuild', '-DeviceLogin']
                 initial = {'settings': {}, 'events': [], 'authenticated': True, 'running': False}
-                result, state, _ = self.run_installer(shell, arguments=flags, state=initial)
+                result, state, _ = self.run_installer(shell, arguments=flags, state=initial,
+                    interactive=(shell == 'powershell'))
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertFalse(any(event[0] == 'build' for event in state['events']))
                 self.assertFalse(any('--entrypoint' in event and '/usr/bin/python3' in event for event in state['events']))
@@ -146,7 +163,9 @@ class InstallerTests(unittest.TestCase):
             with self.subTest(shell=shell):
                 result, state, _ = self.run_installer(shell, auth=False)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn('No valid container Codex sign-in', result.stdout + result.stderr)
+                expected = 'No valid container Codex sign-in' if shell == 'bash' else 'CodexAuthPath'
+                self.assertIn(expected, result.stdout + result.stderr)
+                self.assertFalse(any(event[-1:] == ['login'] for event in state['events']))
                 self.assertFalse(state['running'])
 
     def test_running_agent_is_not_reconfigured_or_rebuilt(self):

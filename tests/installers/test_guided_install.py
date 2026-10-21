@@ -44,12 +44,23 @@ class GuidedInstallTests(unittest.TestCase):
 
     def setUp(self):
         self.journey = host.EnrollmentJourney(self, variable='APPROVED_CONTROLLER')
-        self.owned = self.journey.directory / 'operator'
-        self.owned.mkdir(mode=0o700)
+        self.directory = self.journey.directory
+        if os.name == 'nt':
+            # #73's checked reader also validates all native ancestors. Shared
+            # TEMP may grant other accounts delete rights; use LOCALAPPDATA.
+            import tempfile
+            self.owned = Path(self.enterContext(tempfile.TemporaryDirectory(
+                prefix='guided private ', dir=Path(os.environ['LOCALAPPDATA']).resolve())))
+            runtime.PrivateRuntimeTests.set_windows_private_acl(self, self.owned, directory=True)
+        else:
+            self.owned = self.journey.directory / 'operator'
+            self.owned.mkdir(mode=0o700)
         self.journey.state = self.owned / 'guided-red'
         self.auth = self.owned / 'auth.json'
         self.auth.write_text(json.dumps({'OPENAI_API_KEY': 'GUIDED-FAKE-CODEX-CREDENTIAL'}))
         self.auth.chmod(0o600)
+        if os.name == 'nt':
+            runtime.PrivateRuntimeTests.set_windows_private_acl(self, self.auth)
         self.docker_state = self.journey.directory / 'docker-state.json'
         if self.native:
             for artifact in self.docker_build.iterdir():
