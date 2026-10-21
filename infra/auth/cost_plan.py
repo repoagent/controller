@@ -60,7 +60,7 @@ def budget_plan(scope):
                 len(set(thresholds)) != len(thresholds)):
             raise ValueError("Budget thresholds must contain 1-5 distinct integer percentages above 0 and at most 1000")
     return {"scope": scope, "schema": "Microsoft.Consumption/budgets@2024-08-01",
-            "inputs": inputs, "missingInputs": missing,
+            "inputs": {key: value for key, value in inputs.items() if key != "contactEmails"}, "missingInputs": missing,
             "billingEligibility": "unknown", "readyToApply": False,
             "preApplyGates": ["Verify selected subscription billing offer supports resource-group budgets",
                               "Verify currency, date horizon/current-period constraints and recipient/action-group ownership with the operator",
@@ -75,7 +75,9 @@ def cleanup_capacity():
             "parallelism": 1, "replicaCompletionCount": 1, "replicaRetryLimit": 0,
             "replicaTimeoutSeconds": 90, "cpu": 0.25, "memory": "0.5Gi",
             "nominalReplicaSecondsPerDay": 129600, "nominalVcpuSecondsPerDay": 32400,
-            "nominalGiBSecondsPerDay": 64800, "logRetentionDays": 30, "logDailyQuotaGb": 1,
+            "nominalGiBSecondsPerDay": 64800, "logRetentionDays": 30, "logDailyQuotaGb": 0.1,
+            "telemetryAdditionalSeconds": 5, "consoleDestination": "none",
+            "telemetryTraffic": "Identity and ingestion are additional to the Table wire envelope",
             "processSeconds": 60, "sdkTableDispatches": 128, "sdkBatchDispatches": 32,
             "logicalQueryPages": 16, "entitiesPerPage": 32, "turnAdmissionDispatches": 40,
             "turnAdmissionBatches": 8, "nominalDailySdkTableDispatches": 184320,

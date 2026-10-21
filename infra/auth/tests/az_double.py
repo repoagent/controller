@@ -18,7 +18,7 @@ import tty
 args = sys.argv[1:]
 scenario = json.loads(Path(os.environ['AZ_DOUBLE_SCENARIO']).read_text())
 record = {'args': args}
-command = ' '.join(args[:3]) if args[0] == 'deployment' or args[:2] in (['containerapp', 'revision'], ['containerapp', 'replica']) else ' '.join(args[:2])
+command = ' '.join(args[:3]) if args[0] == 'deployment' or args[:2] in (['containerapp', 'revision'], ['containerapp', 'replica'], ['role', 'assignment']) else ' '.join(args[:2])
 terminal_error = None
 if command == 'containerapp exec':
     # Azure CLI's Unix exec transport requires terminal stdin even in CI.
@@ -44,6 +44,7 @@ if command == 'containerapp exec':
 if '--template-file' in args:
     record['template'] = json.loads(Path(args[args.index('--template-file') + 1]).read_text())
 if '--parameters' in args:
+    record['parameterMode'] = Path(args[args.index('--parameters') + 1].removeprefix('@')).stat().st_mode & 0o777
     record['parameters'] = json.loads(Path(args[args.index('--parameters') + 1].removeprefix('@')).read_text())
 def journal():
     with open(os.environ['AZ_DOUBLE_JOURNAL'], 'a') as stream:

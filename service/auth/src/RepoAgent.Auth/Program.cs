@@ -12,6 +12,7 @@ if (args.FirstOrDefault() == "cleanup")
 }
 
 var builder = WebApplication.CreateBuilder(args);
+BrokerTelemetry.AddHttp(builder);
 builder.Services.AddSingleton(services => BrokerOptions.Read(services.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton(services =>
 {

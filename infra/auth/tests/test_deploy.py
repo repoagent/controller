@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import uuid
 from unittest.mock import patch
 
 AUTH = Path(__file__).resolve().parents[1]
@@ -59,6 +60,35 @@ def owned_resources():
     result[APP_ID]['properties'] = {'environmentId': ENVIRONMENT_ID, 'configuration': {
         'ingress': {'external': True, 'fqdn': ORIGIN.removeprefix('https://')}}}
     return result
+
+
+CONNECTION = 'InstrumentationKey=22222222-2222-2222-2222-222222222222;IngestionEndpoint=https://test.in.applicationinsights.azure.com/'
+INSIGHTS_ID = SCOPE + '/providers/Microsoft.Insights/components/auth-test-insights'
+
+
+def monitoring_resources():
+    """Independent provider readbacks for the owned telemetry deployment boundary."""
+    ownership = dict(repositoryId='1426154477', ownerId='345029828', managedBy='repoagent-auth')
+    logs_id = SCOPE + '/providers/Microsoft.OperationalInsights/workspaces/auth-test-logs'
+    identity_id = SCOPE + '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-cleanup'
+    return {
+        logs_id: dict(id=logs_id, type='Microsoft.OperationalInsights/workspaces', location='swedencentral',
+            tags={**ownership, 'role': 'auth-logs'}, properties=dict(retentionInDays=30, workspaceCapping=dict(dailyQuotaGb=0.1))),
+        INSIGHTS_ID: dict(id=INSIGHTS_ID, type='Microsoft.Insights/components', location='swedencentral',
+            tags={**ownership, 'role': 'auth-monitoring'}, properties=dict(DisableLocalAuth=True,
+                WorkspaceResourceId=logs_id, InstrumentationKey='22222222-2222-2222-2222-222222222222', ConnectionString=CONNECTION)),
+        identity_id: dict(id=identity_id, type='Microsoft.ManagedIdentity/userAssignedIdentities', location='swedencentral',
+            tags={**ownership, 'role': 'auth-cleanup-identity'}, properties=dict(
+                clientId='22222222-3333-4444-5555-666666666666', principalId='bbbbbbbb-cccc-dddd-eeee-ffffffffffff')),
+    }
+
+
+def publisher_assignments():
+    role = '/subscriptions/' + SUBSCRIPTION + '/providers/Microsoft.Authorization/roleDefinitions/3913510d-42f4-4e42-8a64-420c390055eb'
+    return [dict(scope=INSIGHTS_ID, roleDefinitionId=role, principalType='ServicePrincipal', principalId=principal,
+        name=str(uuid.uuid5(uuid.UUID('11fb06fb-712d-4ddd-98c7-e71bbd588830'), '-'.join((INSIGHTS_ID, identity, role)))))
+        for identity, principal in ((SCOPE + '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-runtime', PRINCIPAL_ID),
+            (SCOPE + '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-cleanup', 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff'))]
 
 
 class DeploymentTimeoutTests(unittest.TestCase):
@@ -120,8 +150,10 @@ class DeploymentProcessTests(unittest.TestCase):
             'AUTH_IMAGE': 'ghcr.io/repoagent/auth-service@sha256:' + 'd' * 64,
             'AUTH_IMAGE_ROLE': 'auth-service', 'AUTH_IMAGE_NON_ROOT': 'true', 'AUTH_IMAGE_PUBLIC': 'true',
         })
-        self.scenario = {'group': {'id': SCOPE, 'location': 'swedencentral'},
+        self.scenario = {'responses': {'role assignment list': {'body': publisher_assignments()}}, 'group': {'id': SCOPE, 'location': 'swedencentral'},
                          'resources': owned_resources(), 'plan': {'status': 'Succeeded', 'changes': []}}
+        self.scenario['resources'].update(monitoring_resources())
+        self.scenario['resources'][ENVIRONMENT_ID]['properties']['appLogsConfiguration'] = dict(destination='none')
 
     def run_deploy(self, mode='apply'):
         Path(self.env['AZ_DOUBLE_SCENARIO']).write_text(json.dumps(self.scenario))
@@ -135,7 +167,7 @@ class DeploymentProcessTests(unittest.TestCase):
             self.assertIn('--subscription', args)
             self.assertEqual(args[args.index('--subscription') + 1], SUBSCRIPTION)
             command = tuple(args[:3] if args[0] == 'deployment' else args[:2])
-            self.assertIn(command, {('group', 'show'), ('resource', 'show'),
+            self.assertIn(command, {('group', 'show'), ('resource', 'show'), ('role', 'assignment'),
                 ('deployment', 'group', 'validate'), ('deployment', 'group', 'what-if'),
                 ('deployment', 'group', 'create')}, 'Ordinary deployment must never assign roles, read keys or apply budgets')
         return result
@@ -147,7 +179,7 @@ class DeploymentProcessTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn(message, result.stderr)
         self.assertEqual(self.creates(), [], 'Refusal must happen before a deployment write')
-        read_commands = {('group', 'show'), ('resource', 'show'),
+        read_commands = {('group', 'show'), ('resource', 'show'), ('role', 'assignment'),
                          ('deployment', 'group', 'validate'), ('deployment', 'group', 'what-if')}
         for call in self.calls:
             args = call['args']
@@ -307,7 +339,10 @@ class DeploymentProcessTests(unittest.TestCase):
 
     def test_runtime_refuses_missing_foundation(self):
         self.scenario['resources'] = {}
-        self.assert_refused(self.run_deploy(), 'Runtime requires existing foundation')
+        result = self.run_deploy()
+        self.assert_refused(result, 'not-found')
+        self.assertEqual(result.stdout, '')
+        self.assertTrue(any(call.get('responseCode') == 3 for call in self.calls))
 
     def test_conflicting_ownership_including_container_metadata_refuses_adoption(self):
         baseline = copy.deepcopy(self.scenario)
@@ -321,7 +356,9 @@ class DeploymentProcessTests(unittest.TestCase):
                     target['properties']['metadata']['repositoryId'] = 'other-repository'
                 else:
                     target['tags']['ownerId'] = 'other-owner'
-                self.assert_refused(self.run_deploy(), 'Ownership conflict')
+                result = self.run_deploy()
+                self.assert_refused(result, 'Auth deployment refused')
+                self.assertIn('ownership', result.stderr.lower())
 
     def test_azure_failures_never_become_resource_absence(self):
         responses = [({'error': '(AuthorizationFailed) sensitive-server-body'}, 'forbidden'),
@@ -353,7 +390,7 @@ class DeploymentProcessTests(unittest.TestCase):
                          {'body': {'properties': {'provisioningState': 'Failed'}}},
                          {'body': {'properties': []}}):
             with self.subTest(response=response):
-                self.scenario['responses'] = {'deployment group create': response}
+                self.scenario['responses']['deployment group create'] = response
                 result = self.run_deploy()
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(len(self.creates()), 1)
@@ -366,6 +403,7 @@ class DeploymentProcessTests(unittest.TestCase):
         output = json.loads(result.stdout)
         self.assertEqual(output['tableResourceId'], TABLE_ID)
         self.assertEqual(output['runtimeConfiguration'], {
+            'APPLICATIONINSIGHTS_CONNECTION_STRING': '', 'APPLICATIONINSIGHTS_STATSBEAT_DISABLED': 'true',
             'Broker__BrokerOrigin': None,
             'Broker__TableEndpoint': f'https://{STORAGE}.table.core.windows.net/',
             'Broker__TableName': 'brokerstate', 'Broker__ManagedIdentityClientId': None,
@@ -394,6 +432,7 @@ class DeploymentProcessTests(unittest.TestCase):
         self.assertEqual(output['runtimeIdentityClientId'], CLIENT_ID)
         self.assertEqual(output['runtimeIdentityPrincipalId'], PRINCIPAL_ID)
         self.assertEqual(output['runtimeConfiguration'], {
+            'APPLICATIONINSIGHTS_CONNECTION_STRING': CONNECTION, 'APPLICATIONINSIGHTS_STATSBEAT_DISABLED': 'true',
             'Broker__BrokerOrigin': ORIGIN,
             'Broker__TableEndpoint': f'https://{STORAGE}.table.core.windows.net/',
             'Broker__TableName': 'PilotState42', 'Broker__ManagedIdentityClientId': CLIENT_ID,
@@ -470,7 +509,10 @@ class DeploymentProcessTests(unittest.TestCase):
                            {'clientId': CLIENT_ID, 'principalId': 'not-a-uuid'}):
             with self.subTest(properties=properties):
                 self.scenario['resources'][identity_id]['properties'] = properties
-                self.assert_refused(self.run_deploy('plan'), 'malformed runtime identity')
+                result = self.run_deploy('plan')
+                self.assert_refused(result, 'Auth deployment refused')
+                self.assertEqual(result.stdout, '')
+                self.assertTrue(any(call['args'][:2] == ['resource', 'show'] and identity_id in call['args'] for call in self.calls))
 
     def budget_file(self, inputs):
         filename = self.directory / 'budget.json'
@@ -498,8 +540,8 @@ class DeploymentProcessTests(unittest.TestCase):
         self.assertEqual(output['runtimeConfiguration']['Broker__RequestTimeoutSeconds'], 15)
         self.assertEqual(output['capacityPlan'], {
             'minReplicas': 0, 'maxReplicas': 1, 'cpu': 0.25, 'memory': '0.5Gi',
-            'logRetentionDays': 30, 'logDailyQuotaGb': 1, 'hardSpendingCap': False,
-            'requestLimitsAreProcessLocal': True})
+            'logRetentionDays': 30, 'logDailyQuotaGb': 0.1, 'hardSpendingCap': False,
+            'consoleDestination': 'none', 'requestLimitsAreProcessLocal': True})
         self.assertEqual(self.calls, [])
         self.env['AUTH_REQUEST_LIMIT_PER_MINUTE'] = '10001'
         self.assert_refused(self.run_deploy('cost-plan'), 'AUTH_REQUEST_LIMIT_PER_MINUTE')
@@ -525,7 +567,9 @@ class DeploymentProcessTests(unittest.TestCase):
                 self.assertEqual(output['runtimeConfiguration']['Broker__RequestLimitPerMinute'], 321)
                 self.assertEqual(output['runtimeConfiguration']['Broker__ConcurrentRequestLimit'], 13)
                 self.assertEqual(output['runtimeConfiguration']['Broker__RequestTimeoutSeconds'], 31)
-                self.assertEqual(budget['inputs'], inputs)
+                self.assertEqual(budget['inputs'], {key: value for key, value in inputs.items() if key != 'contactEmails'})
+                for recipient in notifications.get('contactEmails', []):
+                    self.assertNotIn(recipient, result.stdout + result.stderr)
                 self.assertEqual(budget['missingInputs'], [])
                 self.assertEqual(budget['schema'], 'Microsoft.Consumption/budgets@2024-08-01')
                 self.assertEqual(budget['notification'], {'thresholdType': 'Actual', 'operator': 'GreaterThanOrEqualTo'})

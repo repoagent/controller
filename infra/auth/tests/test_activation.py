@@ -73,6 +73,7 @@ class ActivationProcessTests(unittest.TestCase):
         self.scenario['resources'][APP_ID] = self.app
         self.scenario['appId'] = APP_ID
         self.scenario['responses'] = {
+            'role assignment list': {'body': deployment_tests.publisher_assignments()},
             'containerapp revision show': {'body': {'name': REVISION, 'properties': {'template': self.app['properties']['template']}}},
             'containerapp revision deactivate': {'raw': ''},
             'containerapp revision activate': {'raw': ''},
@@ -87,7 +88,7 @@ class ActivationProcessTests(unittest.TestCase):
         identity = SCOPE + '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-runtime'
         app['identity'] = dict(type='UserAssigned', userAssignedIdentities={identity: {}})
         app['tags']['repoagent-role'] = 'auth-service'
-        values = {'Broker__BrokerOrigin': ORIGIN, 'AZURE_CLIENT_ID': CLIENT_ID,
+        values = {'APPLICATIONINSIGHTS_CONNECTION_STRING': deployment_tests.CONNECTION, 'APPLICATIONINSIGHTS_STATSBEAT_DISABLED': 'true', 'Broker__BrokerOrigin': ORIGIN, 'AZURE_CLIENT_ID': CLIENT_ID,
                   'Broker__ManagedIdentityClientId': CLIENT_ID,
                   'Auth__SigningKeyUri': self.env['AUTH_SIGNING_KEY_URI'],
                   'Auth__DataProtectionKeyUri': self.env['AUTH_DATA_PROTECTION_KEY_URI'],
@@ -105,12 +106,12 @@ class ActivationProcessTests(unittest.TestCase):
                           scale=dict(minReplicas=1, maxReplicas=1, rules=[])))
         return app
 
-    def invoke(self, mode):
+    def invoke(self, mode, route=ROUTE):
         Path(self.env['GIT_OBSERVATIONS']).write_text(json.dumps(self.main))
         Path(self.env['AZ_DOUBLE_SCENARIO']).write_text(json.dumps(self.scenario))
         journal = Path(self.env['AZ_DOUBLE_JOURNAL'])
         journal.unlink(missing_ok=True)
-        result = subprocess.run(['bash', '-e', '-c', ROUTE], cwd=AUTH.parents[1],
+        result = subprocess.run(['bash', '-e', '-c', route], cwd=AUTH.parents[1],
                                 env={**self.env, 'AUTH_OPERATION': mode}, stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=75)
         self.last_result = result
@@ -253,7 +254,9 @@ class ActivationProcessTests(unittest.TestCase):
 
     def test_foundation_apply_requires_every_manifest_resource_freshly_present(self):
         baseline = copy.deepcopy(self.scenario)
-        resources = [resource_id for resource_id in baseline['resources'] if resource_id != APP_ID]
+        resources = [resource_id for resource_id, value in baseline['resources'].items()
+                     if resource_id != APP_ID and resource_id != deployment_tests.INSIGHTS_ID
+                     and value.get('tags', {}).get('role') != 'auth-cleanup-identity']
         identity = SCOPE + '/providers/Microsoft.ManagedIdentity/userAssignedIdentities/auth-test-runtime'
         self.assertIn(identity, resources)
         for missing in (None, identity, *(resource_id for resource_id in resources if resource_id != identity)):

@@ -202,4 +202,51 @@ public sealed partial class CleanupProcessTests(ITestOutputHelper output)
     }
 
 
+    [Fact]
+    public async Task Optional_monitoring_preserves_one_summary_authority_and_all_exit_codes()
+    {
+        await using var identity = new TelemetryServer("500", true);
+        var telemetry = new Dictionary<string, string>
+        {
+            ["APPLICATIONINSIGHTS_CONNECTION_STRING"] = TelemetryCapture.ConnectionForCli,
+            ["Broker__ManagedIdentityClientId"] = "11111111-1111-1111-1111-111111111111",
+            ["IDENTITY_ENDPOINT"] = $"http://127.0.0.1:{identity.Port}/token", ["IDENTITY_HEADER"] = "synthetic-cli"
+        };
+        var schema = new[] { "processedAllocations", "deletedRowsObserved", "payloadFieldsRemovedObserved", "unsettledAllocationsObserved", "failures", "conflicts",
+            "incompleteCoverage", "stopReason", "logicalQueryPages", "sdkTableDispatches", "sdkBatchDispatches", "reviewedHttp11Envelope", "elapsedMilliseconds",
+            "oldestObservedOverduePayloadAt", "oldestObservedOverduePayloadAgeSeconds", "unknownDeadlineCount", "cursorAndCycleAges" }.Order().ToArray();
+        JsonElement? baseline = null;
+        foreach (var mode in new[] { "disabled", "malformed", "unavailable", "table-failure" })
+        {
+            await using var storage = new RevocationFixture(); await storage.InitializeAsync();
+            await using var proxy = new CleanupTableProxy(storage);
+            if (mode == "table-failure") proxy.Before = _ => Task.FromResult(false);
+            var environment = new Dictionary<string, string>(telemetry);
+            if (mode == "disabled") environment.Remove("APPLICATIONINSIGHTS_CONNECTION_STRING");
+            if (mode == "malformed") environment["APPLICATIONINSIGHTS_CONNECTION_STRING"] = "private-invalid-connection";
+            var result = await CleanupProcessFixture.RunAsync(storage, proxy.Endpoint, environment: environment);
+            Assert.Equal(mode == "table-failure" ? 1 : 0, result.Exit);
+            var properties = result.Summary.EnumerateObject().Select(p => p.Name).Order().ToArray();
+            Assert.Equal(schema, properties);
+            if (mode != "table-failure")
+            {
+                baseline ??= result.Summary;
+                foreach (var field in new[] { "processedAllocations", "deletedRowsObserved", "payloadFieldsRemovedObserved", "unsettledAllocationsObserved", "failures", "conflicts", "logicalQueryPages", "sdkTableDispatches", "sdkBatchDispatches" })
+                    Assert.Equal(baseline.Value.GetProperty(field).GetInt32(), result.Summary.GetProperty(field).GetInt32());
+            }
+            AssertSdkAccounting(result.Summary);
+            Assert.InRange(proxy.Requests.Count, 1, result.Summary.GetProperty("reviewedHttp11Envelope").GetProperty("tableRequestUpperBound").GetInt32());
+            Assert.DoesNotContain(proxy.Requests, r => r.Path.Contains("blob", StringComparison.OrdinalIgnoreCase) || r.Path.Contains("keys", StringComparison.OrdinalIgnoreCase));
+            output.WriteLine($"{mode}: exit={result.Exit}, Table sends={proxy.Requests.Count}, identity={identity.Count}");
+        }
+        await using var invalidStorage = new RevocationFixture();
+        var before = identity.Count;
+        var args = await CleanupProcessFixture.RunRawAsync(invalidStorage, environment: telemetry, arguments: ["cleanup", "--invalid"]);
+        Assert.Equal((2, "", "Usage: cleanup --once" + Environment.NewLine), args);
+        telemetry["Broker__TableName"] = "!private-invalid-table";
+        var config = await CleanupProcessFixture.RunRawAsync(invalidStorage, environment: telemetry);
+        Assert.Equal((2, "", "Invalid cleanup configuration." + Environment.NewLine), config);
+        Assert.Equal(before, identity.Count);
+    }
+
 }
