@@ -6,7 +6,8 @@ namespace RepoAgentController;
 /// <summary>Composes the controller CLI with its outbound HTTP and gh transports.</summary>
 public static class BridgeCommand
 {
-    public static async Task<int> Run(string[] args, HttpClient? transport = null, string? ghExecutable = null)
+    public static async Task<int> Run(string[] args, HttpClient? transport = null, string? ghExecutable = null,
+        TimeProvider? clock = null, CancellationToken shutdownToken = default)
     {
         if (args.Length > 0 && args[0] is "git-helper" or "git-clone-child" or "git-fetch")
             return await AppGitCredential.Run(args, CancellationToken.None);
@@ -84,8 +85,8 @@ public static class BridgeCommand
                     using var ownedHttp = transport is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(60) } : null;
                     var http = transport ?? ownedHttp!;
                     using var credentials = broker is null
-                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone))
-                        : GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone));
+                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone))
+                        : GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone));
                     await credentials.Initialize(result.GetValue(installationId), cancellationToken);
                     var executable = ghExecutable ?? AppGitHubCommand.FindExecutable("gh");
                     var github = new GitHub(repo, credentials, executable);
@@ -127,7 +128,7 @@ public static class BridgeCommand
                             var succeeded = await bridge.Poll(cancellationToken);
                             Log.Write("poll-completed", $"success={succeeded} elapsed-ms={Stopwatch.GetElapsedTime(pollStarted).TotalMilliseconds:F0}");
                             if (result.GetValue(once)) return succeeded ? 0 : 1;
-                            await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), cancellationToken);
+                            await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), clock ?? TimeProvider.System, cancellationToken);
                         } while (!cancellationToken.IsCancellationRequested);
                         return 0;
                     }
@@ -142,6 +143,6 @@ public static class BridgeCommand
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return 0; }
             catch (Exception error) { Log.Write("fatal", error.Message); return 1; }
         });
-        return await root.Parse(args).InvokeAsync();
+        return await root.Parse(args).InvokeAsync(cancellationToken: shutdownToken);
     }
 }

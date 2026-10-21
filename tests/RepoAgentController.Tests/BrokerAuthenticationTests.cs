@@ -406,9 +406,11 @@ public sealed class BrokerAuthenticationTests
         public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
         public string? Defect { get; set; }
         public Stream? Body { get; set; }
+        public TaskCompletionSource? Requested { get; set; }
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Requests.Add(request.RequestUri!);
+            Requested?.TrySetResult();
             Assert.Equal($"https://credentials.example.org/v{enrollment["protocolVersion"]!.GetValue<int>()}/devices/device-1/installation-token", request.RequestUri!.AbsoluteUri);
             Assert.Equal(HttpMethod.Post, request.Method);
             Assert.Null(request.Content);
@@ -442,11 +444,12 @@ public sealed class BrokerAuthenticationTests
             if (Defect == "malformed") body = "{DO-NOT-LOG";
             if (Defect == "oversized") body = new string('x', 65537);
             var status = Defect == "redirect" ? HttpStatusCode.TemporaryRedirect : Status;
-            return Task.FromResult(new HttpResponseMessage(status) { Content = Body is not null ? new StreamContent(Body) : new StringContent(status == HttpStatusCode.OK ? body : "DO-NOT-LOG") });
+            return Defect == "transport" ? Task.FromException<HttpResponseMessage>(new HttpRequestException("transport unavailable"))
+                : Task.FromResult(new HttpResponseMessage(status) { Content = Body is not null ? new StreamContent(Body) : new StringContent(status == HttpStatusCode.OK ? body : "DO-NOT-LOG") });
         }
     }
 
-    sealed class StalledBody : Stream
+    internal sealed class StalledBody : Stream
     {
         public TaskCompletionSource Reading { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
