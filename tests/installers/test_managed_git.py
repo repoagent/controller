@@ -456,13 +456,18 @@ class GitProvider:
                     if self.command == 'GET' and self.path == '/repos/' + repository + '/git/ref/heads/main':
                         sha = subprocess.run(['git', '--git-dir', str(target), 'rev-parse', 'refs/heads/main'],
                                              check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+                        observer = getattr(provider, 'ref_observer', None)
+                        if observer: observer(sha)
                         return self.reply(dict(ref='refs/heads/main', object=dict(type='commit', sha=sha)))
                     if self.command != 'POST' or self.path != '/graphql' or not body:
                         print('GIT_PROVIDER_DENIED ' + json.dumps({'method': self.command, 'path': self.path}), flush=True)
                         return self.reply({}, 403)
                     query = json.loads(body).get('query', '')
                     if 'discussions(' in query:
-                        return self.reply({'data': {'repository': {'discussions': {'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+                        return self.reply({'data': {'repository': {'discussions': {'nodes': getattr(provider, 'discussions', []), 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+                    if 'node(id:' in query:
+                        field = 'comments' if 'comments(' in query else 'reactions'
+                        return self.reply({'data': {'node': {field: {'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'user(login:' in query:
                         return self.reply({'data': {'user': {'login': 'repoagent'}}})
                     if 'repository' not in query:
