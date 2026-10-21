@@ -111,7 +111,9 @@ class ActivationProcessTests(unittest.TestCase):
         journal = Path(self.env['AZ_DOUBLE_JOURNAL'])
         journal.unlink(missing_ok=True)
         result = subprocess.run(['bash', '-e', '-c', ROUTE], cwd=AUTH.parents[1],
-                                env={**self.env, 'AUTH_OPERATION': mode}, capture_output=True, text=True, timeout=75)
+                                env={**self.env, 'AUTH_OPERATION': mode}, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=75)
+        self.last_result = result
         self.calls = [json.loads(line) for line in journal.read_text().splitlines()] if journal.exists() else []
         self.assertNotIn(CANARY, result.stdout + result.stderr + json.dumps(self.calls))
         self.assertFalse(any('delete' in call['args'] for call in self.calls))
@@ -356,6 +358,10 @@ class ActivationProcessTests(unittest.TestCase):
         output = json.loads(result.stdout)
         self.assertEqual(output['replica'], 'new-replica')
         command = next(call['args'] for call in self.calls if call['args'][:2] == ['containerapp', 'exec'])
+        execution = next(call for call in self.calls if call['args'][:2] == ['containerapp', 'exec'])
+        self.assertTrue(execution['stdinIsTty'])
+        self.assertEqual(execution['terminalSetup'], 'ok')
+        self.assertTrue(execution['terminalRestored'])
         for flag, value in (('--revision', REVISION), ('--replica', 'new-replica'), ('--container', 'auth-service')):
             self.assertEqual(command[command.index(flag) + 1], value)
         self.scenario['responses']['containerapp exec'] = {'error': CANARY}
