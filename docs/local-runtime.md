@@ -31,3 +31,50 @@ Run lifecycle commands sequentially. The trust boundary includes the current hos
 Existing direct-App instances remain accessible with `--key-path`. Ordinary check/start/stop require an existing container to match the selected controller image, UID1000, the controller start entrypoint/arguments, all six expected volume destinations (config read-only), and only its configured read-only PEM bind. Mismatches require manual resolution. These checks do not adopt or relabel legacy data or authorize destructive migration.
 
 Native Windows PowerShell process tests and actual Docker Desktop acceptance are separate gates. Linux execution or a mocked Docker process does not establish Windows ACL, raw-byte transfer, UID/mode, read-only mount or restart persistence acceptance. A real authenticated Codex turn and live broker approval/token-scope acceptance also require their own authorized checks.
+
+## Disable and uninstall a managed instance
+
+Use PowerShell for instances installed with broker enrollment. The legacy Bash
+entrypoint refuses managed-labelled resources before commands can change them.
+
+Preview one instance with its original private host state directory:
+
+```powershell
+./install.ps1 -Action Uninstall -Instance demo -StateDirectory /private/demo -NonInteractive
+```
+
+Add `-Apply` to disable, stop and remove that selected runtime and clear its
+container enrollment, Codex auth and two installation-token cache files. All seven
+volumes, workspace/history, settings, skills, tools and wrappers remain. Preview
+uses host records and Docker metadata only; private-volume binding and disable
+state are unverified until Apply.
+
+The selected enrollment volume retains `disabled.json`. Supported PowerShell work,
+configuration and credential-import commands refuse this durable state. Safe stop,
+passive inspection, uninstall retry and standalone revoke remain available. Do not
+remove or repair the marker to restart an instance; resolve old authority through
+existing enrollment recovery, normally using a fresh instance.
+
+GitHub denial or timeout does not prevent proven local teardown. Results separate
+local launch/runtime/credential state from GitHub marker removal, broker closure
+and unsettled tokens. A removed container can correctly return a nonzero partial
+result. Retain `lifecycle.json`, `approval.json`, `launch.json` and `recovery.json`.
+Only an acknowledged matching guided enrollment copy whose recovery secret is
+already null may be removed; unresolved recovery material stays protected.
+
+Optional self-revocation uses an explicitly supplied `-EnrollmentFile` with trusted
+`-ApprovalStatePath`, through the existing revoke client. GitHub deletion failure
+can prevent that optional attempt; broker closure then remains unconfirmed.
+Supplied source enrollment and host Codex auth/key files are never deleted.
+
+A supplied-enrollment installation can pass complete nonsecret coordinates using
+`-Repository`, `-ExpectedRepositoryId`, `-DeviceId`, `-AppId`, `-InstallationId`,
+`-BrokerOrigin`, `-EnrollmentProfile`, `-ApprovalVariable` and
+`-ExpectedValueSha256`. Legacy approval additionally requires explicit
+`-GitHubEnvironment` and `-ExpectedEnvironmentId`. These coordinates identify
+operator scope; they do not authenticate a controller or prove broker closure.
+
+Standalone `-Action Revoke` remains usable on another machine without Docker or a
+device credential. Use its exact saved/explicit approval coordinates. These are
+sequential operator safeguards; old script copies, direct Docker administration
+and hostile current-user changes are outside the guard guarantee.
