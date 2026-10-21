@@ -140,12 +140,14 @@ internal sealed class ManagedCheckout : IDisposable
         await VerifyBaseline(ct);
         RepositoryCheckout current;
         string target;
-        try { current = await github.CheckoutRepository(ct); target = await github.CheckoutCommit(current.Branch, ct); }
+        try { current = await github.CheckoutRepository(ct); }
         catch (IOException error) when (error is not GitHub.CheckoutIdentityException)
         { throw Deferred("authoritative repository lookup unavailable; retry pending"); }
         if (current.Id != repository.Id || current.Name != repository.Name || current.Remote != repository.Remote)
             throw Blocked("authoritative repository identity changed");
         if (current.Branch != repository.Branch) throw Deferred("default branch changed; inspect the recorded binding");
+        try { target = await github.CheckoutCommit(current.Branch, ct); }
+        catch (IOException) { throw Deferred("authoritative default-branch lookup unavailable; retry pending"); }
         var previous = metadata.Text("commit");
         if (target == previous) return false;
         var fetched = Path.Combine(Root, ".git", "FETCH_HEAD");
