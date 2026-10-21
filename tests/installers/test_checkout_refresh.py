@@ -307,6 +307,25 @@ class CheckoutRefreshTests(unittest.TestCase):
                     if case in ('dirty', 'staged', 'untracked', 'commit', 'operation'): self.assertEqual(len(f.provider.git_tokens), requests)
                 print('MATRIX_GIT case=' + case + ' baseline=' + initial + ' preserved=true', flush=True)
 
+    def test_changed_identity_blocks_admission_when_branch_ref_is_unavailable(self):
+        for status in (404, 200):
+            with self.subTest(ref_status=status), self.fixture(protocol=True) as f, self.controller(f):
+                initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+                before = self.snapshot(f.checkout); requests = len(f.provider.git_tokens)
+                f.provider.repository_id += 1; f.provider.ref_status = status
+                self.publish(f)
+                f.wait(' refresh-')  # Observe either durable pending or blocked, never infer idle from time.
+                journal = json.loads(f.journal.read_text())
+                self.assertEqual(self.snapshot(f.checkout), before)
+                self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
+                self.assertEqual(len(f.provider.git_tokens), requests)
+                print('IDENTITY_REF status=' + str(status) + ' observed-id=' + str(f.provider.repository_id)
+                      + ' blocked=' + str(journal['blocked']) + ' reason=' + journal.get('reason', ''), flush=True)
+                self.assertTrue(journal['blocked'], 'Observed immutable identity mismatch must block despite unavailable/malformed ref')
+                f.provider.discussions = [self.discussion(1)]
+                f.wait('observation-error')
+                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Identity mismatch admitted native work')
+
     def discussion(self, number):
         return dict(id='D' + str(number), number=number, url='https://github.com/owner/project/discussions/' + str(number),
                     body='@test-app[bot] fixture ' + str(number), bodyHTML='fixture', title='fixture',

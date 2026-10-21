@@ -482,6 +482,8 @@ class GitProvider:
                     if self.command == 'GET' and self.path == '/repos/' + repository:
                         return self.reply(dict(id=provider.repository_id, full_name=repository, clone_url='https://github.com/' + repository + '.git', default_branch='main'))
                     if self.command == 'GET' and self.path == '/repos/' + repository + '/git/ref/heads/main':
+                        if getattr(provider, 'ref_status', None):
+                            return self.reply({}, provider.ref_status)
                         sha = subprocess.run(['git', '--git-dir', str(target), 'rev-parse', 'refs/heads/main'],
                                              check=True, capture_output=True, text=True, timeout=15).stdout.strip()
                         observer = getattr(provider, 'ref_observer', None)
