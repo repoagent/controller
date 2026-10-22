@@ -112,6 +112,8 @@ def prepare_runtime(settings, secret_path):
             ('reconcileInterval', '--reconcile-interval'),
         ):
             arguments.extend((option, str(settings[key])))
+        if settings.get('azureWorkQueue'):
+            arguments.extend(('--azure-work-queue', settings['azureWorkQueue']))
         subprocess.run(runtime + arguments, check=True)
     # The existing transport secures the target. Only the native consumer owns
     # enrollment parsing, scope, expiry and broker authorization policy.

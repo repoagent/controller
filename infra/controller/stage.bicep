@@ -18,8 +18,16 @@ param setupMinReplicas int = 0
 @description('Setup-only storage candidate. SMB requires real permission, symlink and locking acceptance before activation.')
 @allowed(['NfsAzureFile', 'AzureFile'])
 param storageType string = 'NfsAzureFile'
+@description('Empty for the original setup profile; otherwise use this dedicated queue through system identity.')
+param workQueueAccountName string = ''
+param workQueueName string = 'controller-work'
+@description('First activation only, after supported old-owner settlement and private enrollment persistence.')
+param activate bool = false
+@secure()
+param enrollment string = ''
+param controllerImage string = loadJsonContent('image.json').image
 
-var image = loadJsonContent('image.json').image
+var image = controllerImage
 var setup = loadTextContent('controller-runtime.py')
 // ACA accepts this restricted SMB option set; Unix modes and symlinks still need real acceptance.
 // Keep byte-range locking enabled. Never add nobrl to bypass a failed lease.
@@ -36,16 +44,34 @@ var binding = {
   installationId: installationId
   brokerOrigin: brokerOrigin
 }
+var settings = {
+  repository: repository
+  repositoryId: repositoryId
+  appId: string(appId)
+  installationId: installationId
+  brokerUrl: brokerOrigin
+  clone: true
+  mode: 'fixed-url'
+  publicUrl: 'https://${name}-controller.${appEnvironment.properties.defaultDomain}'
+  mentionUser: 'repoagent'
+  model: 'gpt-6.1-sol'
+  webSearch: 'live'
+  toolUpdates: 'pinned'
+  listenPort: 8080
+  reconcileInterval: 300
+  azureWorkQueue: 'https://${workQueueAccountName}.queue.${environment().suffixes.storage}/${workQueueName}'
+}
 
 resource appEnvironment 'Microsoft.App/managedEnvironments@2026-07-01' existing = {
   name: '${name}-environment'
 }
 
-// Fresh setup only. Never use this template as an active-controller update path.
+// Never use this first-activation template as an active-controller update path.
 resource app 'Microsoft.App/containerApps@2026-07-01' = {
   name: '${name}-controller'
   location: location
-  tags: { managedBy: 'repoagent-controller', repository: repository, purpose: 'controller-setup' }
+  tags: { managedBy: 'repoagent-controller', repository: repository, purpose: activate ? 'controller-active' : 'controller-setup' }
+  identity: { type: empty(workQueueAccountName) ? 'None' : 'SystemAssigned' }
   properties: {
     environmentId: appEnvironment.id
     workloadProfileName: 'Consumption'
@@ -57,13 +83,14 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
         targetPort: 8080
         transport: 'http'
       }
+      secrets: activate ? [{ name: 'controller-enrollment', value: enrollment }] : []
     }
     template: {
       initContainers: [{
         name: 'private-layout'
         image: image
         command: ['/usr/bin/python3', '-E', '-c']
-        args: [setup, 'initialize', string(binding)]
+        args: [setup, activate ? 'initialize-active' : 'initialize', string(binding)]
         resources: { cpu: json('0.25'), memory: '0.5Gi' }
         volumeMounts: [{ volumeName: 'controller-state', mountPath: '/mnt/controller' }]
       }]
@@ -71,7 +98,7 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
         name: 'controller'
         image: image
         command: ['/usr/bin/python3', '-E', '-c']
-        args: [setup, 'serve']
+        args: activate ? [setup, 'activate', string(settings)] : [setup, 'serve']
         resources: { cpu: json('0.25'), memory: '0.5Gi' }
         volumeMounts: concat([
           { volumeName: 'controller-state', mountPath: '/data', subPath: 'runtime/data' }
@@ -80,19 +107,32 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
           { volumeName: executableVolume, mountPath: '/data/tools', subPath: 'runtime/data/tools' }
           { volumeName: executableVolume, mountPath: '/data/state/bridge.json.github-app/bin', subPath: 'runtime/data/state/bridge.json.github-app/bin' }
           { volumeName: executableVolume, mountPath: '/data/state/bridge.json.github-app/clone-bin', subPath: 'runtime/data/state/bridge.json.github-app/clone-bin' }
-        ] : [])
-        probes: [{
+        ] : [], activate ? [{ volumeName: 'enrollment', mountPath: '/run/enrollment' }] : [])
+        probes: activate ? [{ type: 'Readiness', tcpSocket: { port: 8080 }, periodSeconds: 5, timeoutSeconds: 2 }] : [{
           type: 'Readiness'
           httpGet: { path: '/health/setup', port: 8080 }
           periodSeconds: 5
           timeoutSeconds: 2
         }]
       }]
-      scale: {
+      scale: union({
         minReplicas: setupMinReplicas
         maxReplicas: 1
-        rules: [{ name: 'setup-http', http: { metadata: { concurrentRequests: '10' } } }]
-      }
+        rules: concat([{ name: empty(workQueueAccountName) ? 'setup-http' : 'controller-http', http: { metadata: { concurrentRequests: '10' } } }], empty(workQueueAccountName) ? [] : [{
+          name: 'controller-work'
+          custom: {
+            type: 'azure-queue'
+            identity: 'system'
+            metadata: {
+              accountName: workQueueAccountName
+              queueName: workQueueName
+              queueLength: '1'
+              activationQueueLength: '0'
+              queueLengthStrategy: 'all'
+            }
+          }
+        }])
+      }, empty(workQueueAccountName) ? {} : { cooldownPeriod: 60, pollingInterval: 15 })
       volumes: concat([{
         name: 'controller-state'
         storageType: storageType
@@ -103,7 +143,7 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
         storageType: 'AzureFile'
         storageName: 'controller-state'
         mountOptions: executableMountOptions
-      }] : [])
+      }] : [], activate ? [{ name: 'enrollment', storageType: 'Secret', secrets: [{ secretRef: 'controller-enrollment', path: 'enrollment.json' }] }] : [])
     }
   }
 }
@@ -111,3 +151,4 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
 output appName string = app.name
 // App-level ingress, never CONTAINER_APP_HOSTNAME (a revision hostname).
 output publicOrigin string = 'https://${app.properties.configuration.ingress.fqdn}'
+output principalId string = app.identity.?principalId ?? ''

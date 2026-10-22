@@ -42,7 +42,7 @@ def save(value):
     temporary.replace(CONFIG)
 
 
-def bridge_args(config):
+def bridge_args(config, *, check_auth=False):
     args = ['--repo', config['repository'], '--app-id', config['appId'],
             '--workspace', '/workspace', '--state', STATE]
     if config.get('brokerUrl'):
@@ -62,6 +62,8 @@ def bridge_args(config):
                  '--reconcile-interval', str(config.get('reconcileInterval', 300))]
         if config['mode'] == 'fixed-url':
             args += ['--webhook-url', config['publicUrl']]
+    if config.get('azureWorkQueue') and not check_auth:
+        args += ['--azure-work-queue', config['azureWorkQueue']]
     for url in config.get('enroll', []):
         args += ['--enroll', url]
     return args
@@ -134,6 +136,17 @@ def configure(args):
         if config.get('repositoryId') is not None and config['repositoryId'] != repository_id:
             raise ValueError('Changing expected repository identity requires a fresh instance and enrollment.')
         config['repositoryId'] = repository_id
+    queue = getattr(args, 'azure_work_queue', None)
+    if queue is None:
+        queue = config.get('azureWorkQueue')
+    if queue is not None:
+        if not re.fullmatch(r'https://[a-z0-9]{3,24}\.queue\.core\.windows\.net/[a-z0-9](?:[a-z0-9]|-(?!-)){1,61}[a-z0-9]', queue):
+            raise ValueError('Azure work queue must be a public Azure HTTPS queue endpoint without credentials, query or fragment.')
+        if not broker or not clone or args.mode != 'fixed-url' or repository_id is None or args.installation_id is None:
+            raise ValueError('Azure work queue requires fixed-url broker clone mode with repository and installation IDs.')
+        if config.get('azureWorkQueue') is not None and config['azureWorkQueue'] != queue:
+            raise ValueError('Changing work queue requires a fresh instance after queued work is settled.')
+        config['azureWorkQueue'] = queue
     config.update(clone=clone, repository=args.repository, appId=args.app_id, keyPath=args.key_path,
                   brokerUrl=broker_url,
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
@@ -273,6 +286,7 @@ def main():
     configure_parser.add_argument('--public-url', default='')
     configure_parser.add_argument('--listen-port', type=int, default=8080)
     configure_parser.add_argument('--reconcile-interval', type=int, default=300)
+    configure_parser.add_argument('--azure-work-queue')
     get = sub.add_parser('get'); get.add_argument('key')
     login = sub.add_parser('login')
     login.add_argument('--non-interactive', action='store_true')
@@ -320,7 +334,7 @@ def main():
         if args.command == 'check':
             # Check the webhook grant without creating a tunnel or registering a hook.
             endpoint = ['--webhook-url', 'https://quick-tunnel.invalid'] if config.get('mode') == 'quick-tunnel' else []
-            run(CONTROLLER + bridge_args(config) + endpoint + ['--check-auth'])
+            run(CONTROLLER + bridge_args(config, check_auth=True) + endpoint + ['--check-auth'])
         elif config.get('mode') == 'quick-tunnel':
             sys.exit(quick_tunnel.run(CONTROLLER + bridge_args(config), config.get('listenPort', 8080)))
         else:

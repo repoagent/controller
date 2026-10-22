@@ -8,6 +8,12 @@ param location string = 'swedencentral'
 @description('Zero by default. Select one temporarily for interactive setup or an explicit storage check.')
 @allowed([0, 1])
 param setupMinReplicas int = 0
+@description('Leave false for metadata-only provider checks. First activation requires settled ownership and a fresh enrollment.')
+param activate bool = false
+@secure()
+param enrollment string = ''
+@description('Select an immutable public image containing the queue mode, bootstrap wiring and SMB fixes before activation.')
+param controllerImage string = loadJsonContent('image.json').image
 
 var tags = {
   managedBy: 'repoagent-controller'
@@ -61,6 +67,14 @@ resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2026-09-01
     shareQuota: 32
   }
 }
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2026-09-01' existing = {
+  parent: storage
+  name: 'default'
+}
+resource workQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2026-09-01' = {
+  parent: queueService
+  name: 'controller-work'
+}
 
 resource mountedShare 'Microsoft.App/managedEnvironments/storages@2026-07-01' = {
   parent: appEnvironment
@@ -75,7 +89,7 @@ resource mountedShare 'Microsoft.App/managedEnvironments/storages@2026-07-01' = 
   }
 }
 
-// Reuse the metadata-only setup host. No enrollment, account import or native work.
+// Setup does no account or native work. Activation is a separate explicit selection.
 module setup 'stage.bicep' = {
   name: '${name}-setup'
   params: {
@@ -83,8 +97,22 @@ module setup 'stage.bicep' = {
     location: location
     storageType: 'AzureFile'
     setupMinReplicas: setupMinReplicas
+    workQueueAccountName: storage.name
+    workQueueName: workQueue.name
+    activate: activate
+    enrollment: enrollment
+    controllerImage: controllerImage
   }
   dependsOn: [mountedShare]
+}
+module queueAccess 'queue-access.bicep' = {
+  name: '${name}-queue-access'
+  params: {
+    accountName: storage.name
+    queueName: workQueue.name
+    principalId: setup.outputs.principalId
+  }
+  dependsOn: [workQueue]
 }
 
 output appName string = setup.outputs.appName
@@ -92,3 +120,5 @@ output environmentName string = appEnvironment.name
 output storageAccountName string = storage.name
 output shareName string = share.name
 output publicOrigin string = setup.outputs.publicOrigin
+output workQueueEndpoint string = 'https://${storage.name}.queue.${environment().suffixes.storage}/${workQueue.name}'
+output principalId string = setup.outputs.principalId
