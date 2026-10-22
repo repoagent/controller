@@ -181,6 +181,7 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
         self.assertTrue(lifecycle)
         for event in lifecycle:
             self.assertEqual(event[-2], IMAGE)
+
             self.assertFalse(any('github-app.pem' in argument or 'type=bind,' in argument for argument in event))
             mounts = [event[index + 1] for index, argument in enumerate(event[:-1]) if argument == '--mount']
             enrollment_mount = next(mount for mount in mounts if 'dst=/data/enrollment' in mount)
@@ -191,6 +192,21 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
             else:
                 self.assertTrue(enrollment_mount.endswith(',readonly'))
         self.assertFalse(any(event[0] == 'build' or '--env' in event or '-e' in event for event in state['events']))
+
+    def test_clone_configuration_retains_its_expected_repository_identity(self):
+        self.configure('--clone', '--repository-id', '345')
+        self.assertEqual(self.state()['settings']['repositoryId'], 345)
+        self.configure('--clone')
+        self.assertEqual(self.state()['settings']['repositoryId'], 345)
+        before = self.state()['settings']
+        forwarded = subprocess.run([sys.executable, '-c',
+            'import json,sys; sys.path.insert(0,sys.argv[1]); import runtime; print(json.dumps(runtime.bridge_args(json.load(sys.stdin))))',
+            str(ROOT / 'container')], input=json.dumps(before), text=True, capture_output=True, timeout=10)
+        self.assertEqual(forwarded.returncode, 0, forwarded.stderr)
+        arguments = json.loads(forwarded.stdout)
+        self.assertEqual(arguments[arguments.index('--repository-id') + 1], '345')
+        self.configure('--clone', '--repository-id', '999', success=False)
+        self.assertEqual(self.state()['settings'], before)
 
     def test_conflicting_named_resources_are_preserved_before_mount_or_mutation(self):
         for storage in STORAGE + ('container',):

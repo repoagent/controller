@@ -220,6 +220,36 @@ public sealed class BrokerAuthenticationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task Expected_immutable_repository_accepts_only_the_enrolled_identity(bool webhooks)
+    {
+        using var matching = new Fixture(webhooks, clone: true);
+        Assert.Equal(0, await matching.Start("--repository-id", "345"));
+
+        using var recreated = new Fixture(webhooks, clone: true);
+        recreated.Enrollment["repositoryId"] = 999; // Same name, App and installation; different immutable identity.
+        recreated.SaveEnrollment();
+        recreated.SeedCache();
+        Assert.Equal(1, await recreated.Start("--repository-id", "345"));
+        Assert.Empty(recreated.Transport.Requests);
+        Assert.False(File.Exists(recreated.TokenFile));
+        Assert.False(File.Exists(recreated.TokenFile + ".tmp"));
+        Assert.NotEqual(0, (await recreated.InvokeWrapper()).Exit);
+    }
+
+    [Theory]
+    [InlineData("0", true)]
+    [InlineData("-1", true)]
+    [InlineData("345", false)]
+    public async Task Expected_repository_identity_requires_positive_broker_clone_selection(string id, bool clone)
+    {
+        using var fixture = new Fixture(clone: clone);
+        Assert.Equal(1, await fixture.Start("--repository-id", id));
+        Assert.Empty(fixture.Transport.Requests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task Runtime_permission_profile_must_match_enrollment(bool webhooks)
     {
         using var fixture = new Fixture(webhooks);

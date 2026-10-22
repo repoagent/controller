@@ -26,7 +26,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
     public string AppSlug => enrollment.RootElement.GetProperty("appSlug").GetString()!;
 
     public BrokerTokenSource(HttpClient http, string brokerOrigin, string enrollmentFile, string appId, string repository,
-        TimeProvider clock, bool repositoryWebhooks, bool clone = false)
+        TimeProvider clock, bool repositoryWebhooks, bool clone = false, long? expectedRepositoryId = null)
     {
         this.http = http;
         this.clock = clock;
@@ -59,6 +59,8 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
             if (!long.TryParse(appId, NumberStyles.None, CultureInfo.InvariantCulture, out var id) || id != Id(root, "appId") ||
                 !string.Equals(repository, Text(root, "repository"), StringComparison.OrdinalIgnoreCase))
                 throw Invalid("CLI App/repository differs from enrollment");
+            if (expectedRepositoryId is { } expected && (!clone || expected <= 0 || Id(root, "repositoryId") != expected))
+                throw Invalid("CLI repository ID differs from enrollment");
             deviceId = Text(root, "deviceId");
             secret = Text(root, "deviceSecret");
             if (!Regex.IsMatch(deviceId, @"\A[A-Za-z0-9_-]{1,128}\z") || !Regex.IsMatch(secret, @"\A[A-Za-z0-9_-]{43,128}\z"))

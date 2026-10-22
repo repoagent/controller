@@ -53,6 +53,8 @@ def bridge_args(config):
         args += ['--clone']
     if config.get('installationId'):
         args += ['--installation-id', str(config['installationId'])]
+    if config.get('repositoryId') is not None:
+        args += ['--repository-id', str(config['repositoryId'])]
     if config.get('mentionUser'):
         args += ['--mention-user', config['mentionUser']]
     if config.get('mode', 'polling') in ('fixed-url', 'quick-tunnel'):
@@ -123,6 +125,15 @@ def configure(args):
     clone = getattr(args, 'clone', False)
     if config and bool(config.get('clone', False)) != clone:
         raise ValueError('Changing clone authority requires a fresh instance and enrollment.')
+    repository_id = getattr(args, 'repository_id', None)
+    if repository_id is None:
+        repository_id = config.get('repositoryId')
+    if repository_id is not None:
+        if repository_id <= 0 or not broker or not clone:
+            raise ValueError('Expected repository ID requires broker clone mode and a positive ID.')
+        if config.get('repositoryId') is not None and config['repositoryId'] != repository_id:
+            raise ValueError('Changing expected repository identity requires a fresh instance and enrollment.')
+        config['repositoryId'] = repository_id
     config.update(clone=clone, repository=args.repository, appId=args.app_id, keyPath=args.key_path,
                   brokerUrl=broker_url,
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
@@ -253,6 +264,7 @@ def main():
     configure_parser.add_argument('--enrollment-file')
     configure_parser.add_argument('--clone', action='store_true')
     configure_parser.add_argument('--installation-id', type=int)
+    configure_parser.add_argument('--repository-id', type=int)
     configure_parser.add_argument('--mention-user', default='repoagent')
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
     configure_parser.add_argument('--web-search', choices=['live', 'cached', 'disabled'], default='live')
