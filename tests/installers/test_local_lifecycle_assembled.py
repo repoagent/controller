@@ -91,6 +91,24 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         self.name, self.image, self.instance, self.parent = name, image, instance, parent
         self.marker, self.mount, self.sentinel, self.unrelated = marker, mount, sentinel, unrelated
 
+    def launch_state(self, pending='none'):
+        settings = json.loads(self.files("from pathlib import Path; print(Path('/data/config/settings.json').read_text())"))
+        launch = dict(binding=self.marker['binding'], settings=settings)
+        return dict(schemaVersion=1, instance=self.instance, volumes={part: self.name + '-' + part for part in STORAGE},
+                    storageOriginImage=self.image, currentImage=self.image, currentLaunch=launch,
+                    priorImage=self.image, priorLaunch=launch, targetImage=self.image, targetLaunch=launch,
+                    pending=pending, operationId=uuid.uuid4().hex, revision=1)
+
+    def write_launch_state(self, record):
+        self.files("from pathlib import Path; p=Path('/data/enrollment/launch-state.json'); p.write_text(" + repr(json.dumps(record)) + "); p.chmod(0o600)")
+
+    def test_interrupted_update_refuses_normal_start(self):
+        self.write_launch_state(self.launch_state('update'))
+        started = self.public('start')
+        self.assertNotEqual(started.returncode, 0, 'Pending update launched native work: ' + started.stdout + started.stderr)
+        self.assertIn('pending', (started.stdout + started.stderr).lower())
+        self.assertNotEqual(self.docker('container', 'inspect', self.name, success=False).returncode, 0)
+
     def test_public_start_refuses_durable_disable(self):
         docker, public, mount, marker = self.docker, self.public, self.mount, self.marker
         image, name, parent, instance, sentinel = self.image, self.name, self.parent, self.instance, self.sentinel
