@@ -38,6 +38,7 @@ class EnrollmentJourney:
         self.model.write_text(json.dumps({'variables': {}}), encoding='utf-8')
         self.log = self.directory / 'github.jsonl'
         self.events, self.errors = [], []
+        self.responses = {}
         self.observation_times = []
         self.deadline = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=15)).isoformat()
         self.marker = json.dumps(dict(version=2, approvalKind='repository-agent-variable', githubHost='github.com',
@@ -118,7 +119,11 @@ class EnrollmentJourney:
                         self.end_headers()
                         return
                     data = json.dumps(result).encode('utf-8')
-                    self.send_response(200)
+                    responses = journey.responses.get(self.path.rsplit('/', 1)[-1], [])
+                    status, retry_after = responses.pop(0) if responses else (200, None)
+                    self.send_response(status)
+                    if retry_after is not None:
+                        self.send_header('Retry-After', retry_after)
                     self.send_header('Content-Length', str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)
@@ -240,7 +245,7 @@ class EnrollmentJourney:
             raise LostResponse()
         return {'state': 'active'}
 
-    def run(self, *, saved=False, action='Enroll', extra=()):
+    def run(self, *, saved=False, action='Enroll', extra=(), timeout=50):
         args = ['pwsh', '-NoLogo', '-NoProfile', '-File', str(ROOT / 'install.ps1'),
                 '-Action', action, '-NonInteractive', '-Apply', '-StateDirectory', str(self.state)]
         if not saved:
@@ -250,7 +255,7 @@ class EnrollmentJourney:
             if self.variable != 'APPROVED_CONTROLLER':
                 args += ['-ApprovalVariable', self.variable.lower()]
         result = subprocess.run(args + list(extra), cwd=self.directory, env=self.environment,
-                                input='', capture_output=True, text=True, encoding='utf-8', timeout=50)
+                                input='', capture_output=True, text=True, encoding='utf-8', timeout=timeout)
         output = result.stdout + result.stderr
         for secret in (self.environment['GH_TOKEN'], 's' * 43):
             self.case.assertNotIn(secret, output)
@@ -472,6 +477,74 @@ class HostEnrollmentTests(unittest.TestCase):
         self.assertEqual(journey.events[-2], journey.events[-1])
         self.assertFalse(any('POST' in event['argv'] for event in journey.github()))
         self.assertEqual(journey.errors, [])
+
+    def test_temporary_ack_rate_limit_retries_same_persisted_receipt(self):
+        journey = EnrollmentJourney(self)
+        journey.responses['acknowledgment'] = [(429, '6')]
+        result = journey.run()
+        self.assertEqual(result.returncode, 0, journey.diagnostic(result))
+        acknowledgments = [event for event in journey.events if event['path'].endswith('/acknowledgment')]
+        self.assertEqual(len(acknowledgments), 2)
+        self.assertEqual(acknowledgments[0], acknowledgments[1])
+        observations = [at for path, at in journey.observation_times if path.endswith('/acknowledgment')]
+        self.assertGreaterEqual(observations[1] - observations[0], 6)
+        self.assertEqual(journey.read('approval.json')['deadline'], journey.deadline)
+        self.assertTrue(journey.read('recovery.json')['acknowledged'])
+        self.assertEqual(sum('POST' in event['argv'] for event in journey.github()), 1)
+        self.assertEqual(journey.errors, [])
+
+    def test_rate_limit_without_header_waits_for_quota_window_using_same_request(self):
+        journey = EnrollmentJourney(self)
+        journey.responses['enrollments'] = [(429, None)]
+        result = journey.run(timeout=100)
+        self.assertEqual(result.returncode, 0, journey.diagnostic(result))
+        starts = [event for event in journey.events if event['path'] == '/v2/enrollments']
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(starts[0], starts[1])
+        self.assertGreaterEqual(journey.observation_times[1][1] - journey.observation_times[0][1], 60)
+        self.assertEqual(journey.read('approval.json')['deadline'], journey.deadline)
+        self.assertEqual(sum('POST' in event['argv'] for event in journey.github()), 1)
+        self.assertEqual(journey.errors, [])
+
+    def test_repeated_rate_limit_stops_with_private_state_then_resumes_without_new_approval(self):
+        journey = EnrollmentJourney(self)
+        journey.responses['acknowledgment'] = [(429, '1')] * 3
+        result = journey.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(sum(event['path'].endswith('/acknowledgment') for event in journey.events), 3)
+        before = journey.read('enrollment.json')
+        self.assertFalse(journey.read('recovery.json')['acknowledged'])
+        self.assertTrue(journey.read('recovery.json')['ackAttempted'])
+        result = journey.run(saved=True)
+        self.assertEqual(result.returncode, 0, journey.diagnostic(result))
+        self.assertEqual(journey.read('enrollment.json'), before)
+        self.assertEqual(sum('POST' in event['argv'] for event in journey.github()), 1)
+        self.assertEqual(journey.errors, [])
+
+    def test_rate_limit_cannot_wait_beyond_original_pending_deadline(self):
+        journey = EnrollmentJourney(self)
+        journey.deadline = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=80)).isoformat()
+        journey.responses['acknowledgment'] = [(429, '120')]
+        result = journey.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('deadline', result.stdout)
+        self.assertEqual(sum(event['path'].endswith('/acknowledgment') for event in journey.events), 1)
+        self.assertEqual(journey.read('approval.json')['deadline'], journey.deadline)
+        self.assertFalse(journey.read('recovery.json')['acknowledged'])
+        self.assertEqual(journey.errors, [])
+
+    def test_invalid_or_excessive_retry_delay_stops_without_another_broker_request(self):
+        for retry_after in ('invalid', '121'):
+            with self.subTest(retry_after=retry_after):
+                journey = EnrollmentJourney(self)
+                journey.responses['enrollments'] = [(429, retry_after)]
+                result = journey.run()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Retry-After', result.stdout)
+                self.assertEqual(len(journey.events), 1)
+                self.assertFalse((journey.state / 'enrollment.json').exists())
+                self.assertFalse(any('POST' in event['argv'] for event in journey.github()))
+                self.assertEqual(journey.errors, [])
 
     def test_conflicting_approval_stops_without_replacement(self):
         journey = EnrollmentJourney(self)

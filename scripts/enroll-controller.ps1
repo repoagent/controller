@@ -67,14 +67,35 @@ function Check-Recovery {
     } else { Assert-Text $recovery.secret '\A[A-Za-z0-9_-]{43}\z' }
 }
 function Broker([string]$Method, [string]$Path, [string]$Secret, $Body = $null) {
-    try {
-        $r = Invoke-EnrollmentBroker $BrokerOrigin $Method $Path $Secret $Body
-    } finally {
-        # The broker starts its durable work interval after transport/admission.
-        # Keep the pre-send crash checkpoint, but pace subsequent work from the
-        # completed attempt, including unknown transport outcomes.
-        $recovery.lastWorkAt = [DateTimeOffset]::UtcNow.ToString('O')
-        Write-PrivateJson $recoveryPath $recovery
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        if ($attempt -gt 0) { Wait-Work }
+        try {
+            $r = Invoke-EnrollmentBroker $BrokerOrigin $Method $Path $Secret $Body
+        } finally {
+            # Pace subsequent work from the completed attempt, including unknown
+            # transport outcomes. Every retry also gets a pre-send checkpoint.
+            $recovery.lastWorkAt = [DateTimeOffset]::UtcNow.ToString('O')
+            Write-PrivateJson $recoveryPath $recovery
+        }
+        if ($r.Status -ne 429 -or $attempt -eq 2) { break }
+        $delay = 60L # Durable repository quota denials have no Retry-After header.
+        if ($null -ne $r.RetryAfter) {
+            $date = [DateTimeOffset]::MinValue
+            if (-not [long]::TryParse($r.RetryAfter, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$delay)) {
+                if (-not [DateTimeOffset]::TryParseExact($r.RetryAfter, 'r', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$date)) {
+                    Stop-Enrollment 'Broker Retry-After is invalid; private recovery state retained for inspection.'
+                }
+                $delay = [long][Math]::Ceiling(($date - [DateTimeOffset]::UtcNow).TotalSeconds)
+            }
+        }
+        if ($delay -gt 120) { Stop-Enrollment 'Broker Retry-After exceeds the bounded wait; private recovery state retained.' }
+        $delay = [Math]::Max(5L, $delay)
+        if ($config.deadline -and [DateTimeOffset]::Parse($config.deadline) -le [DateTimeOffset]::UtcNow.AddSeconds($delay + 5)) {
+            Stop-Enrollment 'Rate-limit wait would exhaust the original enrollment deadline; private recovery state retained.'
+        }
+        if ($script:Clock.Elapsed.TotalSeconds + $delay + 5 -ge 900) { Stop-Enrollment 'Host work limit reached; private recovery state retained.' }
+        Write-Host "Broker rate limit reached; retrying the same operation in $delay seconds ($($attempt + 1)/2)."
+        Start-Sleep -Milliseconds ([int]($delay * 1000))
     }
     if ($r.Status -ne 200) { Stop-Enrollment "Broker operation failed (HTTP $($r.Status)); private state is retained. Retry the same enrollment after inspection; no new identity was created." }
     return Read-HostJson $r.Body
