@@ -138,8 +138,8 @@ function Check-Enrollment($Enrollment, $Marker) {
     Assert-Fields $Enrollment.permissions $fields
     foreach ($key in $fields) { if ($Enrollment.permissions[$key] -cne $(if ($key -in @('contents','metadata')) { 'read' } else { 'write' })) { Stop-Enrollment 'Completion permission profile differs.' } }
 }
-function Wait-Work {
-    if ($config.deadline -and [DateTimeOffset]::Parse($config.deadline) -le [DateTimeOffset]::UtcNow.AddSeconds(5)) { Stop-Enrollment 'Original enrollment deadline reached; private recovery state retained.' }
+function Wait-Work([switch]$AcknowledgmentRecovery) {
+    if (-not $AcknowledgmentRecovery -and $config.deadline -and [DateTimeOffset]::Parse($config.deadline) -le [DateTimeOffset]::UtcNow.AddSeconds(5)) { Stop-Enrollment 'Original enrollment deadline reached; private recovery state retained.' }
     # Keep a pre-send checkpoint if the process dies during the request.
     if ($recovery.lastWorkAt) {
         $remaining = ([DateTimeOffset]::Parse($recovery.lastWorkAt).AddSeconds(5) - [DateTimeOffset]::UtcNow).TotalMilliseconds
@@ -263,9 +263,9 @@ try {
         if (-not (Test-Path -LiteralPath $enrollmentPath)) { Stop-Enrollment 'Completion polling limit reached; recover using the same state directory.' }
     }
     Assert-Text $recovery.completionId '\A[0-9a-f]{32}\z'
-    # Active ack may be retried beyond the pending deadline, without extending activity.
-    if ($recovery.ackAttempted) { $config.deadline = $null }
-    Wait-Work
+    # Explicit recovery may replay an already-active ACK after expiry. Retain the
+    # original deadline so automatic429 retries still cannot wait beyond it.
+    Wait-Work -AcknowledgmentRecovery:$recovery.ackAttempted
     $recovery.ackAttempted = $true
     Write-PrivateJson $recoveryPath $recovery
     $receipt = Broker POST ('/v2/devices/' + $enrollment.deviceId + '/acknowledgment') $enrollment.deviceSecret @{ completionId=$recovery.completionId }

@@ -515,6 +515,21 @@ class HostEnrollmentTests(unittest.TestCase):
         before = journey.read('enrollment.json')
         self.assertFalse(journey.read('recovery.json')['acknowledged'])
         self.assertTrue(journey.read('recovery.json')['ackAttempted'])
+        # Arrange a saved ACK recovery whose original pending deadline has now
+        # elapsed, without making this host-client test wait fifteen minutes.
+        approval = journey.read('approval.json')
+        approval['deadline'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=1)).isoformat()
+        (journey.state / 'approval.json').write_text(json.dumps(approval), encoding='utf-8')
+        journey.responses['acknowledgment'] = [(429, '1')]
+        previous_ack_count = sum(event['path'].endswith('/acknowledgment') for event in journey.events)
+        result = journey.run(saved=True)
+        self.assertNotEqual(result.returncode, 0, 'Resumed ACK must not retry429 past its saved deadline')
+        self.assertIn('deadline', result.stdout)
+        self.assertEqual(sum(event['path'].endswith('/acknowledgment') for event in journey.events), previous_ack_count + 1)
+        self.assertEqual(journey.read('approval.json')['deadline'], approval['deadline'])
+        self.assertFalse(journey.read('recovery.json')['acknowledged'])
+        # An operator can still explicitly replay an already-active ACK after
+        # expiry. A successful idempotent response requires no automatic wait.
         result = journey.run(saved=True)
         self.assertEqual(result.returncode, 0, journey.diagnostic(result))
         self.assertEqual(journey.read('enrollment.json'), before)
