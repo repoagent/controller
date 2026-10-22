@@ -5,7 +5,28 @@ using Azure;
 using Azure.Identity;
 using Azure.Storage.Queues;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("QueueHost")]
+
 namespace RepoAgentController;
+
+// The owner supplies the native journal/exclusion boundary; this module owns queue candidates.
+delegate Task<bool> NativeIdleCommit(Func<CancellationToken, Task> commit, CancellationToken ct);
+
+abstract record DurableWorkHint
+{
+    public abstract int ToWire();
+    public sealed record StartupReconcile : DurableWorkHint
+    { public override int ToWire() => 0; public override string ToString() => "reconcile"; }
+    public sealed record CheckoutRefresh : DurableWorkHint
+    { public override int ToWire() => -1; public override string ToString() => "refresh"; }
+    public sealed record Discussion(int Number) : DurableWorkHint
+    {
+        public override int ToWire() => Number > 0 ? Number : throw new ArgumentOutOfRangeException(nameof(Number));
+        public override string ToString() => $"discussion:{Number}";
+    }
+    public static DurableWorkHint FromWire(int number) => number switch
+    { -1 => new CheckoutRefresh(), 0 => new StartupReconcile(), > 0 => new Discussion(number), _ => throw new IOException("Invalid durable work hint") };
+}
 
 /// <summary>Retains nonsecret wake hints until observed work reaches a durable native idle boundary.</summary>
 sealed class DurableWebhookWork : IAsyncDisposable
@@ -43,7 +64,7 @@ sealed class DurableWebhookWork : IAsyncDisposable
         return new QueueClient(uri, credential, options);
     }
 
-    string Body(int discussion) => Json.Object(("version", 1), ("binding", binding), ("discussion", discussion)).ToJsonString();
+    string Body(DurableWorkHint hint) => Json.Object(("version", 1), ("binding", binding), ("discussion", hint.ToWire())).ToJsonString();
     static IOException Failure(string operation, Exception error) => new($"Durable work {operation} failed" +
         (error is RequestFailedException azure ? $" (HTTP {azure.Status})" : "") + "; preserve queued work and inspect the queue");
 
@@ -52,26 +73,33 @@ sealed class DurableWebhookWork : IAsyncDisposable
         try
         {
             // The startup itself may clone, refresh, resume and admit work after the HTTP trigger ends.
-            var sent = (await queue.SendMessageAsync(Body(0), Visibility, TimeSpan.FromSeconds(-1), ct)).Value;
+            var hint = new DurableWorkHint.StartupReconcile();
+            var sent = (await queue.SendMessageAsync(Body(hint), Visibility, TimeSpan.FromSeconds(-1), ct)).Value;
             await capacity.WaitAsync(ct);
-            startup = new(sent.MessageId, sent.PopReceipt, 0);
+            startup = new(sent.MessageId, sent.PopReceipt, hint);
             lock (sync) held.Add(startup);
             renewal = Renew();
         }
         catch (Exception error) when (error is not OperationCanceledException) { throw Failure("startup", error); }
     }
 
-    public async Task Enqueue(int discussion, CancellationToken ct)
+    public async Task Enqueue(DurableWorkHint hint, CancellationToken ct)
     {
-        try { await queue.SendMessageAsync(Body(discussion), TimeSpan.Zero, TimeSpan.FromSeconds(-1), ct); }
-        catch (Exception error) when (error is not OperationCanceledException) { throw Failure("enqueue", error); }
+        try { await queue.SendMessageAsync(Body(hint), TimeSpan.Zero, TimeSpan.FromSeconds(-1), ct); }
+        catch (Exception error)
+        {
+            // A lost response or cancelled send may already have persisted a hint. Stop all native work.
+            await lost.CancelAsync();
+            if (error is OperationCanceledException) throw;
+            throw Failure("enqueue", error);
+        }
     }
 
-    public sealed class Lease(string id, string receipt, int discussion)
+    public sealed class Lease(string id, string receipt, DurableWorkHint hint)
     {
         public string Id { get; } = id;
         public string Receipt { get; set; } = receipt;
-        public int Discussion { get; } = discussion;
+        public DurableWorkHint Hint { get; } = hint;
         public bool Observed { get; set; }
         public bool Deleted { get; set; }
         public SemaphoreSlim Exclusion { get; } = new(1);
@@ -94,7 +122,7 @@ sealed class DurableWebhookWork : IAsyncDisposable
                     if (body is null || body.Count != 3 || body["version"]?.GetValue<int>() != 1 || body.Text("binding") != binding ||
                         body["discussion"] is not JsonValue value || !value.TryGetValue<int>(out var number) || number < -1)
                         throw new IOException("Durable work binding or format differs; preserve the queue for manual inspection");
-                    var lease = new Lease(message.MessageId, message.PopReceipt, number);
+                    var lease = new Lease(message.MessageId, message.PopReceipt, DurableWorkHint.FromWire(number));
                     lock (sync) held.Add(lease);
                     retained = true;
                     return lease;
@@ -108,24 +136,28 @@ sealed class DurableWebhookWork : IAsyncDisposable
 
     public void Observed(Lease lease) { lock (sync) lease.Observed = true; }
 
-    public Task<bool> CompleteAtIdle(CheckoutRefresh refresh, CancellationToken ct) => refresh.CommitAtIdle(async token =>
+    public Task<bool> CompleteAtIdle(NativeIdleCommit commitAtIdle, CancellationToken ct)
     {
+        // Freeze candidates before validating native/refresh idle. A later push retains its own message.
         Lease[] ready;
         lock (sync) ready = held.Where(item => item.Observed).ToArray();
-        foreach (var lease in ready)
+        return commitAtIdle(async token =>
         {
-            await lease.Exclusion.WaitAsync(token);
-            try
+            foreach (var lease in ready)
             {
-                await queue.DeleteMessageAsync(lease.Id, lease.Receipt, token);
-                lease.Deleted = true;
-                lock (sync) held.Remove(lease);
-                capacity.Release();
+                await lease.Exclusion.WaitAsync(token);
+                try
+                {
+                    await queue.DeleteMessageAsync(lease.Id, lease.Receipt, token);
+                    lease.Deleted = true;
+                    lock (sync) held.Remove(lease);
+                    capacity.Release();
+                }
+                catch (Exception error) when (error is not OperationCanceledException) { throw Failure("completion", error); }
+                finally { lease.Exclusion.Release(); }
             }
-            catch (Exception error) when (error is not OperationCanceledException) { throw Failure("completion", error); }
-            finally { lease.Exclusion.Release(); }
-        }
-    }, ct);
+        }, ct);
+    }
 
     async Task Renew()
     {

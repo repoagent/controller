@@ -91,12 +91,12 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
         while (true)
         {
             var lease = await durable!.Receive(ct);
-            if (lease.Discussion == -1) refresh!.Request();
+            if (lease.Hint is DurableWorkHint.CheckoutRefresh) refresh!.Request();
             else
             {
-                var succeeded = lease.Discussion == 0 ? await bridge.Poll(ct) : await bridge.Observe(lease.Discussion, ct);
+                var succeeded = lease.Hint is DurableWorkHint.Discussion discussion ? await bridge.Observe(discussion.Number, ct) : await bridge.Poll(ct);
                 if (!succeeded) throw new IOException("Durable webhook observation failed; queued work is retained for recovery");
-                Log.Write("durable-webhook-observed", $"discussion={lease.Discussion}");
+                Log.Write("durable-webhook-observed", $"hint={lease.Hint}");
             }
             durable.Observed(lease);
         }
@@ -105,7 +105,7 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
     async Task CompleteDurable(CancellationToken ct)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-        while (await timer.WaitForNextTickAsync(ct)) await durable!.CompleteAtIdle(refresh!, ct);
+        while (await timer.WaitForNextTickAsync(ct)) await durable!.CompleteAtIdle(refresh!.CommitAtIdle, ct);
     }
 
     async Task Receive(HttpListener listener, string secret, CancellationToken ct)
@@ -182,7 +182,7 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             if (payload["ref"] is not JsonValue reference || !reference.TryGetValue<string>(out var pushedRef) ||
                 pushedRef.Length is 0 or > 1024 || pushedRef.Any(char.IsControl)) return 400;
             if (pushedRef != refresh.DefaultRef) return 204;
-            if (durable is not null) await durable.Enqueue(-1, ct);
+            if (durable is not null) await durable.Enqueue(new DurableWorkHint.CheckoutRefresh(), ct);
             else refresh.Request(); // Persist the hint before acknowledging; only the worker touches Git/native.
             Log.Write("webhook-delivery", $"delivery={delivery} event=push scheduled=True");
             return 202;
@@ -197,7 +197,7 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             Log.Write("webhook-ignored", $"delivery={delivery} discussion={number} reason=own-comment");
             return 204;
         }
-        if (durable is not null) await durable.Enqueue(number, ct);
+        if (durable is not null) await durable.Enqueue(new DurableWorkHint.Discussion(number), ct);
         else if (!Schedule(number)) return 503;
         Log.Write("webhook-delivery", $"delivery={delivery} event={eventName} action={action} discussion={number} scheduled=True");
         return 202;

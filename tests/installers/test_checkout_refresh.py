@@ -811,7 +811,7 @@ class CheckoutRefreshTests(unittest.TestCase):
     def test_durable_webhooks_retain_unfinished_native_work_and_admit_additional_input(self):
         with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
             with self.controller(f, 'mode=webhook-fixed'):
-                f.wait('durable-webhook-observed discussion=0')
+                f.wait('durable-webhook-observed hint=reconcile')
                 def eventually_count(expected):
                     deadline = time.monotonic() + 15
                     while True:
@@ -831,16 +831,16 @@ class CheckoutRefreshTests(unittest.TestCase):
                 request = self.rpc(f, 'thread/start')
                 self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
                 request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-                f.wait('durable-webhook-observed discussion=1')
+                f.wait('durable-webhook-observed hint=discussion:1')
                 self.assertGreater(queue_operation('count'), 0, 'Native acknowledgment cannot release unfinished work')
                 self.assertEqual(queue_operation('peek'), 0, 'Invisible received work must remain retained')
                 f.provider.discussions[0]['body'] += ' additional input'
                 self.assertEqual(deliver(), 202)
                 request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-                f.wait('durable-webhook-observed discussion=1')
+                f.wait('durable-webhook-observed hint=discussion:1')
                 self.assertGreater(queue_operation('count'), 0, 'Additional input must remain admissible while the same turn is active')
                 self.assertEqual(deliver(), 202)  # Unchanged content must not repeat accepted native input.
-                f.wait('durable-webhook-observed discussion=1')
+                f.wait('durable-webhook-observed hint=discussion:1')
                 self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Duplicate delivery repeated native input')
                 self.terminal(f, 'S1', 'T1')
                 eventually_count(0)
@@ -862,7 +862,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 request = self.rpc(f, 'thread/start')
                 self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
                 request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-                f.wait('durable-webhook-observed discussion=0')
+                f.wait('durable-webhook-observed hint=reconcile')
                 proof = json.loads(pids.read_text())
                 def running(pid):
                     try: return Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1][0] != 'Z'
@@ -888,6 +888,30 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual(f.process.wait(timeout=20), 1)
                 self.assertGreater(queue_operation('count'), 0, 'A foreign binding must remain available for manual inspection')
                 self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Foreign queued work admitted native input')
+
+    def test_push_at_durable_idle_commit_retains_its_hold_before_refresh(self):
+        with self.fixture(webhooks=True) as f, self.durable_queue(f) as queue_operation:
+            queue_operation('idle-race')
+
+    def test_uncertain_durable_send_stops_an_active_turn_after_the_service_committed(self):
+        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
+            f.provider.discussions = [self.discussion(1)]
+            marker = f.directory / 'drop-next-queue-send'
+            f.environment['CONTROLLER_TEST_DROP_QUEUE_SEND'] = str(marker)
+            with self.controller(f, 'mode=webhook-fixed'):
+                request = self.rpc(f, 'thread/start')
+                self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+                f.wait('durable-webhook-observed hint=reconcile')
+                saved = f.state.read_bytes()
+                marker.touch()
+                try: self.assertNotEqual(self.durable_delivery(f), 202)
+                except (http.client.RemoteDisconnected, ConnectionResetError): pass  # Runtime closed during fail-stop.
+                self.assertFalse(marker.exists(), 'The fixture never forwarded and lost the committed send response')
+                self.assertGreaterEqual(queue_operation('count'), 2, 'Azurite must contain the accepted hint and unfinished startup work')
+                self.assertEqual(f.process.wait(timeout=10), 1, 'An ambiguous enqueue left native work running')
+                self.assertTrue(json.loads(f.journal.read_text())['active'])
+                self.assertEqual(f.state.read_bytes(), saved)
 
 
 if __name__ == '__main__':
