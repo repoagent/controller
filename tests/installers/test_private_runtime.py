@@ -497,6 +497,12 @@ class DockerPrivateImportTests(unittest.TestCase):
                         selected, '/opt/repoagent/runtime.py').stdout.decode().split()[0]
         self.assertEqual(actual, hashlib.sha256((ROOT / 'container/runtime.py').read_bytes()).hexdigest())
         def cleanup():
+            inspected = subprocess.run(['docker', 'container', 'inspect', '--format', '{{json .Config.Labels}}', name],
+                                       capture_output=True, text=True, timeout=15)
+            if inspected.returncode == 0:
+                labels = json.loads(inspected.stdout)
+                if labels.get('io.repoagent.owner') == 'private-runtime-v1' and labels.get('io.repoagent.instance') == instance:
+                    docker('rm', name)
             for storage in STORAGE:
                 resource = name + '-' + storage
                 inspected = subprocess.run(['docker', 'volume', 'inspect', '--format', '{{json .Labels}}', resource],
@@ -517,6 +523,17 @@ class DockerPrivateImportTests(unittest.TestCase):
                 'configure', '--repository', 'owner/repository', '--app-id', '123', '--broker-url', BROKER,
                 '--enrollment-file', str(source)], env=environment, capture_output=True, text=True, timeout=60)
             self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
+            # A stopped owned container exercises the actual selected-field
+            # inspection template too; no controller process is started.
+            mounts = []
+            for storage in STORAGE:
+                destination = '/workspace' if storage == 'workspace' else '/data/' + storage
+                access = ',readonly' if storage in ('config', 'enrollment') else ''
+                mounts += ['--mount', f'type=volume,src={name}-{storage},dst={destination}{access}']
+            docker('create', '--name', name, '--user', '1000',
+                   '--label', 'io.repoagent.owner=private-runtime-v1', '--label', 'io.repoagent.instance=' + instance,
+                   '--label', 'io.repoagent.storage=container', '--label', 'io.repoagent.image=' + selected,
+                   *mounts, selected, 'start')
             # A remote daemon has no access to this workstation's checkout.
             # Keep the actual engine/volumes and reject client-file bind mounts
             # at its CLI boundary; the public rerun must still inspect safely.
@@ -531,6 +548,30 @@ class DockerPrivateImportTests(unittest.TestCase):
             repeated = subprocess.run(['pwsh', '-NoProfile', '-File', str(ROOT / 'repoagent.ps1'),
                 'configure', '--repository', 'owner/repository', '--app-id', '123', '--broker-url', BROKER,
                 '--enrollment-file', str(source)], env=remote_environment,
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+            # Exercise the exported lifecycle gate with Legacy quoting, after
+            # normal discovery selects the real Docker image and owned volumes.
+            legacy = directory / 'legacy-host.ps1'
+            legacy.write_text("$ErrorActionPreference = 'Stop'\n"
+                              "Import-Module (Join-Path $env:REPOAGENT_TEST_HOST_ROOT 'scripts/local-runtime.psm1') -DisableNameChecking\n"
+                              "$null = Initialize-LocalRuntime $env:REPOAGENT_INSTANCE $env:REPOAGENT_IMAGE $false $false (Join-Path $PSScriptRoot 'host')\n"
+                              "$PSNativeCommandArgumentPassing = 'Legacy'\n"
+                              "Assert-LocalRuntimeAction 'configure' @()\n"
+                              "exit $LASTEXITCODE\n")
+            repeated = subprocess.run(['pwsh', '-NoProfile', '-File', str(legacy)],
+                env=dict(remote_environment, REPOAGENT_TEST_HOST_ROOT=str(ROOT)),
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
+            # The complete public CLI also performs quoted Docker label and
+            # container discovery before reaching the streamed helper.
+            legacy.write_text("$PSNativeCommandArgumentPassing = 'Legacy'\n"
+                              "& (Join-Path $env:REPOAGENT_TEST_HOST_ROOT 'repoagent.ps1') @args\n"
+                              "exit $LASTEXITCODE\n")
+            repeated = subprocess.run(['pwsh', '-NoProfile', '-File', str(legacy),
+                'configure', '--repository', 'owner/repository', '--app-id', '123', '--broker-url', BROKER,
+                '--enrollment-file', str(source)],
+                env=dict(remote_environment, REPOAGENT_TEST_HOST_ROOT=str(ROOT)),
                 capture_output=True, text=True, timeout=60)
             self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
             def python(code, *, readonly=False, success=True):

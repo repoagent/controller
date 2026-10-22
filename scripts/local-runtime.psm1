@@ -18,7 +18,8 @@ function Get-Resource([string]$Kind, [string]$Name) {
         return @{ Labels = (Invoke-Docker volume inspect --format '{{json .Labels}}' $Name | ConvertFrom-Json -AsHashtable) }
     }
     # Deliberately exclude environment variables and unrelated container settings.
-    $format = '{"Id":{{json .Id}},"Image":{{json .Image}},"User":{{json .Config.User}},"Entrypoint":{{json .Config.Entrypoint}},"Cmd":{{json .Config.Cmd}},"Labels":{{json .Config.Labels}},"Mounts":{{json .Mounts}},"Running":{{json .State.Running}}}'
+    # Legacy native argument passing strips embedded double quotes.
+    $format = '{{printf `{%s:%s,%s:%s,%s:%s,%s:%s,%s:%s,%s:%s,%s:%s,%s:%s}` (json `Id`) (json .Id) (json `Image`) (json .Image) (json `User`) (json .Config.User) (json `Entrypoint`) (json .Config.Entrypoint) (json `Cmd`) (json .Config.Cmd) (json `Labels`) (json .Config.Labels) (json `Mounts`) (json .Mounts) (json `Running`) (json .State.Running)}}'
     $description = Invoke-Docker container inspect --format $format $Name | ConvertFrom-Json -AsHashtable
     if ($description -isnot [Collections.IDictionary]) { throw 'Malformed selected container inspection.' }
     return $description
@@ -114,7 +115,7 @@ function Assert-CompatibleContainer([string]$DirectKey, [string]$ExpectedImage =
         if ($existing.Labels['io.repoagent.image'] -cne $existing.Image) { throw 'Container launch identity differs.' }
     }
     $expectedImage = Invoke-Docker image inspect --format '{{.Id}}' $ExpectedImage
-    $role = Invoke-Docker image inspect --format '{{index .Config.Labels "io.repoagent.role"}}:{{.Config.User}}' $expectedImage
+    $role = Invoke-Docker image inspect --format '{{index .Config.Labels `io.repoagent.role`}}:{{.Config.User}}' $expectedImage
     if ($role -ne 'controller:1000' -or $existing.Image -ne $expectedImage -or $existing.User -ne '1000' -or
         @($existing.Entrypoint).Count -ne 3 -or
         -not [StringComparer]::Ordinal.Equals($existing.Entrypoint[0], '/usr/bin/python3') -or
@@ -179,7 +180,7 @@ function Invoke-LocalHelper([string]$Operation, $Marker) {
     # workstation path. Keep its existing arguments and JSON stdin unchanged.
     $program = [IO.File]::ReadAllText($source, [Text.UTF8Encoding]::new($false, $true))
     $request = @{ source=$program; input=$inputText } | ConvertTo-Json -Depth 3 -Compress
-    $bootstrap = 'import io,json,sys; request=json.load(sys.stdin); sys.stdin=io.TextIOWrapper(io.BytesIO(request["input"].encode("utf-8"))); sys.argv=sys.argv[1:]; exec(compile(request["source"],sys.argv[0],"exec"))'
+    $bootstrap = "import io,json,sys; request=json.load(sys.stdin); sys.stdin=io.TextIOWrapper(io.BytesIO(request['input'].encode('utf-8'))); sys.argv=sys.argv[1:]; exec(compile(request['source'],sys.argv[0],'exec'))"
     $output = $request | & docker run --pull never --rm -i --network none --user 1000 @mounts --entrypoint /usr/bin/python3 $script:helperImage -E -c $bootstrap /source/local-lifecycle.py $script:helperImage $Operation
     if ($LASTEXITCODE -ne 0) { throw 'Selected lifecycle state is unconfirmed; inspect private file safety and binding.' }
     return Read-HostJson ($output -join "`n")
@@ -371,7 +372,7 @@ function Test-LaunchEquality($Left, $Right) {
 }
 function Confirm-LocalImage([string]$Reference) {
     $id = Invoke-Docker image inspect --format '{{.Id}}' $Reference
-    $role = Invoke-Docker image inspect --format '{{index .Config.Labels "io.repoagent.role"}}:{{.Config.User}}' $id
+    $role = Invoke-Docker image inspect --format '{{index .Config.Labels `io.repoagent.role`}}:{{.Config.User}}' $id
     $entry = Invoke-Docker image inspect --format '{{json .Config.Entrypoint}}' $id | ConvertFrom-Json
     if ($id -cnotmatch '^sha256:[a-f0-9]{64}$' -or $role -cne 'controller:1000' -or @($entry).Count -ne 3 -or
         ($entry -join "`n") -cne "/usr/bin/python3`n-E`n/opt/repoagent/runtime.py") { throw 'An available immutable UID1000 controller image with the supported entrypoint is required.' }
