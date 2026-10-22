@@ -1,10 +1,11 @@
-"""Private persistent layout for a fresh, never-enrolled Azure controller."""
+"""Private persistent layout, setup endpoint and first Azure controller activation."""
 import fcntl
 import http.server
 import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 
@@ -22,7 +23,14 @@ def private_file(info):
         raise ValueError('Expected an owned private regular file.')
 
 
-def initialize(share, binding):
+def read_private_json(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor) as saved:
+        private_file(os.fstat(saved.fileno()))
+        return json.load(saved)
+
+
+def initialize(share, binding, *, setup_only=True):
     if share.is_symlink() or not share.is_dir():
         raise ValueError('Expected the mounted share directory.')
     # The dedicated share is trusted to this UID. Serialize competing initializers;
@@ -39,11 +47,8 @@ def initialize(share, binding):
             raise ValueError('Expected the owned runtime parent directory.')
         marker = root / 'binding.json'
         if marker.exists() or marker.is_symlink():
-            descriptor = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(descriptor) as saved:
-                private_file(os.fstat(saved.fileno()))
-                if json.load(saved) != binding:
-                    raise ValueError('Persistent controller binding differs; refusing adoption.')
+            if read_private_json(marker) != binding:
+                raise ValueError('Persistent controller binding differs; refusing adoption.')
         elif any(root.iterdir()):
             raise ValueError('Refusing nonempty unbound runtime storage.')
         else:
@@ -66,7 +71,7 @@ def initialize(share, binding):
                          'data/tools', 'data/control', 'data/participant'):
             private_directory(root / relative)
         enrollment = root / 'data/enrollment/enrollment.json'
-        if enrollment.exists() or enrollment.is_symlink():
+        if setup_only and (enrollment.exists() or enrollment.is_symlink()):
             raise ValueError('Already enrolled; setup cannot replace an active controller.')
         sessions = root / 'data/credentials/codex/sessions'
         if sessions.is_symlink():
@@ -79,6 +84,35 @@ def initialize(share, binding):
         # Root squash maps the platform's mount helper to an unprivileged UID.
         # Search-only access lets it mount subpaths without exposing private data.
         root.chmod(0o711)
+
+
+def prepare_runtime(settings, secret_path):
+    """Prepare the existing image runtime without launching the native controller."""
+    config = Path('/data/config/settings.json')
+    configured = config.exists() or config.is_symlink()
+    if configured:
+        value = read_private_json(config)
+        if not isinstance(value, dict) or any(value.get(key) != expected for key, expected in settings.items()):
+            raise ValueError('Saved runtime settings differ; use the controlled configuration lifecycle.')
+    with secret_path.open('rb') as source:
+        enrollment = source.read(65537)
+    if not 1 <= len(enrollment) <= 65536:
+        raise ValueError('Expected 1..65536 bytes of private enrollment.')
+    runtime = [sys.executable, '-E', '/opt/repoagent/runtime.py']
+    if not configured:
+        arguments = ['configure', '--clone', '--enrollment-file', '/data/enrollment/enrollment.json']
+        for key, option in (
+            ('repository', '--repository'), ('appId', '--app-id'), ('installationId', '--installation-id'),
+            ('brokerUrl', '--broker-url'), ('mode', '--mode'), ('publicUrl', '--public-url'),
+            ('mentionUser', '--mention-user'), ('model', '--model'), ('webSearch', '--web-search'),
+            ('toolUpdates', '--tool-updates'), ('listenPort', '--listen-port'),
+            ('reconcileInterval', '--reconcile-interval'),
+        ):
+            arguments.extend((option, str(settings[key])))
+        subprocess.run(runtime + arguments, check=True)
+    # The existing transport secures the target. Only the native consumer owns
+    # enrollment parsing, scope, expiry and broker authorization policy.
+    subprocess.run(runtime + ['import-enrollment'], input=enrollment, check=True)
 
 
 class SetupHealth(http.server.BaseHTTPRequestHandler):
@@ -112,12 +146,15 @@ if __name__ == '__main__':
     os.umask(0o077)
     if os.getuid() != 1000:
         raise ValueError('The controller runtime requires UID1000.')
-    if sys.argv[1] == 'initialize':
-        initialize(Path('/mnt/controller'), json.loads(sys.argv[2]))
+    if sys.argv[1] in ('initialize', 'initialize-active'):
+        initialize(Path('/mnt/controller'), json.loads(sys.argv[2]), setup_only=sys.argv[1] == 'initialize')
         print('Private persistent controller setup initialized; UID1000.', flush=True)
     elif sys.argv[1] == 'serve':
         print('Setup required; controller has not started.', flush=True)
         with http.server.HTTPServer(('0.0.0.0', 8080), SetupHealth) as server:
             server.serve_forever()
+    elif sys.argv[1] == 'activate':
+        prepare_runtime(json.loads(sys.argv[2]), Path('/run/enrollment/enrollment.json'))
+        os.execv(sys.executable, [sys.executable, '-E', '/opt/repoagent/runtime.py', 'start'])
     else:
-        raise ValueError('Expected initialize or serve.')
+        raise ValueError('Expected initialize, initialize-active, serve or activate.')

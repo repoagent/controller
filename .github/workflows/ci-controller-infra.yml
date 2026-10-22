@@ -17,6 +17,8 @@ jobs:
         with:
           persist-credentials: false
       - run: az bicep install --version v0.48.1
-      - run: az bicep build --file infra/controller/main.bicep --outfile "$RUNNER_TEMP/controller.json"
-      - run: az bicep build --file infra/controller/stage.bicep --outfile "$RUNNER_TEMP/controller-stage.json"
+      - run: |
+          for template in infra/controller/*.bicep; do
+            "$HOME/.azure/bin/bicep" build "$template" --outfile "$RUNNER_TEMP/$(basename "$template" .bicep).json"
+          done
       - run: python3 -m unittest discover -s tests/controller -v

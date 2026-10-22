@@ -13,8 +13,8 @@ param appId int = 5387625
 param installationId int = 173558660
 param brokerOrigin string = 'https://repoagent-auth.livelydune-309701b4.swedencentral.azurecontainerapps.io'
 
-var image = 'ghcr.io/repoagent/controller@sha256:594806ede9f1ce039b1fabf37c504e82443104b6327d2adf2b0cd3ce4ed120a3'
-var setup = loadTextContent('setup-runtime.py')
+var image = loadJsonContent('image.json').image
+var setup = loadTextContent('controller-runtime.py')
 var binding = {
   version: 1
   repository: repository

@@ -1,4 +1,4 @@
-# StoryBeam controller foundation
+# StoryBeam controller on Azure
 
 This foundation creates a dedicated VNet, network-restricted classic NFS 4.1 share, Consumption Container Apps environment and manual smoke job. The job uses the [accepted public controller image](https://github.com/repoagent/controller/actions/runs/39713172578) by immutable digest and runs its installed tools as UID 1000. There are no registry credentials, active controller, enrollment secrets or changes to the existing auth service. Local StoryBeam keeps running.
 
@@ -53,4 +53,60 @@ The non-root initializer creates private0700 `runtime/data` and `runtime/workspa
 
 **Use this template only before enrollment.** It is not a controller update/rollback command. Reapplying setup to an enrolled app is refused by initialization and can make that revision unavailable. Active hosting must preflight configuration/sign-in and use supported owner settlement before enabling a fresh cloud enrollment. Never copy the working local enrollment or use an existing device concurrently. Real cloud inference, signed webhook delivery and controlled update/rollback remain #37/#34/#38 work.
 
-The setup script is runtime filesystem/HTTP code embedded by Bicep, not an Azure deployment wrapper. All Azure settings stay declarative. It uses the accepted public image with no private registry or credentials. Native Container Apps API `2026-07-01` follows the current [resource schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.app/2026-07-01/containerapps), [init-container behavior](https://learn.microsoft.com/en-us/azure/container-apps/containers) and [storage subpaths](https://learn.microsoft.com/en-us/azure/container-apps/storage-mounts). Any future runtime-generated origin must combine `CONTAINER_APP_NAME` with `CONTAINER_APP_ENV_DNS_SUFFIX`; [CONTAINER_APP_HOSTNAME is revision-specific](https://learn.microsoft.com/en-us/azure/container-apps/environment-variables).
+The runtime script is filesystem/process/HTTP code embedded by Bicep, not an Azure deployment wrapper. All Azure settings stay declarative. All entrypoints share the accepted public image in `image.json`, with no private registry or credentials. Native Container Apps API `2026-07-01` follows the current [resource schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.app/2026-07-01/containerapps), [init-container behavior](https://learn.microsoft.com/en-us/azure/container-apps/containers) and [storage subpaths](https://learn.microsoft.com/en-us/azure/container-apps/storage-mounts). The active origin combines the app name and environment DNS suffix; [CONTAINER_APP_HOSTNAME is revision-specific](https://learn.microsoft.com/en-us/azure/container-apps/environment-variables).
+
+## First activation
+
+Keep the local controller running during cloud preflight. In the setup app, sign into Codex using its own private home:
+
+```sh
+az containerapp exec --resource-group rg-storybeam-repoagent-controller \
+  --name storybeam-repoagent-controller --command /bin/sh
+# Inside that shell; complete the displayed account sign-in before continuing:
+codex -c 'cli_auth_credentials_store="file"' login --device-auth
+codex login status
+exit
+```
+
+This writes cloud credentials under `/data/credentials/codex`; never copy the local controller's enrollment. Check that the installed App grants `discussions:write`, `contents:read` and `repository_hooks:write`, and that the selected installation covers StoryBeam/StoryBeam. The webhook profile cannot fall back to polling.
+
+Create a dedicated enrollment vault and identity. The explicitly selected signed-in operator gets Secrets Officer on this vault; the controller gets Secrets User there. Neither grant covers the auth-service vault, signing keys or Table. These use the latest stable [Key Vault API](https://learn.microsoft.com/en-us/azure/templates/microsoft.keyvault/vaults) (`2026-05-15`) and [managed identity API](https://learn.microsoft.com/en-us/azure/templates/microsoft.managedidentity/2024-11-30/userassignedidentities).
+
+```sh
+operator_id=$(az ad signed-in-user show --query id --output tsv)
+az bicep build --file infra/controller/credentials.bicep --outfile /tmp/repoagent-controller-credentials.json
+az deployment group create --resource-group rg-storybeam-repoagent-controller \
+  --name controller-credentials --template-file infra/controller/credentials.bicep \
+  --parameters operatorPrincipalId="$operator_id" --query properties.outputs
+vault_name=$(az deployment group show --resource-group rg-storybeam-repoagent-controller \
+  --name controller-credentials --query properties.outputs.vaultName.value --output tsv)
+```
+
+After preflight, stop the local controller with its existing instance selection (`repoagent.ps1 stop`). Use `scripts/revoke-approval.ps1` with its exact saved `-ApprovalStatePath`, `-EnrollmentFile` and `-Apply -NonInteractive` to withdraw the selected marker and close that device. Its result deliberately reports outstanding tokens as unsettled: closure alone does not release ownership. Observe positive broker cleanup/settlement and old-device denial before creating the cloud enrollment. Unknown capabilities remain blocked; never repair this with owner/counter/epoch resets.
+
+Use a fresh host state directory for the cloud device. The normal host flow saves the private enrollment before acknowledging it; retry with the same directory if interrupted. Run this only after settlement:
+
+```sh
+cloud_state="$HOME/.repoagent/enrollment/storybeam-azure"
+pwsh -NoProfile -File scripts/enroll-controller.ps1 \
+  -Repository StoryBeam/StoryBeam \
+  -BrokerOrigin https://repoagent-auth.livelydune-309701b4.swedencentral.azurecontainerapps.io \
+  -ApprovalVariable APPROVED_CONTROLLER -Profile webhook-clone \
+  -StateDirectory "$cloud_state" -Apply -NonInteractive
+secret_uri=$(az keyvault secret set --vault-name "$vault_name" \
+  --name controller-enrollment --file "$cloud_state/enrollment.json" --encoding utf-8 \
+  --query id --output tsv)
+secret_version=${secret_uri##*/}
+az bicep build --file infra/controller/runtime.bicep --outfile /tmp/repoagent-controller-runtime.json
+az deployment group create --resource-group rg-storybeam-repoagent-controller \
+  --name controller-active --template-file infra/controller/runtime.bicep \
+  --parameters enrollmentVersion="$secret_version" --query properties.outputs
+```
+
+Secret bytes travel from a private file to Key Vault and from its pinned version through a mounted secret into the existing private import transport. They never appear in source, command arguments or deployment outputs. [Versioned Key Vault references](https://learn.microsoft.com/en-us/azure/container-apps/manage-secrets#key-vault-secret-uri-and-secret-rotation) avoid automatic selection of newer enrollment versions. Initial active allocation is one .25 CPU/.5 GiB replica, about $19.71/month before grants plus storage/vault/network costs. This is not a spending cap.
+
+Startup validates the persistent binding, configures the existing native runtime once, then starts clone mode at the stable HTTPS origin. Matching restarts retain saved settings, Codex sign-in/trust and native history. Conflicting settings fail before importing enrollment. Inspect the actual ready revision and `/health/ready`, signed webhook receipt, canonical checkout, accepted native turn and retained history after a controlled restart; TCP platform readiness alone does not prove those outcomes.
+
+## Activation recovery
+
+If upload or activation fails, retain the cloud host journal and every persistent file. Inspect the real deployment/revision and its logs, correct the cause and retry the same enrollment/version/settings. Never create a second device or restore the old approval to work around failure. A settings conflict requires inspection and the controlled configuration lifecycle; startup will not silently overwrite it. Do not reapply `stage.bicep` after enrollment, delete the share or copy local enrollment into cloud. `runtime.bicep` owns first activation; controlled subsequent image update/rollback remains [#38](https://github.com/repoagent/controller/issues/38).
