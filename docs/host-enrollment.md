@@ -37,6 +37,8 @@ Only `/repos/{owner}/{repo}/agents/variables` authorizes this flow; organization
 
 A variable POST is attempted at most once per invocation, with its attempt recorded beforehand. A lost response stays unresolved. Rerun with the same state to inspect it; a previously attempted or observed marker that disappeared is never automatically restored. Enrollment limits host GitHub work to12 calls, individual transport calls to15seconds, and polling to the original pending deadline with at leastfive seconds between expensive broker operations.
 
+Temporary broker HTTP429 responses during start, completion or acknowledgment retry the same private request at most twice. The host waits for `Retry-After` (at leastfive seconds), or sixty seconds when the broker supplies no header. Invalid delays, delays over120seconds, exhausted retries or waits that would exceed the original pending deadline or fifteen-minute host work budget stop with private state retained. Other failures still require inspection and resuming the same state. Public approval writes are never automatically retried.
+
 ## Private state and recovery
 
 The directory must be owned by the current user: Linux0700 with files0600, or Windows protected current-user-only DACLs. Unsafe ownership/modes, links and reparse points fail closed. The host uses exclusive temporary files, flushed contents and an atomic flushed rename, then reopens the private enrollment before acknowledging it. Use a local filesystem supporting these operations.

@@ -9,6 +9,7 @@ import http.server
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import ssl
 import sys
@@ -16,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import test_private_runtime as runtime
 
@@ -38,6 +40,7 @@ class EnrollmentJourney:
         self.model.write_text(json.dumps({'variables': {}}), encoding='utf-8')
         self.log = self.directory / 'github.jsonl'
         self.events, self.errors = [], []
+        self.responses = {}
         self.observation_times = []
         self.deadline = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=15)).isoformat()
         self.marker = json.dumps(dict(version=2, approvalKind='repository-agent-variable', githubHost='github.com',
@@ -118,7 +121,11 @@ class EnrollmentJourney:
                         self.end_headers()
                         return
                     data = json.dumps(result).encode('utf-8')
-                    self.send_response(200)
+                    responses = journey.responses.get(self.path.rsplit('/', 1)[-1], [])
+                    status, retry_after = responses.pop(0) if responses else (200, None)
+                    self.send_response(status)
+                    if retry_after is not None:
+                        self.send_header('Retry-After', retry_after)
                     self.send_header('Content-Length', str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)
@@ -145,10 +152,23 @@ class EnrollmentJourney:
                     journey.errors.append(repr(error))
                     self.send_error(500)
 
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(str(cert), str(key))
-        server.socket = context.wrap_socket(server.socket, server_side=True)
+
+        class Server(http.server.ThreadingHTTPServer):
+            def get_request(self):
+                connection, address = super().get_request()
+                # Wrapping the listening socket handshakes inside accept without
+                # a timeout, preventing shutdown when a peer abandons TLS.
+                connection.settimeout(5)
+                try:
+                    return context.wrap_socket(connection, server_side=True), address
+                except Exception:
+                    connection.close()
+                    raise
+
+        server = Server(('127.0.0.1', 0), Handler)
+        self.server = server
         self.origin = f'https://localhost:{server.server_port}'
         threading.Thread(target=server.serve_forever, daemon=True).start()
         case.addCleanup(server.server_close)
@@ -240,7 +260,8 @@ class EnrollmentJourney:
             raise LostResponse()
         return {'state': 'active'}
 
-    def run(self, *, saved=False, action='Enroll', extra=()):
+    # The host has a 15-minute work budget; retain one minute for startup and cleanup.
+    def run(self, *, saved=False, action='Enroll', extra=(), timeout=16 * 60):
         args = ['pwsh', '-NoLogo', '-NoProfile', '-File', str(ROOT / 'install.ps1'),
                 '-Action', action, '-NonInteractive', '-Apply', '-StateDirectory', str(self.state)]
         if not saved:
@@ -250,7 +271,7 @@ class EnrollmentJourney:
             if self.variable != 'APPROVED_CONTROLLER':
                 args += ['-ApprovalVariable', self.variable.lower()]
         result = subprocess.run(args + list(extra), cwd=self.directory, env=self.environment,
-                                input='', capture_output=True, text=True, encoding='utf-8', timeout=50)
+                                input='', capture_output=True, text=True, encoding='utf-8', timeout=timeout)
         output = result.stdout + result.stderr
         for secret in (self.environment['GH_TOKEN'], 's' * 43):
             self.case.assertNotIn(secret, output)
@@ -314,6 +335,29 @@ class HostEnrollmentTests(unittest.TestCase):
         runtime.PrivateRuntimeTests.setUpClass.__func__(cls)
         cls.docker_build = cls.fixture_build
         cls.fixture_build = gh_build
+
+    def test_abandoned_tls_connection_does_not_block_journey_cleanup(self):
+        journey = EnrollmentJourney(self)
+        handshake_started = threading.Event()
+        original = ssl.SSLSocket.do_handshake
+
+        def observe_handshake(connection, *args, **kwargs):
+            if connection.server_side:
+                handshake_started.set()
+            return original(connection, *args, **kwargs)
+
+        # Observe the real server handshake so shutdown cannot win a race with accept.
+        with patch.object(ssl.SSLSocket, 'do_handshake', observe_handshake):
+            with socket.create_connection(('127.0.0.1', journey.server.server_port), timeout=5) as peer:
+                self.assertTrue(handshake_started.wait(5), 'Server did not accept the stalled TLS peer')
+                cleanup = threading.Thread(target=journey.server.shutdown, daemon=True)
+                cleanup.start()
+                try:
+                    cleanup.join(8)
+                    self.assertFalse(cleanup.is_alive(), 'Abandoned TLS handshake blocked journey cleanup')
+                finally:
+                    peer.close()
+                    cleanup.join(5)
 
     def test_preview_identifies_selected_repository_agent_variable_without_mutations(self):
         with tempfile.TemporaryDirectory(prefix='enrollment preview ') as temporary:
@@ -472,6 +516,89 @@ class HostEnrollmentTests(unittest.TestCase):
         self.assertEqual(journey.events[-2], journey.events[-1])
         self.assertFalse(any('POST' in event['argv'] for event in journey.github()))
         self.assertEqual(journey.errors, [])
+
+    def test_temporary_ack_rate_limit_retries_same_persisted_receipt(self):
+        journey = EnrollmentJourney(self)
+        journey.responses['acknowledgment'] = [(429, '6')]
+        result = journey.run()
+        self.assertEqual(result.returncode, 0, journey.diagnostic(result))
+        acknowledgments = [event for event in journey.events if event['path'].endswith('/acknowledgment')]
+        self.assertEqual(len(acknowledgments), 2)
+        self.assertEqual(acknowledgments[0], acknowledgments[1])
+        observations = [at for path, at in journey.observation_times if path.endswith('/acknowledgment')]
+        self.assertGreaterEqual(observations[1] - observations[0], 6)
+        self.assertEqual(journey.read('approval.json')['deadline'], journey.deadline)
+        self.assertTrue(journey.read('recovery.json')['acknowledged'])
+        self.assertEqual(sum('POST' in event['argv'] for event in journey.github()), 1)
+        self.assertEqual(journey.errors, [])
+
+    def test_rate_limit_without_header_waits_for_quota_window_using_same_request(self):
+        journey = EnrollmentJourney(self)
+        journey.responses['enrollments'] = [(429, None)]
+        result = journey.run(timeout=100)
+        self.assertEqual(result.returncode, 0, journey.diagnostic(result))
+        starts = [event for event in journey.events if event['path'] == '/v2/enrollments']
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(starts[0], starts[1])
+        self.assertGreaterEqual(journey.observation_times[1][1] - journey.observation_times[0][1], 60)
+        self.assertEqual(journey.read('approval.json')['deadline'], journey.deadline)
+        self.assertEqual(sum('POST' in event['argv'] for event in journey.github()), 1)
+        self.assertEqual(journey.errors, [])
+
+    def test_repeated_rate_limit_stops_with_private_state_then_resumes_without_new_approval(self):
+        journey = EnrollmentJourney(self)
+        journey.responses['acknowledgment'] = [(429, '1')] * 3
+        result = journey.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(sum(event['path'].endswith('/acknowledgment') for event in journey.events), 3)
+        before = journey.read('enrollment.json')
+        self.assertFalse(journey.read('recovery.json')['acknowledged'])
+        self.assertTrue(journey.read('recovery.json')['ackAttempted'])
+        # Arrange a saved ACK recovery whose original pending deadline has now
+        # elapsed, without making this host-client test wait fifteen minutes.
+        approval = journey.read('approval.json')
+        approval['deadline'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=1)).isoformat()
+        (journey.state / 'approval.json').write_text(json.dumps(approval), encoding='utf-8')
+        journey.responses['acknowledgment'] = [(429, '1')]
+        previous_ack_count = sum(event['path'].endswith('/acknowledgment') for event in journey.events)
+        result = journey.run(saved=True)
+        self.assertNotEqual(result.returncode, 0, 'Resumed ACK must not retry429 past its saved deadline')
+        self.assertIn('deadline', result.stdout)
+        self.assertEqual(sum(event['path'].endswith('/acknowledgment') for event in journey.events), previous_ack_count + 1)
+        self.assertEqual(journey.read('approval.json')['deadline'], approval['deadline'])
+        self.assertFalse(journey.read('recovery.json')['acknowledged'])
+        # An operator can still explicitly replay an already-active ACK after
+        # expiry. A successful idempotent response requires no automatic wait.
+        result = journey.run(saved=True)
+        self.assertEqual(result.returncode, 0, journey.diagnostic(result))
+        self.assertEqual(journey.read('enrollment.json'), before)
+        self.assertEqual(sum('POST' in event['argv'] for event in journey.github()), 1)
+        self.assertEqual(journey.errors, [])
+
+    def test_rate_limit_cannot_wait_beyond_original_pending_deadline(self):
+        journey = EnrollmentJourney(self)
+        journey.deadline = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=80)).isoformat()
+        journey.responses['acknowledgment'] = [(429, '120')]
+        result = journey.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('deadline', result.stdout)
+        self.assertEqual(sum(event['path'].endswith('/acknowledgment') for event in journey.events), 1)
+        self.assertEqual(journey.read('approval.json')['deadline'], journey.deadline)
+        self.assertFalse(journey.read('recovery.json')['acknowledged'])
+        self.assertEqual(journey.errors, [])
+
+    def test_invalid_or_excessive_retry_delay_stops_without_another_broker_request(self):
+        for retry_after in ('invalid', '121'):
+            with self.subTest(retry_after=retry_after):
+                journey = EnrollmentJourney(self)
+                journey.responses['enrollments'] = [(429, retry_after)]
+                result = journey.run()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Retry-After', result.stdout)
+                self.assertEqual(len(journey.events), 1)
+                self.assertFalse((journey.state / 'enrollment.json').exists())
+                self.assertFalse(any('POST' in event['argv'] for event in journey.github()))
+                self.assertEqual(journey.errors, [])
 
     def test_conflicting_approval_stops_without_replacement(self):
         journey = EnrollmentJourney(self)
