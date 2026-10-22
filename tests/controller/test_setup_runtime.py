@@ -107,12 +107,22 @@ class SetupTests(unittest.TestCase):
                 origin = f'http://127.0.0.1:{server.server_port}'
                 with urllib.request.urlopen(origin + '/health/setup', timeout=3) as response:
                     self.assertEqual(json.load(response), {'mode': 'setup-required', 'controllerStarted': False})
-                for path, status in [('/health/ready', 503), ('/data/enrollment/enrollment.json', 404),
-                                     ('/../../binding.json', 404), ('/', 404)]:
-                    with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as caught:
-                        urllib.request.urlopen(origin + path, timeout=3)
-                    self.assertEqual(caught.exception.code, status)
-                    caught.exception.close()
+                for method, path, status in [
+                    ('GET', '/health/ready', 503), ('HEAD', '/health/ready', 503),
+                    ('GET', '/data/enrollment/enrollment.json', 404),
+                    ('POST', '/data/enrollment/enrollment.json', 404),
+                    ('OPTIONS', '/data/enrollment/enrollment.json', 404),
+                    ('CUSTOM', '/data/enrollment/enrollment.json', 404),
+                    ('GET', '/../../binding.json', 404), ('GET', '/', 404),
+                ]:
+                    with self.subTest(method=method, path=path):
+                        request = urllib.request.Request(origin + path, method=method)
+                        with self.assertRaises(urllib.error.HTTPError) as caught:
+                            urllib.request.urlopen(request, timeout=3)
+                        with caught.exception as response:
+                            self.assertEqual(response.code, status)
+                            if method == 'HEAD':
+                                self.assertEqual(response.read(), b'')
             finally:
                 server.shutdown()
                 worker.join(timeout=3)

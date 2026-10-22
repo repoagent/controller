@@ -82,6 +82,13 @@ def initialize(share, binding):
 
 
 class SetupHealth(http.server.BaseHTTPRequestHandler):
+    def __getattr__(self, name):
+        # BaseHTTPRequestHandler dispatches through do_METHOD. Every method has
+        # the same metadata-only route policy; none can configure the runtime.
+        if name.startswith('do_'):
+            return self.do_GET
+        raise AttributeError(name)
+
     def setup(self):
         self.request.settimeout(5)
         super().setup()
@@ -94,7 +101,8 @@ class SetupHealth(http.server.BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != 'HEAD':
+            self.wfile.write(body)
 
     def log_message(self, *_):
         pass  # No request paths, queries or client input in console logs.
