@@ -128,7 +128,10 @@ function Confirm-Stopped([string[]]$AllowedActive = @()) {
         }
         $remaining = @($revisions | Where-Object { $_.name -cnotin $AllowedActive })
         $replicas = 0
-        foreach ($revision in $remaining) { $replicas += @(Read-Replicas $revision.name).Count }
+        foreach ($revision in $remaining) {
+            $actualReplicas = Read-Replicas $revision.name
+            $replicas += $actualReplicas.Count
+        }
         if ($replicas -eq 0) { return }
         Start-Sleep -Seconds 2
     } while ($clock.Elapsed.TotalSeconds -lt 120)
@@ -147,8 +150,9 @@ function Wait-Ready([string]$Revision, [string]$ExpectedImage, [string]$Hash) {
             # Wake a setup revision which may legitimately have a zero minimum.
             $expectedHost = $Revision + $app.properties.configuration.ingress.fqdn.Substring($AppName.Length)
             if ($candidate[0].properties.fqdn -cne $expectedHost) { throw 'Revision hostname differs from the retained app domain.' }
-            $null = Invoke-WebRequest -Uri "https://$expectedHost/health/setup" -SkipHttpErrorCheck -MaximumRedirection 0 -TimeoutSec 15
-            if (@(Read-Replicas $Revision).Count -eq 1) { return }
+            $null = Invoke-WebRequest -Uri "https://$expectedHost/health/setup" -SkipHttpErrorCheck -MaximumRedirection 0 -TimeoutSec 45
+            $actualReplicas = Read-Replicas $Revision
+            if ($actualReplicas.Count -eq 1) { return }
         }
         Start-Sleep -Seconds 2
     } while ($clock.Elapsed.TotalSeconds -lt 180)
