@@ -9,6 +9,7 @@ import http.server
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import ssl
 import sys
@@ -16,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import test_private_runtime as runtime
 
@@ -150,10 +152,23 @@ class EnrollmentJourney:
                     journey.errors.append(repr(error))
                     self.send_error(500)
 
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(str(cert), str(key))
-        server.socket = context.wrap_socket(server.socket, server_side=True)
+
+        class Server(http.server.ThreadingHTTPServer):
+            def get_request(self):
+                connection, address = super().get_request()
+                # Wrapping the listening socket handshakes inside accept without
+                # a timeout, preventing shutdown when a peer abandons TLS.
+                connection.settimeout(5)
+                try:
+                    return context.wrap_socket(connection, server_side=True), address
+                except Exception:
+                    connection.close()
+                    raise
+
+        server = Server(('127.0.0.1', 0), Handler)
+        self.server = server
         self.origin = f'https://localhost:{server.server_port}'
         threading.Thread(target=server.serve_forever, daemon=True).start()
         case.addCleanup(server.server_close)
@@ -319,6 +334,29 @@ class HostEnrollmentTests(unittest.TestCase):
         runtime.PrivateRuntimeTests.setUpClass.__func__(cls)
         cls.docker_build = cls.fixture_build
         cls.fixture_build = gh_build
+
+    def test_abandoned_tls_connection_does_not_block_journey_cleanup(self):
+        journey = EnrollmentJourney(self)
+        handshake_started = threading.Event()
+        original = ssl.SSLSocket.do_handshake
+
+        def observe_handshake(connection, *args, **kwargs):
+            if connection.server_side:
+                handshake_started.set()
+            return original(connection, *args, **kwargs)
+
+        # Observe the real server handshake so shutdown cannot win a race with accept.
+        with patch.object(ssl.SSLSocket, 'do_handshake', observe_handshake):
+            with socket.create_connection(('127.0.0.1', journey.server.server_port), timeout=5) as peer:
+                self.assertTrue(handshake_started.wait(5), 'Server did not accept the stalled TLS peer')
+                cleanup = threading.Thread(target=journey.server.shutdown, daemon=True)
+                cleanup.start()
+                try:
+                    cleanup.join(8)
+                    self.assertFalse(cleanup.is_alive(), 'Abandoned TLS handshake blocked journey cleanup')
+                finally:
+                    peer.close()
+                    cleanup.join(5)
 
     def test_preview_identifies_selected_repository_agent_variable_without_mutations(self):
         with tempfile.TemporaryDirectory(prefix='enrollment preview ') as temporary:
