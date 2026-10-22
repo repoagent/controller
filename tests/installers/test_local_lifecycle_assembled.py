@@ -220,7 +220,7 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         mounts = [argument for storage in STORAGE for argument in ('--mount', 'type=volume,src=' + self.name + '-' + storage + ',dst=/data/' + storage)]
         mounts += ['--mount', 'type=volume,src=' + self.unrelated + ',dst=/data/unrelated,readonly']
         return self.docker('run', '--rm', '--network', 'none', '--user', '1000', *mounts,
-                           '--entrypoint', '/usr/bin/python3', getattr(self, 'target', self.image), '-E', '-c', code).stdout
+                           '--entrypoint', '/usr/bin/python3', getattr(self, 'target', self.image), '-E', '-c', 'import os; os.umask(0o077); ' + code).stdout
 
     def uninstall(self, state=None, apply=True):
         arguments = ['-Action', 'Uninstall', '-Instance', self.instance, '-StateDirectory', str(state or self.directory / 'host'),

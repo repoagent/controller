@@ -156,7 +156,6 @@ function Get-LocalRuntimeContext {
 }
 function Invoke-LocalHelper([string]$Operation, $Marker) {
     if (-not $brokerMode) { throw 'Selected instance is not managed.' }
-    if ($Operation -ne 'inspect' -and $record -and $helperImage -cnotin @($record.currentImage,$record.priorImage)) { throw 'Restore a recorded current or prior write helper before changing private state.' }
     if ($Operation -eq 'clear' -and (Get-Resource container $containerName).Running) { throw 'Selected runtime must remain stopped before clearing.' }
     foreach ($storage in $storageNames + @('enrollment')) {
         $resource = Get-Resource volume "$containerName-$storage"
@@ -176,7 +175,7 @@ function Invoke-LocalHelper([string]$Operation, $Marker) {
         $mounts += @('--mount', "type=volume,src=$containerName-$storage,dst=/data/$storage$access")
     }
     $inputText = if ($Marker) { $Marker | ConvertTo-Json -Depth 8 -Compress } else { '' }
-    $output = $inputText | & docker run --pull never --rm -i --network none --user 1000 @mounts --entrypoint /usr/bin/python3 $script:helperImage -E /source/local-lifecycle.py $Operation
+    $output = $inputText | & docker run --pull never --rm -i --network none --user 1000 @mounts --entrypoint /usr/bin/python3 $script:helperImage -E /source/local-lifecycle.py $script:helperImage $Operation
     if ($LASTEXITCODE -ne 0) { throw 'Selected lifecycle state is unconfirmed; inspect private file safety and binding.' }
     return Read-HostJson ($output -join "`n")
 }

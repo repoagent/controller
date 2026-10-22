@@ -182,7 +182,7 @@ def launch_state(value):
 
 
 def main():
-    operation = sys.argv[1]
+    operation = sys.argv[-1]
     existing = marker(read(MARKER)) if checked(MARKER, missing=True) else None
     saved = launch_state(read(LAUNCH)) if checked(LAUNCH, missing=True) else None
     required = checked(REQUIRED, missing=True)
@@ -190,6 +190,8 @@ def main():
         return {'marker': existing, 'launchState': saved, 'launchRequired': required}
     if required and saved is None:
         raise ValueError('Missing authoritative launch state')
+    if saved is not None and sys.argv[1] not in (saved['currentImage'], saved['priorImage']):
+        raise ValueError('Restore a recorded current or prior write helper')
     expected = document(sys.stdin.buffer.read(65537))
     if operation in ('launch', 'restore'):
         if existing is not None:
