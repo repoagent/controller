@@ -15,7 +15,7 @@ param brokerOrigin string = 'https://repoagent-auth.livelydune-309701b4.swedence
 @description('Keep one setup replica available while completing device authentication.')
 @allowed([0, 1])
 param setupMinReplicas int = 0
-@description('Setup-only storage candidate. SMB requires real permission, symlink and locking acceptance before activation.')
+@description('NFS supports the active storage path. SMB is setup-only: native SQLite persistence failed in real Azure checks.')
 @allowed(['NfsAzureFile', 'AzureFile'])
 param storageType string = 'NfsAzureFile'
 @description('Empty for the original setup profile; otherwise use this dedicated queue through system identity.')

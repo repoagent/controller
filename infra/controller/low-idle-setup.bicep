@@ -8,7 +8,8 @@ param location string = 'swedencentral'
 @description('Zero by default. Select one temporarily for interactive setup or an explicit storage check.')
 @allowed([0, 1])
 param setupMinReplicas int = 0
-@description('Leave false for metadata-only provider checks. First activation requires settled ownership and a fresh enrollment.')
+@description('Setup only: real SMB native SQLite persistence failed. Activation remains blocked under issue #37.')
+@allowed([false])
 param activate bool = false
 @secure()
 param enrollment string = ''

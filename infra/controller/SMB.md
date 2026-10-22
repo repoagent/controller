@@ -6,15 +6,27 @@ Standard LRS storage account with a classic Hot SMB share, and a setup-only app.
 The SMB share, dedicated work queue, environment storage definition and queue-scoped role assignment are child resources. The app uses its embedded system-assigned identity; it adds no separate identity resource. There is no
 custom VNet/NSG, separately billed managed network group, NFS, registry, vault,
 user-assigned identity, Log Analytics workspace or compatibility Job in this
-candidate. Setup defaults to the immutable public selection in `image.json`; activation requires selecting a public image containing the queue bootstrap and SMB fixes.
+candidate. Setup defaults to the immutable public selection in `image.json`.
+This SMB profile currently accepts setup-only deployment.
 
-This is a candidate for [#37](https://github.com/repoagent/controller/issues/37),
-prepared by [#145](https://github.com/repoagent/controller/issues/145). It has not
-passed real Azure storage or scale-to-zero acceptance. The exact working local
-Docker controller must keep running. The original NFS resources and their data
-remain in place; creating this candidate would not remove their existing bill.
-No controller enrollment, account credentials or broker/GitHub work occurs during
-this setup deployment.
+Real Azure setup checks passed on 2026-10-22: the three-resource profile reached
+zero replicas, woke through HTTP and an invisible queue message, held the replica
+while that message existed, and returned to zero after its exact deletion. The
+system identity exercised the queue successfully.
+
+**Active controller use is blocked.** Native Codex SQLite initialization fails on
+the actual SMB mount with `SQLITE_BUSY`. The documented `CODEX_SQLITE_HOME`
+override permits startup on ephemeral local storage, but a fresh SQLite directory
+loses native thread metadata when resuming the retained SMB rollout. It is not a
+durable-state workaround. Do not use the first-activation steps below on this
+profile until [#37](https://github.com/repoagent/controller/issues/37) establishes
+a compatible persistence design. Setup health and working queue scaling do not
+establish that result.
+
+The exact working local Docker controller must keep running. Original NFS data
+and the Azure-owned account cache remain preserved; this candidate does not
+remove their existing bill. Setup deployment does not enroll a device or start
+broker, GitHub or native work.
 
 ## Compile and inspect
 
@@ -140,7 +152,7 @@ discounts. Subscription-wide ACA free grants are shared with the auth service.
 See the [dated cost assessment](../../docs/research/2026-10-22-container-apps-idle-cost.md)
 and [Azure Files billing](https://learn.microsoft.com/en-us/azure/storage/files/understanding-billing).
 
-## Queue scaling and first activation
+## Queue scaling and gated activation design
 
 The profile always provisions `controller-work` in the same Standard account and
 gives the app's system identity **Storage Queue Data Contributor** at that queue
@@ -169,7 +181,9 @@ replica counts; compiled JSON and declared minimums are not acceptance evidence.
 The operator applying this Bicep must be able to assign the narrowly scoped role;
 the auth service's separate Contributor-only OIDC identity is not used or changed.
 
-For first activation, select a published immutable `controllerImage` containing
+The following activation design remains unavailable on the current SMB profile;
+`activate` is restricted to `false` until native persistence passes #37. For a
+future compatible profile, select a published immutable `controllerImage` containing
 issues #147/#151/#153/#155. Positively settle the old controller's authority through
 the supported host/broker lifecycle before enrolling a fresh cloud device. Persist
 the private enrollment file before ACK. Preserve or explicitly sign into the cloud
