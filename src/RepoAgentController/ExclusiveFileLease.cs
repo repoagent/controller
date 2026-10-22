@@ -9,7 +9,10 @@ static partial class ExclusiveFileLease
 {
     public static FileStream Open(string path)
     {
-        var options = new FileStreamOptions { Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite, Share = FileShare.None };
+        // SMB rejects a second flock on the same handle. On Unix, let the explicit
+        // acquisition below own exclusion; ReadWrite avoids FileStream's implicit
+        // lock when writing to SMB/NFS. Windows still requires exclusive sharing.
+        var options = new FileStreamOptions { Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite, Share = OperatingSystem.IsWindows() ? FileShare.None : FileShare.ReadWrite };
         if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
         var file = new FileStream(path, options);
         try
