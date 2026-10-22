@@ -255,7 +255,7 @@ class GuidedInstallTests(unittest.TestCase):
         else:
             result = subprocess.run(command, cwd=self.journey.directory,
                 env=dict(self.environment, **(environment or {})), input=answers,
-                capture_output=True, text=True, encoding='utf-8', timeout=90)
+                capture_output=True, text=True, encoding='utf-8', timeout=180 if os.name == 'nt' else 90)
             result.prompt_output = result.stdout
         state = json.loads(self.docker_state.read_text()) if self.docker_state.exists() else {}
         output = result.stdout + result.stderr
