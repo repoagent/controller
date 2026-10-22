@@ -187,7 +187,11 @@ try {
     $revisions = Read-Revisions
     $active = @($revisions | Where-Object { $_.properties.active })
     if ($Action -eq 'Status' -or -not $Apply) {
-        $selectedImage = if ($Action -eq 'Rollback') { $journal.previousImage } elseif ($Action -eq 'Status') { $app.properties.template.containers[0].image } else { $Image }
+        $selectedImage = $Image
+        if ($Action -eq 'Rollback') { $selectedImage = $journal.previousImage }
+        elseif ($Action -eq 'Status') {
+            $selectedImage = if ($active.Count -eq 1) { $active[0].properties.template.containers[0].image } else { $null }
+        }
         @{ action=$Action; apply=$false; resourceId=$resourceId; image=$selectedImage; journalPhase=$journal.phase
            activeRevisions=@($active.name); nativeAcceptance='requires native and signed-webhook verification' } | ConvertTo-Json -Depth 8
         return
@@ -211,6 +215,7 @@ try {
             $null = Set-AzureUpdatePhase $context draining
             $null = Invoke-Azure @('containerapp','revision','set-mode','--name',$AppName,'--resource-group',$ResourceGroup,'--mode','multiple')
             if ((Assert-Configuration $hash).properties.configuration.activeRevisionsMode -cne 'Multiple') { throw 'Multiple-revision control is unconfirmed.' }
+            Set-Traffic $previous.name
             Write-Host 'Stopping the previous revision before replacement.'
             $null = Invoke-Azure @('containerapp','revision','deactivate','--name',$AppName,'--resource-group',$ResourceGroup,'--revision',$previous.name)
             Confirm-Stopped
@@ -253,7 +258,9 @@ try {
             }
             Confirm-Stopped @($journal.previousRevision)
             $null = Assert-Configuration $journal.configurationSha256
-            $null = Invoke-Azure @('containerapp','revision','activate','--name',$AppName,'--resource-group',$ResourceGroup,'--revision',$journal.previousRevision)
+            if (-not $previous[0].properties.active) {
+                $null = Invoke-Azure @('containerapp','revision','activate','--name',$AppName,'--resource-group',$ResourceGroup,'--revision',$journal.previousRevision)
+            }
             Wait-Ready $journal.previousRevision $journal.previousImage $journal.configurationSha256
             $null = Set-AzureUpdatePhase $context rollback-ready
             Confirm-Stopped @($journal.previousRevision)
