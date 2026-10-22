@@ -272,6 +272,31 @@ class GuidedInstallTests(unittest.TestCase):
             'brokerRequests': [event['path'] for event in self.journey.events]}), flush=True)
         return result, state
 
+    def test_model_override_keeps_recorded_launch_usable(self):
+        result, state = self.run_guided()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        credential, approval = self.journey.read('enrollment.json'), self.journey.read('approval.json')
+        binding = {key: credential[key] for key in ('repository', 'repositoryId', 'deviceId', 'appId', 'installationId', 'brokerOrigin')}
+        binding.update(profile='polling', approvalKind='repository-agent-variable', approvalVariable='APPROVED_CONTROLLER',
+                       expectedValueSha256=approval['expectedValueSha256'], githubEnvironment=None, environmentId=None)
+        launch = dict(binding=binding, settings=state['settings'])
+        record = dict(schemaVersion=1, instance='guided-red', volumes={part: 'repoagent-guided-red-' + part for part in runtime.STORAGE},
+                      storageOriginImage=IMAGE, currentImage=IMAGE, currentLaunch=launch, priorImage=IMAGE, priorLaunch=launch,
+                      targetImage=IMAGE, targetLaunch=launch, pending='none', operationId='f' * 32, revision=3)
+        mirror = self.journey.read('launch.json'); mirror['launchState'] = record
+        path = self.journey.state / 'launch.json'; path.write_text(json.dumps(mirror))
+        inspection = self.owned / 'inspection.json'
+        inspection.write_text(json.dumps(dict(marker=None, launchState=record, launchRequired=True)))
+        environment = {'INSTALLER_DOCKER_LIFECYCLE_INSPECT_FILE': str(inspection)}
+        before = snapshot(self.journey.state)
+        changed, after = self.run_guided(saved=True, overrides={'Model': 'different-model'}, environment=environment)
+        self.assertNotEqual(changed.returncode, 0, changed.stdout + changed.stderr)
+        self.assertEqual(snapshot(self.journey.state), before, 'Rejected settings must preserve the usable host mirror')
+        self.assertEqual(after['settings'], state['settings'])
+        self.assertTrue(after['running'])
+        resumed, _ = self.run_guided(saved=True, environment=environment)
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+
     def test_failed_credential_import_keeps_enrollment_and_minimal_resume_recovers_saved_auth(self):
         result, state = self.run_guided(environment={'INSTALLER_DOCKER_FAIL_OPERATION': 'import-codex-auth'})
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)

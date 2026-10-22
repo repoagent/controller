@@ -172,6 +172,8 @@ if image.startswith('python@sha256:') and operation[:1] == ['/source/scripts/com
 if options.get('--entrypoint') == 'sh':
     finish(1 if os.environ.get('INSTALLER_UNREADABLE_KEY') else 0)
 if '/source/local-lifecycle.py' in operation:
+    if operation[-1] == 'inspect' and (inspection := os.environ.get('INSTALLER_DOCKER_LIFECYCLE_INSPECT_FILE')):
+        finish(output=Path(inspection).read_text())
     if operation[-1] == 'inspect' and os.environ.get('INSTALLER_DOCKER_LEGACY_ABSENT_MARKER') == '1':
         finish(output='{"marker":null,"launchState":null}')
     finish(2, 'Actual lifecycle helper transport required')

@@ -258,6 +258,22 @@ def assert_review_recovery_regressions(test):
         finally:
             test.environment.pop('REPOAGENT_LIFECYCLE_MISSING_IMAGE')
     test.assertEqual(test.update('-Rollback', '-Apply').returncode, 0)
+    for selection in [('-Image', test.target), ('-Rollback',)]:
+        with test.subTest(finding='GH-4343535481-missing-enrollment', selection=selection):
+            before = (host / 'launch.json').read_bytes()
+            authority = test.files("from pathlib import Path; print(Path('/data/enrollment/launch-state.json').read_text())")
+            selected = json.loads(test.docker('container', 'inspect', test.name).stdout)[0]['Id']
+            credential = test.files("from pathlib import Path; print(Path('/data/enrollment/enrollment.json').read_text())")
+            try:
+                test.files("from pathlib import Path; Path('/data/enrollment/enrollment.json').unlink()")
+                refused = test.update(*selection, '-Apply')
+                test.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+                observed = json.loads(test.docker('container', 'inspect', test.name).stdout)[0]
+                test.assertEqual((observed['Id'], observed['State']['Running']), (selected, True))
+                test.assertEqual((host / 'launch.json').read_bytes(), before)
+                test.assertEqual(test.files("from pathlib import Path; print(Path('/data/enrollment/launch-state.json').read_text())"), authority)
+            finally:
+                test.files("from pathlib import Path; Path('/data/enrollment/enrollment.json').write_text(" + repr(credential) + ")")
     with test.subTest(finding='P003-corrupt-mirror-uninstall'):
         approved = json.loads((host / 'approval.json').read_text())['marker']
         scenario, log = test.directory / 'scenario.json', test.directory / 'gh.jsonl'
