@@ -106,7 +106,7 @@ public static class BridgeCommand
                     var http = transport ?? ownedHttp!;
                     using var credentials = broker is null
                         ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone))
-                        : GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone), expectedRepositoryId: result.GetValue(repositoryId));
+                        : GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone), expectedRepositoryId: result.GetValue(repositoryId), expectedInstallationId: result.GetValue(installationId));
                     await using var durable = queue is null ? null : new DurableWebhookWork(queue, repo, result.GetValue(repositoryId)!.Value,
                         result.GetValue(appId)!, result.GetValue(installationId)!.Value, BrokerTokenSource.ParseOrigin(broker!));
                     if (durable is not null) await durable.Start(cancellationToken);

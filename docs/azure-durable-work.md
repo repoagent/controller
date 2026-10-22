@@ -51,6 +51,9 @@ or cancelled enqueue also stops the runtime because the service may already
 have committed the hint. Duplicate hints reread observed state rather
 than replaying an accepted input. Autonomous full-poll and checkout timers are
 disabled in this mode; startup and authenticated delivery hints reconcile.
+Safe deferred refreshes retry the retained generation at idle with a five-second
+backoff. Temporary lookup failures need no new delivery; uncertain updates still
+require manual recovery and retain their work.
 
 Lease loss, failed observation, unknown native activity and failed checkpoint
 or queue completion stop the runtime while retaining recovery evidence.

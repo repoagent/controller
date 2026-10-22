@@ -797,16 +797,59 @@ class CheckoutRefreshTests(unittest.TestCase):
         finally:
             subprocess.run(['docker', 'rm', '--force', container], check=True, capture_output=True, text=True, timeout=15)
 
-    def durable_delivery(self, f, signature=True, repository_id=345, own=False):
+    def durable_delivery(self, f, signature=True, repository_id=345, own=False, payload=None, event='discussion_comment'):
         settings = json.loads(Path(str(f.state) + '.webhook/hook.json').read_text())
-        body = json.dumps(dict(repository=dict(full_name='owner/project', id=repository_id),
+        body = json.dumps(payload if payload is not None else dict(repository=dict(full_name='owner/project', id=repository_id),
             action='edited', discussion=dict(number=1), sender=dict(login='test-app[bot]' if own else 'participant', type='Bot' if own else 'User'))).encode()
         digest = hmac.new(settings['secret'].encode(), body, hashlib.sha256).hexdigest()
         with closing(http.client.HTTPConnection('127.0.0.1', f.webhook_port, timeout=10)) as connection:
-            connection.request('POST', '/github/webhook', body, {'X-GitHub-Event': 'discussion_comment',
+            connection.request('POST', '/github/webhook', body, {'X-GitHub-Event': event,
                 'X-GitHub-Delivery': '00000000-0000-4000-8000-000000000001',
                 'X-Hub-Signature-256': 'sha256=' + (digest if signature else '0' * 64)})
             response = connection.getresponse(); response.read(); return response.status
+
+    def test_invalid_durable_installation_leaves_no_startup_work(self):
+        with self.fixture(webhooks=True) as f, self.durable_queue(f) as queue_operation:
+            f.command[f.command.index('--installation-id') + 1] = '999'
+            result = subprocess.run(f.command, env=f.environment, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('CLI installation differs from enrollment', result.stdout + result.stderr)
+            self.assertEqual(queue_operation('count'), 0, 'Invalid installation persisted foreign nonexpiring startup work')
+            self.assertEqual(f.provider.requests, [], 'Local binding refusal must precede broker or GitHub contact')
+
+    def test_durable_pending_refresh_recovers_without_another_delivery(self):
+        with self.fixture(webhooks=True) as f, self.durable_queue(f) as queue_operation:
+            with self.controller(f, 'mode=webhook-fixed'):
+                f.wait('durable-webhook-observed hint=reconcile')
+                deadline = time.monotonic() + 15
+                while queue_operation('count'):
+                    if time.monotonic() >= deadline: self.fail('Initial reconciliation did not release its queue hold')
+                    time.sleep(.1)
+                f.provider.ref_status = 503
+                target = self.publish(f)
+                payload = dict(repository=dict(full_name='owner/project', id=345), ref='refs/heads/main', after=target)
+                self.assertEqual(self.durable_delivery(f, payload=payload, event='push'), 202)
+                f.wait('refresh-pending')
+                pending = json.loads(f.journal.read_text())
+                self.assertGreater(pending['requested'], pending['completed'])
+                self.assertFalse(pending['blocked'])
+                self.assertNotIn('applying', pending)
+                self.assertGreater(queue_operation('count'), 0)
+                f.provider.ref_status = None
+                deadline = time.monotonic() + 20
+                while json.loads(f.owner.read_text())['commit'] != target:
+                    if time.monotonic() >= deadline:
+                        self.assertEqual(json.loads(f.owner.read_text())['commit'], target,
+                                         'Recovered provider did not refresh retained work without another delivery')
+                    time.sleep(.1)
+                deadline = time.monotonic() + 15
+                while queue_operation('count'):
+                    if time.monotonic() >= deadline: self.fail('Recovered refresh did not release its retained work')
+                    time.sleep(.1)
+                completed = json.loads(f.journal.read_text())
+                self.assertEqual(completed['requested'], pending['requested'], 'Retry created an autonomous refresh request')
+                self.assertEqual(completed['completed'], completed['requested'])
+                self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
 
     def test_durable_webhooks_retain_unfinished_native_work_and_admit_additional_input(self):
         with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
