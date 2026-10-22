@@ -517,6 +517,22 @@ class DockerPrivateImportTests(unittest.TestCase):
                 'configure', '--repository', 'owner/repository', '--app-id', '123', '--broker-url', BROKER,
                 '--enrollment-file', str(source)], env=environment, capture_output=True, text=True, timeout=60)
             self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
+            # A remote daemon has no access to this workstation's checkout.
+            # Keep the actual engine/volumes and reject client-file bind mounts
+            # at its CLI boundary; the public rerun must still inspect safely.
+            transport = directory / 'remote-docker'
+            transport.mkdir()
+            shutil.copyfile(Path(__file__).with_name('docker_fixture.py'), transport / 'docker')
+            (transport / 'docker').chmod(0o755)
+            remote_environment = dict(environment,
+                PATH=str(transport) + os.pathsep + environment['PATH'],
+                REPOAGENT_LIFECYCLE_REAL_DOCKER=shutil.which('docker'),
+                REPOAGENT_LIFECYCLE_NO_HOST_BINDS='1')
+            repeated = subprocess.run(['pwsh', '-NoProfile', '-File', str(ROOT / 'repoagent.ps1'),
+                'configure', '--repository', 'owner/repository', '--app-id', '123', '--broker-url', BROKER,
+                '--enrollment-file', str(source)], env=remote_environment,
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
             def python(code, *, readonly=False, success=True):
                 mount = 'type=volume,src=' + volume + ',dst=/data/enrollment' + (',readonly' if readonly else '')
                 return docker('run', '--rm', '--network', 'none', '--user', '1000', '--mount', mount,

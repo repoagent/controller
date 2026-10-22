@@ -169,13 +169,18 @@ function Invoke-LocalHelper([string]$Operation, $Marker) {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe helper source link.' }
         $item = if ($item -is [IO.DirectoryInfo]) { $item.Parent } else { $item.Directory }
     }
-    $mounts = @('--mount', "type=bind,src=$source,dst=/source/local-lifecycle.py,readonly")
+    $mounts = @()
     foreach ($storage in @('enrollment', 'config') + $(if ($Operation -eq 'clear') { @('credentials','state') } else { @() })) {
         $access = if ($Operation -in @('inspect','verify') -or ($storage -eq 'config' -and $Operation -ne 'restore') -or ($storage -eq 'enrollment' -and $Operation -eq 'restore')) { ',readonly' } else { '' }
         $mounts += @('--mount', "type=volume,src=$containerName-$storage,dst=/data/$storage$access")
     }
     $inputText = if ($Marker) { $Marker | ConvertTo-Json -Depth 8 -Compress } else { '' }
-    $output = $inputText | & docker run --pull never --rm -i --network none --user 1000 @mounts --entrypoint /usr/bin/python3 $script:helperImage -E /source/local-lifecycle.py $script:helperImage $Operation
+    # The daemon may be remote: stream the trusted host program, never bind a
+    # workstation path. Keep its existing arguments and JSON stdin unchanged.
+    $program = [IO.File]::ReadAllText($source, [Text.UTF8Encoding]::new($false, $true))
+    $request = @{ source=$program; input=$inputText } | ConvertTo-Json -Depth 3 -Compress
+    $bootstrap = 'import io,json,sys; request=json.load(sys.stdin); sys.stdin=io.TextIOWrapper(io.BytesIO(request["input"].encode("utf-8"))); sys.argv=sys.argv[1:]; exec(compile(request["source"],sys.argv[0],"exec"))'
+    $output = $request | & docker run --pull never --rm -i --network none --user 1000 @mounts --entrypoint /usr/bin/python3 $script:helperImage -E -c $bootstrap /source/local-lifecycle.py $script:helperImage $Operation
     if ($LASTEXITCODE -ne 0) { throw 'Selected lifecycle state is unconfirmed; inspect private file safety and binding.' }
     return Read-HostJson ($output -join "`n")
 }
