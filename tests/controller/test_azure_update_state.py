@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -95,6 +96,31 @@ class AzureUpdateStateTests(unittest.TestCase):
                 result = self.run_state(body)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual((self.state / 'update.json').read_bytes(), before)
+
+
+@unittest.skipUnless(shutil.which('pwsh'), 'PowerShell 7 lifecycle command')
+class LifecycleCommandTests(unittest.TestCase):
+    def test_failed_cli_cannot_appear_successful_or_disclose_its_response(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'provider.py'
+            script.write_text('import sys\nprint("PRIVATE_RESPONSE")\n'
+                              'print("PRIVATE_DIAGNOSTIC", file=sys.stderr)\nsys.exit(int(sys.argv[1]))\n')
+            def literal(value):
+                return "'" + str(value).replace("'", "''") + "'"
+            command = ("$ErrorActionPreference='Stop'; Import-Module " +
+                       literal(ROOT / 'scripts/azure/lifecycle-command.psm1') +
+                       ' -Force; Invoke-LifecycleCommand ' + literal(sys.executable) +
+                       ' @(' + literal(script) + ", '{code}')")
+            success = subprocess.run(['pwsh', '-NoLogo', '-NoProfile', '-Command', command.format(code=0)],
+                                     capture_output=True, text=True, timeout=15)
+            self.assertEqual(success.returncode, 0, success.stderr)
+            self.assertIn('PRIVATE_RESPONSE', success.stdout)
+            self.assertNotIn('PRIVATE_DIAGNOSTIC', success.stdout + success.stderr)
+            failure = subprocess.run(['pwsh', '-NoLogo', '-NoProfile', '-Command', command.format(code=7)],
+                                     capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(failure.returncode, 0, 'A failed provider request appeared successful')
+            self.assertNotIn('PRIVATE_RESPONSE', failure.stdout + failure.stderr)
+            self.assertNotIn('PRIVATE_DIAGNOSTIC', failure.stdout + failure.stderr)
 
 
 if __name__ == '__main__':
