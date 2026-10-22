@@ -57,9 +57,14 @@ resource storage 'Microsoft.Storage/storageAccounts@2026-09-01' = {
       bypass: 'None'
       defaultAction: 'Deny'
       ipRules: []
-      virtualNetworkRules: [{ id: network.outputs.subnetResourceIds[0], action: 'Allow' }]
+      // A deterministic ID also lets Storage validate this rule during redeployment.
+      virtualNetworkRules: [{
+        id: resourceId('Microsoft.Network/virtualNetworks/subnets', '${name}-vnet', 'container-apps')
+        action: 'Allow'
+      }]
     }
   }
+  dependsOn: [network]
 }
 
 resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2026-09-01' existing = {
