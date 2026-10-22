@@ -103,10 +103,10 @@ def verify_binding(expected, config=None):
     binding = expected['binding']
     config = read(Path('/data/config/settings.json')) if config is None else config
     fields = {'repository', 'appId', 'installationId', 'brokerUrl', 'keyPath', 'mentionUser', 'model', 'mode',
-              'publicUrl', 'listenPort', 'reconcileInterval', 'toolUpdates', 'webSearch', 'clone', 'enroll'}
+              'publicUrl', 'listenPort', 'reconcileInterval', 'toolUpdates', 'webSearch', 'clone', 'enroll', 'repositoryId'}
     if set(config) - fields or any(not isinstance(config.get(key), str) for key in ('repository', 'appId', 'brokerUrl', 'mode')):
         raise ValueError('Invalid runtime settings')
-    types = {'clone': bool, 'listenPort': int, 'reconcileInterval': int, 'enroll': list}
+    types = {'clone': bool, 'listenPort': int, 'reconcileInterval': int, 'enroll': list, 'repositoryId': int}
     for key, value in config.items():
         if value is not None and type(value) is not types.get(key, int if key == 'installationId' else str):
             raise ValueError('Invalid runtime setting type')
@@ -119,6 +119,8 @@ def verify_binding(expected, config=None):
             raise ValueError('Selected configuration differs')
     if config.get('installationId') and str(config['installationId']) != str(binding['installationId']):
         raise ValueError('Selected installation differs')
+    if config.get('repositoryId') is not None and config['repositoryId'] != binding['repositoryId']:
+        raise ValueError('Selected immutable repository differs')
     profile = ('polling' if config.get('mode') == 'polling' else 'webhook') + ('-clone' if config.get('clone') else '')
     if profile != binding['profile']:
         raise ValueError('Selected profile differs')
