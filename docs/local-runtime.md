@@ -104,6 +104,10 @@ Rollback and Image are mutually exclusive. Keep the current and prior images
 available locally. An older storage-origin image is not required after both
 recorded launch images have advanced.
 
+Image transitions require the private enrollment file. Guided reruns keep the
+recorded runtime settings; differing overrides are refused before modifying the
+host mirror.
+
 Update retains all seven volume identities, enrollment, Codex sign-in, workspace,
 history, state, tools and pending publication journals. It replaces only the
 selected proven container, with controlled downtime. Unrelated instances remain

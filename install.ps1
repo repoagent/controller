@@ -306,7 +306,10 @@ try {
         imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
         listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; toolUpdates=$ToolUpdates; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath }
-    if ($saved.launchState) { $plan['launchState'] = $saved.launchState }
+    if ($saved.launchState) {
+        if ($Apply) { Assert-LocalRuntimeAction Install @() $plan }
+        $plan['launchState'] = $saved.launchState
+    }
     Write-Host "Instance: $Instance; repository: $Repository; authentication: $Authentication; mode: $Mode"
     if ($resolvedClone) {
         Write-Host "Repository context: $resolvedProfile; Contents read, Discussions write$(if ($Mode -ne 'polling') { ', repository hooks write' }). Fresh instance and approval required."

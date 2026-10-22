@@ -179,7 +179,7 @@ function Invoke-LocalHelper([string]$Operation, $Marker) {
     if ($LASTEXITCODE -ne 0) { throw 'Selected lifecycle state is unconfirmed; inspect private file safety and binding.' }
     return Read-HostJson ($output -join "`n")
 }
-function Assert-LocalRuntimeAction([string]$Action, [string[]]$Arguments) {
+function Assert-LocalRuntimeAction([string]$Action, [string[]]$Arguments, $ProposedLaunch = $null) {
     if (-not $brokerMode -or $Action -in @('help','build','stop','logs','get','state','versions','Revoke','Uninstall')) { return }
     if ($Action -eq 'skills' -and @($Arguments)[0] -ne 'install') { return }
     $volume = Get-Resource volume "$containerName-enrollment"
@@ -191,6 +191,7 @@ function Assert-LocalRuntimeAction([string]$Action, [string[]]$Arguments) {
         -not (Test-LaunchEquality $state.launchState $mirror.launchState))) { throw 'Selected update is pending or its host mirror differs; use explicit Rollback.' }
     if ($state.launchState) {
         $choices = Get-LaunchChoices $state.launchState
+        if ($ProposedLaunch) { foreach ($field in $choices.Keys) { if ([string]$ProposedLaunch[$field] -cne $choices[$field]) { throw 'Proposed launch choices differ from volume authority; keep recorded choices.' } } }
         foreach ($field in $choices.Keys) { if ([string]$mirror[$field] -cne $choices[$field]) { throw 'Host launch choices differ from volume authority; use explicit Rollback.' } }
     }
 }

@@ -196,6 +196,8 @@ def main():
     if operation in ('launch', 'restore'):
         if existing is not None:
             raise ValueError('Selected instance is disabled')
+        if operation == 'launch':
+            checked(TARGETS[0])
         expected = launch_state(expected)
         if operation == 'restore' and (saved != expected or expected['pending'] != 'rollback'):
             raise ValueError('Recorded rollback intent required')
