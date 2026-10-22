@@ -41,9 +41,11 @@ az deployment group create \
   --query properties.outputs
 
 az containerapp show --resource-group rg-storybeam-repoagent-controller \
+  --subscription 46f7e5d6-05f3-435b-8089-6c63a203dbfa \
   --name storybeam-lean-controller \
   --query '{state:properties.provisioningState,origin:properties.configuration.ingress.fqdn,scale:properties.template.scale,volumes:properties.template.volumes}'
 az containerapp env show --resource-group rg-storybeam-repoagent-controller \
+  --subscription 46f7e5d6-05f3-435b-8089-6c63a203dbfa \
   --name storybeam-lean-environment \
   --query '{profiles:properties.workloadProfiles,network:properties.vnetConfiguration,logs:properties.appLogsConfiguration}'
 ```
@@ -51,6 +53,9 @@ az containerapp env show --resource-group rg-storybeam-repoagent-controller \
 Read the deployment's `storageAccountName` and `shareName` outputs, then inspect
 the actual account kind/SKU, secure transfer, public-blob denial, share protocol,
 Hot tier and quota with `az storage account show` and `az storage share-rm show`.
+Pass `--subscription 46f7e5d6-05f3-435b-8089-6c63a203dbfa` to both storage
+inspection commands too; a deployment's subscription flag does not select the
+Azure CLI default subscription.
 Inspect only nonsecret fields: do not print account keys, environment storage
 credentials, private files, tokens or the whole runtime environment.
 
