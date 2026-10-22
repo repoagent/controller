@@ -57,9 +57,14 @@ The runtime script is filesystem/process/HTTP code embedded by Bicep, not an Azu
 
 ## First activation
 
-Keep the local controller running during cloud preflight. In the setup app, sign into Codex using its own private home:
+Keep the local controller running during cloud preflight. Before opening the shell, keep one setup replica running for the device-authentication window and verify its setup endpoint:
 
 ```sh
+setup_origin=$(az deployment group create --resource-group rg-storybeam-repoagent-controller \
+  --name controller-setup --template-file infra/controller/stage.bicep \
+  --parameters setupMinReplicas=1 --query properties.outputs.publicOrigin.value --output tsv)
+curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 \
+  --max-time 45 "$setup_origin/health/setup"
 az containerapp exec --resource-group rg-storybeam-repoagent-controller \
   --name storybeam-repoagent-controller --command /bin/sh
 # Inside that shell; complete the displayed account sign-in before continuing:
@@ -68,7 +73,7 @@ codex login status
 exit
 ```
 
-This writes cloud credentials under `/data/credentials/codex`; never copy the local controller's enrollment. Check that the installed App grants `discussions:write`, `contents:read` and `repository_hooks:write`, and that the selected installation covers StoryBeam/StoryBeam. The webhook profile cannot fall back to polling.
+The setup endpoint returns 200; `/health/ready` intentionally returns 503. The explicit minimum keeps the shell available during authentication. After preflight, proceed to activation or, while still unenrolled, reapply setup with `setupMinReplicas=0` to allow idle scale-to-zero. This writes cloud credentials under `/data/credentials/codex`; never copy the local controller's enrollment. Check that the installed App grants `discussions:write`, `contents:read` and `repository_hooks:write`, and that the selected installation covers StoryBeam/StoryBeam. The webhook profile cannot fall back to polling.
 
 Create a dedicated enrollment vault and identity. The explicitly selected signed-in operator gets Secrets Officer on this vault; the controller gets Secrets User there. Neither grant covers the auth-service vault, signing keys or Table. These use the latest stable [Key Vault API](https://learn.microsoft.com/en-us/azure/templates/microsoft.keyvault/vaults) (`2026-05-15`) and [managed identity API](https://learn.microsoft.com/en-us/azure/templates/microsoft.managedidentity/2024-11-30/userassignedidentities).
 

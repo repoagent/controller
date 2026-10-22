@@ -399,7 +399,7 @@ try {
     else { $stage = 'start the selected runtime'; Invoke-Runtime @('start'); Write-Host 'Selected runtime is ready.' }
     Write-Host "Resume: ./install.ps1 -Instance '$Instance' -StateDirectory '$($StateDirectory.Replace("'", "''"))' -NonInteractive -Apply"
     Write-Host "Lifecycle: set REPOAGENT_INSTANCE=$Instance and REPOAGENT_IMAGE=$runtimeImageId; use ./repoagent.ps1 logs --follow, stop, start or restart."
-    Write-Host 'Image publication: scripts/publish-image.ps1. Azure setup with a public image and no ACR: infra/controller/README.md. This result establishes local readiness only.'
+    Write-Host 'Image publication is separate: scripts/publish-image.ps1. Azure planning is read-only: scripts/plan-azure.ps1. This result establishes local readiness only.'
 } catch {
     Write-Warning "Could not $stage. $diagnostic"
     Write-Host "Selected instance: $Instance. Retain the original state directory and rerun the same inputs with -Apply."
