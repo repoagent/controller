@@ -13,7 +13,7 @@ sealed class StateStore : IDisposable
     {
         this.path = path;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        lease = new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        lease = ExclusiveFileLease.Open(path + ".lock");
         try
         {
             onLockAcquired?.Invoke();

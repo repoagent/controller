@@ -24,7 +24,9 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         name, unrelated = 'repoagent-' + instance, 'test97-unrelated-' + uuid.uuid4().hex[:12]
         self.extra_images = []
         self.unrelated_id = None
-        image, parent_alias = None, 'repoagent-test97-parent:' + uuid.uuid4().hex
+        # Keep lazy parent-layer resolution in the public source repository.
+        # A Docker Hub alias can make containerd fetch GHCR blobs from Hub.
+        image, parent_alias = None, 'ghcr.io/repoagent/controller:test97-parent-' + uuid.uuid4().hex
         def docker(*args, data=None, success=True):
             result = subprocess.run(['docker', *args], input=data, text=True, capture_output=True, timeout=90)
             if success:
