@@ -7,7 +7,7 @@ param name string = 'storybeam-repoagent'
 param location string = 'swedencentral'
 
 // Public release accepted from main 0e1ac3405aaf88a1ebe2ad37585de8e883bfb4ec.
-var image = 'ghcr.io/repoagent/controller@sha256:594806ede9f1ce039b1fabf37c504e82443104b6327d2adf2b0cd3ce4ed120a3'
+var image = loadJsonContent('image.json').image
 var tags = {
   managedBy: 'repoagent-controller'
   repository: 'StoryBeam/StoryBeam'

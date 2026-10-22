@@ -13,7 +13,7 @@ import unittest
 import urllib.error
 import urllib.request
 
-SOURCE = Path(__file__).resolve().parents[2] / 'infra/controller/setup-runtime.py'
+SOURCE = Path(__file__).resolve().parents[2] / 'infra/controller/controller-runtime.py'
 spec = importlib.util.spec_from_file_location('setup_runtime', SOURCE)
 setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
@@ -104,6 +104,16 @@ class SetupTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'enrolled'):
             setup.initialize(self.share, BINDING)
         self.assertEqual(enrollment.read_bytes(), b'synthetic enrollment')
+
+    def test_active_layout_reuses_enrollment_while_setup_remains_refused(self):
+        setup.initialize(self.share, BINDING)
+        enrollment = self.root / 'data/enrollment/enrollment.json'
+        enrollment.write_bytes(b'synthetic enrollment')
+        enrollment.chmod(0o600)
+        setup.initialize(self.share, BINDING, setup_only=False)
+        self.assertEqual(enrollment.read_bytes(), b'synthetic enrollment')
+        with self.assertRaisesRegex(ValueError, 'enrolled'):
+            setup.initialize(self.share, BINDING)
 
     def test_initializer_cannot_overlap_another_initializer(self):
         with (self.share / 'runtime.lock').open('w') as owner:
