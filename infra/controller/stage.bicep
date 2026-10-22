@@ -15,9 +15,17 @@ param brokerOrigin string = 'https://repoagent-auth.livelydune-309701b4.swedence
 @description('Keep one setup replica available while completing device authentication.')
 @allowed([0, 1])
 param setupMinReplicas int = 0
+@description('Setup-only storage candidate. SMB requires real permission, symlink and locking acceptance before activation.')
+@allowed(['NfsAzureFile', 'AzureFile'])
+param storageType string = 'NfsAzureFile'
 
 var image = loadJsonContent('image.json').image
 var setup = loadTextContent('controller-runtime.py')
+// ACA accepts this restricted SMB option set; Unix modes and symlinks still need real acceptance.
+// Keep byte-range locking enabled. Never add nobrl to bypass a failed lease.
+var mountOptions = storageType == 'AzureFile'
+  ? 'vers=3.1.1,uid=1000,gid=1000,dir_mode=0700,file_mode=0600,serverino,mfsymlinks'
+  : 'vers=4,minorversion=1,sec=sys'
 var binding = {
   version: 1
   repository: repository
@@ -81,9 +89,9 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
       }
       volumes: [{
         name: 'controller-state'
-        storageType: 'NfsAzureFile'
+        storageType: storageType
         storageName: 'controller-state'
-        mountOptions: 'vers=4,minorversion=1,sec=sys'
+        mountOptions: mountOptions
       }]
     }
   }
