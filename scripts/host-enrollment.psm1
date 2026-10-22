@@ -258,7 +258,9 @@ function Invoke-EnrollmentBroker([string]$Origin, [string]$Method, [string]$Path
                 $count = $stream.ReadAsync($buffer, $length, $buffer.Length - $length, $timeout.Token).GetAwaiter().GetResult(); $length += $count
                 if ($length -gt 65536) { throw 'Broker response exceeds limit.' }
             } while ($count -gt 0)
-            return @{ Status = [int]$response.StatusCode; Body = [Text.UTF8Encoding]::new($false, $true).GetString($buffer, 0, $length) }
+            $retryAfter = $null
+            if ($response.Headers.Contains('Retry-After')) { $retryAfter = $response.Headers.GetValues('Retry-After') -join ',' }
+            return @{ Status = [int]$response.StatusCode; Body = [Text.UTF8Encoding]::new($false, $true).GetString($buffer, 0, $length); RetryAfter = $retryAfter }
         } finally { $response.Dispose() }
     } finally { $timeout.Dispose(); $request.Dispose(); $client.Dispose() }
 }

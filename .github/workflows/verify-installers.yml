@@ -99,7 +99,11 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   windows-host-enrollment:
-    name: Host enrollment and guided installer (windows-2025)
+    name: Windows installer (${{ matrix.suite }})
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [test_host_enrollment.py, test_guided_install.py]
     runs-on: windows-2025
     timeout-minutes: 45
     env:
@@ -119,11 +123,9 @@ jobs:
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           dotnet-version: '10.0.x'
-      - name: Run Windows host enrollment and guided installer cases with fail-fast feedback
+      - name: Run the selected Windows installer suite with fail-fast feedback
         shell: pwsh
         run: |
           $PSVersionTable.PSVersion.ToString()
-          python -m unittest discover -s tests/installers -p test_host_enrollment.py -f -v
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m unittest discover -s tests/installers -p test_guided_install.py -f -v
+          python -m unittest discover -s tests/installers -p '${{ matrix.suite }}' -f -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
