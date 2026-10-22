@@ -13,6 +13,8 @@ import tempfile
 # Isolated assembled journeys can fail only the final Docker transport.
 if real := os.environ.get('REPOAGENT_LIFECYCLE_REAL_DOCKER'):
     args, cut = sys.argv[1:], os.environ.get('REPOAGENT_LIFECYCLE_CUT', '')
+    if (cut == 'stop' and args[:1] == ['stop']) or (args[:2] == ['image', 'inspect'] and args[-1] == os.environ.get('REPOAGENT_LIFECYCLE_MISSING_IMAGE')):
+        sys.exit(73)
     selected_start = args[:1] == ['run'] and '--name' in args and args[args.index('--name') + 1] == 'repoagent-' + os.environ['REPOAGENT_INSTANCE']
     body = sys.stdin.buffer.read() if '/source/local-lifecycle.py' in args and args[-1] == 'launch' else None
     if (cut == 'create' and selected_start) or (cut == 'complete' and body and json.loads(body)['pending'] == 'none'):

@@ -219,3 +219,51 @@ def assert_interrupted_image_recovery(test, cut):
     test.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
     test.assertEqual(json.loads(test.docker('container', 'inspect', test.name).stdout)[0]['Image'], test.image)
     test.assertEqual(test.public('start').returncode, 0)
+
+
+def assert_review_recovery_regressions(test):
+    host = test.prepare_update()
+    transport = test.directory / 'docker'
+    shutil.copyfile(Path(__file__).with_name('docker_fixture.py'), transport); transport.chmod(0o755)
+    test.environment.update(REPOAGENT_LIFECYCLE_REAL_DOCKER=shutil.which('docker'), REPOAGENT_LIFECYCLE_CUT='stop')
+    test.assertNotEqual(test.update('-Image', test.target, '-Apply').returncode, 0)
+    record = json.loads(test.files("from pathlib import Path; print(Path('/data/enrollment/launch-state.json').read_text())"))
+    test.environment['REPOAGENT_LIFECYCLE_CUT'] = ''
+    with test.subTest(finding='P001-missing-authority'):
+        try:
+            test.files("from pathlib import Path; Path('/data/enrollment/launch-state.json').unlink()")
+            test.assertNotEqual(test.public('start').returncode, 0)
+            test.environment['REPOAGENT_STATE_DIRECTORY'] = str(test.directory / 'alternate-host')
+            test.assertNotEqual(test.public('start').returncode, 0)
+        finally:
+            test.environment['REPOAGENT_STATE_DIRECTORY'] = str(host)
+            test.write_launch_state(record)
+    restored = test.update('-Rollback', '-Apply')
+    test.assertEqual(restored.returncode, 0, restored.stdout + restored.stderr)
+    updated = test.update('-Image', test.target, '-Apply')
+    test.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+    with test.subTest(finding='P002-transitioned-preview'):
+        preview = test.update('-Rollback')
+        test.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+        test.assertEqual(test.uninstall(apply=False)[0].returncode, 0)
+    test.assertEqual(test.update('-Rollback', '-Apply').returncode, 0)
+    test.environment['REPOAGENT_LIFECYCLE_CUT'] = 'started'
+    test.assertNotEqual(test.update('-Image', test.target, '-Apply').returncode, 0)
+    test.environment.update(REPOAGENT_LIFECYCLE_CUT='', REPOAGENT_LIFECYCLE_MISSING_IMAGE=test.image)
+    with test.subTest(finding='P004-safe-stop-without-write-helper'):
+        try:
+            stopped = test.public('stop')
+            test.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+            test.assertFalse(json.loads(test.docker('container', 'inspect', test.name).stdout)[0]['State']['Running'])
+        finally:
+            test.environment.pop('REPOAGENT_LIFECYCLE_MISSING_IMAGE')
+    test.assertEqual(test.update('-Rollback', '-Apply').returncode, 0)
+    with test.subTest(finding='P003-corrupt-mirror-uninstall'):
+        approved = json.loads((host / 'approval.json').read_text())['marker']
+        scenario, log = test.directory / 'scenario.json', test.directory / 'gh.jsonl'
+        scenario.write_text(json.dumps([{'body': {'id': 345, 'full_name': 'owner/repository'}},
+                                       {'body': {'name': 'APPROVED_CONTROLLER', 'value': approved}}, {'status': 403}]))
+        test.environment.update(REVOKE_GH_SCENARIO=str(scenario), REVOKE_GH_LOG=str(log), GH_TOKEN='SYNTHETIC-ONLY')
+        (host / 'launch.json').write_text('{corrupt')
+        _, result = test.uninstall()
+        test.assertEqual((result['localLaunch'], result['localRuntime'], result['localCredentials']), ('disabled', 'removed', 'cleared'))

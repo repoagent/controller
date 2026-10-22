@@ -129,6 +129,7 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         self.docker('build', '--network', 'none', '--pull=false', '--iidfile', str(self.directory / 'target-id'), str(self.directory))
         self.target = (self.directory / 'target-id').read_text().strip()
         self.extra_images.append(self.target)
+        self.marker['binding']['expectedValueSha256'] = approval['expectedValueSha256']
         self.environment['REPOAGENT_STATE_DIRECTORY'] = str(host)
         self.unrelated_id = self.docker('run', '-d', '--network', 'none', '--name', self.unrelated, self.target, 'start').stdout.strip()
         return host
@@ -140,7 +141,6 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
 
     def test_selected_image_update_retains_data_and_manual_rollback(self):
         host = self.prepare_update()
-        self.assertEqual(self.public('start').returncode, 0)
         original = json.loads(self.docker('container', 'inspect', self.name).stdout)[0]
         self.files("from pathlib import Path; Path('/data/credentials/codex/auth.json').write_text('synthetic-auth-retained')")
         paths = ['/data/' + part + '/retained' for part in ('workspace','history','state','tools','credentials')] + ['/data/credentials/codex/auth.json']
@@ -173,6 +173,10 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         self.assertIn('disabled', disabled.stdout + disabled.stderr)
         self.files("from pathlib import Path; Path('/data/enrollment/launch-state.json').write_text('{corrupt')")
         self.assertNotEqual(self.public('start').returncode, 0)
+
+    def test_review_recovery_regressions(self):
+        from test_local_lifecycle import assert_review_recovery_regressions
+        assert_review_recovery_regressions(self)
 
     def test_no_container_update_recovery(self):
         from test_local_lifecycle import assert_interrupted_image_recovery
@@ -216,7 +220,7 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         mounts = [argument for storage in STORAGE for argument in ('--mount', 'type=volume,src=' + self.name + '-' + storage + ',dst=/data/' + storage)]
         mounts += ['--mount', 'type=volume,src=' + self.unrelated + ',dst=/data/unrelated,readonly']
         return self.docker('run', '--rm', '--network', 'none', '--user', '1000', *mounts,
-                           '--entrypoint', '/usr/bin/python3', self.image, '-E', '-c', code).stdout
+                           '--entrypoint', '/usr/bin/python3', getattr(self, 'target', self.image), '-E', '-c', code).stdout
 
     def uninstall(self, state=None, apply=True):
         arguments = ['-Action', 'Uninstall', '-Instance', self.instance, '-StateDirectory', str(state or self.directory / 'host'),
