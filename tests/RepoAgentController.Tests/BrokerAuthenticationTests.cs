@@ -80,6 +80,7 @@ public sealed class BrokerAuthenticationTests
             Assert.Equal(token, File.ReadAllText(fixture.TokenFile));
             Assert.Equal("prior-temporary-token", File.ReadAllText(fixture.TokenFile + ".tmp"));
             Assert.DoesNotContain("Unrecognized", denied.Output);
+            if (!OperatingSystem.IsWindows()) Assert.Contains("errno=", denied.Output);
         }
         // A fresh process can acquire after explicit disposal and reach the missing-key refusal.
         var released = await Contender();

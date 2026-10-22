@@ -20,7 +20,7 @@ static partial class ExclusiveFileLease
             if (!OperatingSystem.IsWindows() && Flock(file.SafeFileHandle, Exclusive | Nonblocking) != 0)
             {
                 var error = Marshal.GetLastPInvokeError();
-                throw new IOException("Exclusive controller lease could not be acquired for '" + path + "'.", new Win32Exception(error));
+                throw new IOException("Exclusive controller lease could not be acquired for '" + path + "' (errno=" + error + ").", new Win32Exception(error));
             }
             return file;
         }
