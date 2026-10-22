@@ -189,6 +189,8 @@ class CheckoutRefreshTests(unittest.TestCase):
                         #!/usr/bin/python3
                         import json,os,subprocess,sys,threading
                         child=subprocess.Popen([os.environ['MATRIX_NATIVE'],*sys.argv[1:]],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+                        if os.environ.get('MATRIX_PIDS'):
+                         with open(os.environ['MATRIX_PIDS'],'w') as proof: json.dump(dict(relay=os.getpid(),native=child.pid),proof)
                         lock=threading.Lock()
                         def emit(line):
                          with lock: print(line,end='',flush=True)
@@ -755,6 +757,137 @@ class CheckoutRefreshTests(unittest.TestCase):
                     f.provider.discussions[0]['body'] += ' after fault'
                     self.assertEqual(deliver(notice, event='discussion'), 202); f.wait('observation-error')
                     self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+
+    @contextmanager
+    def durable_queue(self, f):
+        host = ROOT / 'tests/installers/QueueHost'
+        subprocess.run(['dotnet', 'build', str(host), '-c', 'Release', '--nologo', '-v', 'quiet'],
+                       check=True, capture_output=True, text=True, timeout=120)
+        image = 'mcr.microsoft.com/azure-storage/azurite@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5'
+        container = subprocess.check_output(['docker', 'run', '--detach', '--publish', '127.0.0.1::10001', image,
+            'azurite-queue', '--queueHost', '0.0.0.0', '--skipApiVersionCheck', '--location', '/data'], text=True).strip()
+        try:
+            address = subprocess.check_output(['docker', 'port', container, '10001/tcp'], text=True).strip()
+            hostname, port = address.rsplit(':', 1)
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    # Docker's published TCP port can accept before the emulator has bound its socket.
+                    logs = subprocess.check_output(['docker', 'logs', container], text=True, stderr=subprocess.STDOUT)
+                    if 'Azurite Queue service successfully listens' in logs: break
+                    if time.monotonic() >= deadline: self.fail('Owned Azurite queue did not become ready: ' + logs)
+                    time.sleep(.1)
+                except OSError:
+                    if time.monotonic() >= deadline: self.fail('Owned Azurite queue did not listen')
+                    time.sleep(.1)
+            f.environment['CONTROLLER_TEST_QUEUE_ENDPOINT'] = 'http://' + address + '/devstoreaccount1/controller-work'
+            command = ['dotnet', str(host / 'bin/Release/net11.0/QueueHost.dll')]
+            def queue_operation(operation):
+                result = subprocess.run(command + ['queue', operation], env=f.environment,
+                    capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                return int(result.stdout.strip()) if operation in ('count', 'peek') else None
+            queue_operation('create')
+            f.command = command + f.command[len(self.controller_command):] + ['--installation-id', '234', '--repository-id', '345',
+                '--azure-work-queue', 'https://fixturequeue.queue.core.windows.net/controller-work']
+            with socket.socket() as listener:
+                listener.bind(('127.0.0.1', 0)); f.webhook_port = listener.getsockname()[1]
+            f.command += ['--webhook-url', 'https://fixture.invalid', '--listen-port', str(f.webhook_port)]
+            yield queue_operation
+        finally:
+            subprocess.run(['docker', 'rm', '--force', container], check=True, capture_output=True, text=True, timeout=15)
+
+    def durable_delivery(self, f, signature=True, repository_id=345, own=False):
+        settings = json.loads(Path(str(f.state) + '.webhook/hook.json').read_text())
+        body = json.dumps(dict(repository=dict(full_name='owner/project', id=repository_id),
+            action='edited', discussion=dict(number=1), sender=dict(login='test-app[bot]' if own else 'participant', type='Bot' if own else 'User'))).encode()
+        digest = hmac.new(settings['secret'].encode(), body, hashlib.sha256).hexdigest()
+        with closing(http.client.HTTPConnection('127.0.0.1', f.webhook_port, timeout=10)) as connection:
+            connection.request('POST', '/github/webhook', body, {'X-GitHub-Event': 'discussion_comment',
+                'X-GitHub-Delivery': '00000000-0000-4000-8000-000000000001',
+                'X-Hub-Signature-256': 'sha256=' + (digest if signature else '0' * 64)})
+            response = connection.getresponse(); response.read(); return response.status
+
+    def test_durable_webhooks_retain_unfinished_native_work_and_admit_additional_input(self):
+        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
+            with self.controller(f, 'mode=webhook-fixed'):
+                f.wait('durable-webhook-observed discussion=0')
+                def eventually_count(expected):
+                    deadline = time.monotonic() + 15
+                    while True:
+                        actual = queue_operation('count')
+                        if actual == expected: return
+                        if time.monotonic() >= deadline: self.fail(f'Queue count {actual}, expected {expected}')
+                        time.sleep(.1)
+                eventually_count(0)
+                def deliver(**settings): return self.durable_delivery(f, **settings)
+                self.assertEqual(deliver(signature=False), 401)
+                self.assertEqual(deliver(repository_id=999), 403)
+                self.assertEqual(deliver(own=True), 204)
+                self.assertEqual(queue_operation('count'), 0)
+                f.provider.discussions = [self.discussion(1)]
+                self.assertEqual(deliver(), 202)
+                self.assertGreater(queue_operation('count'), 0, 'HTTP202 must have durable work before native acknowledgment')
+                request = self.rpc(f, 'thread/start')
+                self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+                f.wait('durable-webhook-observed discussion=1')
+                self.assertGreater(queue_operation('count'), 0, 'Native acknowledgment cannot release unfinished work')
+                self.assertEqual(queue_operation('peek'), 0, 'Invisible received work must remain retained')
+                f.provider.discussions[0]['body'] += ' additional input'
+                self.assertEqual(deliver(), 202)
+                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+                f.wait('durable-webhook-observed discussion=1')
+                self.assertGreater(queue_operation('count'), 0, 'Additional input must remain admissible while the same turn is active')
+                self.assertEqual(deliver(), 202)  # Unchanged content must not repeat accepted native input.
+                f.wait('durable-webhook-observed discussion=1')
+                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Duplicate delivery repeated native input')
+                self.terminal(f, 'S1', 'T1')
+                eventually_count(0)
+                self.assertEqual(json.loads(f.journal.read_text())['active'], {})
+                self.assertFalse(json.loads(f.journal.read_text())['blocked'])
+            self.assertFalse(any(hook.get('active') is False for hook in f.provider.hooks),
+                             'Ordinary replica shutdown must preserve the signed wake hook')
+            option = f.command.index('--azure-work-queue')
+            del f.command[option:option + 2]
+            f.run(f.command + ['--disable-webhook'])
+            self.assertIs(f.provider.hooks[-1]['active'], False, 'Explicit stopped-instance disable must confirm hook removal')
+
+    def test_lost_durable_work_lease_stops_native_children_and_preserves_unknown_turn(self):
+        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
+            f.provider.discussions = [self.discussion(1)]
+            pids = f.directory / 'native-pids.json'
+            f.environment['MATRIX_PIDS'] = str(pids)
+            with self.controller(f, 'mode=webhook-fixed'):
+                request = self.rpc(f, 'thread/start')
+                self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+                f.wait('durable-webhook-observed discussion=0')
+                proof = json.loads(pids.read_text())
+                def running(pid):
+                    try: return Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1][0] != 'Z'
+                    except FileNotFoundError: return False
+                self.assertTrue(all(running(pid) for pid in proof.values()))
+                self.assertGreater(queue_operation('count'), 0)
+                saved = f.state.read_bytes()
+                queue_operation('clear')  # Real service removes the receipt; the next renewal must fail.
+                self.assertEqual(f.process.wait(timeout=25), 1)
+                self.assertTrue(json.loads(f.journal.read_text())['active'])
+                self.assertTrue(all(not running(pid) for pid in proof.values()), 'A failed queue lease left native children running')
+                self.assertEqual(f.state.read_bytes(), saved)
+            resumed = subprocess.run(f.command, env=f.environment, capture_output=True, text=True, timeout=20)
+            self.assertEqual(resumed.returncode, 1, resumed.stdout + resumed.stderr)
+            self.assertIn('uncertain', resumed.stdout)
+            self.assertEqual(f.state.read_bytes(), saved)
+            self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Restart replayed an outcome-unknown native input')
+
+    def test_foreign_durable_work_is_preserved_without_native_adoption(self):
+        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
+            queue_operation('foreign')
+            with self.controller(f, 'mode=webhook-fixed'):
+                self.assertEqual(f.process.wait(timeout=20), 1)
+                self.assertGreater(queue_operation('count'), 0, 'A foreign binding must remain available for manual inspection')
+                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Foreign queued work admitted native input')
 
 
 if __name__ == '__main__':

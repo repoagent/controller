@@ -13,11 +13,13 @@ sealed record WebhookConfiguration(Uri PublicUrl, int Port, TimeSpan ReconcileIn
 }
 
 /// <summary>Authenticates HTTP deliveries and serializes observations with reconciliation.</summary>
-sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, WebhookConfiguration configuration, CheckoutRefresh? refresh = null)
+sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, WebhookConfiguration configuration, CheckoutRefresh? refresh = null, DurableWebhookWork? durable = null)
 {
     readonly Channel<int> work = Channel.CreateUnbounded<int>(new UnboundedChannelOptions { SingleReader = true });
     readonly HashSet<int> queued = [];
     const int MaximumBody = 2 * 1024 * 1024;
+
+    public static Task<bool> DeactivateSaved(GitHub github, string statePath) => new Registration(github, statePath + ".webhook").Deactivate();
 
     public async Task Run(CancellationToken ct)
     {
@@ -34,9 +36,10 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             if (receive.IsCompleted) await receive;
             Log.Write("mode", $"webhook-fixed public-url={configuration.Endpoint} port={configuration.Port} reconcile-seconds={configuration.ReconcileInterval.TotalSeconds:F0}");
             Log.Write("ready", $"repository={github.Repository} actor={github.AgentLogin} mode=webhook-fixed");
-            Schedule(0); // Reconcile existing content once before relying on notifications.
-            worker = Observe(stop.Token);
-            reconcile = Reconcile(stop.Token);
+            if (durable is not null) Log.Write("durable-work-enabled", "periodic-reconciliation=false queued-hints=true");
+            if (durable is null) Schedule(0); // Durable mode holds its startup hint before any Git/native work.
+            worker = durable is null ? Observe(stop.Token) : ObserveDurable(stop.Token);
+            reconcile = durable is null ? Reconcile(stop.Token) : CompleteDurable(stop.Token);
             var completed = await Task.WhenAny(receive, worker, reconcile);
             await completed;
         }
@@ -44,7 +47,8 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
         {
             await stop.CancelAsync();
             // The runtime token is cancelled: remote cleanup gets its own bounded budget.
-            await registration.Deactivate();
+            // A normal idle replica shutdown must leave the signed wake route registered.
+            if (durable is null) await registration.Deactivate();
             listener.Close();
             work.Writer.TryComplete();
             try { await Task.WhenAll(receive, worker, reconcile); }
@@ -80,6 +84,28 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
     {
         using var timer = new PeriodicTimer(configuration.ReconcileInterval);
         while (await timer.WaitForNextTickAsync(ct)) Schedule(0);
+    }
+
+    async Task ObserveDurable(CancellationToken ct)
+    {
+        while (true)
+        {
+            var lease = await durable!.Receive(ct);
+            if (lease.Discussion == -1) refresh!.Request();
+            else
+            {
+                var succeeded = lease.Discussion == 0 ? await bridge.Poll(ct) : await bridge.Observe(lease.Discussion, ct);
+                if (!succeeded) throw new IOException("Durable webhook observation failed; queued work is retained for recovery");
+                Log.Write("durable-webhook-observed", $"discussion={lease.Discussion}");
+            }
+            durable.Observed(lease);
+        }
+    }
+
+    async Task CompleteDurable(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        while (await timer.WaitForNextTickAsync(ct)) await durable!.CompleteAtIdle(refresh!, ct);
     }
 
     async Task Receive(HttpListener listener, string secret, CancellationToken ct)
@@ -144,6 +170,8 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             return 403;
         }
         if (!Guid.TryParse(request.Headers["X-GitHub-Delivery"], out var delivery)) return 400;
+        if (durable is not null && (payload["repository"]?["id"] is not JsonValue immutableId ||
+            !immutableId.TryGetValue<long>(out var expectedId) || expectedId != refresh!.RepositoryId)) return 403;
         var eventName = request.Headers["X-GitHub-Event"];
         if (eventName == "ping") { Log.Write("webhook-ping", $"delivery={delivery}"); return 204; }
         if (eventName == "push")
@@ -154,7 +182,8 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             if (payload["ref"] is not JsonValue reference || !reference.TryGetValue<string>(out var pushedRef) ||
                 pushedRef.Length is 0 or > 1024 || pushedRef.Any(char.IsControl)) return 400;
             if (pushedRef != refresh.DefaultRef) return 204;
-            refresh.Request(); // Persist the hint before acknowledging; only the worker touches Git/native.
+            if (durable is not null) await durable.Enqueue(-1, ct);
+            else refresh.Request(); // Persist the hint before acknowledging; only the worker touches Git/native.
             Log.Write("webhook-delivery", $"delivery={delivery} event=push scheduled=True");
             return 202;
         }
@@ -168,7 +197,8 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             Log.Write("webhook-ignored", $"delivery={delivery} discussion={number} reason=own-comment");
             return 204;
         }
-        if (!Schedule(number)) return 503;
+        if (durable is not null) await durable.Enqueue(number, ct);
+        else if (!Schedule(number)) return 503;
         Log.Write("webhook-delivery", $"delivery={delivery} event={eventName} action={action} discussion={number} scheduled=True");
         return 202;
     }
@@ -216,9 +246,9 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             Log.Write(hook is null ? "webhook-registered" : "webhook-updated", $"hook={id} url={endpoint}");
         }
 
-        public async Task Deactivate()
+        public async Task<bool> Deactivate()
         {
-            if (settings["hookId"]?.GetValue<long>() is not { } hook) return;
+            if (settings["hookId"]?.GetValue<long>() is not { } hook) return true;
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             try
             {
@@ -227,10 +257,12 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
                 if (result?["id"]?.GetValue<long>() != hook || result?["active"]?.GetValue<bool>() != false)
                     throw new IOException("GitHub did not confirm that the saved hook is inactive");
                 Log.Write("webhook-disabled", $"hook={hook}");
+                return true;
             }
             catch (Exception error)
             {
                 Log.Write("webhook-disable-error", $"hook={hook}; disable not confirmed; manually deactivate the saved hook in repository Settings > Webhooks. {error.Message}");
+                return false;
             }
         }
 

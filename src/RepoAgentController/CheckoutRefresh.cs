@@ -166,6 +166,24 @@ sealed class CheckoutRefresh : IAsyncDisposable
         catch { exclusion.Release(); throw; }
     }
 
+    public async Task<bool> CommitAtIdle(Func<CancellationToken, Task> commit, CancellationToken ct)
+    {
+        await exclusion.WaitAsync(ct);
+        try
+        {
+            await Reconcile(ct);
+            lock (journalLock)
+            {
+                CheckAdmission();
+                if (Busy || Generation("requested") != Generation("completed")) return false;
+            }
+            await commit(ct);
+            lock (journalLock) { CheckAdmission(); if (Busy) throw new IOException("Native activity changed during idle commit"); }
+            return true;
+        }
+        finally { exclusion.Release(); }
+    }
+
     public sealed class Admission(CheckoutRefresh owner, string id, JsonObject record) : IDisposable
     {
         bool confirmed;
