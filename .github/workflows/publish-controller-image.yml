@@ -52,15 +52,32 @@ jobs:
           sha256sum controller.tar build.json > SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: archive
-        if: github.event_name == 'workflow_dispatch'
         with:
           name: controller-image-${{ github.run_attempt }}
           path: ${{ runner.temp }}/controller-image/
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
-  publish:
+  verify-artifact:
     needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      IMAGE: repoagent-controller:${{ github.sha }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: ${{ runner.temp }}/controller-image
+      - name: Verify the transferred image before publication can be approved
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/controller-image"
+          sha256sum --check SHA256SUMS
+          docker load --input controller.tar
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}:{{.Config.User}}:{{index .Config.Labels "io.repoagent.role"}}:{{index .Config.Labels "org.opencontainers.image.revision"}}:{{index .Config.Labels "org.opencontainers.image.source"}}' "$IMAGE")" = "linux/amd64:1000:controller:$GITHUB_SHA:https://github.com/$GITHUB_REPOSITORY"
+  publish:
+    needs: [build, verify-artifact]
     if: github.repository == 'repoagent/controller' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     environment: controller-release
     runs-on: ubuntu-24.04
@@ -96,11 +113,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y skopeo
           auth=$(mktemp)
+          anonymous=$(mktemp -d)
           printf '{"auths":{}}' > "$auth"
-          trap 'rm -f "$auth"' EXIT
+          trap 'rm -rf "$auth" "$anonymous"' EXIT
           digest=$(skopeo inspect --authfile "$auth" --no-creds --format '{{.Digest}}' "docker://$REFERENCE")
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           immutable="ghcr.io/repoagent/controller@$digest"
-          skopeo inspect --authfile "$auth" --no-creds --raw "docker://$immutable" > "$RUNNER_TEMP/manifest.json"
-          test "$(jq -er '.config.digest' "$RUNNER_TEMP/manifest.json")" = "$(jq -er '."containerimage.config.digest"' "$RUNNER_TEMP/controller-image/build.json")"
+          skopeo copy --src-authfile "$auth" --src-no-creds --preserve-digests "docker://$immutable" "dir:$anonymous"
+          test "$(jq -er '.config.digest' "$anonymous/manifest.json")" = "$(jq -er '."containerimage.config.digest"' "$RUNNER_TEMP/controller-image/build.json")"
           printf 'Public controller image: `%s`\n\nSource: `%s`\n' "$immutable" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
