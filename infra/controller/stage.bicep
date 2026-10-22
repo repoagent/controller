@@ -26,6 +26,8 @@ var setup = loadTextContent('controller-runtime.py')
 var mountOptions = storageType == 'AzureFile'
   ? 'vers=3.1.1,uid=1000,gid=1000,dir_mode=0700,file_mode=0600,serverino,mfsymlinks'
   : 'vers=4,minorversion=1,sec=sys'
+var executableVolume = storageType == 'AzureFile' ? 'controller-executable' : 'controller-state'
+var executableMountOptions = 'vers=3.1.1,uid=1000,gid=1000,dir_mode=0700,file_mode=0700,serverino,mfsymlinks'
 var binding = {
   version: 1
   repository: repository
@@ -71,10 +73,14 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
         command: ['/usr/bin/python3', '-E', '-c']
         args: [setup, 'serve']
         resources: { cpu: json('0.25'), memory: '0.5Gi' }
-        volumeMounts: [
+        volumeMounts: concat([
           { volumeName: 'controller-state', mountPath: '/data', subPath: 'runtime/data' }
-          { volumeName: 'controller-state', mountPath: '/workspace', subPath: 'runtime/workspace' }
-        ]
+          { volumeName: executableVolume, mountPath: '/workspace', subPath: 'runtime/workspace' }
+        ], storageType == 'AzureFile' ? [
+          { volumeName: executableVolume, mountPath: '/data/tools', subPath: 'runtime/data/tools' }
+          { volumeName: executableVolume, mountPath: '/data/state/bridge.json.github-app/bin', subPath: 'runtime/data/state/bridge.json.github-app/bin' }
+          { volumeName: executableVolume, mountPath: '/data/state/bridge.json.github-app/clone-bin', subPath: 'runtime/data/state/bridge.json.github-app/clone-bin' }
+        ] : [])
         probes: [{
           type: 'Readiness'
           httpGet: { path: '/health/setup', port: 8080 }
@@ -87,12 +93,17 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
         maxReplicas: 1
         rules: [{ name: 'setup-http', http: { metadata: { concurrentRequests: '10' } } }]
       }
-      volumes: [{
+      volumes: concat([{
         name: 'controller-state'
         storageType: storageType
         storageName: 'controller-state'
         mountOptions: mountOptions
-      }]
+      }], storageType == 'AzureFile' ? [{
+        name: 'controller-executable'
+        storageType: 'AzureFile'
+        storageName: 'controller-state'
+        mountOptions: executableMountOptions
+      }] : [])
     }
   }
 }

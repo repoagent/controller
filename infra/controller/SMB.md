@@ -83,6 +83,29 @@ on the real mount. Byte-range locking stays enabled.
 [Linux SMB mount and permission documentation](https://learn.microsoft.com/en-us/azure/storage/files/storage-how-to-use-files-linux),
 [ACA mount configuration](https://learn.microsoft.com/en-us/azure/container-apps/storage-mounts)
 
+The real uniform0600 mount passed private setup but could not execute a workspace
+script: `chmod +x` left the file0600 and execution failed with EACCES. The setup
+profile now uses two volume views of the same share. Private `/data` retains0600
+files; `/workspace`, `/data/tools`, and the generated Git/GitHub wrapper `bin` and
+`clone-bin` directories use0700 files. All directories stay0700 and owned by
+UID1000. These views add no storage account, identity or always-on service.
+
+Checkout ownership records contain no token or account credentials. The native
+controller accepts owner execute on those workspace records while preserving all
+binding, content, link and exclusive-lease checks. Every group/other permission
+remains rejected. Enrollment, token caches, native trust configuration and refresh
+journals keep their existing strict private-file policy. Generated executable
+wrappers contain token-file paths rather than token values. The initializer
+creates their directories before ACA mounts the nested paths.
+
+This profile still does not provide general POSIX chmod semantics: Git can track
+executable bits in its index while the executable view reports0700 for all files.
+Actual mixed-view mount behavior, Git/native execution and cross-client locks
+must pass real Azure checks before activation. Public image selection must
+include the native checkout-metadata change from
+[#147](https://github.com/repoagent/controller/issues/147); an older image can
+serve setup health but cannot establish active-controller acceptance.
+
 The existing initializer is unchanged. It verifies owned0700 private directories,
 0600 single-link regular files, binding retention and the native-history symlink,
 and uses atomic replacement and a nonblocking filesystem lock. A mount that

@@ -68,7 +68,9 @@ def initialize(share, binding, *, setup_only=True):
                 Path(temporary).unlink(missing_ok=True)
         for relative in ('data', 'workspace', 'data/config', 'data/config/skills', 'data/enrollment',
                          'data/credentials', 'data/credentials/codex', 'data/history', 'data/state',
-                         'data/tools', 'data/control', 'data/participant'):
+                         'data/tools', 'data/control', 'data/participant',
+                         'data/state/bridge.json.github-app', 'data/state/bridge.json.github-app/bin',
+                         'data/state/bridge.json.github-app/clone-bin'):
             private_directory(root / relative)
         enrollment = root / 'data/enrollment/enrollment.json'
         if setup_only and (enrollment.exists() or enrollment.is_symlink()):

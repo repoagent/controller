@@ -33,7 +33,8 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.root.stat().st_mode & 0o777, 0o711)
         for directory in ('data', 'data/enrollment', 'data/credentials/codex', 'data/history',
                           'data/state', 'data/config/skills', 'data/tools', 'data/control',
-                          'data/participant', 'workspace'):
+                          'data/participant', 'workspace', 'data/state/bridge.json.github-app',
+                          'data/state/bridge.json.github-app/bin', 'data/state/bridge.json.github-app/clone-bin'):
             self.assertEqual((self.root / directory).stat().st_mode & 0o777, 0o700)
         binding = self.root / 'binding.json'
         self.assertEqual(json.loads(binding.read_text()), BINDING)

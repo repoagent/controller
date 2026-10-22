@@ -118,6 +118,10 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertEqual((checkout / 'README').read_text(), 'approved repository\n')
             self.assertEqual(json.loads(owner.read_text())['commit'], before)
             self.assertEqual(json.loads(state.read_text())['discussions'], {})
+            # An owner-executable workspace keeps checkout records private to
+            # the same UID; refreshing must also update that retained record.
+            for path in (owner, workspace / '.repoagent-checkout.lock', checkout / '.git/repoagent-owner'):
+                path.chmod(0o700)
             seed = directory / 'seed'
             (seed / 'README').write_text('current default branch B\n')
             git('-C', seed, 'add', 'README')
