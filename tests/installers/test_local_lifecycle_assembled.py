@@ -10,6 +10,7 @@ import unittest
 import uuid
 
 from test_private_runtime import BROKER, STORAGE, frozen_enrollment
+from test_local_lifecycle import assert_review_recovery_regressions, assert_interrupted_image_recovery, assert_recorded_configuration_preserved
 
 ROOT = Path(__file__).resolve().parents[2]
 PARENT = os.environ.get('REPOAGENT_LOCAL_LIFECYCLE_IMAGE', '')
@@ -174,20 +175,19 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         self.files("from pathlib import Path; Path('/data/enrollment/launch-state.json').write_text('{corrupt')")
         self.assertNotEqual(self.public('start').returncode, 0)
 
+    def test_recorded_configuration_preserved(self):
+        assert_recorded_configuration_preserved(self)
+
     def test_review_recovery_regressions(self):
-        from test_local_lifecycle import assert_review_recovery_regressions
         assert_review_recovery_regressions(self)
 
     def test_no_container_update_recovery(self):
-        from test_local_lifecycle import assert_interrupted_image_recovery
         assert_interrupted_image_recovery(self, 'create')
 
     def test_running_target_update_recovery(self):
-        from test_local_lifecycle import assert_interrupted_image_recovery
         assert_interrupted_image_recovery(self, 'started')
 
     def test_incomplete_volume_commit_recovery(self):
-        from test_local_lifecycle import assert_interrupted_image_recovery
         assert_interrupted_image_recovery(self, 'complete')
 
     def test_interrupted_update_refuses_normal_start(self):

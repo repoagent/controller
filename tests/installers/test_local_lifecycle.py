@@ -283,3 +283,28 @@ def assert_review_recovery_regressions(test):
         (host / 'launch.json').write_text('{corrupt')
         _, result = test.uninstall()
         test.assertEqual((result['localLaunch'], result['localRuntime'], result['localCredentials']), ('disabled', 'removed', 'cleared'))
+
+
+def assert_recorded_configuration_preserved(test):
+    host = test.prepare_update()
+    arguments = ('--repository', 'owner/repository', '--app-id', '123', '--broker-url', runtime.BROKER,
+                 '--enrollment-file', str(test.directory / 'enrollment.json'))
+    test.assertEqual(test.public('stop').returncode, 0)
+    configured = test.public('configure', *arguments, '--model', 'retained-model')
+    test.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
+    updated = test.update('-Image', test.target, '-Apply')
+    test.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+    test.assertEqual(test.public('stop').returncode, 0)
+    snapshot = "import json,hashlib; from pathlib import Path; print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in ['/data/config/settings.json','/data/credentials/codex/config.toml']}))"
+    before = test.files(snapshot)
+    mirror = (host / 'launch.json').read_bytes()
+    authority = test.files("from pathlib import Path; print(Path('/data/enrollment/launch-state.json').read_text())")
+    refused = test.public('configure', *arguments, '--model', 'different-model')
+    test.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+    test.assertEqual(test.files(snapshot), before)
+    test.assertEqual((host / 'launch.json').read_bytes(), mirror)
+    test.assertEqual(test.files("from pathlib import Path; print(Path('/data/enrollment/launch-state.json').read_text())"), authority)
+    matched = test.public('configure', *arguments)
+    test.assertEqual(matched.returncode, 0, matched.stdout + matched.stderr)
+    test.assertEqual(test.files(snapshot), before)
+    test.assertEqual(test.public('start').returncode, 0)
