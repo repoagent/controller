@@ -102,7 +102,8 @@ def prepare_runtime(settings, secret_path):
     if not configured:
         arguments = ['configure', '--clone', '--enrollment-file', '/data/enrollment/enrollment.json']
         for key, option in (
-            ('repository', '--repository'), ('appId', '--app-id'), ('installationId', '--installation-id'),
+            ('repository', '--repository'), ('repositoryId', '--repository-id'),
+            ('appId', '--app-id'), ('installationId', '--installation-id'),
             ('brokerUrl', '--broker-url'), ('mode', '--mode'), ('publicUrl', '--public-url'),
             ('mentionUser', '--mention-user'), ('model', '--model'), ('webSearch', '--web-search'),
             ('toolUpdates', '--tool-updates'), ('listenPort', '--listen-port'),

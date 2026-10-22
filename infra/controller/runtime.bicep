@@ -39,6 +39,7 @@ resource vault 'Microsoft.KeyVault/vaults@2026-05-15' existing = {
 
 var settings = {
   repository: repository
+  repositoryId: repositoryId
   appId: string(appId)
   installationId: installationId
   brokerUrl: brokerOrigin

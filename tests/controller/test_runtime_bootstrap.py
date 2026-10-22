@@ -1,12 +1,14 @@
 """Preparation contract against the actual separately published controller image."""
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-IMAGE = json.loads((ROOT / 'infra/controller/image.json').read_text())['image']
+IMAGE = os.environ.get('REPOAGENT_CONTROLLER_TEST_IMAGE',
+    json.loads((ROOT / 'infra/controller/image.json').read_text())['image'])
 SOURCE = ROOT / 'infra/controller/controller-runtime.py'
 
 # Only synthetic opaque transport bytes; no broker, account or network is used.
@@ -14,7 +16,7 @@ JOURNEY = r'''
 import json, pathlib, runpy
 m = runpy.run_path('/acceptance/controller-runtime.py')
 p = pathlib.Path
-settings = dict(repository='owner/repo', appId='123', installationId=456,
+settings = dict(repository='owner/repo', repositoryId=345, appId='123', installationId=456,
     brokerUrl='https://broker.example.org', clone=True, mode='fixed-url',
     publicUrl='https://controller.example.org', mentionUser='repoagent',
     model='gpt-6.1-sol', webSearch='live', toolUpdates='pinned',
