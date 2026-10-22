@@ -67,6 +67,50 @@ public sealed class BrokerAuthenticationTests
     }
 
     [Fact]
+    public async Task State_exclusion_does_not_depend_on_best_effort_runtime_locking()
+    {
+        using var fixture = new Fixture();
+        var token = "{\"token\":\"prior-token\",\"expiresAt\":\"2099-01-01T00:00:00Z\"}";
+        using (var owner = new FileStream(fixture.State + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            fixture.SeedCache();
+            var denied = await Contender();
+            Assert.Equal(1, denied.Exit);
+            Assert.True(File.Exists(fixture.TokenFile), "A losing contender cleared the active owner's cache");
+            Assert.Equal(token, File.ReadAllText(fixture.TokenFile));
+            Assert.Equal("prior-temporary-token", File.ReadAllText(fixture.TokenFile + ".tmp"));
+            Assert.DoesNotContain("Unrecognized", denied.Output);
+            if (!OperatingSystem.IsWindows()) Assert.Contains("errno=", denied.Output);
+        }
+        // A fresh process can acquire after explicit disposal and reach the missing-key refusal.
+        var released = await Contender();
+        Assert.Equal(1, released.Exit);
+        Assert.False(File.Exists(fixture.TokenFile));
+        Assert.False(File.Exists(fixture.TokenFile + ".tmp"));
+        Assert.Contains("missing-key.pem", released.Output);
+
+        async Task<(int Exit, string Output)> Contender()
+        {
+            var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true };
+            start.Environment["DOTNET_SYSTEM_IO_DISABLEFILELOCKING"] = "1";
+            foreach (var argument in new[] { typeof(GitHubAppCredentials).Assembly.Location, "--repo", "owner/repository", "--app-id", "123", "--private-key", Path.Combine(fixture.Directory, "missing-key.pem"), "--check-auth", "--state", fixture.State })
+                start.ArgumentList.Add(argument);
+            using var process = Process.Start(start)!;
+            try
+            {
+                var output = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+                var error = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+                await process.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+                return (process.ExitCode, await output + await error);
+            }
+            finally
+            {
+                if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(CancellationToken.None); }
+            }
+        }
+    }
+
+    [Fact]
     public async Task Invalid_state_after_lock_acquisition_clears_previous_credentials()
     {
         using var fixture = new Fixture();
