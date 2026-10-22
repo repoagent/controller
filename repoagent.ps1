@@ -33,10 +33,11 @@ function Invoke-Docker {
 
 Import-Module "$PSScriptRoot/scripts/local-runtime.psm1" -DisableNameChecking
 function Initialize-Identity([bool]$ConfigureBroker = $false, [bool]$Create = $false) {
-    $context = Initialize-LocalRuntime $instance $image $ConfigureBroker $Create
+    $context = Initialize-LocalRuntime $instance $image $ConfigureBroker $Create $env:REPOAGENT_STATE_DIRECTORY $false ($Command -eq 'stop')
     $script:brokerMode = $context.Managed
     $script:image = $context.Image
     $script:existingContainer = $context.Container
+    $script:launchState = $context.LaunchState
 }
 function Test-CompatibleRuntime {
     $key = if (-not $brokerMode -and $existingContainer) { Invoke-Config get keyPath } else { '' }
@@ -82,6 +83,43 @@ function Invoke-Config {
     $mounts = if ($brokerMode -and $Command -in @('get', 'state', 'versions', 'skills') -and @($CommandArguments)[0] -ne 'install') { @($volumeArguments | ForEach-Object { if ($_ -like 'type=volume,*') { $_ + ',readonly' } else { $_ } }) } else { $volumeArguments }
     $network = if ($brokerMode -and $Command -in @('get', 'state', 'versions', 'skills') -and @($CommandArguments)[0] -ne 'install') { @('--network', 'none') } else { @() }
     Invoke-Docker run --rm --init @network @mounts $image @args
+}
+
+function Get-RecordedConfigureArguments([string[]]$Arguments) {
+    if (-not $launchState) { return $Arguments }
+    $invalid = 'Configuration must retain recorded launch choices; use full option names and matching values.'
+    $values = @{ '--enrollment-file' = '/data/enrollment/enrollment.json' }
+    foreach ($field in $launchState.currentLaunch.settings.Keys | Where-Object { $_ -notin @('keyPath','enroll') }) {
+        $option = '--' + [regex]::Replace($field, '[A-Z]', '-$0').ToLowerInvariant()
+        $values[$option] = $launchState.currentLaunch.settings[$field]
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    for ($index = 0; $index -lt $Arguments.Count; $index++) {
+        $parts = $Arguments[$index] -split '=', 2
+        $option = $parts[0]
+        if (-not $values.ContainsKey($option) -or -not $seen.Add($option)) { throw $invalid }
+        $expected = $values[$option]
+        if ($option -eq '--clone') {
+            if ($parts.Count -ne 1) { throw $invalid }
+            $value = $true
+        } else {
+            if ($parts.Count -eq 2) { $value = $parts[1] }
+            else { $index++; if ($index -ge $Arguments.Count) { throw $invalid }; $value = $Arguments[$index] }
+            if ($expected -is [long] -or $expected -is [int]) {
+                [long]$number = 0
+                if (-not [long]::TryParse($value, [Globalization.NumberStyles]::Integer, [Globalization.CultureInfo]::InvariantCulture, [ref]$number)) { throw $invalid }
+                $value = $number
+            }
+        }
+        if ($null -eq $expected -or [string]$value -cne [string]$expected) { throw $invalid }
+    }
+    foreach ($required in @('--repository','--app-id','--broker-url','--enrollment-file')) { if (-not $seen.Contains($required)) { throw $invalid } }
+    $canonical = @()
+    foreach ($option in $values.Keys) {
+        if ($values[$option] -is [bool]) { if ($values[$option]) { $canonical += $option } }
+        elseif ($null -ne $values[$option]) { $canonical += "$option=$($values[$option])" }
+    }
+    return $canonical
 }
 
 function Test-AgentRunning {
@@ -207,7 +245,12 @@ switch ($Command) {
         if ($CommandArguments.Count) { throw 'Pass installation options directly to .\install.ps1 -SkipBuild -NoStart.' }
         & "$PSScriptRoot/install.ps1" -SkipBuild -NoStart
     }
-    'configure' { Assert-Stopped; Invoke-Config configure @configArguments; if ($configureBroker) { Import-Enrollment $privateBytes } }
+    'configure' {
+        Assert-Stopped
+        $recordedArguments = Get-RecordedConfigureArguments $configArguments
+        Invoke-Config configure @recordedArguments
+        if ($configureBroker) { Import-Enrollment $privateBytes }
+    }
     'import-enrollment' { Import-Enrollment $privateBytes }
     'get' { Invoke-Config get @CommandArguments }
     'login' { Assert-Stopped; Invoke-Docker run --rm --init -i @volumeArguments $image login @CommandArguments }

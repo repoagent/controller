@@ -27,11 +27,11 @@ def snapshot(directory):
 
 def readonly_lifecycle_inspection(event):
     """Exact approved Apply-only transport; extra options or mounts remain effects."""
-    expected = ['run', '--rm', '-i', '--network', 'none', '--user', '1000',
+    expected = ['run', '--pull', 'never', '--rm', '-i', '--network', 'none', '--user', '1000',
         '--mount', f'type=bind,src={ROOT / "container/local-lifecycle.py"},dst=/source/local-lifecycle.py,readonly',
         '--mount', 'type=volume,src=repoagent-guided-red-enrollment,dst=/data/enrollment,readonly',
         '--mount', 'type=volume,src=repoagent-guided-red-config,dst=/data/config,readonly',
-        '--entrypoint', '/usr/bin/python3', IMAGE, '-E', '/source/local-lifecycle.py', 'inspect']
+        '--entrypoint', '/usr/bin/python3', IMAGE, '-E', '/source/local-lifecycle.py', IMAGE, 'inspect']
     return event == expected
 
 
@@ -255,7 +255,7 @@ class GuidedInstallTests(unittest.TestCase):
         else:
             result = subprocess.run(command, cwd=self.journey.directory,
                 env=dict(self.environment, **(environment or {})), input=answers,
-                capture_output=True, text=True, encoding='utf-8', timeout=90)
+                capture_output=True, text=True, encoding='utf-8', timeout=180 if os.name == 'nt' else 90)
             result.prompt_output = result.stdout
         state = json.loads(self.docker_state.read_text()) if self.docker_state.exists() else {}
         output = result.stdout + result.stderr
@@ -271,6 +271,31 @@ class GuidedInstallTests(unittest.TestCase):
             'running': state.get('running', False), 'dockerEvents': state.get('events', []),
             'brokerRequests': [event['path'] for event in self.journey.events]}), flush=True)
         return result, state
+
+    def test_model_override_keeps_recorded_launch_usable(self):
+        result, state = self.run_guided(overrides={'NoStart': None})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        credential, approval = self.journey.read('enrollment.json'), self.journey.read('approval.json')
+        binding = {key: credential[key] for key in ('repository', 'repositoryId', 'deviceId', 'appId', 'installationId', 'brokerOrigin')}
+        binding.update(profile='polling', approvalKind='repository-agent-variable', approvalVariable='APPROVED_CONTROLLER',
+                       expectedValueSha256=approval['expectedValueSha256'], githubEnvironment=None, environmentId=None)
+        launch = dict(binding=binding, settings=state['settings'])
+        record = dict(schemaVersion=1, instance='guided-red', volumes={part: 'repoagent-guided-red-' + part for part in runtime.STORAGE},
+                      storageOriginImage=IMAGE, currentImage=IMAGE, currentLaunch=launch, priorImage=IMAGE, priorLaunch=launch,
+                      targetImage=IMAGE, targetLaunch=launch, pending='none', operationId='f' * 32, revision=3)
+        mirror = self.journey.read('launch.json'); mirror['launchState'] = record
+        path = self.journey.state / 'launch.json'; path.write_text(json.dumps(mirror))
+        inspection = self.owned / 'inspection.json'
+        inspection.write_text(json.dumps(dict(marker=None, launchState=record, launchRequired=True)))
+        environment = {'INSTALLER_DOCKER_LIFECYCLE_INSPECT_FILE': str(inspection)}
+        before = snapshot(self.journey.state)
+        changed, after = self.run_guided(saved=True, overrides={'Model': 'different-model'}, environment=environment)
+        self.assertNotEqual(changed.returncode, 0, changed.stdout + changed.stderr)
+        self.assertEqual(snapshot(self.journey.state), before, 'Rejected settings must preserve the usable host mirror')
+        self.assertEqual(after['settings'], state['settings'])
+        self.assertFalse(after['running'])
+        resumed, _ = self.run_guided(saved=True, environment=environment)
+        self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
 
     def test_failed_credential_import_keeps_enrollment_and_minimal_resume_recovers_saved_auth(self):
         result, state = self.run_guided(environment={'INSTALLER_DOCKER_FAIL_OPERATION': 'import-codex-auth'})

@@ -61,3 +61,9 @@ configure/import/get and the unchanged host-carried helper use actual Docker and
 UID1000 volumes. Generated resources are removed even on assertion failure. This
 proves local lifecycle behavior with a controlled runtime, not native-controller,
 provider or Windows Docker Desktop acceptance. No image is pulled or published.
+
+The same opt-in lifecycle suite builds a second compatible immutable local layer
+for public Update/Rollback journeys. It checks selected/unrelated runtimes, retained
+private data, pending-state refusal and fresh-process recovery after Docker
+transport cuts, including host completion without the volume commit. No live
+credentials, provider, image pull/publication or user runtime is used.
