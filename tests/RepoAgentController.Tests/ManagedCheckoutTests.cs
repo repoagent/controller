@@ -30,7 +30,7 @@ public sealed class ManagedCheckoutTests
     [InlineData("partial")]
     [InlineData("reuse")]
     [InlineData("executable-owner-mismatch")]
-    [InlineData("metadata-group-readable")]
+    [InlineData("record-group-readable")]
     [InlineData("marker-other-executable")]
     [InlineData("lock-group-writable")]
     [InlineData("executable-private-config")]
@@ -363,7 +363,7 @@ public sealed class ManagedCheckoutTests
                     File.WriteAllText(Path.Combine(dotGit, "repoagent-owner"), Guid.NewGuid().ToString("N"));
                     File.SetUnixFileMode(Path.Combine(dotGit, "repoagent-owner"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
                     break;
-                case "metadata-group-readable": File.SetUnixFileMode(record, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead); break;
+                case "record-group-readable": File.SetUnixFileMode(record, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead); break;
                 case "marker-other-executable": File.SetUnixFileMode(Path.Combine(dotGit, "repoagent-owner"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.OtherExecute); break;
                 case "lock-group-writable": File.SetUnixFileMode(Path.Combine(workspace, ".repoagent-checkout.lock"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupWrite); break;
                 case "executable-private-config": File.SetUnixFileMode(Path.Combine(home, "config.toml"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); break;
