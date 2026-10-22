@@ -1,5 +1,10 @@
 # StoryBeam controller on Azure
 
+The current cost-first evaluation is the [three-resource SMB setup candidate](SMB.md).
+Keep the exact working local Docker controller running during that evaluation.
+The NFS foundation and activation instructions below describe the existing hosting
+path; the SMB candidate is setup-only and has not passed live storage acceptance.
+
 This foundation creates a dedicated VNet, network-restricted classic NFS 4.1 share, Consumption Container Apps environment and manual smoke job. The job uses the [accepted public controller image](https://github.com/repoagent/controller/actions/runs/39806177465) by immutable digest and runs its installed tools as UID 1000. There are no registry credentials, active controller, enrollment secrets or changes to the existing auth service. Local StoryBeam keeps running.
 
 Deploy to the selected subscription and dedicated resource group:
