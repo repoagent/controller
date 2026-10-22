@@ -1,6 +1,6 @@
 # StoryBeam controller on Azure
 
-This foundation creates a dedicated VNet, network-restricted classic NFS 4.1 share, Consumption Container Apps environment and manual smoke job. The job uses the [accepted public controller image](https://github.com/repoagent/controller/actions/runs/39713172578) by immutable digest and runs its installed tools as UID 1000. There are no registry credentials, active controller, enrollment secrets or changes to the existing auth service. Local StoryBeam keeps running.
+This foundation creates a dedicated VNet, network-restricted classic NFS 4.1 share, Consumption Container Apps environment and manual smoke job. The job uses the [accepted public controller image](https://github.com/repoagent/controller/actions/runs/39806177465) by immutable digest and runs its installed tools as UID 1000. There are no registry credentials, active controller, enrollment secrets or changes to the existing auth service. Local StoryBeam keeps running.
 
 Deploy to the selected subscription and dedicated resource group:
 
