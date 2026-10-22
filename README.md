@@ -7,7 +7,8 @@ RepoAgent connects GitHub conversations to native coding-agent sessions. Its CLI
 - [Minimal PoC — issue #2](https://github.com/repoagent/controller/issues/2): the implementation starting point, with manual verification.
 - [Full specification — issue #1](https://github.com/repoagent/controller/issues/1): broader design reference. The PoC's smaller scope takes precedence for the initial build.
 - [Flows, payloads and session instructions](https://github.com/repoagent/controller/issues/2#issuecomment-6276915447).
-- [Maintainer authentication-service deployment](docs/azure-auth-deployment.md): the Azure resource group, OIDC access and verified Bicep workflow; Container App deployment remains to be implemented.
+- [Maintainer authentication-service deployment](docs/azure-auth-deployment.md): Bicep/OIDC setup and continuous deployment of the broker API and cleanup service from `main`.
+- [Azure controller setup](infra/controller/README.md): public GHCR image, private persistent storage and a dedicated controller resource group, without ACR; includes cloud sign-in and the first-activation handover procedure.
 
 The PoC uses one native Codex session per Discussion, a small JSON mapping/checkpoint, GraphQL observation, an ordinary skill plus `gh` for replies, and timestamped stdout logging. After the native harness accepts input, the bridge adds 👀 to the forwarded source Discussion, comment or reply.
 
