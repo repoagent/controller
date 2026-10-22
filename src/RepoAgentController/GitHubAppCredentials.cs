@@ -9,12 +9,14 @@ public sealed class GitHubAppCredentials : IDisposable
     readonly IInstallationTokenSource source;
     readonly TimeProvider clock;
     readonly SemaphoreSlim refreshLock = new(1);
+    readonly CancellationTokenSource brokerCredentialLost = new();
     string? token;
     DateTimeOffset expiresAt;
     string appSlug = "";
 
     public string AgentLogin => appSlug.Length == 0 ? "" : appSlug + "[bot]";
     public string TokenFile { get; }
+    public CancellationToken BrokerCredentialLost => source is BrokerTokenSource ? brokerCredentialLost.Token : CancellationToken.None;
     internal long? RepositoryId => source.RepositoryId;
 
     public GitHubAppCredentials(HttpClient http, string appId, string privateKeyPath, string repository,
@@ -82,6 +84,7 @@ public sealed class GitHubAppCredentials : IDisposable
         await refreshLock.WaitAsync(ct);
         try
         {
+            RequireLiveBrokerCredential();
             if (appSlug.Length == 0) throw new InvalidOperationException("GitHub App authentication has not been initialized");
             if (token is not null && File.Exists(TokenFile) && expiresAt > clock.GetUtcNow().AddMinutes(5)) return token;
             try
@@ -114,11 +117,14 @@ public sealed class GitHubAppCredentials : IDisposable
                 Log.Write("app-token-refreshed", $"actor={AgentLogin} expires={expiry:O}");
                 return token;
             }
-            catch
+            catch (Exception error)
             {
-                token = null;
-                File.Delete(TokenFile);
-                File.Delete(TokenFile + ".tmp");
+                try { Invalidate(); }
+                finally
+                {
+                    if (source is BrokerTokenSource && !(error is OperationCanceledException && ct.IsCancellationRequested))
+                        brokerCredentialLost.Cancel();
+                }
                 throw;
             }
         }
@@ -134,9 +140,20 @@ public sealed class GitHubAppCredentials : IDisposable
                 await Task.Delay(TimeSpan.FromMinutes(1), clock, ct);
                 await GetToken(ct);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
-            catch (Exception error) { Log.Write("app-refresh-error", error.Message); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            catch (Exception error)
+            {
+                Log.Write("app-refresh-error", error.Message);
+                if (brokerCredentialLost.IsCancellationRequested) break;
+            }
         }
+        RequireLiveBrokerCredential();
+    }
+
+    void RequireLiveBrokerCredential()
+    {
+        if (brokerCredentialLost.IsCancellationRequested)
+            throw new InvalidOperationException("Broker credential renewal failed; this controller lifetime cannot resume. Check authorization and pending recovery state before restarting.");
     }
 
     internal static void SecureDirectory(string path)
@@ -145,5 +162,5 @@ public sealed class GitHubAppCredentials : IDisposable
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
-    public void Dispose() { source.Dispose(); refreshLock.Dispose(); }
+    public void Dispose() { source.Dispose(); refreshLock.Dispose(); brokerCredentialLost.Dispose(); }
 }

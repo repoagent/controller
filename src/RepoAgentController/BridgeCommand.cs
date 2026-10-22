@@ -6,7 +6,8 @@ namespace RepoAgentController;
 /// <summary>Composes the controller CLI with its outbound HTTP and gh transports.</summary>
 public static class BridgeCommand
 {
-    public static async Task<int> Run(string[] args, HttpClient? transport = null, string? ghExecutable = null)
+    public static async Task<int> Run(string[] args, HttpClient? transport = null, string? ghExecutable = null,
+        TimeProvider? clock = null, CancellationToken shutdownToken = default)
     {
         if (args.Length > 0 && args[0] is "git-helper" or "git-clone-child" or "git-fetch")
             return await AppGitCredential.Run(args, CancellationToken.None);
@@ -84,8 +85,8 @@ public static class BridgeCommand
                     using var ownedHttp = transport is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(60) } : null;
                     var http = transport ?? ownedHttp!;
                     using var credentials = broker is null
-                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone))
-                        : GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone));
+                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone))
+                        : GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone));
                     await credentials.Initialize(result.GetValue(installationId), cancellationToken);
                     var executable = ghExecutable ?? AppGitHubCommand.FindExecutable("gh");
                     var github = new GitHub(repo, credentials, executable);
@@ -95,28 +96,29 @@ public static class BridgeCommand
                     if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentials.TokenFile);
                     var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentials.TokenFile);
                     if (result.GetValue(checkAuth)) return 0;
-                    using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                    var refresh = credentials.RefreshUntilCancelled(refreshCancellation.Token);
+                    using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, credentials.BrokerCredentialLost);
+                    var runtimeToken = refreshCancellation.Token;
+                    var refresh = credentials.RefreshUntilCancelled(runtimeToken);
                     try
                     {
                         using var checkout = result.GetValue(clone)
-                            ? await ManagedCheckout.Open(cwd, statePath, github, credentials, executable, cancellationToken) : null;
+                            ? await ManagedCheckout.Open(cwd, statePath, github, credentials, executable, runtimeToken) : null;
                         var nativeRoot = checkout?.Root ?? cwd;
                         var nativeConfig = Path.Combine(credentialDirectory, "gh-config");
-                        if (checkout is not null) await Codex.TrustWorkspace(nativeRoot, wrapper, nativeConfig, cancellationToken);
+                        if (checkout is not null) await Codex.TrustWorkspace(nativeRoot, wrapper, nativeConfig, runtimeToken, credentials.BrokerCredentialLost);
                         var reconciliation = checkout is null ? null : new CheckoutRefresh(checkout, statePath,
                             store.Discussions.Any(entry => entry.Value!.Text("sessionId").Length != 0),
                             store.Discussions.Any(entry => entry.Value?["pending"] is not null));
-                        await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, reconciliation);
+                        await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, reconciliation, credentials.BrokerCredentialLost);
                         await using var managedRefresh = reconciliation;
-                        await codex.Initialize(cancellationToken);
+                        await codex.Initialize(runtimeToken);
                         if (reconciliation is not null) await reconciliation.Start(codex,
-                            TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)), cancellationToken);
+                            TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)), runtimeToken);
                         var bridge = new Bridge(github, codex, store, numbers, reconciliation);
                         if (publicUrl is not null)
                         {
                             await new DiscussionWebhooks(github, bridge, statePath,
-                                new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), reconciliation).Run(cancellationToken);
+                                new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), reconciliation).Run(runtimeToken);
                             return 0;
                         }
                         Log.Write("mode", $"polling interval-seconds={result.GetValue(interval)}");
@@ -124,11 +126,11 @@ public static class BridgeCommand
                         do
                         {
                             var pollStarted = Stopwatch.GetTimestamp();
-                            var succeeded = await bridge.Poll(cancellationToken);
+                            var succeeded = await bridge.Poll(runtimeToken);
                             Log.Write("poll-completed", $"success={succeeded} elapsed-ms={Stopwatch.GetElapsedTime(pollStarted).TotalMilliseconds:F0}");
                             if (result.GetValue(once)) return succeeded ? 0 : 1;
-                            await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), cancellationToken);
-                        } while (!cancellationToken.IsCancellationRequested);
+                            await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), clock ?? TimeProvider.System, runtimeToken);
+                        } while (!runtimeToken.IsCancellationRequested);
                         return 0;
                     }
                     finally
@@ -142,6 +144,6 @@ public static class BridgeCommand
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return 0; }
             catch (Exception error) { Log.Write("fatal", error.Message); return 1; }
         });
-        return await root.Parse(args).InvokeAsync();
+        return await root.Parse(args).InvokeAsync(cancellationToken: shutdownToken);
     }
 }
