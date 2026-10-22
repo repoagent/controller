@@ -1,0 +1,126 @@
+name: Publish controller image
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/NativeSmoke/**'
+      - 'tests/RepoAgent.LiveTests/**'
+      - 'container/**'
+      - 'image/**'
+      - 'global.json'
+      - '.agents/skills/github-discussion/**'
+      - 'scripts/compose-image.py'
+      - '.github/workflows/publish-controller-image.yml'
+permissions:
+  contents: read
+concurrency:
+  group: controller-image-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      IMAGE: repoagent-controller:${{ github.sha }}
+    outputs:
+      artifact-id: ${{ steps.archive.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Compose and build the exact source inventory
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/controller-image"
+          python3 scripts/compose-image.py --source . --manifest image/default.json --output "$RUNNER_TEMP/context"
+          docker buildx build --platform linux/amd64 --target runtime \
+            --provenance=false --sbom=false \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --metadata-file "$RUNNER_TEMP/controller-image/build.json" \
+            --output "type=docker,dest=$RUNNER_TEMP/controller-image/controller.tar" \
+            --tag "$IMAGE" --file "$RUNNER_TEMP/context/container/Containerfile" "$RUNNER_TEMP/context"
+      - name: Smoke the built image and record its checksum
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/controller-image"
+          docker load --input controller.tar
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}:{{.Config.User}}:{{index .Config.Labels "io.repoagent.role"}}:{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE")" = "linux/amd64:1000:controller:$GITHUB_SHA"
+          docker run --rm --network none "$IMAGE" versions
+          docker run --rm --network none --entrypoint /opt/repoagent/native-smoke/NativeSmoke "$IMAGE"
+          sha256sum controller.tar build.json > SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: archive
+        with:
+          name: controller-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/controller-image/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+  verify-artifact:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      IMAGE: repoagent-controller:${{ github.sha }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: ${{ runner.temp }}/controller-image
+      - name: Verify the transferred image before publication can be approved
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/controller-image"
+          sha256sum --check SHA256SUMS
+          docker load --input controller.tar
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}:{{.Config.User}}:{{index .Config.Labels "io.repoagent.role"}}:{{index .Config.Labels "org.opencontainers.image.revision"}}:{{index .Config.Labels "org.opencontainers.image.source"}}' "$IMAGE")" = "linux/amd64:1000:controller:$GITHUB_SHA:https://github.com/$GITHUB_REPOSITORY"
+  publish:
+    needs: [build, verify-artifact]
+    if: github.repository == 'repoagent/controller' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    environment: controller-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: repoagent-controller:${{ github.sha }}
+      REFERENCE: ghcr.io/repoagent/controller:sha-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: ${{ runner.temp }}/controller-image
+      - name: Verify and load the approved build
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/controller-image"
+          sha256sum --check SHA256SUMS
+          docker load --input controller.tar
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}:{{.Config.User}}:{{index .Config.Labels "io.repoagent.role"}}:{{index .Config.Labels "org.opencontainers.image.revision"}}:{{index .Config.Labels "org.opencontainers.image.source"}}' "$IMAGE")" = "linux/amd64:1000:controller:$GITHUB_SHA:https://github.com/$GITHUB_REPOSITORY"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish and require anonymous immutable image access
+        run: |
+          set -euo pipefail
+          docker tag "$IMAGE" "$REFERENCE"
+          docker push "$REFERENCE"
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+          auth=$(mktemp)
+          anonymous=$(mktemp -d)
+          printf '{"auths":{}}' > "$auth"
+          trap 'rm -rf "$auth" "$anonymous"' EXIT
+          digest=$(skopeo inspect --authfile "$auth" --no-creds --format '{{.Digest}}' "docker://$REFERENCE")
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          immutable="ghcr.io/repoagent/controller@$digest"
+          skopeo copy --src-authfile "$auth" --src-no-creds --preserve-digests "docker://$immutable" "dir:$anonymous"
+          test "$(jq -er '.config.digest' "$anonymous/manifest.json")" = "$(jq -er '."containerimage.config.digest"' "$RUNNER_TEMP/controller-image/build.json")"
+          printf 'Public controller image: `%s`\n\nSource: `%s`\n' "$immutable" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
