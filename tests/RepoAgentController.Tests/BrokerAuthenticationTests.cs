@@ -346,12 +346,14 @@ public sealed class BrokerAuthenticationTests
         Assert.Equal(0, await fixture.Start());
     }
 
-    [Fact]
-    public async Task Shared_enrollment_file_is_rejected_before_contacting_the_broker()
+    [Theory]
+    [InlineData(UnixFileMode.GroupRead)]
+    [InlineData(UnixFileMode.UserExecute)]
+    public async Task Unsafe_enrollment_file_is_rejected_before_contacting_the_broker(UnixFileMode extraMode)
     {
         if (OperatingSystem.IsWindows()) return;
         using var fixture = new Fixture();
-        File.SetUnixFileMode(fixture.EnrollmentFile, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
+        File.SetUnixFileMode(fixture.EnrollmentFile, UnixFileMode.UserRead | UnixFileMode.UserWrite | extraMode);
         Assert.Equal(1, await fixture.Start());
         Assert.Empty(fixture.Transport.Requests);
     }

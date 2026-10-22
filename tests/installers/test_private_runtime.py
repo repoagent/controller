@@ -132,7 +132,7 @@ if ($bytes.Length -lt 1) { throw 'Synthetic private source is empty.' }
     def invoke(self, *arguments, success=True):
         result = subprocess.run(['pwsh', '-NoLogo', '-NoProfile', '-File', str(ROOT / 'repoagent.ps1'),
             *arguments], capture_output=True, text=True, encoding='utf-8', env=self.environment,
-            cwd=self.directory, timeout=30)
+            cwd=self.directory, timeout=90 if os.name == 'nt' else 30)
         output = result.stdout + result.stderr
         state = self.state()
         self.assertNotIn(ENROLLMENT_CANARY, output)

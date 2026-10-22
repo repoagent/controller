@@ -29,6 +29,11 @@ public sealed class ManagedCheckoutTests
     [InlineData("unmanaged")]
     [InlineData("partial")]
     [InlineData("reuse")]
+    [InlineData("executable-owner-mismatch")]
+    [InlineData("record-group-readable")]
+    [InlineData("marker-other-executable")]
+    [InlineData("lock-group-writable")]
+    [InlineData("executable-private-config")]
     [InlineData("shutdown-leases")]
     [InlineData("shutdown-forced")]
     [InlineData("trust-malformed")]
@@ -55,6 +60,10 @@ public sealed class ManagedCheckoutTests
     [InlineData("unsafe-config")]
     public async Task Checkout_restart_preserves_local_state_and_blocks_unsafe_reuse(string scenario)
         => await Exercise(true, false, scenario);
+
+    [Fact]
+    public async Task Owner_only_executable_checkout_metadata_supports_restart()
+        => await Exercise(true, false, "owner-executable-metadata");
 
     [Fact]
     public async Task Start_and_resume_transport_preserve_verified_cwd_and_developer_instructions()
@@ -346,6 +355,18 @@ public sealed class ManagedCheckoutTests
             var dotGit = Path.Combine(expected, ".git");
             switch (scenario)
             {
+                case "owner-executable-metadata":
+                    foreach (var path in new[] { record, Path.Combine(workspace, ".repoagent-checkout.lock"), Path.Combine(dotGit, "repoagent-owner") })
+                        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                    break;
+                case "executable-owner-mismatch":
+                    File.WriteAllText(Path.Combine(dotGit, "repoagent-owner"), Guid.NewGuid().ToString("N"));
+                    File.SetUnixFileMode(Path.Combine(dotGit, "repoagent-owner"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                    break;
+                case "record-group-readable": File.SetUnixFileMode(record, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead); break;
+                case "marker-other-executable": File.SetUnixFileMode(Path.Combine(dotGit, "repoagent-owner"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.OtherExecute); break;
+                case "lock-group-writable": File.SetUnixFileMode(Path.Combine(workspace, ".repoagent-checkout.lock"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupWrite); break;
+                case "executable-private-config": File.SetUnixFileMode(Path.Combine(home, "config.toml"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); break;
                 case "reuse":
                     File.WriteAllText(Path.Combine(origin, "remote-advance"), "new remote commit");
                     await Git("-C", origin, "add", ".");
@@ -382,10 +403,11 @@ public sealed class ManagedCheckoutTests
                     break;
             }
             var snapshot = Snapshot(workspace);
-            Assert.Equal(scenario is "reuse" or "ignored" ? 0 : 1, await Start());
+            var restartAllowed = scenario is "reuse" or "ignored" or "owner-executable-metadata";
+            Assert.Equal(restartAllowed ? 0 : 1, await Start());
             Assert.Equal(snapshot.ToArray(), Snapshot(workspace).ToArray());
             Assert.Equal(clones, File.ReadAllText(cloneLog));
-            if (scenario is "reuse" or "ignored")
+            if (restartAllowed)
             {
                 Assert.Equal(commit, await Git("-C", expected, "rev-parse", "HEAD"));
                 Assert.All(File.ReadAllLines(capture), line => Assert.Equal(expected, JsonNode.Parse(line)!["cwd"]!.GetValue<string>()));

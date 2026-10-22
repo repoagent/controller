@@ -9,6 +9,10 @@ internal sealed record RepositoryCheckout(long Id, string Name, string Remote, s
 /// <summary>Owns one persistent checkout, refusing ambiguous state without repairing user work.</summary>
 internal sealed class ManagedCheckout : IDisposable
 {
+    const UnixFileMode PrivateFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+    // These ownership records contain no credentials. An executable SMB view
+    // reports owner execute on every file, without granting another user access.
+    const UnixFileMode CheckoutMetadataMode = PrivateFileMode | UnixFileMode.UserExecute;
     readonly FileStream lease;
     public string Root { get; }
     readonly string record, git;
@@ -36,7 +40,7 @@ internal sealed class ManagedCheckout : IDisposable
         var record = Path.Combine(workspace, ".repoagent-checkout.json");
         var lockPath = Path.Combine(workspace, ".repoagent-checkout.lock");
         CheckPath(lockPath);
-        if (File.Exists(lockPath)) _ = ReadPrivate(lockPath);
+        if (File.Exists(lockPath)) _ = ReadFile(lockPath, CheckoutMetadataMode);
         var lease = ExclusiveFileLease.Open(lockPath);
         try
         {
@@ -48,7 +52,7 @@ internal sealed class ManagedCheckout : IDisposable
             JsonNode? saved = null;
             if (File.Exists(record))
             {
-                saved = JsonNode.Parse(ReadPrivate(record)) ?? throw Blocked("invalid ownership record");
+                saved = JsonNode.Parse(ReadFile(record, CheckoutMetadataMode)) ?? throw Blocked("invalid ownership record");
                 if (saved["version"]?.GetValue<int>() != 1 || saved.Text("state") != state || saved.Text("root") != root ||
                     saved["repositoryId"]?.GetValue<long>() != repository.Id || saved.Text("repository") != repository.Name ||
                     saved.Text("remote") != repository.Remote || saved.Text("branch") != repository.Branch ||
@@ -66,7 +70,7 @@ internal sealed class ManagedCheckout : IDisposable
             var ownerFile = Path.Combine(root, ".git", "repoagent-owner");
             if (saved is not null)
             {
-                if (saved.Text("commit") != commit || ReadPrivate(ownerFile) != saved.Text("owner")) throw Blocked("checkout was replaced or advanced locally");
+                if (saved.Text("commit") != commit || ReadFile(ownerFile, CheckoutMetadataMode) != saved.Text("owner")) throw Blocked("checkout was replaced or advanced locally");
             }
             else
             {
@@ -128,8 +132,8 @@ internal sealed class ManagedCheckout : IDisposable
 
     async Task VerifyBaseline(CancellationToken ct)
     {
-        if (!JsonNode.DeepEquals(metadata, JsonNode.Parse(ReadPrivate(record))) ||
-            ReadPrivate(Path.Combine(Root, ".git", "repoagent-owner")) != Owner)
+        if (!JsonNode.DeepEquals(metadata, JsonNode.Parse(ReadFile(record, CheckoutMetadataMode))) ||
+            ReadFile(Path.Combine(Root, ".git", "repoagent-owner"), CheckoutMetadataMode) != Owner)
             throw Blocked("ownership record changed");
         if (await Inspect(git, Root, repository, ct) != metadata.Text("commit"))
             throw Deferred("checkout advanced locally; recorded baseline retained");
@@ -179,15 +183,17 @@ internal sealed class ManagedCheckout : IDisposable
         await Local(git, Root, ct, "-c", "submodule.recurse=false", "merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", target);
         if (await Inspect(git, Root, repository, ct) != target) throw Blocked("applied commit differs");
         metadata["commit"] = target;
-        SavePrivate(record, metadata.ToJsonString());
+        SaveFile(record, metadata.ToJsonString(), CheckoutMetadataMode);
         Log.Write("checkout-refreshed", $"root={Root} commit={target}");
         return true;
     }
 
-    internal static void SavePrivate(string path, string value)
+    internal static void SavePrivate(string path, string value) => SaveFile(path, value, PrivateFileMode);
+
+    static void SaveFile(string path, string value, UnixFileMode maximumMode)
     {
         CheckPath(path);
-        if (File.Exists(path)) _ = ReadPrivate(path);
+        if (File.Exists(path)) _ = ReadFile(path, maximumMode);
         WriteNew(path + ".tmp", value);
         File.Move(path + ".tmp", path, true);
     }
@@ -200,12 +206,14 @@ internal sealed class ManagedCheckout : IDisposable
                 (File.GetAttributes(item) & FileAttributes.ReparsePoint) != 0) throw Blocked("symbolic links are not supported in managed paths");
     }
 
-    internal static string ReadPrivate(string path)
+    internal static string ReadPrivate(string path) => ReadFile(path, PrivateFileMode);
+
+    static string ReadFile(string path, UnixFileMode maximumMode)
     {
         CheckPath(path);
         var info = new FileInfo(path);
         if (!info.Exists || info.Length > 65536 || (!OperatingSystem.IsWindows() &&
-            (File.GetUnixFileMode(path) & ~(UnixFileMode.UserRead | UnixFileMode.UserWrite)) != 0)) throw Blocked("private state is missing or unsafe");
+            (File.GetUnixFileMode(path) & ~maximumMode) != 0)) throw Blocked("private state is missing or unsafe");
         return File.ReadAllText(path);
     }
 
