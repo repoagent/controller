@@ -4,6 +4,9 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -61,6 +64,25 @@ class SetupTests(unittest.TestCase):
             setup.initialize(self.share, BINDING)
         self.assertEqual(retained.read_bytes(), b'do not replace')
         self.assertFalse((self.root / 'binding.json').exists())
+
+    def test_fifo_binding_is_rejected_without_blocking_or_changing_retained_data(self):
+        self.root.mkdir(mode=0o700)
+        marker = self.root / 'binding.json'
+        os.mkfifo(marker, mode=0o600)
+        retained = self.root / 'retained'
+        retained.write_bytes(b'do not replace')
+        # A process deadline exercises the actual blocking-open regression and
+        # guarantees that a failure leaves neither a child nor a held lock.
+        command = ('import runpy,sys,json; from pathlib import Path; '
+                   "runpy.run_path(sys.argv[1])['initialize'](Path(sys.argv[2]),json.loads(sys.argv[3]))")
+        result = subprocess.run([sys.executable, '-E', '-c', command, str(SOURCE), str(self.share),
+                                 json.dumps(BINDING)], capture_output=True, text=True, timeout=3)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('owned private regular file', result.stderr)
+        self.assertTrue(stat.S_ISFIFO(marker.lstat().st_mode))
+        self.assertEqual(retained.read_bytes(), b'do not replace')
+        with (self.share / 'runtime.lock').open('r+') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_unsafe_paths_are_rejected_without_changing_targets(self):
         setup.initialize(self.share, BINDING)

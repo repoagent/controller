@@ -39,7 +39,7 @@ def initialize(share, binding):
             raise ValueError('Expected the owned runtime parent directory.')
         marker = root / 'binding.json'
         if marker.exists() or marker.is_symlink():
-            descriptor = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW)
+            descriptor = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(descriptor) as saved:
                 private_file(os.fstat(saved.fileno()))
                 if json.load(saved) != binding:
