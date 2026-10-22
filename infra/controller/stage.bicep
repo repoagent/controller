@@ -21,10 +21,10 @@ param storageType string = 'NfsAzureFile'
 
 var image = loadJsonContent('image.json').image
 var setup = loadTextContent('controller-runtime.py')
-// SMB client-enforced Unix modes and symlinks are candidates, not proof of POSIX compatibility.
+// ACA accepts this restricted SMB option set; Unix modes and symlinks still need real acceptance.
 // Keep byte-range locking enabled. Never add nobrl to bypass a failed lease.
 var mountOptions = storageType == 'AzureFile'
-  ? 'vers=3.1.1,seal,uid=1000,gid=1000,dir_mode=0700,file_mode=0600,serverino,mfsymlinks,cifsacl,modefromsid,idsfromsid,actimeo=0,closetimeo=0'
+  ? 'vers=3.1.1,uid=1000,gid=1000,dir_mode=0700,file_mode=0600,serverino,mfsymlinks'
   : 'vers=4,minorversion=1,sec=sys'
 var binding = {
   version: 1

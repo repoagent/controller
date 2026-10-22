@@ -72,11 +72,16 @@ Do not repeat cold-start health requests while measuring idle scaling.
 
 ## Storage hypothesis and acceptance
 
-The setup module uses SMB3.1.1 encryption, UID/GID1000, private fallback file and
-directory modes, `cifsacl,modefromsid,idsfromsid`, and `mfsymlinks`. Microsoft
-documents client-enforced Unix permissions and symlinks for Linux SMB clients;
-the ACA host kernel and actual mount still have to support them. Byte-range
-locking stays enabled. [Linux SMB mount and permission documentation](https://learn.microsoft.com/en-us/azure/storage/files/storage-how-to-use-files-linux)
+The setup module uses SMB3.1.1, UID/GID1000, private fallback file and directory
+modes, `serverino` and `mfsymlinks`. The storage account requires secure transfer,
+so Azure Files requires encrypted SMB. Real ACA preflight rejected `seal`,
+`cifsacl`, `modefromsid`, `idsfromsid`, `actimeo` and `closetimeo`; the candidate
+therefore uses the restricted options that ACA accepts. Fallback mount modes
+do not establish per-file Unix permission changes or executable-file support.
+The unchanged initializer and later native checks must establish compatibility
+on the real mount. Byte-range locking stays enabled.
+[Linux SMB mount and permission documentation](https://learn.microsoft.com/en-us/azure/storage/files/storage-how-to-use-files-linux),
+[ACA mount configuration](https://learn.microsoft.com/en-us/azure/container-apps/storage-mounts)
 
 The existing initializer is unchanged. It verifies owned0700 private directories,
 0600 single-link regular files, binding retention and the native-history symlink,
