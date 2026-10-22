@@ -106,7 +106,8 @@ recorded launch images have advanced.
 
 Image transitions require the private enrollment file. Guided reruns keep the
 recorded runtime settings; differing overrides are refused before modifying the
-host mirror.
+host mirror. Direct configure also refuses conflicting recorded choices and
+retains recorded values for omitted options.
 
 Update retains all seven volume identities, enrollment, Codex sign-in, workspace,
 history, state, tools and pending publication journals. It replaces only the
