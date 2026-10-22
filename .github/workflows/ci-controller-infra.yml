@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'infra/controller/**'
+      - 'tests/controller/**'
       - '.github/workflows/ci-controller-infra.yml'
 permissions:
   contents: read
@@ -17,3 +18,5 @@ jobs:
           persist-credentials: false
       - run: az bicep install --version v0.48.1
       - run: az bicep build --file infra/controller/main.bicep --outfile "$RUNNER_TEMP/controller.json"
+      - run: az bicep build --file infra/controller/stage.bicep --outfile "$RUNNER_TEMP/controller-stage.json"
+      - run: python3 -m unittest discover -s tests/controller -v

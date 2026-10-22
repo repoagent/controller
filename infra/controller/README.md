@@ -33,3 +33,24 @@ Retain the foundation for the following storage and hosting work. Deleting the d
 ## Acceptance boundary
 
 Inspect the actual Azure account firewall, share protocol/capacity, environment subnet and job image/resources, then run the real manual job. Its success establishes UID 1000 execution, installed tools and the mounted NFS filesystem only. [Issue #37](https://github.com/repoagent/controller/issues/37) still requires actual controller state/lock, private-file, Git/tool/session and crash recovery evidence. [Issue #34](https://github.com/repoagent/controller/issues/34) still requires positive settlement of every old capability before any cloud owner is enrolled; never copy the local enrollment. [Issue #38](https://github.com/repoagent/controller/issues/38) still owns active hosting and controlled updates/rollback. These gates remain open after foundation deployment.
+
+## Prepare the hosted controller
+
+After the foundation, deploy the **setup-only** app. This allocates no controller owner and does not contact GitHub or the broker:
+
+```sh
+az bicep build --file infra/controller/stage.bicep --outfile /tmp/repoagent-controller-stage.json
+az deployment group create --resource-group rg-storybeam-repoagent-controller \
+  --name controller-setup --template-file infra/controller/stage.bicep
+az containerapp show --resource-group rg-storybeam-repoagent-controller \
+  --name storybeam-repoagent-controller \
+  --query '{state:properties.provisioningState,origin:properties.configuration.ingress.fqdn,image:properties.template.containers[0].image}'
+```
+
+The `publicOrigin` deployment output is the stable app HTTPS address. `/health/setup` returns fixed `setup-required` metadata; `/health/ready` returns 503. Other routes cannot read files or configure credentials. Platform revision readiness means the setup endpoint is available, not that a controller is running. HTTP activation allows 0..1 replicas, each .25 CPU/.5 GiB; idle can scale to zero. Full active allocation is about $19.71/month at the documented Sweden rates before grants, plus the existing storage/network costs. No continuous bot is enabled yet.
+
+The non-root initializer creates private0700 `runtime/data` and `runtime/workspace` on the existing share, mounted at `/data` and `/workspace`. Only their parent `runtime` uses0711: the root-squashed platform mount helper needs traversal permission to mount subpaths. Other users cannot list that parent, read its0600 binding or traverse the private data/workspace directories. The binding, directories and native-session history link are retained on setup restart/redeployment. The binding records immutable repository/App/installation IDs and broker origin; reuse refuses a mismatch. Nonempty unbound storage, unsafe ownership/permissions/links and existing enrollment are refused rather than repaired or adopted. Interrupted initialization with unbound partial files requires inspection; do not delete retained data to retry. NFS access is restricted to the dedicated subnet; same-UID workloads on that share remain within the same trust boundary.
+
+**Use this template only before enrollment.** It is not a controller update/rollback command. Reapplying setup to an enrolled app is refused by initialization and can make that revision unavailable. Active hosting must preflight configuration/sign-in and use supported owner settlement before enabling a fresh cloud enrollment. Never copy the working local enrollment or use an existing device concurrently. Real cloud inference, signed webhook delivery and controlled update/rollback remain #37/#34/#38 work.
+
+The setup script is runtime filesystem/HTTP code embedded by Bicep, not an Azure deployment wrapper. All Azure settings stay declarative. It uses the accepted public image with no private registry or credentials. Native Container Apps API `2026-07-01` follows the current [resource schema](https://learn.microsoft.com/en-us/azure/templates/microsoft.app/2026-07-01/containerapps), [init-container behavior](https://learn.microsoft.com/en-us/azure/container-apps/containers) and [storage subpaths](https://learn.microsoft.com/en-us/azure/container-apps/storage-mounts). Any future runtime-generated origin must combine `CONTAINER_APP_NAME` with `CONTAINER_APP_ENV_DNS_SUFFIX`; [CONTAINER_APP_HOSTNAME is revision-specific](https://learn.microsoft.com/en-us/azure/container-apps/environment-variables).
