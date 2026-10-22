@@ -273,7 +273,7 @@ class GuidedInstallTests(unittest.TestCase):
         return result, state
 
     def test_model_override_keeps_recorded_launch_usable(self):
-        result, state = self.run_guided()
+        result, state = self.run_guided(overrides={'NoStart': None})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         credential, approval = self.journey.read('enrollment.json'), self.journey.read('approval.json')
         binding = {key: credential[key] for key in ('repository', 'repositoryId', 'deviceId', 'appId', 'installationId', 'brokerOrigin')}
@@ -293,7 +293,7 @@ class GuidedInstallTests(unittest.TestCase):
         self.assertNotEqual(changed.returncode, 0, changed.stdout + changed.stderr)
         self.assertEqual(snapshot(self.journey.state), before, 'Rejected settings must preserve the usable host mirror')
         self.assertEqual(after['settings'], state['settings'])
-        self.assertTrue(after['running'])
+        self.assertFalse(after['running'])
         resumed, _ = self.run_guided(saved=True, environment=environment)
         self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
 
