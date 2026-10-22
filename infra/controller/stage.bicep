@@ -15,14 +15,13 @@ param brokerOrigin string = 'https://repoagent-auth.livelydune-309701b4.swedence
 @description('Keep one setup replica available while completing device authentication.')
 @allowed([0, 1])
 param setupMinReplicas int = 0
-@description('NFS supports the active storage path. SMB is setup-only: native SQLite persistence failed in real Azure checks.')
+@description('SMB retains controller conversations and uses local native SQLite; NFS retains the complete native filesystem.')
 @allowed(['NfsAzureFile', 'AzureFile'])
 param storageType string = 'NfsAzureFile'
 @description('Empty for the original setup profile; otherwise use this dedicated queue through system identity.')
 param workQueueAccountName string = ''
 param workQueueName string = 'controller-work'
 @description('First activation only, after supported old-owner settlement and private enrollment persistence.')
-@allowed([false])
 param activate bool = false
 @secure()
 param enrollment string = ''
@@ -71,7 +70,8 @@ resource appEnvironment 'Microsoft.App/managedEnvironments@2026-07-01' existing 
 resource app 'Microsoft.App/containerApps@2026-07-01' = {
   name: '${name}-controller'
   location: location
-  tags: { managedBy: 'repoagent-controller', repository: repository, purpose: activate ? 'controller-active' : 'controller-setup' }
+  tags: union({ managedBy: 'repoagent-controller', repository: repository, purpose: activate ? 'controller-active' : 'controller-setup' },
+    storageType == 'AzureFile' ? { nativePersistence: 'conversation-rollouts' } : {})
   identity: { type: empty(workQueueAccountName) ? 'None' : 'SystemAssigned' }
   properties: {
     environmentId: appEnvironment.id
@@ -100,6 +100,8 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
         image: image
         command: ['/usr/bin/python3', '-E', '-c']
         args: activate ? [setup, 'activate', string(settings)] : [setup, 'serve']
+        // Conversation rollouts stay private on SMB; SQLite requires local locking.
+        env: storageType == 'AzureFile' ? [{ name: 'CODEX_SQLITE_HOME', value: '/tmp/repoagent-codex-sqlite' }] : []
         resources: { cpu: json('0.25'), memory: '0.5Gi' }
         volumeMounts: concat([
           { volumeName: 'controller-state', mountPath: '/data', subPath: 'runtime/data' }
