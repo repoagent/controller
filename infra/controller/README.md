@@ -114,4 +114,36 @@ Startup validates the persistent binding and passes its numeric repository ID to
 
 ## Activation recovery
 
-If upload or activation fails, retain the cloud host journal and every persistent file. Inspect the real deployment/revision and its logs, correct the cause and retry the same enrollment/version/settings. Never create a second device or restore the old approval to work around failure. A settings conflict requires inspection and the controlled configuration lifecycle; startup will not silently overwrite it. Do not reapply `stage.bicep` after enrollment, delete the share or copy local enrollment into cloud. `runtime.bicep` owns first activation; controlled subsequent image update/rollback remains [#38](https://github.com/repoagent/controller/issues/38).
+If upload or activation fails, retain the cloud host journal and every persistent file. Inspect the real deployment/revision and its logs, correct the cause and retry the same enrollment/version/settings. Never create a second device or restore the old approval to work around failure. A settings conflict requires inspection and the controlled configuration lifecycle; startup will not silently overwrite it. Do not reapply `stage.bicep` after enrollment, delete the share or copy local enrollment into cloud. `runtime.bicep` owns first activation.
+
+## Subsequent controller image updates
+
+Use PowerShell 7.4+, authenticated Azure CLI with the Container Apps commands installed, and a running Docker daemon. The host preflights the desired and rollback images with an empty registry-auth configuration. Select the same private host state directory for every update and recovery of this app:
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME/.repoagent/azure" | Out-Null
+$selection = @{
+    SubscriptionId = '46f7e5d6-05f3-435b-8089-6c63a203dbfa'
+    ResourceGroup = 'rg-storybeam-repoagent-controller'
+    AppName = 'storybeam-repoagent-controller'
+    Repository = 'StoryBeam/StoryBeam'
+    RepositoryId = 1069791767
+    StateDirectory = "$HOME/.repoagent/azure/storybeam-controller"
+}
+./scripts/update-azure-controller.ps1 @selection                    # preview
+./scripts/update-azure-controller.ps1 @selection -Apply             # use image.json
+./scripts/update-azure-controller.ps1 @selection -Action Status
+./scripts/update-azure-controller.ps1 @selection -Action Rollback -Apply
+```
+
+Pass `-Image ghcr.io/repoagent/controller@sha256:...` to select another published controller digest. The command copies the retained revision and changes its main controller image, preserving the initializer image, startup settings, NFS mounts, managed identity, versioned secret references and stable app origin. Bicep remains the source for initial resources/settings; changing those settings needs a separately reviewed deployment rather than an image update.
+
+Preview runs the same source, recovery and anonymous-image checks as Apply, without changing the journal or Azure resources. It can download image layers. `Status` reports inventory without those action checks. A subsequent update must start from the exact revision and image recorded by the completed update or rollback; unexpected revisions require inspection.
+
+Updates deliberately interrupt service. The command saves a private atomic journal, takes a host process lock, selects multiple-revision control, deactivates the previous revision and checks actual replicas before starting the replacement. It routes traffic after platform readiness and records the transition. Verify a native turn and signed webhook afterward. Keep other Azure resource writers fenced; the host lock does not serialize other machines or portal changes.
+
+An interrupted or failed update retains its journal and requires explicit `Rollback`. Rollback checks the recorded configuration, stops any recorded candidate, confirms its replicas are gone and reactivates the previous exact revision. Unexpected drift requires inspection; use the exact journal revision names when inspecting Azure and do not delete private state to retry. Data, history and enrollment are preserved. The same logical device continues to own its issued tokens; image replacement is not token revocation or owner reassignment. A different device still requires the supported broker settlement and fresh-enrollment flow.
+
+After a launch may have been requested, recovery requires the recorded candidate to be visible with a terminal provisioning outcome. A missing revision or unfinished Azure operation keeps recovery blocked; inspect the actual Azure operation before retrying. A failure recorded before launch does not require a candidate that was never requested. The selected source and recovery revisions must match the retained configuration before any change.
+
+Real setup-only update/recovery evidence covers platform mechanics. Active native/webhook/history acceptance remains tracked in [#138](https://github.com/repoagent/controller/issues/138) and [#38](https://github.com/repoagent/controller/issues/38).
