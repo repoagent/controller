@@ -37,7 +37,7 @@ internal sealed class ManagedCheckout : IDisposable
         var lockPath = Path.Combine(workspace, ".repoagent-checkout.lock");
         CheckPath(lockPath);
         if (File.Exists(lockPath)) _ = ReadPrivate(lockPath);
-        var lease = new FileStream(lockPath, PrivateOptions(FileMode.OpenOrCreate));
+        var lease = ExclusiveFileLease.Open(lockPath);
         try
         {
             foreach (var entry in Directory.EnumerateFileSystemEntries(workspace))
