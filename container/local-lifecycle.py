@@ -9,6 +9,7 @@ import tempfile
 
 ENROLLMENT = Path('/data/enrollment')
 MARKER = ENROLLMENT / 'disabled.json'
+LAUNCH = ENROLLMENT / 'launch-state.json'
 TARGETS = (ENROLLMENT / 'enrollment.json', Path('/data/credentials/codex/auth.json'),
            Path('/data/state/bridge.json.github-app/installation-token.json'),
            Path('/data/state/bridge.json.github-app/installation-token.json.tmp'))
@@ -27,7 +28,7 @@ def checked(path, missing=False):
                 raise ValueError('Unsafe selected directory ownership or mode')
         if stat.S_ISLNK(info.st_mode) or (item != path and not stat.S_ISDIR(info.st_mode)):
             raise ValueError('Unsafe selected directory')
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != 1000 or info.st_mode & 0o077:
         raise ValueError('Unsafe selected file')
     return True
 
@@ -97,9 +98,9 @@ def marker(value):
     return value
 
 
-def verify_binding(expected):
+def verify_binding(expected, config=None):
     binding = expected['binding']
-    config = read(Path('/data/config/settings.json'))
+    config = read(Path('/data/config/settings.json')) if config is None else config
     fields = {'repository', 'appId', 'installationId', 'brokerUrl', 'keyPath', 'mentionUser', 'model', 'mode',
               'publicUrl', 'listenPort', 'reconcileInterval', 'toolUpdates', 'webSearch', 'clone', 'enroll'}
     if set(config) - fields or any(not isinstance(config.get(key), str) for key in ('repository', 'appId', 'brokerUrl', 'mode')):
@@ -152,27 +153,70 @@ def verify_binding(expected):
             raise ValueError('Selected enrollment profile differs')
 
 
+def launch_state(value):
+    fields = {'schemaVersion', 'instance', 'volumes', 'storageOriginImage', 'currentImage', 'currentLaunch',
+              'priorImage', 'priorLaunch', 'targetImage', 'targetLaunch', 'pending', 'operationId', 'revision'}
+    if set(value) != fields or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1:
+        raise ValueError('Invalid launch fields')
+    if (value['pending'] not in ('none', 'update', 'rollback') or type(value['revision']) is not int
+            or not 0 < value['revision'] < 2**63 or not re.fullmatch(r'[a-f0-9]{32}', value['operationId'])):
+        raise ValueError('Invalid launch operation')
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,40}', value['instance']):
+        raise ValueError('Invalid launch instance')
+    expected = {name: 'repoagent-' + value['instance'] + '-' + name
+                for name in ('config', 'credentials', 'workspace', 'history', 'state', 'tools', 'enrollment')}
+    if value['volumes'] != expected or not re.fullmatch(r'sha256:[a-f0-9]{64}', value['storageOriginImage']):
+        raise ValueError('Invalid launch storage')
+    for prefix in ('current', 'prior', 'target'):
+        image, launch = value[prefix + 'Image'], value[prefix + 'Launch']
+        if image is None and launch is None and prefix != 'current' and value['pending'] == 'none':
+            continue
+        if not isinstance(launch, dict) or set(launch) != {'binding', 'settings'}:
+            raise ValueError('Invalid saved launch')
+        selected = marker(dict(schemaVersion=1, state='disabled', instance=value['instance'], image=image, binding=launch['binding']))
+        verify_binding(selected, launch['settings'])
+        if launch['settings'].get('keyPath'):
+            raise ValueError('Host credential paths are not launch state')
+    return value
+
+
 def main():
     operation = sys.argv[1]
     existing = marker(read(MARKER)) if checked(MARKER, missing=True) else None
+    saved = launch_state(read(LAUNCH)) if checked(LAUNCH, missing=True) else None
     if operation == 'inspect':
-        return {'marker': existing}
-    expected = marker(document(sys.stdin.buffer.read(65537)))
-    if existing is not None and existing != expected:
+        return {'marker': existing, 'launchState': saved}
+    expected = document(sys.stdin.buffer.read(65537))
+    if operation in ('launch', 'restore'):
+        if existing is not None:
+            raise ValueError('Selected instance is disabled')
+        expected = launch_state(expected)
+        if operation == 'restore' and (saved != expected or expected['pending'] != 'rollback'):
+            raise ValueError('Recorded rollback intent required')
+        if operation == 'launch' and expected['currentLaunch']['settings'] != read(Path('/data/config/settings.json')):
+            raise ValueError('Selected launch settings differ')
+    else:
+        expected = marker(expected)
+    if operation not in ('launch', 'restore') and existing is not None and existing != expected:
         raise ValueError('Disable identity differs')
-    verify_binding(expected)
+    if operation not in ('launch', 'restore'):
+        verify_binding(expected)
     if operation == 'verify':
-        return {'verified': True}
-    if operation == 'disable':
-        if existing is None:
-            descriptor, name = tempfile.mkstemp(prefix='.disable-', dir=ENROLLMENT)
+        return {'verified': True, 'launch': {'binding': expected['binding'], 'settings': read(Path('/data/config/settings.json'))}}
+    if operation in ('disable', 'launch', 'restore'):
+        destination = LAUNCH if operation == 'launch' else Path('/data/config/settings.json') if operation == 'restore' else MARKER
+        if operation == 'restore':
+            expected = expected['targetLaunch']['settings']
+        checked(destination, missing=True)
+        if operation in ('launch', 'restore') or existing is None:
+            descriptor, name = tempfile.mkstemp(prefix='.lifecycle-', dir=destination.parent)
             try:
                 with os.fdopen(descriptor, 'wb') as stream:
                     stream.write(json.dumps(expected).encode())
                     stream.flush()
                     os.fsync(stream.fileno())
-                os.replace(name, MARKER)
-                directory = os.open(ENROLLMENT, os.O_RDONLY | os.O_DIRECTORY)
+                os.replace(name, destination)
+                directory = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
                 try:
                     os.fsync(directory)
                 finally:
@@ -180,7 +224,7 @@ def main():
             finally:
                 if os.path.exists(name):
                     os.unlink(name)
-        return {'state': 'disabled'}
+        return {'launchState': expected} if operation == 'launch' else {'state': 'restored' if operation == 'restore' else 'disabled'}
     if operation != 'clear' or existing is None:
         raise ValueError('Durable disable required')
     results = {}

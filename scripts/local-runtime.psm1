@@ -38,13 +38,18 @@ function Get-OwnershipArguments([string]$Storage) {
         '--label', "io.repoagent.storage=$Storage", '--label', "io.repoagent.image=$script:image")
 }
 
-function Initialize-LocalRuntime([string]$Instance, [string]$Image, [bool]$ConfigureBroker = $false, [bool]$Create = $false) {
+function Initialize-LocalRuntime([string]$Instance, [string]$Image, [bool]$ConfigureBroker = $false, [bool]$Create = $false, [string]$StateDirectory, [bool]$MetadataOnly = $false) {
     if ($Instance -cnotmatch '^[a-z0-9][a-z0-9-]{0,40}$') { throw 'Invalid selected instance.' }
     $script:instance = $Instance
     $script:image = $Image
     $script:containerName = "repoagent-$Instance"
     $script:storageNames = @('config', 'credentials', 'workspace', 'history', 'state', 'tools')
     $script:existingContainer = Get-Resource container $containerName
+    $script:hostDirectory = if ($StateDirectory) { $StateDirectory } elseif ($env:REPOAGENT_STATE_DIRECTORY) { $env:REPOAGENT_STATE_DIRECTORY } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) ".repoagent/instances/$Instance" }
+    $script:launchPath = Join-Path ([IO.Path]::GetFullPath($hostDirectory)) 'launch.json'
+    $script:mirror = $null
+    try { if (Test-Path -LiteralPath $launchPath) { $script:mirror = Read-LocalJson $launchPath } } catch { Write-Verbose 'Host launch mirror is unreadable; volume recovery is required.' }
+    $script:record = $null
     $resources = @{}
     foreach ($storage in $storageNames + @('enrollment')) {
         $resources[$storage] = Get-Resource volume "$containerName-$storage"
@@ -61,6 +66,7 @@ function Initialize-LocalRuntime([string]$Instance, [string]$Image, [bool]$Confi
         if ($resource) {
             Assert-Owned $resource $storage
             $resourceImage = $resource.Labels['io.repoagent.image']
+            if ($storage -eq 'container') { continue }
             if ($pinned -and $pinned -ne $resourceImage) { throw 'Instance image metadata conflicts; resolve manually.' }
             $pinned = $resourceImage
         }
@@ -69,16 +75,19 @@ function Initialize-LocalRuntime([string]$Instance, [string]$Image, [bool]$Confi
         $pinned = Invoke-Docker image inspect --format '{{.Id}}' $image
         if ($pinned -cnotmatch '^sha256:[a-f0-9]{64}$') { throw 'Select an existing immutable controller image.' }
     }
-    $Image = $pinned
+    $script:storageOrigin = $pinned
     $script:image = $pinned
-    $role = Invoke-Docker image inspect --format '{{index .Config.Labels "io.repoagent.role"}}:{{.Config.User}}' $pinned
-    if ($role -ne 'controller:1000') { throw 'Selected image must be a UID1000 controller image.' }
+    $Image = $pinned
     foreach ($storage in $storageNames + @('enrollment')) {
         if (-not $resources[$storage]) {
             if (-not $ConfigureBroker) { throw 'Incomplete broker instance: rerun broker configure to create missing owned storage.' }
         }
     }
-    if ($script:existingContainer) { Assert-CompatibleContainer }
+    $incomplete = @($resources.Values | Where-Object { $_ }).Count -lt 7
+    if ($incomplete) {
+        if ($existingContainer -and $existingContainer.Image -cne $storageOrigin) { throw 'Missing storage for a transitioned launch; restore it manually.' }
+        $script:image = Confirm-LocalImage $image
+    }
     if ($ConfigureBroker -and $Create) {
         foreach ($storage in $storageNames + @('enrollment')) {
             if (-not $resources[$storage]) {
@@ -90,14 +99,21 @@ function Initialize-LocalRuntime([string]$Instance, [string]$Image, [bool]$Confi
             }
         }
     }
+    if ($MetadataOnly) { return Get-LocalRuntimeContext }
+    if ($incomplete) { return Get-LocalRuntimeContext }
+    Read-LocalLaunchState
+    if ($script:existingContainer) { Assert-CompatibleContainer '' $script:existingContainer.Image }
     return Get-LocalRuntimeContext
 }
 
-function Assert-CompatibleContainer([string]$DirectKey) {
+function Assert-CompatibleContainer([string]$DirectKey, [string]$ExpectedImage = $image) {
     $existing = $script:existingContainer
     if (-not $existing) { return }
-    if ($script:brokerMode) { Assert-Owned $existing 'container' }
-    $expectedImage = Invoke-Docker image inspect --format '{{.Id}}' $image
+    if ($script:brokerMode) {
+        Assert-Owned $existing 'container'
+        if ($existing.Labels['io.repoagent.image'] -cne $existing.Image) { throw 'Container launch identity differs.' }
+    }
+    $expectedImage = Invoke-Docker image inspect --format '{{.Id}}' $ExpectedImage
     $role = Invoke-Docker image inspect --format '{{index .Config.Labels "io.repoagent.role"}}:{{.Config.User}}' $expectedImage
     if ($role -ne 'controller:1000' -or $existing.Image -ne $expectedImage -or $existing.User -ne '1000' -or
         @($existing.Entrypoint).Count -ne 3 -or
@@ -136,12 +152,16 @@ function Assert-CompatibleContainer([string]$DirectKey) {
 }
 
 function Get-LocalRuntimeContext {
-    return @{ Instance=$instance; Image=$image; Managed=$brokerMode; Container=$existingContainer; Name=$containerName }
+    return @{ Instance=$instance; Image=$script:image; Managed=$brokerMode; Container=$existingContainer; Name=$containerName; LaunchState=$record; StorageOrigin=$storageOrigin }
 }
 function Invoke-LocalHelper([string]$Operation, $Marker) {
-    $context = Initialize-LocalRuntime $instance $image
-    if (-not $context.Managed) { throw 'Selected instance is not managed.' }
-    if ($Operation -eq 'clear' -and $context.Container.Running) { throw 'Selected runtime must remain stopped before clearing.' }
+    if (-not $brokerMode) { throw 'Selected instance is not managed.' }
+    if ($Operation -eq 'clear' -and (Get-Resource container $containerName).Running) { throw 'Selected runtime must remain stopped before clearing.' }
+    foreach ($storage in $storageNames + @('enrollment')) {
+        $resource = Get-Resource volume "$containerName-$storage"
+        Assert-Owned $resource $storage
+        if ($resource.Labels['io.repoagent.image'] -cne $storageOrigin) { throw 'Selected storage identity changed.' }
+    }
     $source = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../container/local-lifecycle.py'))
     if ($source -match '[,\p{Cc}]') { throw 'Unsafe helper source path.' }
     $item = Get-Item -LiteralPath $source
@@ -151,11 +171,11 @@ function Invoke-LocalHelper([string]$Operation, $Marker) {
     }
     $mounts = @('--mount', "type=bind,src=$source,dst=/source/local-lifecycle.py,readonly")
     foreach ($storage in @('enrollment', 'config') + $(if ($Operation -eq 'clear') { @('credentials','state') } else { @() })) {
-        $access = if ($Operation -in @('inspect','verify') -or $storage -eq 'config') { ',readonly' } else { '' }
+        $access = if ($Operation -in @('inspect','verify') -or ($storage -eq 'config' -and $Operation -ne 'restore') -or ($storage -eq 'enrollment' -and $Operation -eq 'restore')) { ',readonly' } else { '' }
         $mounts += @('--mount', "type=volume,src=$containerName-$storage,dst=/data/$storage$access")
     }
     $inputText = if ($Marker) { $Marker | ConvertTo-Json -Depth 8 -Compress } else { '' }
-    $output = $inputText | & docker run --rm -i --network none --user 1000 @mounts --entrypoint /usr/bin/python3 $image -E /source/local-lifecycle.py $Operation
+    $output = $inputText | & docker run --pull never --rm -i --network none --user 1000 @mounts --entrypoint /usr/bin/python3 $script:helperImage -E /source/local-lifecycle.py $Operation
     if ($LASTEXITCODE -ne 0) { throw 'Selected lifecycle state is unconfirmed; inspect private file safety and binding.' }
     return Read-HostJson ($output -join "`n")
 }
@@ -166,25 +186,34 @@ function Assert-LocalRuntimeAction([string]$Action, [string[]]$Arguments) {
     if (-not $volume) { return }
     $state = Invoke-LocalHelper inspect
     if ($state.marker) { throw 'Selected instance is disabled. Use safe stop, inspection or Uninstall retry; never automatically reenroll.' }
+    if ($state.launchState -and ($state.launchState.pending -ne 'none' -or -not $mirror -or $mirror.instance -cne $instance -or
+        $mirror.runtimeImageId -cne $state.launchState.currentImage -or $mirror.repository -cne $state.launchState.currentLaunch.binding.repository -or
+        -not (Test-LaunchEquality $state.launchState $mirror.launchState))) { throw 'Selected update is pending or its host mirror differs; use explicit Rollback.' }
+    if ($state.launchState) {
+        $choices = Get-LaunchChoices $state.launchState
+        foreach ($field in $choices.Keys) { if ([string]$mirror[$field] -cne $choices[$field]) { throw 'Host launch choices differ from volume authority; use explicit Rollback.' } }
+    }
 }
 function Get-SelectedContainer {
-    $null = Initialize-LocalRuntime $instance $image
+    $null = Initialize-LocalRuntime $instance $image $false $false $hostDirectory
     if (-not $brokerMode) { throw 'Selected instance is not managed.' }
     if (-not $existingContainer) { return $null }
     $again = Get-Resource container $containerName
     if ($existingContainer.Id -cnotmatch '^[a-f0-9]{64}$' -or -not $again -or $again.Id -cne $existingContainer.Id) { throw 'Selected container identity changed.' }
     return $again
 }
-function Stop-LocalRuntime {
+function Stop-LocalRuntime([string]$ExpectedId) {
     $selected = Get-SelectedContainer
     if (-not $selected) { return }
+    if ($ExpectedId -and $selected.Id -cne $ExpectedId) { throw 'Selected stop identity changed.' }
     Invoke-Docker stop --timeout 20 $selected.Id | Out-Null
     $after = Get-Resource container $containerName
     if ($after -and ($after.Id -cne $selected.Id -or $after.Running)) { throw 'Selected stop is unconfirmed.' }
 }
-function Remove-LocalRuntime {
+function Remove-LocalRuntime([string]$ExpectedId) {
     $selected = Get-SelectedContainer
     if (-not $selected) { return }
+    if ($ExpectedId -and $selected.Id -cne $ExpectedId) { throw 'Selected removal identity changed.' }
     if ($selected.Running) { throw 'Selected runtime is still running.' }
     Invoke-Docker rm $selected.Id | Out-Null
 }
@@ -242,14 +271,14 @@ function Invoke-LocalUninstall([hashtable]$Options) {
     Assert-Text $binding.approvalVariable '\A[A-Z_][A-Z0-9_]{0,99}\z'
     Assert-Text $binding.profile '\A(?:polling|webhook)(?:-clone)?\z'
     $null = Get-BrokerOrigin $binding.brokerOrigin
-    $context = Initialize-LocalRuntime $Options.Instance $(if ($env:REPOAGENT_IMAGE) { $env:REPOAGENT_IMAGE } else { 'repoagent:local' })
+    $context = Initialize-LocalRuntime $Options.Instance $(if ($env:REPOAGENT_IMAGE) { $env:REPOAGENT_IMAGE } else { 'repoagent:local' }) $false $false $stateDirectory (-not $Options.Apply)
     if (-not $context.Managed) { throw 'Uninstall requires a proven managed instance.' }
     $marker = [ordered]@{ schemaVersion=1; state='disabled'; instance=$context.Instance; image=$context.Image; binding=$binding }
     if ($previous -and ($previous.marker | ConvertTo-Json -Depth 8 -Compress) -cne ($marker | ConvertTo-Json -Depth 8 -Compress)) { throw 'Saved lifecycle binding differs.' }
     $launchPath = Join-Path $stateDirectory 'launch.json'
     if (Test-Path -LiteralPath $launchPath) {
         $launch = Read-LocalJson $launchPath
-        if ($launch.instance -cne $context.Instance -or $launch.runtimeImageId -cne $context.Image -or $launch.repository -cne $binding.repository) { throw 'Saved launch identity differs.' }
+        if ($launch.instance -cne $context.Instance -or (-not $context.LaunchState -and $launch.runtimeImageId -cne $context.Image) -or $launch.repository -cne $binding.repository) { throw 'Saved launch identity differs.' }
     }
     $remote = [ordered]@{ approvalKind=$binding.approvalKind; repository=$binding.repository; repositoryId=$binding.repositoryId;
         approvalVariable=$binding.approvalVariable; observedValueSha256=''; expectedValueSha256=$binding.expectedValueSha256;
@@ -329,4 +358,151 @@ function Invoke-LocalUninstall([hashtable]$Options) {
     try { Write-PrivateJson $receiptPath $receipt } catch { $result.result='partial'; Write-Host 'Host retry receipt is unconfirmed; preserve the selected coordinates.' }
     return $result
 }
-Export-ModuleMember -Function Initialize-LocalRuntime, Assert-CompatibleContainer, Get-OwnershipArguments, Assert-LocalRuntimeAction, Stop-LocalRuntime, Remove-LocalRuntime, Invoke-LocalUninstall
+function Test-LaunchEquality($Left, $Right) {
+    $a = [Text.Json.Nodes.JsonNode]::Parse(($Left | ConvertTo-Json -Depth 8 -Compress))
+    $b = [Text.Json.Nodes.JsonNode]::Parse(($Right | ConvertTo-Json -Depth 8 -Compress))
+    return [Text.Json.Nodes.JsonNode]::DeepEquals($a, $b)
+}
+function Confirm-LocalImage([string]$Reference) {
+    $id = Invoke-Docker image inspect --format '{{.Id}}' $Reference
+    $role = Invoke-Docker image inspect --format '{{index .Config.Labels "io.repoagent.role"}}:{{.Config.User}}' $id
+    $entry = Invoke-Docker image inspect --format '{{json .Config.Entrypoint}}' $id | ConvertFrom-Json
+    if ($id -cnotmatch '^sha256:[a-f0-9]{64}$' -or $role -cne 'controller:1000' -or @($entry).Count -ne 3 -or
+        ($entry -join "`n") -cne "/usr/bin/python3`n-E`n/opt/repoagent/runtime.py") { throw 'An available immutable UID1000 controller image with the supported entrypoint is required.' }
+    return $id
+}
+function Read-LocalLaunchState {
+    $candidates = @($mirror.launchState.currentImage, $mirror.launchState.priorImage, $existingContainer.Image) | Where-Object { $_ } | Select-Object -Unique
+    if (-not $candidates) { $candidates = @($storageOrigin) }
+    $queue = [Collections.Generic.Queue[string]]::new()
+    foreach ($candidate in $candidates) { $queue.Enqueue($candidate) }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $selected = $false
+    while ($queue.Count) {
+        $candidate = $queue.Dequeue()
+        if (-not $seen.Add($candidate)) { continue }
+        if ($candidate -cnotmatch '^sha256:[a-f0-9]{64}$') { throw 'Invalid helper bootstrap identity.' }
+        & docker image inspect --format '{{.Id}}' $candidate 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { continue }
+        $script:helperImage = Confirm-LocalImage $candidate
+        $state = Invoke-LocalHelper inspect
+        $script:record = $state.launchState
+        if ($record -and $candidate -cnotin @($record.currentImage, $record.priorImage)) {
+            foreach ($known in @($record.currentImage, $record.priorImage) | Where-Object { $_ }) { $queue.Enqueue($known) }
+            continue
+        }
+        if (-not $record -and ($candidate -cne $storageOrigin -or ($existingContainer -and $existingContainer.Image -cne $storageOrigin))) { throw 'Missing original launch authority; no transitioned resources were adopted.' }
+        $selected = $true
+        break
+    }
+    if (-not $selected) { throw 'Restore an exact recorded current or prior helper image manually.' }
+    if ($record) {
+        if ($record.instance -cne $instance -or $record.storageOriginImage -cne $storageOrigin) { throw 'Authoritative launch ownership differs.' }
+        $script:image = $record.currentImage
+        if ($existingContainer -and $existingContainer.Image -cnotin @($record.currentImage, $record.priorImage, $record.targetImage)) { throw 'Unknown selected container launch.' }
+    }
+}
+function Get-LaunchChoices($Record) {
+    $choices = [ordered]@{}
+    foreach ($key in $Record.currentLaunch.settings.Keys | Where-Object { $_ -notin @('keyPath','enroll') }) {
+        $field = if ($key -eq 'brokerUrl') { 'brokerOrigin' } else { $key }
+        $choices[$field] = if ($key -eq 'clone') { ([string]$Record.currentLaunch.settings[$key]).ToLowerInvariant() } else { [string]$Record.currentLaunch.settings[$key] }
+    }
+    $choices['enrollmentProfile'] = $Record.currentLaunch.binding.profile
+    return $choices
+}
+function Write-LaunchMirror($Record) {
+    if (-not $mirror -or $mirror.instance -cne $instance) { throw 'Restore the original checked host launch mirror.' }
+    $script:mirror['launchState'] = $Record
+    $script:mirror['runtimeImageId'] = $Record.currentImage
+    $choices = Get-LaunchChoices $Record
+    foreach ($field in $choices.Keys) { $script:mirror[$field] = $choices[$field] }
+    $null = Initialize-PrivateDirectory $hostDirectory
+    Write-PrivateJson $launchPath $mirror
+}
+function Invoke-LocalUpdate([hashtable]$Options) {
+    foreach ($option in $Options.Keys) {
+        if ($option -notin @('Action','Image','Rollback','Instance','StateDirectory','Apply','NonInteractive')) { throw 'Update accepts only instance/state, Image or Rollback, Apply and NonInteractive.' }
+    }
+    if ([bool]$Options.Image -eq [bool]$Options.Rollback) { throw 'Select exactly one immutable Image or Rollback.' }
+    $context = Initialize-LocalRuntime $Options.Instance 'repoagent:local' $false $false $Options.StateDirectory (-not $Options.Apply)
+    if (-not $context.Managed -or ($mirror -and $mirror.instance -cne $instance) -or
+        (-not $mirror -and -not ($Options.Rollback -and $Options.Apply -and $record))) { throw 'Update requires checked managed launch state.' }
+    if (-not $mirror) { $script:mirror = [ordered]@{ instance=$instance; repository=$record.currentLaunch.binding.repository; runtimeImageId=$record.currentImage; launchState=$record } }
+    if ($Options.Image -and $Options.Image -cnotmatch '^(sha256:[a-f0-9]{64}|[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64})$') { throw 'Select an immutable local image ID or repository digest; no pull is performed.' }
+    $target = if ($Options.Rollback) { $mirror.launchState.priorImage } else { Confirm-LocalImage $Options.Image }
+    if ($Options.Rollback -and $Options.Apply) { $binding = $record.currentLaunch.binding } else {
+        $approval = Read-LocalJson (Join-Path $hostDirectory 'approval.json')
+        $kind = Get-ApprovalStateKind $approval
+        $approved = Read-HostJson $approval.marker
+        $binding = [ordered]@{ repository=$approval.repository; repositoryId=$approval.repositoryId; deviceId=$approved.deviceId; appId=$approved.appId;
+            installationId=$approved.installationId; brokerOrigin=$approval.brokerOrigin; profile=$approval.profile; approvalKind=$kind;
+            approvalVariable=$approval.approvalVariable; expectedValueSha256=$approval.expectedValueSha256;
+            githubEnvironment=$(if ($kind -eq 'environment-variable') { $approval.repoEnvironment } else { $null }); environmentId=$(if ($kind -eq 'environment-variable') { $approval.environmentId } else { $null }) }
+    }
+    $kind = $binding.approvalKind
+    if ($mirror.repository -cne $binding.repository) { throw 'Host repository binding differs.' }
+    if (-not $record -and $mirror.runtimeImageId -cne $image) { throw 'Original host launch image differs.' }
+    Write-Host "Instance $instance; repository $($binding.repository); device $($binding.deviceId); image $image."
+    Write-Host "Approval $kind/$($binding.approvalVariable); prior $($mirror.launchState.priorImage); target $target; retain all seven volumes and private data."
+    if (-not $Options.Apply) { Write-Host 'Read-only preview; authoritative volume verification is deferred until Apply.'; return }
+    if ($Options.Rollback) { $target = $record.priorImage; if (-not $target) { throw 'No authoritative prior image is recorded.' } }
+    else { Assert-LocalRuntimeAction Update @() }
+    $target = Confirm-LocalImage $target
+    $marker = [ordered]@{ schemaVersion=1; state='disabled'; instance=$instance; image=$image; binding=$binding }
+    if ((Invoke-LocalHelper inspect).marker) { throw 'Selected instance is disabled.' }
+    $verified = Invoke-LocalHelper verify $marker
+    if (-not $record) {
+        if ($Options.Rollback) { throw 'No authoritative prior image is recorded.' }
+        $script:record = [ordered]@{ schemaVersion=1; instance=$instance; volumes=[ordered]@{}; storageOriginImage=$storageOrigin;
+            currentImage=$image; currentLaunch=$verified.launch; priorImage=$null; priorLaunch=$null; targetImage=$null; targetLaunch=$null;
+            pending='none'; operationId=[Guid]::NewGuid().ToString('N'); revision=1 }
+        foreach ($storage in $storageNames + @('enrollment')) { $record.volumes[$storage] = "$containerName-$storage" }
+    }
+    if ($Options.Rollback -and $context.Container) { $record.currentImage = $context.Container.Image }
+    $record.currentLaunch = $verified.launch
+    if (-not $Options.Rollback) { $record.priorImage=$record.currentImage; $record.priorLaunch=$record.currentLaunch }
+    $record.targetImage=$target
+    $record.targetLaunch=$(if ($Options.Rollback) { $record.priorLaunch } else { $record.currentLaunch })
+    $record.pending=$(if ($Options.Rollback) { 'rollback' } else { 'update' })
+    $record.operationId=[Guid]::NewGuid().ToString('N'); $record.revision++
+    try {
+        $null = Invoke-LocalHelper launch $record
+        Write-LaunchMirror $record
+        if ($context.Container) {
+            Stop-LocalRuntime $context.Container.Id
+            Remove-LocalRuntime $context.Container.Id
+        }
+        $null = Initialize-LocalRuntime $instance $image $false $false $hostDirectory
+        if (Get-Resource container $containerName) { throw 'Selected name is no longer absent.' }
+        if ($Options.Rollback) { $null = Invoke-LocalHelper restore $record }
+        $mounts = @()
+        foreach ($storage in $storageNames + @('enrollment')) {
+            $destination = if ($storage -eq 'workspace') { '/workspace' } else { "/data/$storage" }
+            $access = if ($storage -in @('config','enrollment')) { ',readonly' } else { '' }
+            $mounts += @('--mount', "type=volume,src=$containerName-$storage,dst=$destination$access")
+        }
+        $network = if ($record.targetLaunch.settings.mode -eq 'fixed-url') { @('--publish', "127.0.0.1:$($record.targetLaunch.settings.listenPort):$($record.targetLaunch.settings.listenPort)") } else { @() }
+        $script:image=$target
+        $labels = Get-OwnershipArguments container
+        $targetId = Invoke-Docker run --pull never -d --init @labels --name $containerName @network @mounts $target start
+        if ($targetId -cnotmatch '^[a-f0-9]{64}$') { throw 'Target creation identity is unconfirmed.' }
+        $deadline = (Get-Date).AddMinutes(10)
+        do {
+            $observed = Get-Resource container $containerName
+            if (-not $observed -or $observed.Id -cne $targetId -or -not $observed.Running -or $observed.Image -cne $target) { throw 'Target runtime identity or readiness differs.' }
+            $output = Invoke-Docker logs $observed.Id
+            if (($output -join "`n").Contains(' ready repository=')) { break }
+            if ((Get-Date) -ge $deadline) { throw 'Target runtime readiness timed out.' }
+            Start-Sleep -Seconds 1
+        } while ($true)
+        $record.currentImage=$target; $record.currentLaunch=$record.targetLaunch; $record.pending='none'; $record.revision++
+        Write-LaunchMirror $record
+        $null = Invoke-LocalHelper launch $record
+        $null = Initialize-LocalRuntime $instance $target $false $false $hostDirectory
+        Assert-LocalRuntimeAction Update @()
+        Write-Host 'Selected image transition completed. Prior image and all seven volumes retained.'
+    } catch { throw 'Update is unconfirmed. Preserve all data and use explicit Update -Rollback -Apply with the original state directory.' }
+}
+
+Export-ModuleMember -Function Invoke-LocalUpdate, Initialize-LocalRuntime, Assert-CompatibleContainer, Get-OwnershipArguments, Assert-LocalRuntimeAction, Stop-LocalRuntime, Remove-LocalRuntime, Invoke-LocalUninstall

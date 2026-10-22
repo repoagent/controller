@@ -10,6 +10,16 @@ import subprocess
 import sys
 import tempfile
 
+# Isolated assembled journeys can fail only the final Docker transport.
+if real := os.environ.get('REPOAGENT_LIFECYCLE_REAL_DOCKER'):
+    args, cut = sys.argv[1:], os.environ.get('REPOAGENT_LIFECYCLE_CUT', '')
+    selected_start = args[:1] == ['run'] and '--name' in args and args[args.index('--name') + 1] == 'repoagent-' + os.environ['REPOAGENT_INSTANCE']
+    body = sys.stdin.buffer.read() if '/source/local-lifecycle.py' in args and args[-1] == 'launch' else None
+    if (cut == 'create' and selected_start) or (cut == 'complete' and body and json.loads(body)['pending'] == 'none'):
+        sys.exit(73)
+    result = subprocess.run([real, *args], input=body)
+    sys.exit(73 if result.returncode == 0 and selected_start and cut == 'started' else result.returncode)
+
 path = Path(os.environ['INSTALLER_DOCKER_STATE'])
 state = json.loads(path.read_text()) if path.exists() else {'settings': {}, 'events': [], 'authenticated': False, 'running': False}
 arguments = sys.argv[1:]
@@ -77,6 +87,8 @@ if command == 'build':
     finish(output='Fixture image built')
 if command == 'image' and arguments[1:3] == ['inspect', '--format']:
     reference = arguments[4]
+    if '.Config.Entrypoint' in arguments[3]:
+        finish(output=json.dumps(['/usr/bin/python3', '-E', '/opt/repoagent/runtime.py']))
     if '.Config.Labels' in arguments[3]:
         finish(output='controller:1000')
     if reference.startswith('sha256:'):
@@ -106,7 +118,7 @@ options = {}
 mounts = []
 while arguments[index].startswith('-'):
     option = arguments[index]
-    if option in ('--mount', '--name', '--entrypoint', '--publish', '--network', '--user', '--label'):
+    if option in ('--mount', '--name', '--entrypoint', '--publish', '--network', '--user', '--label', '--pull'):
         options[option] = arguments[index + 1]
         if option == '--mount':
             mounts.append(arguments[index + 1])
@@ -159,7 +171,7 @@ if options.get('--entrypoint') == 'sh':
     finish(1 if os.environ.get('INSTALLER_UNREADABLE_KEY') else 0)
 if '/source/local-lifecycle.py' in operation:
     if operation[-1] == 'inspect' and os.environ.get('INSTALLER_DOCKER_LEGACY_ABSENT_MARKER') == '1':
-        finish(output='{"marker":null}')
+        finish(output='{"marker":null,"launchState":null}')
     finish(2, 'Actual lifecycle helper transport required')
 if options.get('--entrypoint') in ('python3', '/usr/bin/python3'):
     if os.environ.get('INSTALLER_DOCKER_FAIL_OPERATION') == 'import-codex-auth':

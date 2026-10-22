@@ -46,6 +46,32 @@ class LocalLifecycleProcessTests(unittest.TestCase):
         metadata = (['container', 'ls'], ['volume', 'ls'], ['container', 'inspect'], ['volume', 'inspect'], ['image', 'inspect'])
         self.assertTrue(all(event[:2] in metadata for event in added), added)
 
+    def test_update_preview_is_immutable_and_read_only(self):
+        self.configure()
+        host = self.private / 'host'
+        host.mkdir(mode=0o700)
+        approved = json.dumps(dict(deviceId='device-1', appId=123, installationId=234))
+        approval = dict(version=2, setupVersion=2, approvalKind='repository-agent-variable', repository='owner/repository',
+                        repositoryId=345, brokerOrigin=runtime.BROKER, approvalVariable='APPROVED_CONTROLLER', profile='polling',
+                        pendingId=None, deadline=None, marker=approved, expectedValueSha256=hashlib.sha256(approved.encode()).hexdigest(),
+                        approvalWriteAttempted=True, approvalObserved=True)
+        for name, value in [('approval.json', approval), ('launch.json', dict(instance=runtime.INSTANCE, runtimeImageId=runtime.IMAGE, repository='owner/repository'))]:
+            path = host / name
+            path.write_text(json.dumps(value)); path.chmod(0o600)
+            if os.name == 'nt':
+                self.set_windows_private_acl(host, directory=True); self.set_windows_private_acl(path)
+        before = self.state()
+        for selectors, valid in [(('-Image', 'sha256:' + 'b' * 64), True), (('-Image', 'repoagent:latest'), False),
+                                 (('-Image', runtime.IMAGE, '-Rollback'), False)]:
+            result = subprocess.run(['pwsh', '-NoProfile', '-File', str(ROOT / 'install.ps1'), '-Action', 'Update',
+                                     '-Instance', runtime.INSTANCE, '-StateDirectory', str(host), '-NonInteractive', *selectors],
+                                    env=self.environment, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode == 0, valid, result.stdout + result.stderr)
+            if valid:
+                self.assertIn('deferred until Apply', result.stdout)
+                self.assertIn('device-1', result.stdout)
+            self.assert_no_effects(before)
+
     def test_uninstall_preview_defers_volume_binding_and_has_no_effects(self):
         self.configure()
         before = self.state()
@@ -156,3 +182,40 @@ class LocalLifecycleProcessTests(unittest.TestCase):
         self.assertEqual((outcome['githubMarker'], outcome['brokerClosure'], outcome['outstandingTokens']), ('removed', 'unconfirmed', 'unsettled'))
         self.assertEqual([json.loads(line)['argv'][4] for line in log.read_text().splitlines()], ['GET', 'GET', 'DELETE'])
         self.assertEqual(json.loads(log.read_text().splitlines()[-1])['argv'][-1], 'repos/owner/repository/agents/variables/APPROVED_CONTROLLER')
+
+
+def assert_interrupted_image_recovery(test, cut):
+    """Actual public processes and Docker state, with transport interruption only."""
+    host = test.prepare_update()
+    transport = test.directory / 'docker'
+    shutil.copyfile(Path(__file__).with_name('docker_fixture.py'), transport)
+    transport.chmod(0o755)
+    test.environment['REPOAGENT_LIFECYCLE_REAL_DOCKER'] = shutil.which('docker')
+    test.environment['REPOAGENT_LIFECYCLE_CUT'] = cut
+    failed = test.update('-Image', test.target, '-Apply')
+    test.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
+    state = json.loads(test.files("from pathlib import Path; print(Path('/data/enrollment/launch-state.json').read_text())"))
+    test.assertEqual((state['pending'], state['priorImage']), ('update', test.image))
+    observed = test.docker('container', 'inspect', test.name, success=False)
+    test.assertEqual(observed.returncode == 0, cut != 'create')
+    if cut == 'complete':
+        test.assertEqual(json.loads((host / 'launch.json').read_text())['launchState']['pending'], 'none')
+    test.environment['REPOAGENT_LIFECYCLE_CUT'] = ''
+    refused = test.public('start')
+    test.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+    test.environment['REPOAGENT_STATE_DIRECTORY'] = str(test.directory / 'alternate-state')
+    test.assertNotEqual(test.public('start').returncode, 0)
+    test.environment['REPOAGENT_STATE_DIRECTORY'] = str(host)
+    stopped = test.public('stop')
+    test.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+    if cut == 'complete':
+        (host / 'launch.json').write_text('{corrupt')
+    test.environment['REPOAGENT_LIFECYCLE_CUT'] = 'create'
+    test.assertNotEqual(test.update('-Rollback', '-Apply').returncode, 0)
+    pending = json.loads(test.files("from pathlib import Path; print(Path('/data/enrollment/launch-state.json').read_text())"))
+    test.assertEqual((pending['pending'], pending['priorImage'], pending['targetImage']), ('rollback', test.image, test.image))
+    test.environment['REPOAGENT_LIFECYCLE_CUT'] = ''
+    recovered = test.update('-Rollback', '-Apply')
+    test.assertEqual(recovered.returncode, 0, recovered.stdout + recovered.stderr)
+    test.assertEqual(json.loads(test.docker('container', 'inspect', test.name).stdout)[0]['Image'], test.image)
+    test.assertEqual(test.public('start').returncode, 0)

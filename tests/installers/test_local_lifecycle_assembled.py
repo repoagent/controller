@@ -21,6 +21,8 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
         self.assertRegex(PARENT, r'^sha256:[a-f0-9]{64}$')
         instance = 'test97-' + uuid.uuid4().hex[:12]
         name, unrelated = 'repoagent-' + instance, 'test97-unrelated-' + uuid.uuid4().hex[:12]
+        self.extra_images = []
+        self.unrelated_id = None
         image, parent_alias = None, 'repoagent-test97-parent:' + uuid.uuid4().hex
         def docker(*args, data=None, success=True):
             result = subprocess.run(['docker', *args], input=data, text=True, capture_output=True, timeout=90)
@@ -32,15 +34,21 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
             if inspected.returncode == 0:
                 resource = json.loads(inspected.stdout)[0]
                 self.assertEqual(resource['Config']['Labels']['io.repoagent.instance'], instance)
-                self.assertEqual(resource['Image'], image)
+                self.assertIn(resource['Image'], [image, *self.extra_images])
                 docker('stop', '--time', '5', resource['Id'])
                 docker('rm', resource['Id'])
+            if self.unrelated_id:
+                other = json.loads(docker('container', 'inspect', unrelated).stdout)[0]
+                self.assertEqual(other['Id'], self.unrelated_id)
+                docker('stop', '--time', '5', self.unrelated_id); docker('rm', self.unrelated_id)
             for volume in [name + '-' + storage for storage in STORAGE] + [unrelated]:
                 found = docker('volume', 'inspect', volume, success=False)
                 if found.returncode == 0:
                     self.assertEqual(json.loads(found.stdout)[0]['Labels']['io.repoagent.instance'], instance)
                     docker('volume', 'rm', volume)
-            if image:
+            for extra in self.extra_images:
+                docker('image', 'rm', extra)
+            if image and docker('image', 'inspect', image, success=False).returncode == 0:
                 docker('image', 'rm', image)
             tagged = docker('image', 'inspect', '--format', '{{.Id}}', parent_alias, success=False)
             if tagged.returncode == 0:
@@ -101,6 +109,82 @@ class LocalLifecycleAssembledTests(unittest.TestCase):
 
     def write_launch_state(self, record):
         self.files("from pathlib import Path; p=Path('/data/enrollment/launch-state.json'); p.write_text(" + repr(json.dumps(record)) + "); p.chmod(0o600)")
+
+    def prepare_update(self):
+        started = self.public('start')
+        self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+        host = self.directory / 'host'
+        host.mkdir(mode=0o700)
+        approved = json.dumps(self.marker['binding'])
+        approval = dict(version=2, setupVersion=2, approvalKind='repository-agent-variable', repository='owner/repository',
+                        repositoryId=345, brokerOrigin=BROKER, approvalVariable='APPROVED_CONTROLLER', profile='polling',
+                        pendingId=None, deadline=None, marker=approved, expectedValueSha256=hashlib.sha256(approved.encode()).hexdigest(),
+                        approvalWriteAttempted=True, approvalObserved=True)
+        for filename, value in [('launch.json', dict(instance=self.instance, runtimeImageId=self.image, repository='owner/repository', hostOnly='retained')),
+                                ('approval.json', approval)]:
+            (host / filename).write_text(json.dumps(value)); (host / filename).chmod(0o600)
+        alias = 'repoagent-test98-parent:' + uuid.uuid4().hex
+        self.docker('tag', self.image, alias)
+        (self.directory / 'Dockerfile').write_text('FROM ' + alias + '\nLABEL io.repoagent.test-version=update\n')
+        self.docker('build', '--network', 'none', '--pull=false', '--iidfile', str(self.directory / 'target-id'), str(self.directory))
+        self.target = (self.directory / 'target-id').read_text().strip()
+        self.extra_images.append(self.target)
+        self.environment['REPOAGENT_STATE_DIRECTORY'] = str(host)
+        self.unrelated_id = self.docker('run', '-d', '--network', 'none', '--name', self.unrelated, self.target, 'start').stdout.strip()
+        return host
+
+    def update(self, *arguments):
+        return subprocess.run(['pwsh', '-NoProfile', '-File', str(ROOT / 'install.ps1'), '-Action', 'Update',
+                               '-Instance', self.instance, '-StateDirectory', str(self.directory / 'host'), '-NonInteractive', *arguments],
+                              env=self.environment, text=True, capture_output=True, timeout=90)
+
+    def test_selected_image_update_retains_data_and_manual_rollback(self):
+        host = self.prepare_update()
+        self.assertEqual(self.public('start').returncode, 0)
+        original = json.loads(self.docker('container', 'inspect', self.name).stdout)[0]
+        self.files("from pathlib import Path; Path('/data/credentials/codex/auth.json').write_text('synthetic-auth-retained')")
+        paths = ['/data/' + part + '/retained' for part in ('workspace','history','state','tools','credentials')] + ['/data/credentials/codex/auth.json']
+        self.files("from pathlib import Path; [Path(p).write_text('synthetic-retained') for p in " + repr(paths) + "]")
+        before = self.files("import json,hashlib; from pathlib import Path; print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in " + repr(paths + ['/data/enrollment/enrollment.json','/data/config/settings.json']) + "}))")
+        preview = self.update('-Image', self.target)
+        self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+        self.assertEqual(json.loads(self.docker('container', 'inspect', self.name).stdout)[0]['Id'], original['Id'])
+        applied = self.update('-Image', self.target, '-Apply')
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        current = json.loads(self.docker('container', 'inspect', self.name).stdout)[0]
+        self.assertEqual(current['Image'], self.target)
+        self.assertEqual({m['Name'] for m in current['Mounts']}, {m['Name'] for m in original['Mounts']})
+        self.assertEqual(self.files("import json,hashlib; from pathlib import Path; print(json.dumps({p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in " + repr(paths + ['/data/enrollment/enrollment.json','/data/config/settings.json']) + "}))"), before)
+        self.assertEqual(json.loads((host / 'launch.json').read_text())['hostOnly'], 'retained')
+        self.assertEqual(self.public('start').returncode, 0)
+        rolled = self.update('-Rollback', '-Apply')
+        self.assertEqual(rolled.returncode, 0, rolled.stdout + rolled.stderr)
+        self.assertEqual(json.loads(self.docker('container', 'inspect', self.name).stdout)[0]['Image'], self.image)
+        other = json.loads(self.docker('container', 'inspect', self.unrelated).stdout)[0]
+        self.assertEqual((other['Id'], other['State']['Running']), (self.unrelated_id, True))
+        for _ in range(2):
+            advanced = self.update('-Image', self.target, '-Apply')
+            self.assertEqual(advanced.returncode, 0, advanced.stdout + advanced.stderr)
+        self.docker('image', 'rm', self.image)
+        self.assertEqual(self.public('start').returncode, 0, 'Historical storage-origin image must not be required')
+        self.files("from pathlib import Path; p=Path('/data/enrollment/disabled.json'); p.write_text(" + repr(json.dumps(self.marker)) + "); p.chmod(0o600)")
+        disabled = self.update('-Rollback', '-Apply')
+        self.assertNotEqual(disabled.returncode, 0)
+        self.assertIn('disabled', disabled.stdout + disabled.stderr)
+        self.files("from pathlib import Path; Path('/data/enrollment/launch-state.json').write_text('{corrupt')")
+        self.assertNotEqual(self.public('start').returncode, 0)
+
+    def test_no_container_update_recovery(self):
+        from test_local_lifecycle import assert_interrupted_image_recovery
+        assert_interrupted_image_recovery(self, 'create')
+
+    def test_running_target_update_recovery(self):
+        from test_local_lifecycle import assert_interrupted_image_recovery
+        assert_interrupted_image_recovery(self, 'started')
+
+    def test_incomplete_volume_commit_recovery(self):
+        from test_local_lifecycle import assert_interrupted_image_recovery
+        assert_interrupted_image_recovery(self, 'complete')
 
     def test_interrupted_update_refuses_normal_start(self):
         self.write_launch_state(self.launch_state('update'))

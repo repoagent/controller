@@ -17,7 +17,7 @@ Existing own-App options remain available with -Authentication OwnApp.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Install', 'Enroll', 'Revoke', 'Uninstall')][string]$Action = 'Install',
+    [ValidateSet('Install', 'Enroll', 'Revoke', 'Uninstall', 'Update')][string]$Action = 'Install',
     [ValidateSet('Broker', 'OwnApp')][string]$Authentication,
     [string]$BrokerOrigin,
     [string]$StateDirectory,
@@ -31,6 +31,8 @@ param(
     [string]$ExpectedRepositoryId,
     [string]$ExpectedEnvironmentId,
     [switch]$Apply,
+    [string]$Image,
+    [switch]$Rollback,
     [string]$ImageManifest,
     [string]$DerivedDockerfile,
     [string[]]$BuildArg = @(),
@@ -57,12 +59,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+if ($Action -eq 'Update') {
+    Import-Module "$PSScriptRoot/scripts/local-runtime.psm1" -DisableNameChecking
+    $options = @{} + $PSBoundParameters
+    $options.Instance = $Instance
+    Invoke-LocalUpdate $options
+    exit 0
+}
+if ($Image -or $Rollback) { throw 'Image and Rollback require Action Update.' }
 if ($Action -in @('Install','Enroll')) {
     $selectedState = if ($StateDirectory) { $StateDirectory } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) ".repoagent/instances/$Instance" }
     if (Test-Path -LiteralPath (Join-Path $selectedState 'lifecycle.json')) { throw 'Selected instance is disabled or has unresolved lifecycle intent; use inspection or Uninstall retry.' }
     if ($Apply) {
         Import-Module "$PSScriptRoot/scripts/local-runtime.psm1" -DisableNameChecking
-        $null = Initialize-LocalRuntime $Instance $(if ($env:REPOAGENT_IMAGE) { $env:REPOAGENT_IMAGE } else { 'repoagent:local' })
+        $null = Initialize-LocalRuntime $Instance $(if ($env:REPOAGENT_IMAGE) { $env:REPOAGENT_IMAGE } else { 'repoagent:local' }) $false $false $selectedState
         Assert-LocalRuntimeAction $Action @()
     }
 }
@@ -100,6 +110,7 @@ $stage = 'validate the selected plan'
 $diagnostic = 'Check the selected inputs and private saved state; nothing is repaired automatically.'
 $oldInstance = $env:REPOAGENT_INSTANCE
 $oldImage = $env:REPOAGENT_IMAGE
+$oldStateDirectory = $env:REPOAGENT_STATE_DIRECTORY
 $promptedRequired = $false
 function Stop-Install([string]$Message) { $script:diagnostic = $Message; throw 'Installation stopped.' }
 function Setting([string]$Name, [string]$Default = '', [switch]$Required) {
@@ -162,9 +173,10 @@ try {
         'mentionUser','model','mode','publicUrl','listenPort','reconcileInterval','toolUpdates','webSearch','codexAuthPath')
     if ($saved) {
         if ($saved.Contains('clone')) { $fields += 'clone' }
+        if ($saved.Contains('launchState')) { $fields += 'launchState' }
         Assert-Fields $saved $fields
         if ($saved.schemaVersion -ne 1 -or $saved.instance -cne $Instance -or -not $(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase.Equals($saved.stateDirectory, $StateDirectory) } else { [StringComparer]::Ordinal.Equals($saved.stateDirectory, $StateDirectory) })) { Stop-Install 'Saved launch coordinates differ from the selected instance/state directory.' }
-        foreach ($field in $fields | Where-Object { $_ -ne 'schemaVersion' }) {
+        foreach ($field in $fields | Where-Object { $_ -notin @('schemaVersion','launchState') }) {
             if ($saved[$field] -isnot [string] -or $saved[$field] -match '[\p{Cc}]') { Stop-Install 'Invalid saved launch choice; inspect the original state without discarding recovery files.' }
         }
     }
@@ -264,8 +276,9 @@ try {
             if ($LASTEXITCODE -ne 0) { Stop-Install 'Cannot inspect selected volume ownership.' }
             if ($Authentication -eq 'Broker') {
                 if (-not $labels -or $labels['io.repoagent.owner'] -ne 'private-runtime-v1' -or $labels['io.repoagent.instance'] -cne $Instance -or $labels['io.repoagent.storage'] -cne $storage -or $labels['io.repoagent.image'] -cnotmatch '^sha256:[a-f0-9]{64}$') { Stop-Install 'Conflicting or legacy Docker storage; choose a fresh instance.' }
-                if ($runtimeImageId -and $runtimeImageId -cne $labels['io.repoagent.image']) { Stop-Install 'Saved image conflicts with owned Docker storage.' }
-                $runtimeImageId = $labels['io.repoagent.image']; $image = $runtimeImageId
+                $storageImage = if ($saved.launchState) { $saved.launchState.storageOriginImage } else { $runtimeImageId }
+                if ($storageImage -and $storageImage -cne $labels['io.repoagent.image']) { Stop-Install 'Saved image conflicts with owned Docker storage.' }
+                if (-not $saved.launchState) { $runtimeImageId = $labels['io.repoagent.image']; $image = $runtimeImageId }
             } elseif ($labels -and $labels['io.repoagent.owner'] -eq 'private-runtime-v1') { Stop-Install 'Broker storage cannot be used for OwnApp.' }
         }
     }
@@ -293,6 +306,7 @@ try {
         imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
         listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; toolUpdates=$ToolUpdates; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath }
+    if ($saved.launchState) { $plan['launchState'] = $saved.launchState }
     Write-Host "Instance: $Instance; repository: $Repository; authentication: $Authentication; mode: $Mode"
     if ($resolvedClone) {
         Write-Host "Repository context: $resolvedProfile; Contents read, Discussions write$(if ($Mode -ne 'polling') { ', repository hooks write' }). Fresh instance and approval required."
@@ -337,6 +351,7 @@ try {
         Write-PrivateJson $launchPath $plan
     }
     $env:REPOAGENT_INSTANCE = $Instance
+    $env:REPOAGENT_STATE_DIRECTORY = $StateDirectory
     $env:REPOAGENT_IMAGE = $image
     if ($build) {
         $stage = 'build the selected image'
@@ -389,4 +404,5 @@ try {
 } finally {
     $env:REPOAGENT_INSTANCE = $oldInstance
     $env:REPOAGENT_IMAGE = $oldImage
+    $env:REPOAGENT_STATE_DIRECTORY = $oldStateDirectory
 }
