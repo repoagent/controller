@@ -38,7 +38,7 @@ function Get-OwnershipArguments([string]$Storage) {
         '--label', "io.repoagent.storage=$Storage", '--label', "io.repoagent.image=$script:image")
 }
 
-function Initialize-LocalRuntime([string]$Instance, [string]$Image, [bool]$ConfigureBroker = $false, [bool]$Create = $false, [string]$StateDirectory, [bool]$MetadataOnly = $false) {
+function Initialize-LocalRuntime([string]$Instance, [string]$Image, [bool]$ConfigureBroker = $false, [bool]$Create = $false, [string]$StateDirectory, [bool]$MetadataOnly = $false, [bool]$SafeStop = $false) {
     if ($Instance -cnotmatch '^[a-z0-9][a-z0-9-]{0,40}$') { throw 'Invalid selected instance.' }
     $script:instance = $Instance
     $script:image = $Image
@@ -76,7 +76,7 @@ function Initialize-LocalRuntime([string]$Instance, [string]$Image, [bool]$Confi
         if ($pinned -cnotmatch '^sha256:[a-f0-9]{64}$') { throw 'Select an existing immutable controller image.' }
     }
     $script:storageOrigin = $pinned
-    $script:image = $pinned
+    $script:image = if ($MetadataOnly -and $mirror.launchState) { Assert-Text $mirror.runtimeImageId '\Asha256:[a-f0-9]{64}\z'; $mirror.runtimeImageId } else { $pinned }
     $Image = $pinned
     foreach ($storage in $storageNames + @('enrollment')) {
         if (-not $resources[$storage]) {
@@ -101,7 +101,7 @@ function Initialize-LocalRuntime([string]$Instance, [string]$Image, [bool]$Confi
     }
     if ($MetadataOnly) { return Get-LocalRuntimeContext }
     if ($incomplete) { return Get-LocalRuntimeContext }
-    Read-LocalLaunchState
+    Read-LocalLaunchState $SafeStop
     if ($script:existingContainer) { Assert-CompatibleContainer '' $script:existingContainer.Image }
     return Get-LocalRuntimeContext
 }
@@ -156,6 +156,7 @@ function Get-LocalRuntimeContext {
 }
 function Invoke-LocalHelper([string]$Operation, $Marker) {
     if (-not $brokerMode) { throw 'Selected instance is not managed.' }
+    if ($Operation -ne 'inspect' -and $record -and $helperImage -cnotin @($record.currentImage,$record.priorImage)) { throw 'Restore a recorded current or prior write helper before changing private state.' }
     if ($Operation -eq 'clear' -and (Get-Resource container $containerName).Running) { throw 'Selected runtime must remain stopped before clearing.' }
     foreach ($storage in $storageNames + @('enrollment')) {
         $resource = Get-Resource volume "$containerName-$storage"
@@ -194,8 +195,8 @@ function Assert-LocalRuntimeAction([string]$Action, [string[]]$Arguments) {
         foreach ($field in $choices.Keys) { if ([string]$mirror[$field] -cne $choices[$field]) { throw 'Host launch choices differ from volume authority; use explicit Rollback.' } }
     }
 }
-function Get-SelectedContainer {
-    $null = Initialize-LocalRuntime $instance $image $false $false $hostDirectory
+function Get-SelectedContainer([bool]$SafeStop = $false) {
+    $null = Initialize-LocalRuntime $instance $image $false $false $hostDirectory $false $SafeStop
     if (-not $brokerMode) { throw 'Selected instance is not managed.' }
     if (-not $existingContainer) { return $null }
     $again = Get-Resource container $containerName
@@ -203,7 +204,7 @@ function Get-SelectedContainer {
     return $again
 }
 function Stop-LocalRuntime([string]$ExpectedId) {
-    $selected = Get-SelectedContainer
+    $selected = Get-SelectedContainer $true
     if (-not $selected) { return }
     if ($ExpectedId -and $selected.Id -cne $ExpectedId) { throw 'Selected stop identity changed.' }
     Invoke-Docker stop --timeout 20 $selected.Id | Out-Null
@@ -277,8 +278,8 @@ function Invoke-LocalUninstall([hashtable]$Options) {
     if ($previous -and ($previous.marker | ConvertTo-Json -Depth 8 -Compress) -cne ($marker | ConvertTo-Json -Depth 8 -Compress)) { throw 'Saved lifecycle binding differs.' }
     $launchPath = Join-Path $stateDirectory 'launch.json'
     if (Test-Path -LiteralPath $launchPath) {
-        $launch = Read-LocalJson $launchPath
-        if ($launch.instance -cne $context.Instance -or (-not $context.LaunchState -and $launch.runtimeImageId -cne $context.Image) -or $launch.repository -cne $binding.repository) { throw 'Saved launch identity differs.' }
+        $launch = try { Read-LocalJson $launchPath } catch { if (-not $context.LaunchState) { throw 'Unconfirmed host launch state.' }; $null }
+        if ($launch -and ($launch.instance -cne $context.Instance -or (-not $context.LaunchState -and $launch.runtimeImageId -cne $context.Image) -or $launch.repository -cne $binding.repository)) { throw 'Saved launch identity differs.' }
     }
     $remote = [ordered]@{ approvalKind=$binding.approvalKind; repository=$binding.repository; repositoryId=$binding.repositoryId;
         approvalVariable=$binding.approvalVariable; observedValueSha256=''; expectedValueSha256=$binding.expectedValueSha256;
@@ -371,11 +372,10 @@ function Confirm-LocalImage([string]$Reference) {
         ($entry -join "`n") -cne "/usr/bin/python3`n-E`n/opt/repoagent/runtime.py") { throw 'An available immutable UID1000 controller image with the supported entrypoint is required.' }
     return $id
 }
-function Read-LocalLaunchState {
+function Read-LocalLaunchState([bool]$SafeStop = $false) {
     $candidates = @($mirror.launchState.currentImage, $mirror.launchState.priorImage, $existingContainer.Image) | Where-Object { $_ } | Select-Object -Unique
     if (-not $candidates) { $candidates = @($storageOrigin) }
-    $queue = [Collections.Generic.Queue[string]]::new()
-    foreach ($candidate in $candidates) { $queue.Enqueue($candidate) }
+    $queue = [Collections.Generic.Queue[string]]::new([string[]]@($candidates))
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $selected = $false
     while ($queue.Count) {
@@ -387,11 +387,11 @@ function Read-LocalLaunchState {
         $script:helperImage = Confirm-LocalImage $candidate
         $state = Invoke-LocalHelper inspect
         $script:record = $state.launchState
-        if ($record -and $candidate -cnotin @($record.currentImage, $record.priorImage)) {
+        if ($record -and $candidate -cnotin @($record.currentImage, $record.priorImage) -and -not $SafeStop) {
             foreach ($known in @($record.currentImage, $record.priorImage) | Where-Object { $_ }) { $queue.Enqueue($known) }
             continue
         }
-        if (-not $record -and ($candidate -cne $storageOrigin -or ($existingContainer -and $existingContainer.Image -cne $storageOrigin))) { throw 'Missing original launch authority; no transitioned resources were adopted.' }
+        if (-not $record -and -not $SafeStop -and ($state.launchRequired -or $mirror.launchState -or $candidate -cne $storageOrigin -or ($existingContainer -and $existingContainer.Image -cne $storageOrigin))) { throw 'Missing original launch authority; no transitioned resources were adopted.' }
         $selected = $true
         break
     }

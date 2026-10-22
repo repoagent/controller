@@ -33,7 +33,7 @@ function Invoke-Docker {
 
 Import-Module "$PSScriptRoot/scripts/local-runtime.psm1" -DisableNameChecking
 function Initialize-Identity([bool]$ConfigureBroker = $false, [bool]$Create = $false) {
-    $context = Initialize-LocalRuntime $instance $image $ConfigureBroker $Create
+    $context = Initialize-LocalRuntime $instance $image $ConfigureBroker $Create $env:REPOAGENT_STATE_DIRECTORY $false ($Command -eq 'stop')
     $script:brokerMode = $context.Managed
     $script:image = $context.Image
     $script:existingContainer = $context.Container

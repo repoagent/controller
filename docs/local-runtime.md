@@ -111,7 +111,8 @@ untouched. A successful update retains the prior image and launch settings until
 a subsequent explicit transition supersedes them.
 
 The enrollment volume owns `launch-state.json`; `launch.json` is its checked host
-mirror. Pending intent is flushed before stopping the old runtime. Completion
+mirror. A retained `launch-state.required` marker refuses lost authority even
+with another host state directory. Pending intent is flushed before stopping the old runtime. Completion
 writes the host mirror before committing the volume record. Startup refuses
 pending, missing or conflicting mirrors, including with another state directory.
 Readiness alone cannot repair an interrupted transition. Use explicit Rollback

@@ -10,6 +10,7 @@ import tempfile
 ENROLLMENT = Path('/data/enrollment')
 MARKER = ENROLLMENT / 'disabled.json'
 LAUNCH = ENROLLMENT / 'launch-state.json'
+REQUIRED = ENROLLMENT / 'launch-state.required'
 TARGETS = (ENROLLMENT / 'enrollment.json', Path('/data/credentials/codex/auth.json'),
            Path('/data/state/bridge.json.github-app/installation-token.json'),
            Path('/data/state/bridge.json.github-app/installation-token.json.tmp'))
@@ -184,8 +185,11 @@ def main():
     operation = sys.argv[1]
     existing = marker(read(MARKER)) if checked(MARKER, missing=True) else None
     saved = launch_state(read(LAUNCH)) if checked(LAUNCH, missing=True) else None
+    required = checked(REQUIRED, missing=True)
     if operation == 'inspect':
-        return {'marker': existing, 'launchState': saved}
+        return {'marker': existing, 'launchState': saved, 'launchRequired': required}
+    if required and saved is None:
+        raise ValueError('Missing authoritative launch state')
     expected = document(sys.stdin.buffer.read(65537))
     if operation in ('launch', 'restore'):
         if existing is not None:
@@ -195,6 +199,10 @@ def main():
             raise ValueError('Recorded rollback intent required')
         if operation == 'launch' and expected['currentLaunch']['settings'] != read(Path('/data/config/settings.json')):
             raise ValueError('Selected launch settings differ')
+        if operation == 'launch' and not required:
+            descriptor = os.open(REQUIRED, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, 'wb') as stream:
+                stream.write(b'1'); stream.flush(); os.fsync(stream.fileno())
     else:
         expected = marker(expected)
     if operation not in ('launch', 'restore') and existing is not None and existing != expected:
