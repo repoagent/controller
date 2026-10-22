@@ -187,8 +187,13 @@ try {
     $revisions = Read-Revisions
     $active = @($revisions | Where-Object { $_.properties.active })
     if ($Action -eq 'Status' -or -not $Apply) {
-        @{ action=$Action; apply=$false; resourceId=$resourceId; image=$Image; journalPhase=$journal.phase
+        $selectedImage = if ($Action -eq 'Rollback') { $journal.previousImage } elseif ($Action -eq 'Status') { $app.properties.template.containers[0].image } else { $Image }
+        @{ action=$Action; apply=$false; resourceId=$resourceId; image=$selectedImage; journalPhase=$journal.phase
            activeRevisions=@($active.name); nativeAcceptance='requires native and signed-webhook verification' } | ConvertTo-Json -Depth 8
+        return
+    }
+    if ($Action -eq 'Update' -and $active.Count -eq 1 -and $active[0].properties.template.containers[0].image -ceq $Image) {
+        Write-Host 'Selected controller image is already active; no revision change was made.'
         return
     }
     $dockerConfig = Initialize-PrivateDirectory (Join-Path ([IO.Path]::GetFullPath($StateDirectory)) ('docker-' + [Guid]::NewGuid().ToString('N')))
@@ -222,7 +227,20 @@ try {
             Set-Traffic $journal.candidateRevision
             $null = Set-AzureUpdatePhase $context committed
         } else {
-            if ($journal.phase -ceq 'rolled-back') { Write-Host 'Recorded rollback is already complete.'; return }
+            if ($journal.phase -ceq 'rolled-back') {
+                if ($active.Count -ne 1 -or $active[0].name -cne $journal.previousRevision -or
+                        $active[0].properties.template.containers[0].image -cne $journal.previousImage) {
+                    throw 'Completed rollback no longer matches Azure; inspect before another operation.'
+                }
+                Wait-Ready $journal.previousRevision $journal.previousImage $journal.configurationSha256
+                Confirm-Stopped @($journal.previousRevision)
+                $traffic = @((Read-App).properties.configuration.ingress.traffic)
+                if ($traffic.Count -ne 1 -or $traffic[0].revisionName -cne $journal.previousRevision -or $traffic[0].weight -ne 100) {
+                    throw 'Completed rollback traffic differs; inspect Azure.'
+                }
+                Write-Host 'Recorded rollback is confirmed in Azure.'
+                return
+            }
             if (@($active | Where-Object { $_.name -cnotin @($journal.previousRevision,$journal.candidateRevision) }).Count) { throw 'Unexpected active revision prevents rollback.' }
             $previous = @($revisions | Where-Object { $_.name -ceq $journal.previousRevision })
             if ($previous.Count -ne 1 -or $previous[0].properties.template.containers[0].image -cne $journal.previousImage) { throw 'Recorded rollback revision differs or is absent.' }
