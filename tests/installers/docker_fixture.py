@@ -13,11 +13,18 @@ import tempfile
 # Isolated assembled journeys can fail only the final Docker transport.
 if real := os.environ.get('REPOAGENT_LIFECYCLE_REAL_DOCKER'):
     args, cut = sys.argv[1:], os.environ.get('REPOAGENT_LIFECYCLE_CUT', '')
+    if os.environ.get('REPOAGENT_LIFECYCLE_NO_HOST_BINDS') == '1' and any('type=bind,' in argument for argument in args):
+        print('Client filesystem bind mounts are unavailable on this daemon.', file=sys.stderr)
+        sys.exit(73)
     if (cut == 'stop' and args[:1] == ['stop']) or (args[:2] == ['image', 'inspect'] and args[-1] == os.environ.get('REPOAGENT_LIFECYCLE_MISSING_IMAGE')):
         sys.exit(73)
     selected_start = args[:1] == ['run'] and '--name' in args and args[args.index('--name') + 1] == 'repoagent-' + os.environ['REPOAGENT_INSTANCE']
-    body = sys.stdin.buffer.read() if '/source/local-lifecycle.py' in args and args[-1] == 'launch' else None
-    if (cut == 'create' and selected_start) or (cut == 'complete' and body and json.loads(body)['pending'] == 'none'):
+    helper = '/source/local-lifecycle.py' in args
+    body = sys.stdin.buffer.read() if helper else None
+    payload = json.loads(body) if body and args[-1] == 'launch' else None
+    if payload and '-c' in args:
+        payload = json.loads(payload['input'])
+    if (cut == 'create' and selected_start) or (cut == 'complete' and payload and payload['pending'] == 'none'):
         sys.exit(73)
     result = subprocess.run([real, *args], input=body)
     sys.exit(73 if result.returncode == 0 and selected_start and cut == 'started' else result.returncode)
@@ -172,6 +179,10 @@ if image.startswith('python@sha256:') and operation[:1] == ['/source/scripts/com
 if options.get('--entrypoint') == 'sh':
     finish(1 if os.environ.get('INSTALLER_UNREADABLE_KEY') else 0)
 if '/source/local-lifecycle.py' in operation:
+    if '-c' in operation:
+        # Drain the streamed program/input before returning a controlled result,
+        # including on Windows pipes with a smaller native buffer.
+        sys.stdin.buffer.read()
     if operation[-1] == 'inspect' and (inspection := os.environ.get('INSTALLER_DOCKER_LIFECYCLE_INSPECT_FILE')):
         finish(output=Path(inspection).read_text())
     if operation[-1] == 'inspect' and os.environ.get('INSTALLER_DOCKER_LEGACY_ABSENT_MARKER') == '1':

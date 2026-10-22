@@ -27,11 +27,11 @@ def snapshot(directory):
 
 def readonly_lifecycle_inspection(event):
     """Exact approved Apply-only transport; extra options or mounts remain effects."""
+    bootstrap = "import io,json,sys; request=json.load(sys.stdin); sys.stdin=io.TextIOWrapper(io.BytesIO(request['input'].encode('utf-8'))); sys.argv=sys.argv[1:]; exec(compile(request['source'],sys.argv[0],'exec'))"
     expected = ['run', '--pull', 'never', '--rm', '-i', '--network', 'none', '--user', '1000',
-        '--mount', f'type=bind,src={ROOT / "container/local-lifecycle.py"},dst=/source/local-lifecycle.py,readonly',
         '--mount', 'type=volume,src=repoagent-guided-red-enrollment,dst=/data/enrollment,readonly',
         '--mount', 'type=volume,src=repoagent-guided-red-config,dst=/data/config,readonly',
-        '--entrypoint', '/usr/bin/python3', IMAGE, '-E', '/source/local-lifecycle.py', IMAGE, 'inspect']
+        '--entrypoint', '/usr/bin/python3', IMAGE, '-E', '-c', bootstrap, '/source/local-lifecycle.py', IMAGE, 'inspect']
     return event == expected
 
 
