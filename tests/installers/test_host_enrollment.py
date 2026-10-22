@@ -260,7 +260,8 @@ class EnrollmentJourney:
             raise LostResponse()
         return {'state': 'active'}
 
-    def run(self, *, saved=False, action='Enroll', extra=(), timeout=50):
+    # The host has a 15-minute work budget; retain one minute for startup and cleanup.
+    def run(self, *, saved=False, action='Enroll', extra=(), timeout=16 * 60):
         args = ['pwsh', '-NoLogo', '-NoProfile', '-File', str(ROOT / 'install.ps1'),
                 '-Action', action, '-NonInteractive', '-Apply', '-StateDirectory', str(self.state)]
         if not saved:

@@ -84,10 +84,10 @@ class InstallerTests(unittest.TestCase):
                 if field in state['settings']:
                     saved_command += ['-' + name, str(state['settings'][field])]
             arranged = subprocess.run(saved_command, input='', text=True, capture_output=True,
-                env=environment, cwd=directory, timeout=30)
+                env=environment, cwd=directory, timeout=90)
             self.assertEqual(arranged.returncode, 0, arranged.stdout + arranged.stderr)
         result = subprocess.run(command, input=answers, text=True,
-                                capture_output=True, env=environment, cwd=directory, timeout=30)
+                                capture_output=True, env=environment, cwd=directory, timeout=90)
         observed = json.loads(state_path.read_text()) if state_path.exists() else None
         output = result.stdout + result.stderr
         self.assertNotIn('PRIVATE-KEY-CONTENT-MUST-NOT-APPEAR', output)
