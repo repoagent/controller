@@ -207,7 +207,10 @@ function Wait-Ready([string]$Revision, [string]$ExpectedImage, [string]$Hash) {
             if ($candidate[0].properties.fqdn -cne $expectedHost) { throw 'Revision hostname differs from the retained app domain.' }
             $null = Invoke-WebRequest -Uri "https://$expectedHost/health/setup" -SkipHttpErrorCheck -MaximumRedirection 0 -TimeoutSec 45
             $actualReplicas = Read-Replicas $Revision
-            if ($actualReplicas.Count -eq 1) { return }
+            if ($actualReplicas.Count -eq 1) {
+                $controller = @($actualReplicas[0].properties.containers | Where-Object { $_.name -ceq 'controller' })
+                if ($controller.Count -eq 1 -and $controller[0].ready -is [bool] -and $controller[0].ready) { return }
+            }
         }
         Start-Sleep -Seconds 2
     } while ($clock.Elapsed.TotalSeconds -lt 180)
@@ -242,18 +245,10 @@ try {
     if ($journal -and $journal.configurationSha256 -cne $hash) { throw 'Selected app configuration differs from its retained journal.' }
     $revisions = Read-Revisions
     $active = @($revisions | Where-Object { $_.properties.active })
-    if ($Action -eq 'Status' -or -not $Apply) {
-        $selectedImage = $Image
-        if ($Action -eq 'Rollback') { $selectedImage = $journal.previousImage }
-        elseif ($Action -eq 'Status') {
-            $selectedImage = if ($active.Count -eq 1) { $active[0].properties.template.containers[0].image } else { $null }
-        }
+    if ($Action -eq 'Status') {
+        $selectedImage = if ($active.Count -eq 1) { $active[0].properties.template.containers[0].image } else { $null }
         @{ action=$Action; apply=$false; resourceId=$resourceId; image=$selectedImage; journalPhase=$journal.phase
            activeRevisions=@($active.name); nativeAcceptance='requires native and signed-webhook verification' } | ConvertTo-Json -Depth 8
-        return
-    }
-    if ($Action -eq 'Update' -and $active.Count -eq 1 -and $active[0].properties.template.containers[0].image -ceq $Image) {
-        Write-Host 'Selected controller image is already active; no revision change was made.'
         return
     }
     $dockerConfig = Initialize-PrivateDirectory (Join-Path ([IO.Path]::GetFullPath($StateDirectory)) ('docker-' + [Guid]::NewGuid().ToString('N')))
@@ -266,9 +261,20 @@ try {
             $previous = Read-RecordedRevision $previous.name $previousImage
             if (-not $previous.properties.active -or $previous.properties.provisioningState -cne 'Provisioned' -or
                     $app.properties.provisioningState -cne 'Succeeded') { throw 'Previous revision or app provisioning is unresolved.' }
+            Assert-AzureUpdateSource $context $hash $previous.name $previousImage
             Assert-Image $previousImage $dockerConfig
             Assert-Image $Image $dockerConfig
             $null = Assert-Configuration $hash
+            if (-not $Apply) {
+                @{ action=$Action; apply=$false; resourceId=$resourceId; image=$Image; journalPhase=$journal.phase
+                   previousRevision=$previous.name; activeRevisions=@($active.name)
+                   nativeAcceptance='requires native and signed-webhook verification' } | ConvertTo-Json -Depth 8
+                return
+            }
+            if ($previousImage -ceq $Image) {
+                Write-Host 'Selected controller image is already active; no revision change was made.'
+                return
+            }
             $suffix = 'u' + [Guid]::NewGuid().ToString('N').Substring(0,12)
             $journal = Begin-AzureImageUpdate $context $hash $previous.name $previousImage "$AppName--$suffix" $Image
             $null = Set-AzureUpdatePhase $context draining
@@ -292,25 +298,33 @@ try {
             $null = Set-AzureUpdatePhase $context committed
         } else {
             Assert-RecordedRevisions $revisions
-            if ($journal.phase -ceq 'rolled-back') {
-                if ($active.Count -ne 1 -or $active[0].name -cne $journal.previousRevision -or
-                        $active[0].properties.template.containers[0].image -cne $journal.previousImage) {
-                    throw 'Completed rollback no longer matches Azure; inspect before another operation.'
-                }
-                Wait-Ready $journal.previousRevision $journal.previousImage $journal.configurationSha256
-                Confirm-Stopped @($journal.previousRevision)
-                $traffic = @((Read-App).properties.configuration.ingress.traffic)
-                if ($traffic.Count -ne 1 -or $traffic[0].revisionName -cne $journal.previousRevision -or $traffic[0].weight -ne 100) {
-                    throw 'Completed rollback traffic differs; inspect Azure.'
-                }
-                Write-Host 'Recorded rollback is confirmed in Azure.'
-                return
-            }
             if (@($active | Where-Object { $_.name -cnotin @($journal.previousRevision,$journal.candidateRevision) }).Count) { throw 'Unexpected active revision prevents rollback.' }
             $previous = @($revisions | Where-Object { $_.name -ceq $journal.previousRevision })
             if ($previous.Count -ne 1 -or $previous[0].properties.template.containers[0].image -cne $journal.previousImage) { throw 'Recorded rollback revision differs or is absent.' }
             Assert-Image $journal.previousImage $dockerConfig
             $null = Assert-Configuration $journal.configurationSha256
+            if ($journal.phase -ceq 'rolled-back') {
+                if ($active.Count -ne 1 -or $active[0].name -cne $journal.previousRevision -or
+                        $active[0].properties.template.containers[0].image -cne $journal.previousImage) {
+                    throw 'Completed rollback no longer matches Azure; inspect before another operation.'
+                }
+                $traffic = @((Read-App).properties.configuration.ingress.traffic)
+                if ($traffic.Count -ne 1 -or $traffic[0].revisionName -cne $journal.previousRevision -or $traffic[0].weight -ne 100) {
+                    throw 'Completed rollback traffic differs; inspect Azure.'
+                }
+            }
+            if (-not $Apply) {
+                @{ action=$Action; apply=$false; resourceId=$resourceId; image=$journal.previousImage; journalPhase=$journal.phase
+                   previousRevision=$journal.previousRevision; activeRevisions=@($active.name)
+                   nativeAcceptance='requires native and signed-webhook verification' } | ConvertTo-Json -Depth 8
+                return
+            }
+            if ($journal.phase -ceq 'rolled-back') {
+                Wait-Ready $journal.previousRevision $journal.previousImage $journal.configurationSha256
+                Confirm-Stopped @($journal.previousRevision)
+                Write-Host 'Recorded rollback is confirmed in Azure.'
+                return
+            }
             $null = Set-AzureUpdatePhase $context rollback-draining
             $candidate = @($revisions | Where-Object { $_.name -ceq $journal.candidateRevision })
             if ($candidate.Count -eq 1 -and $candidate[0].properties.active) {

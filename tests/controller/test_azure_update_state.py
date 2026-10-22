@@ -33,9 +33,33 @@ class AzureUpdateStateTests(unittest.TestCase):
                               capture_output=True, text=True, timeout=15)
 
     @staticmethod
-    def begin(candidate='controller--new'):
-        return ("Begin-AzureImageUpdate $c '" + 'c' * 64 + "' 'controller--old' '" + OLD +
+    def begin(candidate='controller--new', *, previous='controller--old', previous_image=OLD):
+        return ("Begin-AzureImageUpdate $c '" + 'c' * 64 + "' '" + previous + "' '" + previous_image +
                 "' '" + candidate + "' '" + NEW + "' | Out-Null; ")
+
+    def test_completed_update_requires_the_recorded_revision_and_image_before_replacing_journal(self):
+        for phase in ('committed', 'rolled-back'):
+            with self.subTest(phase=phase):
+                self.state = self.directory / phase
+                phases = ['draining', 'drained', 'launching', 'ready', 'committed']
+                if phase == 'rolled-back':
+                    phases += ['rollback-draining', 'rollback-ready', 'rolled-back']
+                transitions = ''.join('Set-AzureUpdatePhase $c ' + item + ' | Out-Null; ' for item in phases)
+                result = self.run_state(self.begin() + transitions)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                before = (self.state / 'update.json').read_bytes()
+                source = 'controller--new' if phase == 'committed' else 'controller--old'
+                image = NEW if phase == 'committed' else OLD
+                for revision, reference in (('controller--unrecorded', image),
+                                            (source, OLD if image == NEW else NEW)):
+                    rejected = self.run_state(self.begin('controller--next', previous=revision,
+                                                         previous_image=reference))
+                    self.assertNotEqual(rejected.returncode, 0, 'Unrecorded source replaced completed authority')
+                    self.assertEqual((self.state / 'update.json').read_bytes(), before)
+                accepted = self.run_state(self.begin('controller--next', previous=source, previous_image=image))
+                self.assertEqual(accepted.returncode, 0, accepted.stderr)
+                record = json.loads((self.state / 'update.json').read_text())
+                self.assertEqual((record['previousRevision'], record['previousImage']), (source, image))
 
     def test_pending_update_cannot_overwrite_rollback_authority(self):
         first = self.run_state(self.begin() + 'Set-AzureUpdatePhase $c draining | Out-Null')

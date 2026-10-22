@@ -54,8 +54,8 @@ function Assert-AzureUpdateJournal($Record, [string]$ResourceId) {
     }
 }
 
-function Begin-AzureImageUpdate($Context, [string]$ConfigurationSha256, [string]$PreviousRevision,
-        [string]$PreviousImage, [string]$CandidateRevision, [string]$CandidateImage) {
+function Assert-AzureUpdateSource($Context, [string]$ConfigurationSha256, [string]$PreviousRevision,
+        [string]$PreviousImage) {
     $previous = Read-AzureUpdateJournal $Context
     if ($previous -and $previous.phase -cnotin @('committed', 'rolled-back')) {
         throw 'An Azure update is pending; use explicit Rollback before another Update.'
@@ -63,6 +63,18 @@ function Begin-AzureImageUpdate($Context, [string]$ConfigurationSha256, [string]
     if ($previous -and $previous.configurationSha256 -cne $ConfigurationSha256) {
         throw 'Retained Azure configuration differs from the recorded update binding.'
     }
+    if ($previous) {
+        $expectedRevision = if ($previous.phase -ceq 'committed') { $previous.candidateRevision } else { $previous.previousRevision }
+        $expectedImage = if ($previous.phase -ceq 'committed') { $previous.candidateImage } else { $previous.previousImage }
+        if ($PreviousRevision -cne $expectedRevision -or $PreviousImage -cne $expectedImage) {
+            throw 'Active revision or image differs from the recorded completed update; retain the journal and inspect Azure.'
+        }
+    }
+}
+
+function Begin-AzureImageUpdate($Context, [string]$ConfigurationSha256, [string]$PreviousRevision,
+        [string]$PreviousImage, [string]$CandidateRevision, [string]$CandidateImage) {
+    Assert-AzureUpdateSource $Context $ConfigurationSha256 $PreviousRevision $PreviousImage
     $record = [ordered]@{
         version = 2; resourceId = $Context.ResourceId; configurationSha256 = $ConfigurationSha256
         previousRevision = $PreviousRevision; previousImage = $PreviousImage
@@ -91,4 +103,4 @@ function Set-AzureUpdatePhase($Context, [string]$Phase) {
     return Read-AzureUpdateJournal $Context
 }
 
-Export-ModuleMember -Function Open-AzureUpdateState, Read-AzureUpdateJournal, Begin-AzureImageUpdate, Set-AzureUpdatePhase
+Export-ModuleMember -Function Open-AzureUpdateState, Read-AzureUpdateJournal, Assert-AzureUpdateSource, Begin-AzureImageUpdate, Set-AzureUpdatePhase
