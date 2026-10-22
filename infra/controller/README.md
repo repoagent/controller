@@ -13,9 +13,9 @@ az deployment group create --resource-group rg-storybeam-repoagent-controller \
   --name controller-foundation --template-file infra/controller/main.bicep
 az resource list --resource-group rg-storybeam-repoagent-controller --output table
 az containerapp job start --resource-group rg-storybeam-repoagent-controller \
-  --name storybeam-repoagent-storage-smoke
+  --name storybeam-repoagent-smoke
 az containerapp job execution list --resource-group rg-storybeam-repoagent-controller \
-  --name storybeam-repoagent-storage-smoke --output table
+  --name storybeam-repoagent-smoke --output table
 ```
 
 Rerun the same incremental deployment to reuse the foundation. These commands target a dedicated resource group; do not use them to adopt unrelated resources. No deployment wrapper or simulated Azure validation is needed. `.github/workflows/ci-controller-infra.yml` compiles affected PRs and supports manual compilation.

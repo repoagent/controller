@@ -2,7 +2,7 @@ targetScope = 'resourceGroup'
 
 @description('Dedicated controller foundation; deploy into a new, selected resource group.')
 @minLength(3)
-@maxLength(30)
+@maxLength(26)
 param name string = 'storybeam-repoagent'
 param location string = 'swedencentral'
 
@@ -107,7 +107,7 @@ resource mountedShare 'Microsoft.App/managedEnvironments/storages@2026-07-01' = 
 
 // Manual and credential-free: this never runs the controller or contacts the broker.
 resource smoke 'Microsoft.App/jobs@2026-07-01' = {
-  name: '${name}-storage-smoke'
+  name: '${name}-smoke'
   location: location
   tags: tags
   properties: {
