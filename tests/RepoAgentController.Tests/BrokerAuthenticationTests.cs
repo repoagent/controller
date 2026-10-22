@@ -9,6 +9,39 @@ namespace RepoAgentController.Tests;
 
 public sealed class BrokerAuthenticationTests
 {
+    [Theory]
+    [InlineData("http://account.queue.core.windows.net/controller-work")]
+    [InlineData("https://foreign.example/controller-work")]
+    [InlineData("https://account.queue.core.windows.net/controller-work?sig=forbidden")]
+    [InlineData("https://user@account.queue.core.windows.net/controller-work")]
+    [InlineData("https://account.queue.core.windows.net:8443/controller-work")]
+    [InlineData("https://account.queue.core.windows.net/controller--work")]
+    [InlineData("https://account.queue.core.windows.net/controller-work/extra")]
+    public async Task Durable_work_rejects_unsafe_endpoints_before_clearing_credentials_or_contacting_services(string endpoint)
+    {
+        using var fixture = new Fixture(webhooks: true, clone: true);
+        fixture.SeedCache();
+        Assert.Equal(1, await BridgeCommand.Run(["--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
+            "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
+            "--clone", "--webhook-url", "https://controller.example.org", "--installation-id", "234", "--repository-id", "345",
+            "--azure-work-queue", endpoint], fixture.Http, fixture.Gh));
+        Assert.Empty(fixture.Transport.Requests);
+        Assert.Contains("prior-token", File.ReadAllText(fixture.TokenFile));
+        Assert.Equal("prior-temporary-token", File.ReadAllText(fixture.TokenFile + ".tmp"));
+        Assert.False(File.Exists(fixture.State));
+    }
+
+    [Fact]
+    public async Task Durable_work_cannot_be_enabled_by_an_authentication_check_or_implicit_runtime_binding()
+    {
+        using var fixture = new Fixture(webhooks: true, clone: true);
+        fixture.SeedCache();
+        Assert.Equal(1, await fixture.Start("--azure-work-queue", "https://account.queue.core.windows.net/controller-work"));
+        Assert.Empty(fixture.Transport.Requests);
+        Assert.Contains("prior-token", File.ReadAllText(fixture.TokenFile));
+        Assert.False(File.Exists(fixture.State));
+    }
+
     [Fact]
     public async Task Broker_CLI_rejects_an_insecure_origin_without_requiring_a_PEM()
     {

@@ -40,11 +40,11 @@ public sealed class GitHubAppCredentials : IDisposable
 
     public static GitHubAppCredentials FromBroker(HttpClient http, string brokerOrigin, string enrollmentFile,
         string appId, string repository, string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false,
-        long? expectedRepositoryId = null)
+        long? expectedRepositoryId = null, long? expectedInstallationId = null)
     {
         ClearCache(credentialDirectory);
         var time = clock ?? TimeProvider.System;
-        return new(new BrokerTokenSource(http, brokerOrigin, enrollmentFile, appId, repository, time, repositoryWebhooks, clone, expectedRepositoryId), credentialDirectory, time);
+        return new(new BrokerTokenSource(http, brokerOrigin, enrollmentFile, appId, repository, time, repositoryWebhooks, clone, expectedRepositoryId, expectedInstallationId), credentialDirectory, time);
     }
 
     public async Task Initialize(long? expectedInstallation, CancellationToken ct)

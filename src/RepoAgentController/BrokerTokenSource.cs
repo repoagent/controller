@@ -26,7 +26,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
     public string AppSlug => enrollment.RootElement.GetProperty("appSlug").GetString()!;
 
     public BrokerTokenSource(HttpClient http, string brokerOrigin, string enrollmentFile, string appId, string repository,
-        TimeProvider clock, bool repositoryWebhooks, bool clone = false, long? expectedRepositoryId = null)
+        TimeProvider clock, bool repositoryWebhooks, bool clone = false, long? expectedRepositoryId = null, long? expectedInstallationId = null)
     {
         this.http = http;
         this.clock = clock;
@@ -61,6 +61,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
                 throw Invalid("CLI App/repository differs from enrollment");
             if (expectedRepositoryId is { } expected && (!clone || expected <= 0 || Id(root, "repositoryId") != expected))
                 throw Invalid("CLI repository ID differs from enrollment");
+            ValidateInstallation(expectedInstallationId);
             deviceId = Text(root, "deviceId");
             secret = Text(root, "deviceSecret");
             if (!Regex.IsMatch(deviceId, @"\A[A-Za-z0-9_-]{1,128}\z") || !Regex.IsMatch(secret, @"\A[A-Za-z0-9_-]{43,128}\z"))
@@ -82,9 +83,14 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
     public Task Initialize(long? expectedInstallation, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        ValidateInstallation(expectedInstallation);
+        return Task.CompletedTask;
+    }
+
+    void ValidateInstallation(long? expectedInstallation)
+    {
         if (expectedInstallation is not null && expectedInstallation != Id(enrollment.RootElement, "installationId"))
             throw Invalid("CLI installation differs from enrollment");
-        return Task.CompletedTask;
     }
 
     public async Task<InstallationLease> Acquire(CancellationToken ct)

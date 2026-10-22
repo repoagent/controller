@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
@@ -16,6 +17,7 @@ sealed class CheckoutRefresh : IAsyncDisposable
     Codex? codex;
     bool blocked, eligible;
     long sequence;
+    long retryStarted;
     int epoch = 1;
 
     public CheckoutRefresh(ManagedCheckout checkout, string statePath, bool priorSessions, bool pendingDiscussion)
@@ -67,6 +69,7 @@ sealed class CheckoutRefresh : IAsyncDisposable
         {
             journal["requested"] = checked(Generation("requested") + 1);
             eligible = true; Save();
+            retryStarted = 0;
         }
         Signal();
     }
@@ -109,7 +112,8 @@ sealed class CheckoutRefresh : IAsyncDisposable
         lock (journalLock)
         {
             CheckAdmission();
-            if (!eligible || Busy || Generation("requested") == Generation("completed")) return;
+            if (!eligible || Busy || Generation("requested") == Generation("completed") ||
+                (retryStarted != 0 && Stopwatch.GetElapsedTime(retryStarted) < TimeSpan.FromSeconds(5))) return;
             generation = Generation("requested"); eligible = false;
         }
         try
@@ -137,7 +141,7 @@ sealed class CheckoutRefresh : IAsyncDisposable
             lock (journalLock)
             {
                 if (journal["applying"] is not null) Fault(error.Message);
-                else { journal["reason"] = error.Message; Save(); }
+                else { eligible = true; retryStarted = Stopwatch.GetTimestamp(); journal["reason"] = error.Message; Save(); }
             }
             Log.Write("refresh-pending", error.Message);
         }
@@ -164,6 +168,24 @@ sealed class CheckoutRefresh : IAsyncDisposable
             }
         }
         catch { exclusion.Release(); throw; }
+    }
+
+    public async Task<bool> CommitAtIdle(Func<CancellationToken, Task> commit, CancellationToken ct)
+    {
+        await exclusion.WaitAsync(ct);
+        try
+        {
+            await Reconcile(ct);
+            lock (journalLock)
+            {
+                CheckAdmission();
+                if (Busy || Generation("requested") != Generation("completed")) return false;
+            }
+            await commit(ct);
+            lock (journalLock) { CheckAdmission(); if (Busy) throw new IOException("Native activity changed during idle commit"); }
+            return true;
+        }
+        finally { exclusion.Release(); }
     }
 
     public sealed class Admission(CheckoutRefresh owner, string id, JsonObject record) : IDisposable
