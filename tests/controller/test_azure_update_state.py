@@ -77,6 +77,21 @@ class AzureUpdateStateTests(unittest.TestCase):
         released = self.run_state('')
         self.assertEqual(released.returncode, 0, released.stderr)
 
+    def test_possible_launch_remains_recorded_through_rollback_and_process_restart(self):
+        launched = self.run_state(self.begin() +
+                                  "foreach($phase in @('draining','drained','launching','rollback-draining')) "
+                                  '{ Set-AzureUpdatePhase $c $phase | Out-Null }')
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        resumed = self.run_state('Read-AzureUpdateJournal $c | ConvertTo-Json -Compress')
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertIs(json.loads(resumed.stdout).get('launchAttempted'), True,
+                      'Rollback forgot that its remote copy may still exist')
+        completed = self.run_state('Set-AzureUpdatePhase $c rollback-ready | Out-Null; '
+                                   'Set-AzureUpdatePhase $c rolled-back | Out-Null; '
+                                   'Read-AzureUpdateJournal $c | ConvertTo-Json -Compress')
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIs(json.loads(completed.stdout)['launchAttempted'], True)
+
     def test_different_app_cannot_adopt_the_recovery_journal(self):
         first = self.run_state(self.begin())
         self.assertEqual(first.returncode, 0, first.stderr)

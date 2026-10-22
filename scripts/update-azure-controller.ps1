@@ -56,6 +56,59 @@ function Convert-Canonical($Value) {
     if ($Value -is [array]) { return ,@($Value | ForEach-Object { Convert-Canonical $_ }) }
     return $Value
 }
+function Get-TemplateHash($Template) {
+    if (@($Template.containers).Count -ne 1 -or $Template.containers[0].name -cne 'controller' -or
+            @($Template.initContainers).Count -ne 1 -or $Template.initContainers[0].name -cne 'private-layout') {
+        throw 'Revision does not have the retained controller and initializer.'
+    }
+    $snapshot = $Template | ConvertTo-Json -Depth 50 -Compress | ConvertFrom-Json -AsHashtable
+    $snapshot.Remove('revisionSuffix')
+    $snapshot.containers[0].Remove('image')
+    # Revision GET omits these documented defaults which app GET expands.
+    if ($null -eq $snapshot.scale.pollingInterval) { $snapshot.scale.pollingInterval = 30 }
+    if ($null -eq $snapshot.scale.cooldownPeriod) { $snapshot.scale.cooldownPeriod = 300 }
+    $cpu = $snapshot.containers[0].resources.cpu
+    $defaultStorage = if ($cpu -le 0.25) { '1Gi' } elseif ($cpu -le 0.5) { '2Gi' } elseif ($cpu -le 1) { '4Gi' } else { '8Gi' }
+    foreach ($container in @($snapshot.containers) + @($snapshot.initContainers)) {
+        if ($null -eq $container.resources.ephemeralStorage) {
+            if ($container.resources.cpu -ne $cpu) { throw 'Unreported storage allocation cannot be compared for different initializer resources.' }
+            $container.resources.ephemeralStorage = $defaultStorage
+        }
+    }
+    return Get-ValueHash ((Convert-Canonical $snapshot) | ConvertTo-Json -Depth 50 -Compress)
+}
+function Read-RecordedRevision([string]$Name, [string]$ExpectedImage) {
+    $revision = Read-Azure "$resourceUrl/revisions/$Name`?api-version=2026-07-01"
+    if ($revision.id -ine "$resourceId/revisions/$Name" -or $revision.name -cne $Name -or
+            $revision.properties.active -isnot [bool] -or
+            $revision.properties.provisioningState -cnotin @('Provisioned','Failed','Deprovisioned')) {
+        throw 'Recorded revision is missing or its provisioning outcome remains unresolved.'
+    }
+    if ((Get-TemplateHash $revision.properties.template) -cne $templateHash -or
+            $revision.properties.template.containers[0].image -cne $ExpectedImage) {
+        throw 'Recorded revision configuration differs from the validated retained template.'
+    }
+    return $revision
+}
+function Assert-RecordedRevisions($Revisions) {
+    $record = Read-AzureUpdateJournal $context
+    $app = Assert-Configuration $record.configurationSha256
+    if ($app.properties.provisioningState -cnotin @('Succeeded','Failed','Canceled')) {
+        throw 'Azure provisioning remains unresolved; retain the journal and inspect before recovery.'
+    }
+    $required = [ordered]@{}
+    $required[$record.previousRevision] = $record.previousImage
+    if ($record.launchAttempted) { $required[$record.candidateRevision] = $record.candidateImage }
+    elseif (@($Revisions | Where-Object { $_.name -ceq $record.candidateRevision }).Count) {
+        throw 'A candidate exists without a recorded launch; inspect before recovery.'
+    }
+    foreach ($name in $required.Keys) {
+        if (@($Revisions | Where-Object { $_.name -ceq $name }).Count -ne 1) {
+            throw 'A recorded revision is missing from inventory; its remote outcome remains unknown.'
+        }
+        $null = Read-RecordedRevision $name $required[$name]
+    }
+}
 function Read-App {
     $app = Read-Azure "$resourceUrl`?api-version=2026-07-01"
     if ($app.id -isnot [string] -or $app.id -ine $resourceId -or $app.location -isnot [string] -or
@@ -123,6 +176,7 @@ function Confirm-Stopped([string[]]$AllowedActive = @()) {
     $clock = [Diagnostics.Stopwatch]::StartNew()
     do {
         $revisions = Read-Revisions
+        Assert-RecordedRevisions $revisions
         if (@($revisions | Where-Object { $_.properties.active -and $_.name -cnotin $AllowedActive }).Count) {
             throw 'An unexpected revision is active; no new controller will be started.'
         }
@@ -147,6 +201,7 @@ function Wait-Ready([string]$Revision, [string]$ExpectedImage, [string]$Hash) {
         if ($candidate.Count -eq 1 -and $candidate[0].properties.active -and
                 $candidate[0].properties.template.containers[0].image -ceq $ExpectedImage -and
                 $candidate[0].properties.healthState -ceq 'Healthy') {
+            $null = Read-RecordedRevision $Revision $ExpectedImage
             # Wake a setup revision which may legitimately have a zero minimum.
             $expectedHost = $Revision + $app.properties.configuration.ingress.fqdn.Substring($AppName.Length)
             if ($candidate[0].properties.fqdn -cne $expectedHost) { throw 'Revision hostname differs from the retained app domain.' }
@@ -183,6 +238,7 @@ try {
     if ($Action -eq 'Rollback' -and -not $journal) { throw 'Rollback requires the retained private update journal.' }
     $app = Read-App
     $hash = Get-ConfigurationHash $app
+    $templateHash = Get-TemplateHash $app.properties.template
     if ($journal -and $journal.configurationSha256 -cne $hash) { throw 'Selected app configuration differs from its retained journal.' }
     $revisions = Read-Revisions
     $active = @($revisions | Where-Object { $_.properties.active })
@@ -207,6 +263,9 @@ try {
             if ($active.Count -ne 1) { throw 'Update requires exactly one active previous revision.' }
             $previous = $active[0]
             $previousImage = $previous.properties.template.containers[0].image
+            $previous = Read-RecordedRevision $previous.name $previousImage
+            if (-not $previous.properties.active -or $previous.properties.provisioningState -cne 'Provisioned' -or
+                    $app.properties.provisioningState -cne 'Succeeded') { throw 'Previous revision or app provisioning is unresolved.' }
             Assert-Image $previousImage $dockerConfig
             Assert-Image $Image $dockerConfig
             $null = Assert-Configuration $hash
@@ -232,6 +291,7 @@ try {
             Set-Traffic $journal.candidateRevision
             $null = Set-AzureUpdatePhase $context committed
         } else {
+            Assert-RecordedRevisions $revisions
             if ($journal.phase -ceq 'rolled-back') {
                 if ($active.Count -ne 1 -or $active[0].name -cne $journal.previousRevision -or
                         $active[0].properties.template.containers[0].image -cne $journal.previousImage) {

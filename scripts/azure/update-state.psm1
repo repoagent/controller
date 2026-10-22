@@ -26,14 +26,15 @@ function Open-AzureUpdateState([string]$Directory, [string]$ResourceId) {
 function Read-AzureUpdateJournal($Context) {
     if (-not (Test-Path -LiteralPath $Context.Path)) { return $null }
     $record = Read-PrivateJson $Context.Path
+    if ($record.version -eq 1) { throw 'Pre-release journal lacks launch evidence; preserve it and inspect Azure before recovery.' }
     Assert-AzureUpdateJournal $record $Context.ResourceId
     return $record
 }
 
 function Assert-AzureUpdateJournal($Record, [string]$ResourceId) {
-    Assert-Fields $record @('version','resourceId','configurationSha256','previousRevision','previousImage','candidateRevision','candidateImage','phase')
+    Assert-Fields $record @('version','resourceId','configurationSha256','previousRevision','previousImage','candidateRevision','candidateImage','phase','launchAttempted')
     if (($record.version -isnot [long] -and $record.version -isnot [int]) -or
-            $record.version -ne 1 -or $record.resourceId -cne $ResourceId) {
+            $record.version -ne 2 -or $record.resourceId -cne $ResourceId -or $record.launchAttempted -isnot [bool]) {
         throw 'The update journal belongs to a different Azure app or version.'
     }
     Assert-Text $record.configurationSha256 '\A[0-9a-f]{64}\z'
@@ -47,6 +48,10 @@ function Assert-AzureUpdateJournal($Record, [string]$ResourceId) {
         Assert-Text $record[$key] '\Aghcr\.io/repoagent/controller@sha256:[0-9a-f]{64}\z'
     }
     Assert-Text $record.phase '\A(prepared|draining|drained|launching|ready|committed|rollback-draining|rollback-ready|rolled-back)\z'
+    if (($record.phase -cin @('prepared','draining','drained') -and $record.launchAttempted) -or
+            ($record.phase -cin @('launching','ready','committed') -and -not $record.launchAttempted)) {
+        throw 'The journal phase conflicts with retained launch evidence.'
+    }
 }
 
 function Begin-AzureImageUpdate($Context, [string]$ConfigurationSha256, [string]$PreviousRevision,
@@ -59,9 +64,9 @@ function Begin-AzureImageUpdate($Context, [string]$ConfigurationSha256, [string]
         throw 'Retained Azure configuration differs from the recorded update binding.'
     }
     $record = [ordered]@{
-        version = 1; resourceId = $Context.ResourceId; configurationSha256 = $ConfigurationSha256
+        version = 2; resourceId = $Context.ResourceId; configurationSha256 = $ConfigurationSha256
         previousRevision = $PreviousRevision; previousImage = $PreviousImage
-        candidateRevision = $CandidateRevision; candidateImage = $CandidateImage; phase = 'prepared'
+        candidateRevision = $CandidateRevision; candidateImage = $CandidateImage; phase = 'prepared'; launchAttempted = $false
     }
     Assert-AzureUpdateJournal $record $Context.ResourceId
     Write-PrivateJson $Context.Path $record
@@ -81,6 +86,7 @@ function Set-AzureUpdatePhase($Context, [string]$Phase) {
         throw 'Invalid Azure update transition; use explicit Rollback for recovery.'
     }
     $record.phase = $Phase
+    if ($Phase -ceq 'launching') { $record.launchAttempted = $true }
     Write-PrivateJson $Context.Path $record
     return Read-AzureUpdateJournal $Context
 }
