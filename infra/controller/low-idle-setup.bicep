@@ -23,7 +23,7 @@ resource appEnvironment 'Microsoft.App/managedEnvironments@2026-07-01' = {
   properties: {
     publicNetworkAccess: 'Enabled'
     zoneRedundant: false
-    appLogsConfiguration: { destination: 'none' }
+    appLogsConfiguration: { destination: null }
     workloadProfiles: [{ name: 'Consumption', workloadProfileType: 'Consumption' }]
   }
 }
