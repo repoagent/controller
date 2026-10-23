@@ -157,6 +157,20 @@ class InstallerTests(unittest.TestCase):
                 for key, value in initial['settings'].items():
                     self.assertEqual(state['settings'][key], value)
 
+    def test_fresh_install_runs_the_image_tools_and_rerun_keeps_a_saved_update_choice(self):
+        for shell in self.shells():
+            with self.subTest(shell=shell):
+                flag = '--no-start' if shell == 'bash' else '-NoStart'
+                result, state, _ = self.run_installer(shell, arguments=[flag])
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(state['settings']['toolUpdates'], 'pinned',
+                                 'A new controller runs the tool versions its baseline release records')
+                initial = {'settings': {'repository': 'example/project', 'appId': '123456', 'toolUpdates': 'latest'},
+                           'events': [], 'authenticated': True, 'running': False}
+                result, state, _ = self.run_installer(shell, arguments=[flag], state=initial)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(state['settings']['toolUpdates'], 'latest', 'An existing opt-in is not silently changed')
+
     def test_failed_app_verification_never_starts_agent(self):
         for shell in self.shells():
             with self.subTest(shell=shell):
@@ -242,11 +256,60 @@ class ContainerConfigurationTests(unittest.TestCase):
             self.assertIn('--dashboard-category', runtime.bridge_args(json.loads(runtime.CONFIG.read_text())))
             args.dashboard_category = ''
             runtime.configure(args)
-            self.assertNotIn('--dashboard-category', runtime.bridge_args(json.loads(runtime.CONFIG.read_text())))
+            # Removal leaves no key behind, so other configurations keep their exact field set.
+            self.assertNotIn('dashboardCategory', json.loads(runtime.CONFIG.read_text()))
             for invalid in ('   ', 'x' * 101, 'line\nbreak'):
                 args.dashboard_category = invalid
                 with self.subTest(category=invalid), self.assertRaisesRegex(ValueError, 'Dashboard category'):
                     runtime.configure(args)
+
+    def test_repository_settings_are_an_explicit_direct_App_runtime_choice(self):
+        runtime = load_runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.CONFIG = Path(directory) / 'config/settings.json'
+            runtime.CODEX = Path(directory) / 'codex'
+            args = argparse.Namespace(repository='example/project', app_id='123456', key_path='/private/key.pem',
+                installation_id=None, mention_user='', model='test-model', web_search='live', tool_updates='latest',
+                mode='polling', public_url='', listen_port=8080, reconcile_interval=300)
+            runtime.configure(args)
+            self.assertNotIn('--repository-settings', runtime.bridge_args(json.loads(runtime.CONFIG.read_text())))
+            args.repository_settings = True
+            runtime.configure(args)
+            config = json.loads(runtime.CONFIG.read_text())
+            self.assertIn('--repository-settings', runtime.bridge_args(config))
+            self.assertIn('--repository-settings', runtime.bridge_args(config, check_auth=True))
+            saved = runtime.CONFIG.read_bytes()
+            broker = argparse.Namespace(**dict(vars(args), key_path=None, broker_url='https://broker.example',
+                enrollment_file='/data/enrollment/enrollment.json'))
+            runtime.CONFIG.unlink()
+            with self.assertRaisesRegex(ValueError, 'Variables: read'):
+                runtime.configure(broker)
+            self.assertFalse(runtime.CONFIG.exists())
+            runtime.CONFIG.write_bytes(saved)
+
+    def test_container_starts_with_image_tools_unless_startup_updates_are_chosen(self):
+        runtime = load_runtime()
+        configure = ['runtime.py', 'configure', '--repository', 'example/project', '--app-id', '123456',
+                     '--key-path', '/private/key.pem']
+        for name, choice, updated in [('default', [], False), ('explicit pinned', ['--tool-updates', 'pinned'], False),
+                                      ('explicit opt-in', ['--tool-updates', 'latest'], True)]:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
+                runtime.CONFIG = Path(directory) / 'config/settings.json'
+                runtime.CODEX = Path(directory) / 'codex'
+                with patch.dict(os.environ, PATH='/data/tools/bin:/opt/repoagent/tools/bin:/usr/bin'):
+                    with patch.object(sys, 'argv', configure + choice):
+                        runtime.main()
+                    # The startup download is the external boundary; the controller process is not started.
+                    with patch.object(sys, 'argv', ['runtime.py', 'start']), \
+                         patch.object(runtime.update_tools, 'update') as download, \
+                         patch.object(runtime.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)), \
+                         patch.object(runtime.os, 'execv') as controller:
+                        runtime.main()
+                    tools = os.environ['PATH'].split(os.pathsep)
+                self.assertEqual(download.called, updated)
+                self.assertEqual(tools[0] == '/data/tools/bin', updated)
+                self.assertEqual('/data/tools/bin' in tools, updated)
+                controller.assert_called_once()
 
     def test_status_and_retained_logs_are_read_by_the_controller_from_the_runtime_state(self):
         runtime = load_runtime()

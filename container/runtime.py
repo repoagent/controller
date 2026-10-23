@@ -52,6 +52,8 @@ def bridge_args(config, *, check_auth=False):
         args += ['--private-key', '/run/secrets/github-app.pem']
     if config.get('clone', False):
         args += ['--clone']
+    if config.get('repositorySettings', False):
+        args += ['--repository-settings']
     if config.get('installationId'):
         args += ['--installation-id', str(config['installationId'])]
     if config.get('repositoryId') is not None:
@@ -74,7 +76,7 @@ def bridge_args(config, *, check_auth=False):
 
 def select_tools(config):
     paths = [p for p in os.environ['PATH'].split(os.pathsep) if p != '/data/tools/bin']
-    if config.get('toolUpdates', 'latest') == 'latest':
+    if config.get('toolUpdates') == 'latest':
         paths.insert(0, '/data/tools/bin')
     os.environ['PATH'] = os.pathsep.join(paths)
 
@@ -129,6 +131,9 @@ def configure(args):
         url = urllib.parse.urlsplit(args.public_url)
         if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment:
             raise ValueError('Fixed URL needs a public HTTPS origin without credentials, path, query or fragment.')
+    repository_settings = getattr(args, 'repository_settings', False)
+    if repository_settings and broker:
+        raise ValueError('Repository settings need a Variables: read runtime grant; broker enrollment profiles do not include it.')
     clone = getattr(args, 'clone', False)
     if config and bool(config.get('clone', False)) != clone:
         raise ValueError('Changing clone authority requires a fresh instance and enrollment.')
@@ -156,7 +161,16 @@ def configure(args):
     if dashboard is not None:
         if dashboard and (not dashboard.strip() or len(dashboard) > 100 or any(not c.isprintable() for c in dashboard)):
             raise ValueError('Dashboard category must be an existing Discussion category name of at most 100 printable characters.')
-        config['dashboardCategory'] = dashboard or None
+        # Only a configured dashboard carries this key, so other configurations keep their exact field set.
+        if dashboard:
+            config['dashboardCategory'] = dashboard
+        else:
+            config.pop('dashboardCategory', None)
+    # Only direct-App configurations carry this key; broker binding checks keep their exact field set.
+    if repository_settings:
+        config['repositorySettings'] = True
+    else:
+        config.pop('repositorySettings', None)
     config.update(clone=clone, repository=args.repository, appId=args.app_id, keyPath=args.key_path,
                   brokerUrl=broker_url,
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
@@ -286,12 +300,13 @@ def main():
     configure_parser.add_argument('--broker-url')
     configure_parser.add_argument('--enrollment-file')
     configure_parser.add_argument('--clone', action='store_true')
+    configure_parser.add_argument('--repository-settings', action='store_true')
     configure_parser.add_argument('--installation-id', type=int)
     configure_parser.add_argument('--repository-id', type=int)
     configure_parser.add_argument('--mention-user', default='repoagent')
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
     configure_parser.add_argument('--web-search', choices=['live', 'cached', 'disabled'], default='live')
-    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='latest')
+    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='pinned')
     configure_parser.add_argument('--mode', choices=['polling', 'fixed-url', 'quick-tunnel'], default='polling')
     configure_parser.add_argument('--public-url', default='')
     configure_parser.add_argument('--listen-port', type=int, default=8080)
@@ -342,7 +357,7 @@ def main():
         os.execv(CONTROLLER[0], CONTROLLER + [args.command, '--state', STATE])
     elif args.command in ('check', 'start'):
         config = settings()
-        if args.command == 'start' and config.get('toolUpdates', 'latest') == 'latest':
+        if args.command == 'start' and config.get('toolUpdates') == 'latest':
             update_tools.update()
         run(['codex', 'login', 'status'])
         if args.command == 'check':

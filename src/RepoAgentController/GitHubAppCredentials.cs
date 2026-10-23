@@ -20,9 +20,9 @@ public sealed class GitHubAppCredentials : IDisposable
     internal long? RepositoryId => source.RepositoryId;
 
     public GitHubAppCredentials(HttpClient http, string appId, string privateKeyPath, string repository,
-        string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false)
+        string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false, bool repositorySettings = false)
         : this(credentialDirectory, clock ?? TimeProvider.System,
-            time => new DirectAppTokenSource(http, appId, privateKeyPath, repository, time, repositoryWebhooks, clone)) { }
+            time => new DirectAppTokenSource(http, appId, privateKeyPath, repository, time, repositoryWebhooks, clone, repositorySettings)) { }
 
     GitHubAppCredentials(string credentialDirectory, TimeProvider clock, Func<TimeProvider, IInstallationTokenSource> createSource)
     {
