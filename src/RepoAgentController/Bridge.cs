@@ -2,9 +2,21 @@ using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
 
+/// <summary>
+/// Observes Discussions into an ordered per-Discussion waiting queue in the state store, then dispatches the next
+/// size-bounded batch only to a natively idle session. EYES follow native acceptance of the batch carrying the source.
+/// </summary>
 sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> enroll, CheckoutRefresh? refresh = null)
 {
+    // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
+    const int MaximumBatchCharacters = 256 * 1024;
     readonly HashSet<string> blockedLogged = [];
+    // Serializes observation and idle dispatch over the shared state store.
+    readonly SemaphoreSlim gate = new(1, 1), wake = new(0, 1);
+    volatile bool inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
+
+    /// <summary>True while any observed Discussion input waits in the controller for idle dispatch.</summary>
+    public bool HasWaitingInput => inputWaiting;
 
     public async Task<bool> Poll(CancellationToken ct)
     {
@@ -36,6 +48,13 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
 
     async Task<bool> Observe(List<JsonNode> discussions, CancellationToken ct)
     {
+        await gate.WaitAsync(ct);
+        try { return await ObserveExclusive(discussions, ct); }
+        finally { gate.Release(); }
+    }
+
+    async Task<bool> ObserveExclusive(List<JsonNode> discussions, CancellationToken ct)
+    {
         var succeeded = true;
         foreach (var discussion in discussions)
         {
@@ -53,7 +72,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
                 // Read every page, including reactions to agent-authored messages.
                 var sources = await github.Sources(discussion, ct);
                 var bootstrap = record is null || record.Text("sessionId").Length == 0;
-                if (bootstrap && !enroll.Contains(discussion["number"]!.GetValue<int>()) && !sources.Any(github.IsEnrollmentMention)) continue;
+                if (bootstrap && record?["waiting"] is null && !enroll.Contains(discussion["number"]!.GetValue<int>()) && !sources.Any(github.IsEnrollmentMention)) continue;
                 if (record is null)
                 {
                     record = new JsonObject { ["url"] = discussion.Text("url"), ["sources"] = new JsonObject() };
@@ -63,7 +82,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
                 var previous = record["sources"]!.AsObject();
                 var current = new JsonObject();
                 var changes = new JsonArray();
-                var receipts = new HashSet<string>();
+                var receipts = new List<string>(); // Receipt source of each change, by index.
                 foreach (var source in sources)
                 {
                     var sourceId = source.Text("id");
@@ -96,46 +115,19 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
                     foreach (var reaction in oldReactions)
                         if (!newReactions.ContainsKey(reaction.Key)) Add("reaction.removed", reaction.Value);
                 }
-                if (bootstrap && changes.Count == 0)
+                if (bootstrap && changes.Count == 0 && record["waiting"] is null)
                 {
                     changes.Add((JsonNode)new JsonObject { ["kind"] = "discussion.enrolled", ["subject"] = Public(discussion), ["replyTarget"] = new JsonObject { ["discussionId"] = id, ["replyToId"] = null } });
                     receipts.Add(id);
                 }
-                if (changes.Count == 0)
-                {
-                    // Quietly remember agent output so later human reactions can be compared.
-                    if (!JsonNode.DeepEquals(previous, current)) { record["sources"] = current; store.Save(); }
-                    continue;
-                }
-                var envelope = new JsonObject
-                {
-                    ["_bridge"] = new JsonObject { ["channel"] = "github-discussions", ["mode"] = bootstrap ? "bootstrap" : "continue", ["repository"] = github.Repository, ["agentLogin"] = github.AgentLogin, ["mentionLogin"] = github.MentionUser?.Login },
-                    ["discussion"] = Public(discussion), ["changes"] = changes
-                };
-                if (bootstrap) envelope["context"] = new JsonObject { ["existingComments"] = Json.Array(sources.Skip(1).Select(Public)) };
-                using var admission = refresh is null ? null : await refresh.Admit(ct);
-                // A durable stop marker prevents automatic retry after a lost native acknowledgement.
-                record["pending"] = new JsonObject { ["operation"] = bootstrap ? "create-and-send" : "send", ["since"] = DateTimeOffset.UtcNow.ToString("O"), ["sourceIds"] = new JsonArray(receipts.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()) };
-                store.Save();
-                if (bootstrap)
-                {
-                    record["sessionId"] = await codex.Start(ct);
-                    admission?.Bind(record.Text("sessionId"));
-                    store.Save();
-                    Log.Write("session-created", $"{discussion.Text("url")} session={record.Text("sessionId")}");
-                }
-                admission?.Bind(record.Text("sessionId"));
-                await codex.Accept(record.Text("sessionId"), envelope, ct, admission);
-                record["sources"] = current;
-                record.Remove("pending");
-                store.Save();
-                admission?.Confirm();
-                Log.Write("forwarded", $"{discussion.Text("url")} session={record.Text("sessionId")} changes={changes.Count} sources={string.Join(',', receipts)}");
-                foreach (var source in sources.Where(s => receipts.Contains(s.Text("id"))))
-                {
-                    try { await github.Receipt(source, ct); }
-                    catch (Exception error) when (error is not OperationCanceledException) { succeeded = false; Log.Write("receipt-error", $"{source.Text("url")}: {error.Message}; accepted input will not be replayed"); }
-                }
+                if (changes.Count != 0) Queue(record, discussion, sources, changes, receipts, bootstrap, current);
+                // Quietly remember agent output so later human reactions can be compared.
+                else if (!JsonNode.DeepEquals(previous, current)) { record["sources"] = current; store.Save(); }
+                if (record["waiting"] is not JsonObject waiting) continue;
+                var (dispatched, delivered) = await Dispatch(record, ct);
+                succeeded &= delivered;
+                if (!dispatched && changes.Count != 0)
+                    Log.Write("input-waiting", $"{discussion.Text("url")} session={record.Text("sessionId")} status={(record.Text("sessionId") is { Length: > 0 } session ? codex.Status(session).ToString() : "none")} waiting={waiting["inputs"]!.AsArray().Count} sources={string.Join(',', receipts.Distinct())}");
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
@@ -144,6 +136,141 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
             }
         }
         return succeeded;
+    }
+
+    /// <summary>Wakes on native session status changes and dispatches waiting input, oldest first, until stopped.</summary>
+    /// <remarks>An in-flight dispatch finishes on <paramref name="ct"/>; <paramref name="stop"/> only ends waiting.</remarks>
+    public async Task DispatchWhenIdle(CancellationToken stop, CancellationToken ct)
+    {
+        void Wake() { if (wake.CurrentCount == 0) try { wake.Release(); } catch (SemaphoreFullException) { } }
+        codex.StatusChanged += Wake;
+        try
+        {
+            while (true)
+            {
+                await wake.WaitAsync(stop);
+                await gate.WaitAsync(stop);
+                try
+                {
+                    var ready = store.Discussions.Select(entry => entry.Value!.AsObject())
+                        .Where(record => record["waiting"] is not null && record["pending"] is null)
+                        .OrderBy(record => record["waiting"]!["inputs"]![0]!.Text("observedAt"), StringComparer.Ordinal).ToArray();
+                    foreach (var record in ready)
+                    {
+                        try { await Dispatch(record, ct); }
+                        catch (Exception error) when (error is not OperationCanceledException)
+                        { Log.Write(record["pending"] is null ? "dispatch-error" : "manual-recovery", $"{record.Text("url")}: {error.Message}"); }
+                    }
+                }
+                finally { gate.Release(); }
+            }
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        finally { codex.StatusChanged -= Wake; }
+    }
+
+    // Caller holds the gate. Observed changes wait durably, in order, with their receipt source; the checkpoint advances.
+    void Queue(JsonObject record, JsonNode discussion, List<JsonNode> sources, JsonArray changes, List<string> receipts, bool bootstrap, JsonObject current)
+    {
+        var waiting = record["waiting"] as JsonObject ?? new JsonObject { ["inputs"] = new JsonArray() };
+        waiting["discussion"] = Public(discussion);
+        // Bootstrap context travels with the first batch delivered to the session.
+        if (bootstrap && waiting["context"] is null) waiting["context"] = new JsonObject { ["existingComments"] = Json.Array(sources.Skip(1).Select(Public)) };
+        var inputs = waiting["inputs"]!.AsArray();
+        var observed = DateTimeOffset.UtcNow.ToString("O");
+        for (var index = 0; index < changes.Count; index++)
+        {
+            var source = sources.First(candidate => candidate.Text("id") == receipts[index]);
+            inputs.Add((JsonNode)new JsonObject
+            {
+                ["observedAt"] = observed, ["change"] = changes[index]!.Copy(),
+                ["receipt"] = new JsonObject { ["id"] = receipts[index], ["url"] = source.Text("url"), ["reactionGroups"] = source["reactionGroups"]?.Copy() }
+            });
+        }
+        record["waiting"] = waiting;
+        record["sources"] = current;
+        store.Save();
+        inputWaiting = true;
+    }
+
+    // Caller holds the gate. Returns whether a batch was accepted; receipt failures clear Delivered.
+    async Task<(bool Dispatched, bool Delivered)> Dispatch(JsonObject record, CancellationToken ct)
+    {
+        var waiting = record["waiting"]!.AsObject();
+        var session = record.Text("sessionId");
+        var create = session.Length == 0;
+        // An active, failed or unrecognized loaded session keeps its input here without taking global admission.
+        if (!create && codex.Loaded(session) && codex.Status(session) != Codex.SessionStatus.Idle) return (false, true);
+        var inputs = waiting["inputs"]!.AsArray();
+        var bootstrap = waiting["context"] is not null;
+        var envelope = new JsonObject
+        {
+            ["_bridge"] = new JsonObject { ["channel"] = "github-discussions", ["mode"] = bootstrap ? "bootstrap" : "continue", ["repository"] = github.Repository, ["agentLogin"] = github.AgentLogin, ["mentionLogin"] = github.MentionUser?.Login },
+            ["discussion"] = waiting["discussion"]!.Copy(), ["changes"] = new JsonArray()
+        };
+        if (bootstrap) envelope["context"] = waiting["context"]!.Copy();
+        var count = Batch(envelope, inputs, record);
+        envelope["changes"] = new JsonArray(inputs.Take(count).Select(input => input!["change"]!.Copy()).ToArray());
+        var receipts = inputs.Take(count).Select(input => input!["receipt"]!).DistinctBy(receipt => receipt.Text("id")).ToArray();
+        // Global admission: checkout refresh exclusion today; capacity limits can further hold dispatch here.
+        using var admission = refresh is null ? null : await refresh.Admit(ct);
+        // A durable stop marker prevents automatic retry after a lost native acknowledgement.
+        var pending = new JsonObject { ["operation"] = create ? "create-and-send" : "send", ["since"] = DateTimeOffset.UtcNow.ToString("O"), ["sourceIds"] = new JsonArray(receipts.Select(receipt => (JsonNode?)JsonValue.Create(receipt.Text("id"))).ToArray()), ["inputs"] = count };
+        if (create)
+        {
+            record["pending"] = pending;
+            store.Save();
+            record["sessionId"] = session = await codex.Start(ct);
+            admission?.Bind(session);
+            store.Save();
+            Log.Write("session-created", $"{record.Text("url")} session={session}");
+        }
+        else
+        {
+            admission?.Bind(session);
+            await codex.Load(session, ct);
+        }
+        if (codex.Status(session) != Codex.SessionStatus.Idle)
+        {
+            // Unknown, unloaded, failed or active native status is never assumed idle.
+            if (record.Remove("pending")) store.Save();
+            admission?.Abandon();
+            return (false, true);
+        }
+        if (!create) { record["pending"] = pending; store.Save(); }
+        await codex.Accept(session, envelope, ct, admission);
+        for (var index = 0; index < count; index++) inputs.RemoveAt(0);
+        waiting.Remove("context");
+        if (inputs.Count == 0) record.Remove("waiting");
+        record.Remove("pending");
+        store.Save();
+        inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
+        admission?.Confirm();
+        Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count}");
+        var delivered = true;
+        foreach (var source in receipts)
+        {
+            try { await github.Receipt(source, ct); }
+            catch (Exception error) when (error is not OperationCanceledException) { delivered = false; Log.Write("receipt-error", $"{source.Text("url")}: {error.Message}; accepted input will not be replayed"); }
+        }
+        return (true, delivered);
+    }
+
+    // Leading inputs whose changes fit one envelope; at least one, so an oversized change is sent alone, never dropped.
+    static int Batch(JsonObject envelope, JsonArray inputs, JsonObject record)
+    {
+        long length = envelope.ToJsonString().Length;
+        var count = 0;
+        foreach (var input in inputs)
+        {
+            var next = input!["change"]!.ToJsonString().Length + (count == 0 ? 0 : 1);
+            if (count != 0 && length + next > MaximumBatchCharacters) break;
+            length += next;
+            count++;
+        }
+        if (count < inputs.Count) Log.Write("batch-split", $"{record.Text("url")} dispatching={count} remaining={inputs.Count - count}");
+        if (length > MaximumBatchCharacters) Log.Write("batch-oversized", $"{record.Text("url")} characters={length}");
+        return count;
     }
 
     bool Own(JsonNode? actor) => github.IsAgentActor(actor);

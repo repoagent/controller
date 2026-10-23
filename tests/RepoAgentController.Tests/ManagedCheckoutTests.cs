@@ -143,7 +143,7 @@ public sealed class ManagedCheckoutTests
               request=json.loads(line);method=request.get('method')
               if os.environ.get('CHECKOUT_TRANSPORT') and method in ('thread/start','thread/resume','turn/start'):
                with open(os.environ['CHECKOUT_TRANSPORT'],'a') as log:log.write(line)
-               result={'turn':{'id':'transport-turn'}} if method=='turn/start' else {'cwd':os.getcwd(),'thread':{'id':'transport-thread','cwd':os.getcwd()}}
+               result={'turn':{'id':'transport-turn'}} if method=='turn/start' else {'cwd':os.getcwd(),'thread':{'id':'transport-thread','cwd':os.getcwd(),'status':{'type':'idle'}}}
                if method=='turn/start':
                 print(json.dumps({'method':'turn/completed','params':{'threadId':'transport-thread','turn':{'id':'transport-turn','status':'completed'}}}),flush=True)
                print(json.dumps({'id':request['id'],'result':result}),flush=True);continue

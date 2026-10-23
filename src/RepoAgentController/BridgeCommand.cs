@@ -142,23 +142,33 @@ public static class BridgeCommand
                         if (reconciliation is not null) await reconciliation.Start(codex,
                             durable is null ? TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)) : Timeout.InfiniteTimeSpan, runtimeToken);
                         var bridge = new Bridge(github, codex, store, numbers, reconciliation);
-                        if (publicUrl is not null)
+                        using var dispatchStop = CancellationTokenSource.CreateLinkedTokenSource(runtimeToken);
+                        var dispatcher = bridge.DispatchWhenIdle(dispatchStop.Token, runtimeToken);
+                        try
                         {
-                            await new DiscussionWebhooks(github, bridge, statePath,
-                                new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), reconciliation, durable).Run(runtimeToken);
+                            if (publicUrl is not null)
+                            {
+                                await new DiscussionWebhooks(github, bridge, statePath,
+                                    new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), reconciliation, durable).Run(runtimeToken);
+                                return 0;
+                            }
+                            Log.Write("mode", $"polling interval-seconds={result.GetValue(interval)}");
+                            Log.Write("ready", $"repository={repo} actor={credentials.AgentLogin} mode=polling");
+                            do
+                            {
+                                var pollStarted = Stopwatch.GetTimestamp();
+                                var succeeded = await bridge.Poll(runtimeToken);
+                                Log.Write("poll-completed", $"success={succeeded} elapsed-ms={Stopwatch.GetElapsedTime(pollStarted).TotalMilliseconds:F0}");
+                                if (result.GetValue(once)) return succeeded ? 0 : 1;
+                                await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), clock ?? TimeProvider.System, runtimeToken);
+                            } while (!runtimeToken.IsCancellationRequested);
                             return 0;
                         }
-                        Log.Write("mode", $"polling interval-seconds={result.GetValue(interval)}");
-                        Log.Write("ready", $"repository={repo} actor={credentials.AgentLogin} mode=polling");
-                        do
+                        finally
                         {
-                            var pollStarted = Stopwatch.GetTimestamp();
-                            var succeeded = await bridge.Poll(runtimeToken);
-                            Log.Write("poll-completed", $"success={succeeded} elapsed-ms={Stopwatch.GetElapsedTime(pollStarted).TotalMilliseconds:F0}");
-                            if (result.GetValue(once)) return succeeded ? 0 : 1;
-                            await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), clock ?? TimeProvider.System, runtimeToken);
-                        } while (!runtimeToken.IsCancellationRequested);
-                        return 0;
+                            await dispatchStop.CancelAsync();
+                            await dispatcher;
+                        }
                     }
                     finally
                     {
