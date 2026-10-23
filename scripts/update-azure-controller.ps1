@@ -264,6 +264,8 @@ try {
                 return
             }
             $suffix = 'u' + [Guid]::NewGuid().ToString('N').Substring(0,12)
+            $payloadPath = Join-Path $dockerConfig 'replacement.json'
+            Write-ControllerImagePatch $payloadPath (New-ControllerImagePatch $retainedTemplate $Image $suffix $app.location)
             $journal = Begin-AzureImageUpdate $context $hash $previous.name $previousImage "$AppName--$suffix" $Image
             $null = Set-AzureUpdatePhase $context draining
             $null = Invoke-Azure @('containerapp','revision','set-mode','--name',$AppName,'--resource-group',$ResourceGroup,'--mode','multiple')
@@ -277,8 +279,6 @@ try {
             Confirm-Stopped
             $null = Set-AzureUpdatePhase $context launching
             Write-Host 'Old replicas are gone; creating the selected replacement revision.'
-            $payloadPath = Join-Path $dockerConfig 'replacement.json'
-            Write-PrivateJson $payloadPath (New-ControllerImagePatch $retainedTemplate $Image $suffix $app.location)
             $null = Invoke-Azure @('rest','--method','PATCH','--url',"$resourceUrl`?api-version=2026-07-01",
                 '--body',("@" + $payloadPath)) 180
             Wait-Ready $journal.candidateRevision $Image $hash

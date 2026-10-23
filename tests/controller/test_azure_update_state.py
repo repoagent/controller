@@ -166,7 +166,8 @@ class LifecycleCommandTests(unittest.TestCase):
 class RevisionTemplateTests(unittest.TestCase):
     def run_profile(self, body):
         module = ROOT / 'scripts/azure/controller-profile.psm1'
-        command = ("$ErrorActionPreference='Stop'; Import-Module '" + str(module).replace("'", "''") +
+        command = ("$ErrorActionPreference='Stop'; Import-Module '" + str(ROOT / 'scripts/host-enrollment.psm1').replace("'", "''") +
+                   "' -DisableNameChecking; Import-Module '" + str(module).replace("'", "''") +
                    "' -Force -DisableNameChecking; " + body)
         return subprocess.run(['pwsh', '-NoLogo', '-NoProfile', '-Command', command],
                               capture_output=True, text=True, timeout=15)
@@ -197,6 +198,20 @@ $p=New-ControllerImagePatch $t 'new' 'next' 'swedencentral'
         self.assertEqual(expected['scale']['pollingInterval'], 15)
         self.assertEqual(expected['scale']['cooldownPeriod'], 60)
         self.assertEqual([r['name'] for r in expected['scale']['rules']], ['controller-http', 'controller-work'])
+
+    def test_private_request_roundtrips_fractional_cpu_before_any_cloud_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.run_profile("""
+$d=Initialize-PrivateDirectory (Join-Path REQUEST_DIRECTORY 'request')
+$t=@{containers=@(@{name='controller';image='old';resources=@{cpu=0.25}})}
+$p=Join-Path $d 'replacement.json'
+Write-ControllerImagePatch $p (New-ControllerImagePatch $t 'new' 'next' 'swedencentral')
+Assert-PrivatePath $p
+Get-Content -LiteralPath $p -Raw
+""".replace("REQUEST_DIRECTORY", "'" + directory.replace("'", "''") + "'"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload['properties']['template']['containers'][0]['resources']['cpu'], 0.25)
 
     def test_explicit_scaling_and_other_template_drift_are_not_normalized_away(self):
         result = self.run_profile("""

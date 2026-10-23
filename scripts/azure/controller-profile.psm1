@@ -121,4 +121,24 @@ function New-ControllerImagePatch($Template, [string]$Image, [string]$Suffix, [s
     return @{ location=$Location; properties=@{template=$copy} }
 }
 
-Export-ModuleMember -Function Assert-ControllerStorageProfile, Get-NativeEnrollmentFingerprint, Assert-ControllerTemplateAnchor, Get-ComparableControllerTemplate, New-ControllerImagePatch
+function Write-ControllerImagePatch([string]$Path, $Value) {
+    Assert-PrivatePath ([IO.Path]::GetDirectoryName($Path)) -Directory
+    $text = $Value | ConvertTo-Json -Depth 50 -Compress -WarningAction Stop
+    # This temporary Azure request supports fractional CPU, unlike enrollment JSON.
+    $document = [Text.Json.JsonDocument]::Parse($text)
+    $document.Dispose()
+    $options = [IO.FileStreamOptions]::new()
+    $options.Mode = [IO.FileMode]::CreateNew; $options.Access = [IO.FileAccess]::Write; $options.Share = [IO.FileShare]::None
+    if ($IsLinux) { $options.UnixCreateMode = [IO.UnixFileMode]384 }
+    $stream = [IO.FileStream]::new($Path, $options)
+    try {
+        Set-PrivateFileAcl $Path
+        Assert-PrivatePath $Path
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($text)
+        $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
+    } finally { $stream.Dispose() }
+    Assert-PrivatePath $Path
+    if ([IO.File]::ReadAllText($Path) -cne $text) { throw 'Private Azure request differs from its prepared template.' }
+}
+
+Export-ModuleMember -Function Assert-ControllerStorageProfile, Get-NativeEnrollmentFingerprint, Assert-ControllerTemplateAnchor, Get-ComparableControllerTemplate, New-ControllerImagePatch, Write-ControllerImagePatch
