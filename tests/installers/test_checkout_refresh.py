@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import runpy
 import select
 import signal
@@ -389,6 +390,10 @@ class CheckoutRefreshTests(unittest.TestCase):
         self.assertTrue(text.startswith('$github-discussion\n'), text[:80])
         return json.loads(text.split('\n', 1)[1])
 
+    def native_event(self, line):
+        # Lifecycle identity fields only: method=... thread=... turn=... status=...
+        return dict(re.findall(r'([\w-]+)=(\S*)', line.split(' native-event ', 1)[1]))
+
     def subjects(self, envelope):
         return [(change['subject']['id'], change['subject']['author']['login'], change['subject']['body']) for change in envelope['changes']]
 
@@ -435,6 +440,8 @@ class CheckoutRefreshTests(unittest.TestCase):
                 saved = json.loads(f.state.read_text())['discussions']['D1']
                 self.assertNotIn('pending', saved)
                 self.assertEqual([item['change']['subject']['id'] for item in saved['waiting']['inputs']], ['C1', 'C2'])
+                status = json.loads(f.run(self.controller_command + ['status', '--state', f.state]))
+                self.assertEqual((status['work']['waiting'], status['sessions'][0]['waiting']), (2, 2))
                 # A restarted native has not loaded S1: the controller loads it and uses only the reported status.
                 with self.controller(f, 'mode=polling'):
                     request = self.rpc(f, 'thread/resume')
@@ -780,13 +787,13 @@ class CheckoutRefreshTests(unittest.TestCase):
             with self.controller(f):
                 f.provider.discussions = [self.discussion(1)]
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_FIRST'
-                first = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                first = self.native_event(f.wait('native-event'))
                 self.assertEqual(first['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(first), flush=True)
                 self.settled(f)
-                self.assertEqual(first['params']['turn']['status'], 'completed')
+                self.assertEqual(first['status'], 'completed')
                 self.assertEqual(len(f.provider.model_requests), 1)
                 session = json.loads(f.state.read_text())['discussions']['D1']['sessionId']
-                self.assertEqual(first['params']['threadId'], session)
+                self.assertEqual(first['thread'], session)
                 rollout, = home.rglob('rollout-*.jsonl')
                 prefix = rollout.read_bytes()
                 self.assertIn(b'NATIVE_USER_FIRST', prefix)
@@ -805,11 +812,11 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertIn('NATIVE_DESCRIPTION_B', listed)
                 self.assertNotIn('NATIVE_DESCRIPTION_A', listed)
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_SECOND'
-                second = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                second = self.native_event(f.wait('native-event'))
                 self.assertEqual(second['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(second), flush=True)
                 self.settled(f)
-                self.assertEqual(second['params']['turn']['status'], 'completed')
-                self.assertEqual(second['params']['threadId'], session)
+                self.assertEqual(second['status'], 'completed')
+                self.assertEqual(second['thread'], session)
                 self.assertEqual(json.loads(f.state.read_text())['discussions']['D1']['sessionId'], session)
                 self.assertEqual(len(f.provider.model_requests), 2)
                 request_b = json.dumps(f.provider.model_requests[1]['body'])
@@ -850,20 +857,20 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.assertTrue(any('input-waiting' in line and 'sources=C1' in line for line in f.lines))
                     self.assertFalse(any('session-status session=' + session + ' status=Idle' in line for line in f.lines))
                     hold.set()
-                    first = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                    first = self.native_event(f.wait('native-event'))
                     f.wait('session-status session=' + session + ' status=Active')  # Native report for the dispatched turn.
-                    second = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                    second = self.native_event(f.wait('native-event'))
                     f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-1')
             finally: hold.set()
             for completed in (first, second):
-                self.assertEqual((completed['method'], completed['params']['threadId'], completed['params']['turn']['status']),
+                self.assertEqual((completed['method'], completed['thread'], completed['status']),
                                  ('turn/completed', session, 'completed'))
-            self.assertNotEqual(first['params']['turn']['id'], second['params']['turn']['id'], 'Waiting input steered the first turn')
+            self.assertNotEqual(first['turn'], second['turn'], 'Waiting input steered the first turn')
             self.assertEqual(len(f.provider.model_requests), 2)
             self.assertNotIn('NATIVE_WAITING_INPUT', json.dumps(f.provider.model_requests[0]['body']))
             self.assertIn('NATIVE_WAITING_INPUT', json.dumps(f.provider.model_requests[1]['body']))
             self.assertEqual(f.provider.reactions, ['D1', 'C1'])
-            print('NATIVE_IDLE_DISPATCH session=' + session + ' turns=' + first['params']['turn']['id'] + ',' + second['params']['turn']['id']
+            print('NATIVE_IDLE_DISPATCH session=' + session + ' turns=' + first['turn'] + ',' + second['turn']
                   + ' statuses=' + json.dumps([line.split(' ', 2)[2].strip() for line in f.lines if 'session-status' in line]), flush=True)
 
     def test_signed_push_is_durable_idle_safe_and_scoped_to_managed_clone(self):

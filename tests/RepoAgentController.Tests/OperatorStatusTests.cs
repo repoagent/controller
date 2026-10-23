@@ -225,7 +225,7 @@ public sealed class OperatorStatusTests
           error={'code':-32000,'message':'turn rejected while holding '+token}
           print(json.dumps(dict(id=request['id'],error=error)),flush=True)
           continue
-         result={'codexHome':os.getcwd()} if method=='initialize' else {'thread':{'id':'native-T1'}}
+         result={'codexHome':os.getcwd()} if method=='initialize' else {'thread':dict(id='native-T1',status=dict(type='idle'))}
          print(json.dumps({'id':request['id'],'result':result}),flush=True)
         """;
 
