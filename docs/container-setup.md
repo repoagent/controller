@@ -173,7 +173,7 @@ The supplied credential must be authorized to read that exact source repository/
 | `repoagent-default-credentials` | Codex sign-in/configuration |
 | `repoagent-default-workspace` | Agent working files |
 | `repoagent-default-history` | Native Codex session histories |
-| `repoagent-default-state` | JSON checkpoint, lease, renewable GitHub App credential/wrapper, operator status and bounded retained logs |
+| `repoagent-default-state` | JSON checkpoint, lease, GitHub App wrappers and credential handoff pointer (no tokens), operator status and bounded retained logs |
 | `repoagent-default-tools` | Updated `gh` and managed Codex executables and update metadata |
 | `repoagent-default-participant` | Separate human GitHub sign-in, used only by opt-in live tests |
 

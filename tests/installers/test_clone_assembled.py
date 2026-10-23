@@ -81,7 +81,7 @@ class CloneAssembledTests(unittest.TestCase):
             provider_directory = directory / 'provider'
             provider_directory.mkdir()
             provider = GitProvider(provider_directory, repository='example/project', app_slug='repo-agent-connector',
-                token='assembled-runtime-token', listen_host='0.0.0.0', broker_target=('127.0.0.1', port))
+                token='assembled-runtime-token', listen_host='0.0.0.0', broker_target=('127.0.0.1', port), repository_id=123)
             self.addCleanup(provider.close)
             public.mkdir()
             (public / 'ca.pem').write_bytes((directory / 'cert.pem').read_bytes() + provider.cert.read_bytes())
@@ -234,7 +234,7 @@ class CloneAssembledTests(unittest.TestCase):
 
 
 CONTAINER_PROBE = r'''
-import hashlib,json,os,selectors,stat,subprocess,sys
+import hashlib,json,os,queue,selectors,stat,subprocess,sys,threading
 from pathlib import Path
 sys.path.insert(0,'/opt/repoagent')
 import runtime
@@ -258,9 +258,18 @@ assert result.returncode==0,result.stderr
 assert 'repo-agent-connector[bot]' in result.stdout
 wrapper='/data/state/bridge.json.github-app/bin/gh'
 fetch='/data/state/bridge.json.github-app/bin/repoagent-git'
-subprocess.run([wrapper,'repo','clone','example/project','/workspace/checkout'],check=True,capture_output=True)
-assert Path('/workspace/checkout/README').read_text()=='approved repository\n'
-subprocess.run([fetch,'fetch','--directory','/workspace/checkout'],check=True,capture_output=True)
+# The checked lifetime has exited without persisting its lease, so its wrapper is denied.
+assert subprocess.run([wrapper,'repo','clone','example/project','/tmp/denied'],capture_output=True).returncode!=0
+# A running controller holds the lease in memory and clones its own checkout through the same handoff.
+controller=subprocess.Popen(runtime.CONTROLLER+runtime.bridge_args(runtime.settings())+['--interval','3600'],
+ stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+lines=queue.Queue()
+threading.Thread(target=lambda:[lines.put(line) for line in controller.stdout],daemon=True).start()
+while ' ready ' not in lines.get(timeout=90):pass
+assert Path('/workspace/repository/README').read_text()=='approved repository\n'
+subprocess.run([wrapper,'repo','clone','example/project','/tmp/checkout'],check=True,capture_output=True)
+assert Path('/tmp/checkout/README').read_text()=='approved repository\n'
+subprocess.run([fetch,'fetch','--directory','/tmp/checkout'],check=True,capture_output=True)
 process=subprocess.Popen(['codex','app-server'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
 buffer=b''
 def request(i,method,params):
@@ -279,7 +288,7 @@ def request(i,method,params):
 try:
  request(1,'initialize',dict(clientInfo=dict(name='container_clone_conformance',version='1'),capabilities=dict(experimentalApi=False)))
  process.stdin.write('{"method":"initialized"}\n');process.stdin.flush()
- response=request(2,'command/exec',dict(command=[fetch,'fetch','--directory','/workspace/checkout'],cwd='/workspace',timeoutMs=20000))
+ response=request(2,'command/exec',dict(command=[fetch,'fetch','--directory','/tmp/checkout'],cwd='/tmp',timeoutMs=20000))
  assert response['exitCode']==0,response.get('stderr','')
  assert process.poll() is None
  pid=process.pid
@@ -288,6 +297,8 @@ finally:
  try:process.wait(timeout=5)
  except subprocess.TimeoutExpired:process.kill();process.wait(timeout=5)
  process.stdout.close()
+ controller.terminate()
+ controller.wait(timeout=20)
 print(json.dumps(dict(uid=os.getuid(),privateFile=True,readonly=True,bot=True,clone=True,fetch=True,nativeFetch=True,nativePid=pid)))
 '''
 

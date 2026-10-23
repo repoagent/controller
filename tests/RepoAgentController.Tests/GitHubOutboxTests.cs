@@ -1,0 +1,322 @@
+using System.Text.Json.Nodes;
+using Microsoft.Extensions.Time.Testing;
+using RepoAgentController;
+using Xunit;
+
+namespace RepoAgentController.Tests;
+
+// The controller entrypoint, its state and outbox files, the installed gh and process boundaries are real.
+// Only GitHub's HTTP responses and the native JSON-RPC peer are controlled; that is not live-provider evidence.
+[Collection("Managed checkout environment")]
+public sealed class GitHubOutboxTests
+{
+    [Theory]
+    [InlineData("secondary")]
+    [InlineData("primary")]
+    [InlineData("graphql")]
+    [InlineData("too-many-requests")]
+    public async Task Rate_limited_receipt_retries_after_restart_without_resending_accepted_input(string signal)
+    {
+        using var controller = new Controller();
+        controller.Respond(RateLimited(signal, controller.Clock));
+
+        Assert.Equal(1, await controller.RunOnce());
+        Assert.Equal(1, controller.Turns);
+        Assert.Equal(1, controller.Writes("D1"));
+
+        controller.Clock.Advance(TimeSpan.FromSeconds(30));
+        await controller.RunOnce();
+        Assert.Equal(1, controller.Writes("D1")); // The signalled wait survives a restart.
+
+        controller.Clock.Advance(TimeSpan.FromSeconds(32));
+        Assert.Equal(0, await controller.RunOnce());
+        Assert.Equal(2, controller.Writes("D1"));
+        Assert.True(controller.HasEyes("D1"));
+
+        Assert.Equal(0, await controller.RunOnce());
+        Assert.Equal(2, controller.Writes("D1"));
+        Assert.Equal(1, controller.Turns);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Uncertain_receipt_is_reconciled_from_GitHub_before_another_write(bool appliedBeforeTheResponseFailed)
+    {
+        using var controller = new Controller();
+        var lost = Response(502, "<html>Bad gateway</html>");
+        lost["apply"] = appliedBeforeTheResponseFailed;
+        controller.Respond(lost);
+
+        Assert.Equal(1, await controller.RunOnce());
+        Assert.Equal(1, controller.Writes("D1"));
+
+        controller.Clock.Advance(TimeSpan.FromSeconds(20));
+        Assert.Equal(0, await controller.RunOnce());
+        Assert.True(controller.HasEyes("D1"));
+        Assert.Equal(appliedBeforeTheResponseFailed ? 1 : 2, controller.Writes("D1"));
+        Assert.Equal(1, controller.Turns);
+    }
+
+    [Fact]
+    public async Task Permanent_receipt_failure_leaves_active_delivery_with_an_actionable_nonsecret_log()
+    {
+        using var controller = new Controller();
+        controller.Respond(Response(200, """{"data":{"addReaction":null},"errors":[{"type":"FORBIDDEN","path":["addReaction"],"message":"Resource not accessible by integration"}]}"""));
+
+        var (exit, log) = await controller.RunOnceLogged();
+        Assert.Equal(1, exit);
+        var failure = Assert.Single(log.Split('\n'), line => line.Contains(" receipt-error "));
+        Assert.Contains("https://github.com/owner/repository/discussions/1 subject=D1", failure);
+        Assert.Contains("FORBIDDEN: Resource not accessible by integration", failure);
+        Assert.Contains("permanent", failure);
+        Assert.DoesNotContain("opaque-token", log);
+
+        controller.Clock.Advance(TimeSpan.FromMinutes(30));
+        Assert.Equal(0, await controller.RunOnce());
+        Assert.Equal(1, controller.Writes("D1"));
+        Assert.False(controller.HasEyes("D1"));
+        Assert.Equal(1, controller.Turns);
+    }
+
+    [Fact]
+    public async Task Superseded_operation_is_coalesced_without_dropping_unrelated_retained_operations()
+    {
+        using var controller = new Controller();
+        controller.Comment("C1", "First observation.");
+        controller.Respond(RateLimited("secondary", controller.Clock));
+        Assert.Equal(1, await controller.RunOnce()); // D1 is rate-limited; C1 waits behind the installation-wide pause.
+
+        controller.Clock.Advance(TimeSpan.FromSeconds(30));
+        controller.Comment("C1", "Edited observation.");
+        Assert.Equal(1, await controller.RunOnce());
+        Assert.Equal(2, controller.Turns); // The edit is new input and supersedes C1's still-pending receipt.
+
+        controller.Clock.Advance(TimeSpan.FromSeconds(32));
+        Assert.Equal(0, await controller.RunOnce());
+        Assert.True(controller.HasEyes("D1"));
+        Assert.True(controller.HasEyes("C1"));
+        Assert.Equal(2, controller.Writes("D1"));
+        Assert.Equal(1, controller.Writes("C1"));
+        Assert.Equal(2, controller.Turns);
+    }
+
+    [Fact]
+    public async Task Transient_receipt_failure_retries_while_the_controller_keeps_running()
+    {
+        using var controller = new Controller();
+        controller.Respond(Response(503, """{"message":"Service unavailable"}"""));
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = controller.Run(shutdown.Token);
+        try
+        {
+            await Until(() => controller.Writes("D1") == 1);
+            // Only the controlled clock moves; the next poll is an hour away, so delivery alone must retry.
+            await Until(() =>
+            {
+                controller.Clock.Advance(TimeSpan.FromSeconds(1));
+                return controller.HasEyes("D1");
+            });
+            Assert.Equal(2, controller.Writes("D1"));
+            Assert.Equal(1, controller.Turns);
+        }
+        finally { await shutdown.CancelAsync(); }
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    // A real-time watchdog for observing another process; it never drives the controller's clock.
+    static async Task Until(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (true)
+        {
+            try { if (condition()) return; }
+            catch (System.Text.Json.JsonException) { } // The controlled peer is rewriting its file.
+            Assert.True(DateTime.UtcNow < deadline, "Condition was not observed before the watchdog deadline");
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+        }
+    }
+
+    static JsonObject RateLimited(string signal, TimeProvider clock)
+    {
+        var reset = (clock.GetUtcNow().ToUnixTimeSeconds() + 61).ToString();
+        return signal switch
+        {
+            "secondary" => Response(403, """{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","documentation_url":"https://docs.github.com/graphql/overview/rate-limits-and-node-limits-for-the-graphql-api#secondary-rate-limits"}""",
+                ("Retry-After", "61")),
+            "primary" => Response(403, """{"message":"API rate limit exceeded for installation ID 234.","documentation_url":"https://docs.github.com/graphql/overview/rate-limits-and-node-limits-for-the-graphql-api"}""",
+                ("X-RateLimit-Remaining", "0"), ("X-RateLimit-Reset", reset)),
+            "graphql" => Response(200, """{"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded for installation ID 234."}]}""",
+                ("X-RateLimit-Remaining", "0"), ("X-RateLimit-Reset", reset)),
+            _ => Response(429, """{"message":"Too many requests"}""", ("Retry-After", "61"))
+        };
+    }
+
+    static JsonObject Response(int status, string body, params (string Name, string Value)[] headers) => new()
+    {
+        ["status"] = status, ["body"] = body,
+        ["headers"] = new JsonObject(headers.Select(h => new KeyValuePair<string, JsonNode?>(h.Name, h.Value)))
+    };
+
+    /// <summary>Runs the real controller entrypoint against controlled GitHub and native peers across restarts.</summary>
+    sealed class Controller : IDisposable
+    {
+        readonly BrokerAuthenticationTests.Fixture fixture = new();
+        readonly string? path = Environment.GetEnvironmentVariable("PATH");
+        readonly string world, requests, native;
+        public FakeTimeProvider Clock => fixture.Clock;
+
+        public Controller()
+        {
+            world = Path.Combine(fixture.Directory, "github-world.json");
+            requests = Path.Combine(fixture.Directory, "github-requests.jsonl");
+            native = Path.Combine(fixture.Directory, "native-requests.jsonl");
+            var gh = (path ?? "").Split(Path.PathSeparator).Select(directory => Path.Combine(directory, "gh")).FirstOrDefault(File.Exists)
+                ?? throw new InvalidOperationException("The installed gh is required: its --include output is the adapter compatibility boundary");
+            var tools = Path.Combine(fixture.Directory, "native-tools");
+            Directory.CreateDirectory(tools);
+            WriteExecutable(Path.Combine(tools, "codex"), Native.Replace("NATIVE_LOG", Quote(native)));
+            WriteExecutable(fixture.Gh, GitHub.Replace("WORLD", Quote(world)).Replace("REQUESTS", Quote(requests)).Replace("REAL_GH", Quote(gh)));
+            File.WriteAllText(world, new JsonObject
+            {
+                ["discussion"] = new JsonObject
+                {
+                    ["id"] = "D1", ["number"] = 1, ["url"] = "https://github.com/owner/repository/discussions/1", ["title"] = "Fixture",
+                    ["body"] = "Please review the fixture.", ["bodyHTML"] = "<p>Please review the fixture.</p>", ["closed"] = false, ["locked"] = false,
+                    ["answer"] = null, ["category"] = new JsonObject { ["id"] = "DIC1", ["name"] = "General" },
+                    ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" }
+                },
+                ["comments"] = new JsonArray(), ["eyes"] = new JsonArray(), ["responses"] = new JsonArray()
+            }.ToJsonString());
+            Environment.SetEnvironmentVariable("PATH", tools + Path.PathSeparator + path);
+        }
+
+        public void Respond(params JsonObject[] responses) => Update(state =>
+        {
+            foreach (var response in responses) state["responses"]!.AsArray().Add(response);
+        });
+
+        /// <summary>Adds or edits a participant's top-level comment.</summary>
+        public void Comment(string id, string body) => Update(state =>
+        {
+            var comments = state["comments"]!.AsArray();
+            if (comments.FirstOrDefault(c => c!["id"]!.GetValue<string>() == id) is { } existing) existing["body"] = body;
+            else comments.Add(new JsonObject
+            {
+                ["id"] = id, ["url"] = "https://github.com/owner/repository/discussions/1#discussioncomment-" + id, ["body"] = body,
+                ["bodyHTML"] = "<p>" + body + "</p>", ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" }, ["replyTo"] = null
+            });
+        });
+
+        void Update(Action<JsonObject> change)
+        {
+            var state = JsonNode.Parse(File.ReadAllText(world))!.AsObject();
+            change(state);
+            File.WriteAllText(world, state.ToJsonString());
+        }
+
+        public Task<int> RunOnce() => BridgeCommand.Run([.. Arguments, "--once"], fixture.Http, fixture.Gh, fixture.Clock,
+            TestContext.Current.CancellationToken);
+
+        public Task<int> Run(CancellationToken shutdown) => BridgeCommand.Run(Arguments, fixture.Http, fixture.Gh, fixture.Clock, shutdown);
+
+        public async Task<(int Exit, string Log)> RunOnceLogged()
+        {
+            var original = Console.Out;
+            using var capture = new StringWriter();
+            Console.SetOut(TextWriter.Synchronized(capture));
+            try { return (await RunOnce(), capture.ToString()); }
+            finally { Console.SetOut(original); }
+        }
+
+        string[] Arguments =>
+        [
+            "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
+            "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
+            "--workspace", fixture.Directory, "--interval", "3600", "--enroll", "https://github.com/owner/repository/discussions/1"
+        ];
+
+        public int Turns => Lines(native).Count(line => line["method"]?.GetValue<string>() == "turn/start");
+        public int Writes(string subject) => Lines(requests).Count(line => line["kind"]!.GetValue<string>() == "addReaction" && line["subject"]?.GetValue<string>() == subject);
+        public bool HasEyes(string subject) => JsonNode.Parse(File.ReadAllText(world))!["eyes"]!.AsArray().Any(id => id!.GetValue<string>() == subject);
+
+        static IEnumerable<JsonNode> Lines(string file) => File.Exists(file)
+            ? File.ReadAllLines(file).Where(line => line.Length != 0).Select(line => JsonNode.Parse(line)!) : [];
+
+        static string Quote(string value) => JsonValue.Create(value).ToJsonString();
+
+        static void WriteExecutable(string file, string source)
+        {
+            File.WriteAllText(file, source);
+            File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        public void Dispose()
+        {
+            Environment.SetEnvironmentVariable("PATH", path);
+            fixture.Dispose();
+        }
+
+        const string Native = """
+            #!/usr/bin/python3
+            import json,os,sys
+            for line in sys.stdin:
+             request=json.loads(line)
+             with open(NATIVE_LOG,'a') as log:log.write(line)
+             if 'id' not in request:continue
+             method=request['method']
+             result={'codexHome':os.getcwd()} if method=='initialize' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1'}}
+             print(json.dumps({'id':request['id'],'result':result}),flush=True)
+            """;
+
+        // Reads answer from the controlled world. Controller-owned writes and their result reads are relayed through
+        // the installed gh to a one-shot local HTTP peer, so the controller consumes gh's actual status/header output.
+        const string GitHub = """
+            #!/usr/bin/python3
+            import fcntl,http.server,json,os,subprocess,sys,threading
+            args=sys.argv[1:]
+            request=json.loads(sys.stdin.read()) if '--input' in args else {}
+            query=request.get('query','');variables=request.get('variables') or {}
+            page=lambda nodes:{'nodes':nodes,'pageInfo':{'hasNextPage':False,'endCursor':None}}
+            relay=None;kind='read';data=None
+            with open(WORLD,'r+') as handle:
+             fcntl.flock(handle,fcntl.LOCK_EX)
+             world=json.load(handle)
+             groups=lambda id:[{'content':'EYES','viewerHasReacted':id in world['eyes']}]
+             message=lambda item:dict(item,reactionGroups=groups(item['id']))
+             if 'addReaction' in query:
+              kind='addReaction';subject=variables['id']
+              relay=world['responses'].pop(0) if world['responses'] else {'status':200,'body':json.dumps({'data':{'addReaction':{'reaction':{'id':'R-'+subject}}}}),'apply':True}
+              if relay.get('apply') and subject not in world['eyes']:world['eyes'].append(subject)
+             elif 'query { viewer' in query:data={'viewer':{'login':'test-app[bot]'}}
+             elif 'discussions(' in query:data={'repository':{'discussions':page([message(world['discussion'])])}}
+             elif 'comments(' in query:data={'node':{'comments':page([message(c) for c in world['comments'] if c.get('replyTo') is None])}}
+             elif 'replies(' in query:data={'node':{'replies':page([message(c) for c in world['comments'] if (c.get('replyTo') or {}).get('id')==variables['id']])}}
+             elif 'reactions(' in query:data={'node':{'reactions':page([])}}
+             elif 'reactionGroups' in query and 'node(' in query:
+              kind='reconcile';subject=variables['id']
+              relay=world['responses'].pop(0) if world['responses'] else {'status':200,'body':json.dumps({'data':{'node':{'reactionGroups':groups(subject)}}})}
+             else:raise RuntimeError('Unexpected GitHub request: '+query)
+             with open(REQUESTS,'a') as log:log.write(json.dumps({'kind':kind,'subject':variables.get('id'),'include':'--include' in args})+'\n')
+             handle.seek(0);handle.truncate();json.dump(world,handle)
+            if relay is None:
+             print(json.dumps({'data':data}));sys.exit(0)
+            class Peer(http.server.BaseHTTPRequestHandler):
+             def do_POST(self):
+              self.rfile.read(int(self.headers.get('Content-Length','0')))
+              self.send_response(relay['status'])
+              for name,value in relay.get('headers',{}).items():self.send_header(name,value)
+              self.send_header('Content-Type','application/json; charset=utf-8');self.end_headers()
+              self.wfile.write(relay['body'].encode())
+             def log_message(self,*_):pass
+            server=http.server.HTTPServer(('127.0.0.1',0),Peer)
+            threading.Thread(target=server.handle_request,daemon=True).start()
+            proxy='http://127.0.0.1:%d'%server.server_port
+            environment=dict(os.environ,HTTP_PROXY=proxy,http_proxy=proxy,NO_PROXY='',no_proxy='')
+            # gh serves github.localhost over plain HTTP, the only host this local peer can answer for.
+            result=subprocess.run([REAL_GH]+['github.localhost' if a=='github.com' else a for a in args],input=json.dumps(request),
+             capture_output=True,text=True,env=environment,timeout=30)
+            sys.stdout.write(result.stdout);sys.stderr.write(result.stderr);sys.exit(result.returncode)
+            """;
+    }
+}

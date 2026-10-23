@@ -137,9 +137,11 @@ UID1000. These views add no storage account, identity or always-on service.
 Checkout ownership records contain no token or account credentials. The native
 controller accepts owner execute on those workspace records while preserving all
 binding, content, link and exclusive-lease checks. Every group/other permission
-remains rejected. Enrollment, token caches, native trust configuration and refresh
-journals keep their existing strict private-file policy. Generated executable
-wrappers contain token-file paths rather than token values. The initializer
+remains rejected. Enrollment, native trust configuration and refresh journals
+keep their existing strict private-file policy. GitHub App tokens are never
+written to the share: generated executable wrappers contain only the credential
+directory path, and the controller's credential handoff socket lives in local
+temporary storage because SMB cannot host sockets. The initializer
 creates their directories before ACA mounts the nested paths.
 
 This profile still does not provide general POSIX chmod semantics: Git can track

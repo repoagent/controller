@@ -44,7 +44,7 @@ Preview one instance with its original private host state directory:
 ```
 
 Add `-Apply` to disable, stop and remove that selected runtime and clear its
-container enrollment, Codex auth and two installation-token cache files. All seven
+container enrollment, Codex auth and any legacy installation-token cache files. All seven
 volumes, workspace/history, settings, skills, tools and wrappers remain. Preview
 uses host records and Docker metadata only; private-volume binding and disable
 state are unverified until Apply.
