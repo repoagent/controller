@@ -20,7 +20,7 @@ public sealed class OperatorStatusTests
     {
         if (!OperatingSystem.IsLinux()) return; // Shipping Linux process fixtures.
         using var fixture = new BrokerAuthenticationTests.Fixture();
-        using var environment = new NativeEnvironment(fixture, FailingNative(fixture.TokenFile), EnrollingGitHub);
+        using var environment = new NativeEnvironment(fixture, FailingNative, EnrollingGitHub);
         using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         using var stdout = new CapturedConsole();
         var run = BridgeCommand.Run(ControllerArguments(fixture, "--interval", "3600"), fixture.Http, fixture.Gh, fixture.Clock, shutdown.Token);
@@ -210,10 +210,10 @@ public sealed class OperatorStatusTests
     }
 
     // Starts a session, reports a completed turn carrying transcript content, then rejects the
-    // delivery with an error that echoes the controller's live installation token.
-    static string FailingNative(string tokenFile) => $$$"""
+    // delivery with an error that echoes the controller's live installation token, obtained through its gh.
+    const string FailingNative = $$$"""
         #!/usr/bin/python3
-        import json,os,sys
+        import json,os,subprocess,sys
         for line in sys.stdin:
          request=json.loads(line);method=request.get('method')
          if 'id' not in request:continue
@@ -221,7 +221,8 @@ public sealed class OperatorStatusTests
           item={'type':'agentMessage','id':'item-1','text':'{{{TranscriptCanary}}}'}
           turn={'id':'earlier-turn','status':'completed','items':[item]}
           print(json.dumps(dict(method='turn/completed',params=dict(threadId='native-T1',turn=turn))),flush=True)
-          token=json.load(open({{{System.Text.Json.JsonSerializer.Serialize(tokenFile)}}}))['token']
+          token=subprocess.run(['gh','auth','token'],capture_output=True,text=True,check=True).stdout.strip()
+          assert token.startswith('opaque-token-')
           error={'code':-32000,'message':'turn rejected while holding '+token}
           print(json.dumps(dict(id=request['id'],error=error)),flush=True)
           continue
@@ -260,8 +261,9 @@ public sealed class OperatorStatusTests
 
     const string EnrollingGitHub = """
         #!/usr/bin/python3
-        import json,sys
+        import json,os,sys
         a=sys.argv[1:]
+        if a==['auth','token']:print(os.environ.get('GH_TOKEN',''));sys.exit(0)
         if a[:2]!=['api','graphql']:raise RuntimeError('Unexpected GitHub command')
         q=json.load(sys.stdin)['query'];page={'nodes':[],'pageInfo':{'hasNextPage':False,'endCursor':None}}
         discussion={'id':'D1','number':1,'url':'https://github.com/owner/repository/discussions/1','body':'@test-app[bot] work','bodyHTML':'work','title':'fixture','author':{'__typename':'User','login':'participant'},'reactionGroups':[]}

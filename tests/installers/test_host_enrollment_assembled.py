@@ -90,7 +90,7 @@ class AssembledHostEnrollmentTests(unittest.TestCase):
             return [json.loads(line) for line in (directory / 'broker.jsonl').read_text().splitlines()]
 
         def complete(secret, pending):
-            request = urllib.request.Request(journey.origin + '/v2/enrollments/' + pending + '/completion',
+            request = urllib.request.Request(journey.origin + '/v3/enrollments/' + pending + '/completion',
                                              method='POST', headers={'Authorization': 'Bearer ' + secret})
             try:
                 with urllib.request.urlopen(request, context=ssl.create_default_context(cafile=str(directory / 'cert.pem')),
@@ -141,13 +141,13 @@ class AssembledHostEnrollmentTests(unittest.TestCase):
             self.assertEqual(approval['marker'], json.loads(journey.model.read_text())['variables'][journey.variable])
             marker = json.loads(approval['marker'])
             self.assertEqual((marker['version'], marker['approvalKind'], receipt['protocolVersion']),
-                             (2, 'repository-agent-variable', 1))
+                             (3, 'repository-actions-variable', 1))
             journey.private()
             stop()
             self.assertTrue(any((directory / 'keys').glob('*.xml')), 'Real persisted Data Protection keyring required')
             output.write_text('', encoding='utf-8')
             start()
-            completion_path = '/v2/enrollments/' + approval['pendingId'] + '/completion'
+            completion_path = '/v3/enrollments/' + approval['pendingId'] + '/completion'
             before_recovery = provider_work()
             status, delivered = complete(recovery['secret'], approval['pendingId'])
             if status == 429:
@@ -195,7 +195,7 @@ class AssembledHostEnrollmentTests(unittest.TestCase):
                              ['fresh-created-and-verified', 'resume-existing-fixture-table'])
             self.assertTrue(any(event.get('path', '').endswith('/installation-token') and event['status'] == 200 for event in recorded))
             scopes = [event['permissions'] for event in recorded if 'permissions' in event]
-            self.assertEqual(scopes, [{'agent_variables': 'read'}, {'discussions': 'write'}])
+            self.assertEqual(scopes, [{'actions_variables': 'read'}, {'discussions': 'write'}])
             self.assertTrue(any(event.get('receiptBeforeAck') for event in recorded))
             print('ASSEMBLED native SHA256=' + EXPECTED_NATIVE + ' table=' + table +
                   ' brokerRestart=true durableFloor=429 providerReplayWork=0 scopes=' + json.dumps(scopes))

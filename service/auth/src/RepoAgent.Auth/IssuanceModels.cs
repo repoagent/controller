@@ -25,6 +25,7 @@ public static class IssuancePolicy
         "polling" => new Dictionary<string, string> { ["discussions"] = "write" },
         "webhook" => new Dictionary<string, string> { ["discussions"] = "write", ["repository_hooks"] = "write" },
         "agent-variable-verification" => new Dictionary<string, string> { ["agent_variables"] = "read" },
+        "actions-variable-verification" => new Dictionary<string, string> { ["actions_variables"] = "read" },
         "verification" => new Dictionary<string, string> { ["environments"] = "read", ["actions"] = "read" },
         _ => throw new IssuanceDenied()
     };
