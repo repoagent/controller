@@ -46,7 +46,7 @@ public sealed class AppAuthenticationTests
         Assert.Equal("write", request["permissions"]!["discussions"]!.GetValue<string>());
         Assert.Single(request["permissions"]!.AsObject());
         Assert.Equal("installation-token-1", await credentials.GetToken(TestContext.Current.CancellationToken));
-        if (!OperatingSystem.IsWindows()) Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(credentials.TokenFile));
+        fixture.AssertNothingPersisted();
     }
 
     [Fact]
@@ -80,7 +80,7 @@ public sealed class AppAuthenticationTests
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.Initialize(null, TestContext.Current.CancellationToken));
         Assert.Contains("Webhooks: read and write", error.Message);
         Assert.Empty(fixture.Provider.TokenRequests);
-        Assert.False(File.Exists(credentials.TokenFile));
+        fixture.AssertNothingPersisted();
     }
 
     [Fact]
@@ -89,7 +89,7 @@ public sealed class AppAuthenticationTests
         using var fixture = new AppFixture();
         using var credentials = fixture.Credentials();
         await credentials.Initialize(null, TestContext.Current.CancellationToken);
-        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin with 'quotes' and spaces"), fixture.Gh, credentials.TokenFile);
+        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin with 'quotes' and spaces"), fixture.Gh, credentials.CredentialDirectory);
 
         var first = await Run(wrapper, ["api", "graphql", "--input", "a file with spaces.json"]);
         Assert.Equal(0, first.Exit);
@@ -127,7 +127,7 @@ public sealed class AppAuthenticationTests
         using var fixture = new AppFixture();
         using var credentials = fixture.Credentials();
         await credentials.Initialize(null, TestContext.Current.CancellationToken);
-        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, credentials.TokenFile);
+        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, credentials.CredentialDirectory);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var refresh = credentials.RefreshUntilCancelled(lifetime.Token);
         try
@@ -140,7 +140,7 @@ public sealed class AppAuthenticationTests
             var blocked = await Run(wrapper, ["api", "user"], "ambient-human-token");
             Assert.NotEqual(0, blocked.Exit);
             Assert.DoesNotContain("gh-invoked", blocked.Output);
-            Assert.False(File.Exists(credentials.TokenFile));
+            fixture.AssertNothingPersisted();
 
             fixture.Provider.RejectRefresh = false;
             fixture.Clock.Advance(TimeSpan.FromMinutes(1));
@@ -163,13 +163,13 @@ public sealed class AppAuthenticationTests
         using var fixture = new AppFixture();
         using var credentials = fixture.Credentials();
         await credentials.Initialize(null, TestContext.Current.CancellationToken);
-        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, credentials.TokenFile);
+        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, credentials.CredentialDirectory);
         fixture.Clock.Advance(TimeSpan.FromMinutes(56));
         fixture.Provider.RejectRefresh = true;
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
         Assert.Contains("HTTP 401", error.Message);
-        Assert.False(File.Exists(credentials.TokenFile));
+        fixture.AssertNothingPersisted();
         var result = await Run(wrapper, ["api", "user"]);
         Assert.NotEqual(0, result.Exit);
         Assert.DoesNotContain("installation-token-1", result.Output);
@@ -177,17 +177,37 @@ public sealed class AppAuthenticationTests
     }
 
     [Fact]
-    public async Task An_expired_cache_cannot_launch_gh_with_ambient_user_credentials()
+    public async Task An_expired_credential_cannot_launch_gh_with_ambient_user_credentials()
     {
         using var fixture = new AppFixture();
-        var tokenFile = Path.Combine(fixture.Directory, "expired.json");
-        await File.WriteAllTextAsync(tokenFile, JsonSerializer.Serialize(new { token = "expired-app-token", expiresAt = DateTimeOffset.UtcNow.AddMinutes(-1) }), TestContext.Current.CancellationToken);
-        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, tokenFile);
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, credentials.CredentialDirectory);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(60)); // No renewal ran; the held credential has expired.
         var result = await Run(wrapper, ["api", "user"], "ambient-human-token");
         Assert.NotEqual(0, result.Exit);
         Assert.DoesNotContain("gh-invoked", result.Output);
         Assert.DoesNotContain("ambient-human-token", result.Output);
-        Assert.DoesNotContain("expired-app-token", result.Output);
+        Assert.DoesNotContain("installation-token-1", result.Output);
+    }
+
+    [Fact]
+    public async Task A_stopped_controller_lifetime_cannot_launch_gh_with_its_former_or_ambient_credentials()
+    {
+        using var fixture = new AppFixture();
+        string wrapper;
+        using (var credentials = fixture.Credentials())
+        {
+            await credentials.Initialize(null, TestContext.Current.CancellationToken);
+            wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, credentials.CredentialDirectory);
+            Assert.Contains("installation-token-1", (await Run(wrapper, ["api", "user"])).Output);
+        }
+        var result = await Run(wrapper, ["api", "user"], "ambient-human-token");
+        Assert.NotEqual(0, result.Exit);
+        Assert.DoesNotContain("gh-invoked", result.Output);
+        Assert.DoesNotContain("ambient-human-token", result.Output);
+        Assert.DoesNotContain("installation-token-1", result.Output);
+        fixture.AssertNothingPersisted();
     }
 
     [Fact]
@@ -197,7 +217,7 @@ public sealed class AppAuthenticationTests
         using var credentials = fixture.Credentials();
         await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.Initialize(123, TestContext.Current.CancellationToken));
         Assert.Empty(fixture.Provider.TokenRequests);
-        Assert.False(File.Exists(credentials.TokenFile));
+        fixture.AssertNothingPersisted();
     }
 
     [Fact]
@@ -218,7 +238,7 @@ public sealed class AppAuthenticationTests
         fixture.Provider.RejectRefresh = true;
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.Initialize(null, TestContext.Current.CancellationToken));
         Assert.DoesNotContain("DO-NOT-LOG", error.ToString());
-        Assert.False(File.Exists(credentials.TokenFile));
+        fixture.AssertNothingPersisted();
     }
 
     [Fact]
@@ -281,7 +301,7 @@ public sealed class AppAuthenticationTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => renewal
             ? credentials.GetToken(TestContext.Current.CancellationToken)
             : credentials.Initialize(null, TestContext.Current.CancellationToken));
-        Assert.False(File.Exists(credentials.TokenFile));
+        fixture.AssertNothingPersisted();
     }
 
     static async Task<(int Exit, string Output)> Run(string command, string[] arguments, string? ambientToken = null)
@@ -323,6 +343,13 @@ public sealed class AppAuthenticationTests
         {
             Provider.CloneScope = clone;
             return new(http, "Iv-test-client", privateKey, "egil/gh-discussion-agent-bridge", Path.Combine(Directory, "credentials"), Clock, repositoryWebhooks, clone);
+        }
+
+        // Issued installation tokens are canaries: no file under the controller's directories may contain one.
+        public void AssertNothingPersisted()
+        {
+            foreach (var file in System.IO.Directory.EnumerateFiles(Directory, "*", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = 0 }))
+                Assert.DoesNotContain("installation-token-", File.ReadAllText(file));
         }
         public void Dispose() { http.Dispose(); key.Dispose(); System.IO.Directory.Delete(Directory, true); }
     }

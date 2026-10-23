@@ -1,38 +1,34 @@
 using System.Diagnostics;
-using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
 
 /// <summary>Dispatches gh with current App credentials, including from an already-running agent.</summary>
 public static class AppGitHubCommand
 {
-    public static ProcessStartInfo Create(string executable, string tokenFile, IEnumerable<string> arguments,
-        TimeProvider? clock = null)
+    internal static ProcessStartInfo Create(string executable, InstallationCredential credential, string credentialDirectory,
+        IEnumerable<string> arguments)
     {
-        var credential = JsonNode.Parse(File.ReadAllText(tokenFile)) ?? throw new IOException("Missing GitHub App credential");
-        var token = credential.Text("token");
-        if (string.IsNullOrWhiteSpace(token) ||
-            !DateTimeOffset.TryParse(credential.Text("expiresAt"), out var expiry) || expiry <= (clock ?? TimeProvider.System).GetUtcNow().AddSeconds(30))
-            throw new InvalidOperationException("GitHub App credential is expired or unavailable; the bridge must refresh it before gh can run");
-        Log.Protect(token);
+        Log.Protect(credential.Token);
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         var forwarded = arguments.ToArray();
-        forwarded = AppGitCredential.PrepareClone(start, tokenFile, forwarded);
+        forwarded = AppGitCredential.PrepareClone(start, credential, credentialDirectory, forwarded);
         foreach (var argument in forwarded) start.ArgumentList.Add(argument);
-        IsolateEnvironment(start, Path.Combine(Path.GetDirectoryName(tokenFile)!, "gh-config"));
-        start.Environment["GH_TOKEN"] = token;
+        IsolateEnvironment(start, Path.Combine(credentialDirectory, "gh-config"));
+        // The child's environment is process memory; the token never reaches arguments or files.
+        start.Environment["GH_TOKEN"] = credential.Token;
         return start;
     }
 
-    public static async Task<int> Run(string executable, string tokenFile, string[] arguments, CancellationToken ct)
+    public static async Task<int> Run(string executable, string credentialDirectory, string[] arguments, CancellationToken ct)
     {
-        using var process = Process.Start(Create(executable, tokenFile, arguments)) ?? throw new IOException("Could not start authenticated gh");
+        var credential = await CredentialHandoff.Request(credentialDirectory, ct);
+        using var process = Process.Start(Create(executable, credential, credentialDirectory, arguments)) ?? throw new IOException("Could not start authenticated gh");
         try { await process.WaitForExitAsync(ct); }
         catch { if (!process.HasExited) process.Kill(true); throw; }
         return process.ExitCode;
     }
 
-    public static string InstallWrapper(string directory, string executable, string tokenFile)
+    public static string InstallWrapper(string directory, string executable, string credentialDirectory)
     {
         if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("The App-authenticated gh wrapper requires a Linux or macOS runtime");
         GitHubAppCredentials.SecureDirectory(directory);
@@ -42,7 +38,7 @@ public static class AppGitHubCommand
         var launcher = File.Exists(apphost) ? new[] { apphost } :
             new[] { FindExecutable("dotnet"), Path.Combine(AppContext.BaseDirectory, "RepoAgentController.dll") };
         var command = string.Join(' ', launcher.Concat(new[] {
-            "github-command", "--gh-path", executable, "--token-file", tokenFile }).Select(Quote));
+            "github-command", "--gh-path", executable, "--credential-directory", credentialDirectory }).Select(Quote));
         File.WriteAllText(path, "#!/bin/sh\nexec " + command + " -- \"$@\"\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;

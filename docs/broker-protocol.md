@@ -2,7 +2,7 @@
 
 This is the consumer contract for [deployment plan #28](https://github.com/repoagent/controller/issues/28). It does not establish that an enrollment service or hosted broker exists. Direct App authentication remains available for an operator's own App.
 
-The approved provider/installer design is now [repository-held approval with a UI-free auth service](auth-repository-approval.md). It supersedes the earlier browser/personal-administrator ceremony below without changing the frozen v1 consumer fields, runtime permission profiles or cache lifecycle.
+The approved provider/installer design is now [repository-held approval with a UI-free auth service](auth-repository-approval.md). It supersedes the earlier browser/personal-administrator ceremony below without changing the frozen v1 consumer fields, runtime permission profiles or credential lifecycle.
 
 ## Enrollment file
 
@@ -54,11 +54,11 @@ The successful response is a JSON object with exactly these fields:
 
 All fields are required with the shown types. Bind App ID/slug, installation ID, repository ID/name and permission profile to the enrollment on **every** response, including renewal. Reject unknown or duplicate fields, unsupported versions, malformed JSON and empty tokens. Treat the token as opaque rather than requiring a GitHub prefix or fixed length; reject whitespace/control characters unsuitable for bearer authentication. `expiresAt` is an RFC 3339 timestamp strictly more than five minutes and at most 65 minutes after the consumer clock. The five-minute upper tolerance accommodates clock skew around GitHub's one-hour lifetime; it does not authorize the broker to extend that lifetime. Renew within the existing five-minute safety window.
 
-## Cache and identity lifecycle
+## Credential and identity lifecycle
 
-One credential manager owns cache publication, renewal serialization and scheduled refresh for both direct-App and broker sources. After acquiring the controller state lock, invalidate the prior process's cache **before** authenticating a new configuration. A failure to acquire the state lock must leave the active owner's cache alone.
+One credential manager owns the held credential, renewal serialization and scheduled refresh for both direct-App and broker sources. Tokens are held only in the controller's memory; no lease is persisted. After acquiring the controller state lock, remove any token cache left by an earlier version **before** authenticating a new configuration. A failure to acquire the state lock must leave the active owner's credential alone.
 
-Only validated leases may be atomically published into the owner-only token cache. The real GitHub viewer must also equal `appSlug + "[bot]"` before any native agent work. If a temporary cache is required for that viewer check, every failed check or startup authentication failure removes it and any temporary cache. A previously installed native wrapper must then fail without invoking `gh`, even if human GitHub credentials are present. Failed renewal likewise clears the cache; subsequent successful authorization may recover. Cache deletion prevents new compliant launches, but cannot revoke tokens already copied into a running child.
+Only validated leases may be held and handed to the controller's own `gh` and Git children. The handoff is an owner-only Unix socket in a private local temporary directory that exists only for the running controller lifetime; the credential directory holds only a nonsecret pointer to it. The real GitHub viewer must also equal `appSlug + "[bot]"` before any native agent work. Every failed check, startup authentication failure, `--check-auth` exit or controller stop leaves no usable credential. A previously installed native wrapper must then fail without invoking `gh`, even if human GitHub credentials are present. Failed renewal likewise drops the held credential; subsequent successful authorization may recover. Dropping the credential prevents new compliant launches, but cannot revoke tokens already copied into a running child.
 
 ## Provider and hosted release gates
 
@@ -88,6 +88,6 @@ The authenticated `gh` wrapper supports `gh repo clone OWNER/REPO [DESTINATION]`
 
 Use the sibling `repoagent-git fetch --directory CHECKOUT` wrapper for later fetches. The approved URL is implicit; caller URLs, remotes and Git flags are not accepted. Fetch refuses repository authentication/header/rewrite/include configuration and does not recurse into submodules. Checkout selection, trust and update scheduling remain separate work.
 
-The helper validates HTTPS, github.com and the exact repository path, reads the current validated private lease on every request, never stores Git credentials, and coordinates rejected-lease deletion with atomic publication so old A cannot erase new B. No token is embedded in a wrapper, remote URL or command argument. Child processes isolate ambient helpers, gh/human tokens, askpass, netrc and Git configuration without changing global settings. Normal TLS verification remains required. Background renewal remains owned by the existing credential manager; an unavailable lease denies new launches. Already copied bearer tokens retain the existing revocation/expiry limits.
+The helper validates HTTPS, github.com and the exact repository path, requests the running controller's current validated lease on every request, never stores Git credentials, and forwards a rejected lease to the controller, which drops it only if it is still the current one so old A cannot erase new B. No token is embedded in a wrapper, remote URL or command argument. Child processes isolate ambient helpers, gh/human tokens, askpass, netrc and Git configuration without changing global settings. Normal TLS verification remains required. Background renewal remains owned by the existing credential manager; an unavailable lease denies new launches. Already copied bearer tokens retain the existing revocation/expiry limits.
 
 Supported native wrappers remain Linux/macOS, including the Linux container/AOT runtime; Windows is the PowerShell installation host. Source tests and local transport fixtures do not prove actual App permission approval, private GitHub clone/renewed fetch, deployed Azure signing or pilot acceptance.

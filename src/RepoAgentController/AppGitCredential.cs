@@ -1,55 +1,38 @@
 using System.Diagnostics;
 using System.Text;
-using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
 
 // Only managed clone/fetch cross this interface. Ordinary local Git is not intercepted.
 internal static class AppGitCredential
 {
-    internal static FileStream Lock(string file)
+    // Only clone-capable credentials carry the approved repository binding Git may use.
+    static InstallationCredential Lease(InstallationCredential credential)
     {
-        var deadline = Stopwatch.StartNew();
-        while (true)
-        {
-            try { return new FileStream(file + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
-            catch (IOException) when (deadline.Elapsed < TimeSpan.FromSeconds(3)) { Thread.Sleep(10); }
-        }
-    }
-
-    static JsonNode Read(string file)
-    {
-        var info = new FileInfo(file);
-        if (!info.Exists || info.Length > 65536 || (!OperatingSystem.IsWindows() &&
-            (File.GetUnixFileMode(file) & ~(UnixFileMode.UserRead | UnixFileMode.UserWrite)) != 0)) throw new IOException("Unavailable Git lease");
-        var value = JsonNode.Parse(File.ReadAllText(file)) ?? throw new IOException("Unavailable Git lease");
-        var repository = value.Text("repository");
-        if (value.Text("profile") is not ("polling-clone" or "webhook-clone") ||
-            repository.Split('/') is not [var owner, var name] || !Segment(owner) || !Segment(name) ||
-            !DateTimeOffset.TryParse(value.Text("expiresAt"), out var expiry) || expiry <= DateTimeOffset.UtcNow.AddSeconds(30) ||
-            string.IsNullOrWhiteSpace(value.Text("token")) || value.Text("token").Any(c => char.IsControl(c) || char.IsWhiteSpace(c)))
+        if (credential.Profile is not ("polling-clone" or "webhook-clone") ||
+            credential.Repository?.Split('/') is not [var owner, var name] || !Segment(owner) || !Segment(name))
             throw new IOException("Unavailable Git lease");
-        Log.Protect(value.Text("token"));
-        return value;
+        return credential;
     }
+    static async Task<InstallationCredential> Lease(string directory, CancellationToken ct) => Lease(await CredentialHandoff.Request(directory, ct));
     static bool Segment(string s) => s.Length is > 0 and <= 100 && s is not ("." or "..") && s.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
-    static string Url(JsonNode lease) => "https://github.com/" + lease.Text("repository") + ".git";
+    static string Url(InstallationCredential lease) => "https://github.com/" + lease.Repository + ".git";
     static string Quote(string s) => "'" + s.Replace("'", "'\"'\"'") + "'";
     static string Launcher()
     {
         var host = Path.Combine(AppContext.BaseDirectory, "RepoAgentController");
         return File.Exists(host) ? Quote(host) : Quote(AppGitHubCommand.FindExecutable("dotnet")) + " " + Quote(Path.Combine(AppContext.BaseDirectory, "RepoAgentController.dll"));
     }
-    internal static void Install(string bin, string file)
+    internal static void Install(string bin, string directory)
     {
         if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Git wrappers require Linux or macOS runtime");
         var git = AppGitHubCommand.FindExecutable("git");
-        var child = Path.Combine(Path.GetDirectoryName(file)!, "clone-bin");
+        var child = Path.Combine(directory, "clone-bin");
         GitHubAppCredentials.SecureDirectory(bin);
         GitHubAppCredentials.SecureDirectory(child);
-        Write(Path.Combine(bin, "repoagent-git"), "git-fetch", file, git);
-        Write(Path.Combine(child, "git"), "git-clone-child", file, git);
-        Write(Path.Combine(child, "credential"), "git-helper", file);
+        Write(Path.Combine(bin, "repoagent-git"), "git-fetch", directory, git);
+        Write(Path.Combine(child, "git"), "git-clone-child", directory, git);
+        Write(Path.Combine(child, "credential"), "git-helper", directory);
     }
     static void Write(string path, string operation, params string[] arguments)
     {
@@ -57,13 +40,13 @@ internal static class AppGitCredential
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
-    internal static string[] PrepareClone(ProcessStartInfo start, string file, string[] args)
+    internal static string[] PrepareClone(ProcessStartInfo start, InstallationCredential credential, string directory, string[] args)
     {
         if (args.Length < 2 || args[0] != "repo" || args[1] != "clone") return args;
-        var lease = Read(file);
+        var lease = Lease(credential);
         if (args.Length < 3) throw new ArgumentException("Clone requires the approved repository");
         var target = args[2];
-        if (!string.Equals(target, lease.Text("repository"), StringComparison.OrdinalIgnoreCase) &&
+        if (!string.Equals(target, lease.Repository, StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(target, Url(lease), StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(target, Url(lease)[..^4], StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Clone target differs from approval");
         string? destination = null;
@@ -73,8 +56,7 @@ internal static class AppGitCredential
             if (destination is not null || arg.StartsWith('-')) throw new ArgumentException("Managed clone accepts only a destination");
             destination = arg;
         }
-        destination = Path.GetFullPath(destination ?? lease.Text("repository").Split('/')[1]);
-        var directory = Path.GetDirectoryName(file)!;
+        destination = Path.GetFullPath(destination ?? lease.Repository!.Split('/')[1]);
         Isolate(start, directory);
         start.Environment["REPOAGENT_CLONE_TARGET"] = destination;
         start.Environment["PATH"] = Path.Combine(directory, "clone-bin") + Path.PathSeparator + start.Environment["PATH"];
@@ -97,11 +79,11 @@ internal static class AppGitCredential
         start.Environment["GIT_ASKPASS"] = "/bin/false";
         start.Environment["GIT_ALLOW_PROTOCOL"] = "https";
     }
-    static ProcessStartInfo Git(string executable, string file, params string[] args)
+    static ProcessStartInfo Git(string executable, string directory, params string[] args)
     {
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
-        Isolate(start, Path.GetDirectoryName(file)!);
-        var helper = Path.Combine(Path.GetDirectoryName(file)!, "clone-bin", "credential");
+        Isolate(start, directory);
+        var helper = Path.Combine(directory, "clone-bin", "credential");
         // Explicit shell form keeps quoted paths absolute; otherwise Git prefixes git credential-.
         var helperCommand = "!" + Quote(helper);
         foreach (var setting in new[] { "credential.helper=", "credential.helper=" + helperCommand,
@@ -125,15 +107,15 @@ internal static class AppGitCredential
         try
         {
             if (args.Length < 3) throw new ArgumentException("Invalid managed Git operation");
-            var file = args[1];
-            if (args[0] == "git-helper") return await Helper(file, args[2]);
-            var lease = Read(file);
+            var credentials = args[1];
+            if (args[0] == "git-helper") return await Helper(credentials, args[2]);
+            var lease = await Lease(credentials, ct);
             var git = args[2];
             if (args[0] == "git-fetch" && args is [_, _, _, "fetch", "--directory", var directory])
             {
                 directory = Path.GetFullPath(directory);
                 var local = new ProcessStartInfo(git) { UseShellExecute = false, RedirectStandardOutput = true };
-                Isolate(local, Path.GetDirectoryName(file)!);
+                Isolate(local, credentials);
                 foreach (var a in new[] { "-C", directory, "config", "--null", "--list" }) local.ArgumentList.Add(a);
                 using var listing = Process.Start(local) ?? throw new IOException("Git configuration unavailable");
                 string config;
@@ -155,18 +137,18 @@ internal static class AppGitCredential
                 }
                 catch { if (!listing.HasExited) listing.Kill(true); throw; }
                 if (listing.ExitCode != 0 || config.Length > 65536 || config.Split('\0').Any(UnsafeConfig)) throw new IOException("Repository authentication configuration is not supported");
-                return await Execute(Git(git, file, "-C", directory, "fetch", "--no-recurse-submodules", "--no-tags", Url(lease)), ct);
+                return await Execute(Git(git, credentials, "-C", directory, "fetch", "--no-recurse-submodules", "--no-tags", Url(lease)), ct);
             }
             if (args[0] == "git-clone-child")
             {
                 var target = Environment.GetEnvironmentVariable("REPOAGENT_CLONE_TARGET") ?? throw new IOException("Missing clone destination");
                 var forwarded = args[3..];
                 if (forwarded is ["-C", var cwd, "config", "--add", "remote.origin.gh-resolved", "base"] && cwd == target)
-                    return await Execute(Git(git, file, forwarded), ct);
+                    return await Execute(Git(git, credentials, forwarded), ct);
                 if (forwarded is ["-c", "credential.https://github.com.helper=", "-c", var injected, "clone", var url, var destination] &&
                     injected.StartsWith("credential.https://github.com.helper=!", StringComparison.Ordinal) &&
                     injected.EndsWith(" auth git-credential", StringComparison.Ordinal) && url == Url(lease) && destination == target)
-                    return await Execute(Git(git, file, "clone", "--", url, destination), ct);
+                    return await Execute(Git(git, credentials, "clone", "--", url, destination), ct);
             }
             throw new ArgumentException("Unsupported managed Git invocation");
         }
@@ -184,7 +166,7 @@ internal static class AppGitCredential
         return new[] { "credential.", "http.", "url.", "include.", "includeif." }.Any(p => key.StartsWith(p, StringComparison.OrdinalIgnoreCase)) ||
             key.Equals("core.askpass", StringComparison.OrdinalIgnoreCase) || key.Equals("core.sshcommand", StringComparison.OrdinalIgnoreCase);
     }
-    static async Task<int> Helper(string file, string operation)
+    static async Task<int> Helper(string credentials, string operation)
     {
         if (operation is not ("get" or "store" or "erase")) throw new ArgumentException();
         var fields = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -213,16 +195,16 @@ internal static class AppGitCredential
             }
             else line.Append(buffer[0]);
         }
-        using var locked = Lock(file);
-        var lease = Read(file);
+        var lease = await Lease(credentials, deadline.Token);
         if (fields.GetValueOrDefault("protocol") != "https" || fields.GetValueOrDefault("host") != "github.com" ||
-            !(string.Equals(fields.GetValueOrDefault("path"), lease.Text("repository"), StringComparison.OrdinalIgnoreCase) ||
-              string.Equals(fields.GetValueOrDefault("path"), lease.Text("repository") + ".git", StringComparison.OrdinalIgnoreCase))) throw new IOException();
+            !(string.Equals(fields.GetValueOrDefault("path"), lease.Repository, StringComparison.OrdinalIgnoreCase) ||
+              string.Equals(fields.GetValueOrDefault("path"), lease.Repository + ".git", StringComparison.OrdinalIgnoreCase))) throw new IOException();
         if (operation == "erase")
         {
-            if (fields.GetValueOrDefault("password") == lease.Text("token")) File.Delete(file);
+            // The controller drops only its still-current credential, so rejecting A never erases a renewed B.
+            if (fields.GetValueOrDefault("password") is { } rejected) await CredentialHandoff.Reject(credentials, rejected, deadline.Token);
         }
-        else if (operation == "get") Console.Write("username=x-access-token\npassword=" + lease.Text("token") + "\n\n");
+        else if (operation == "get") Console.Write("username=x-access-token\npassword=" + lease.Token + "\n\n");
         return 0;
     }
 }

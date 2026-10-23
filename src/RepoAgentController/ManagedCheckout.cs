@@ -62,8 +62,8 @@ internal sealed class ManagedCheckout : IDisposable
             else
             {
                 if (Path.Exists(root)) throw Blocked("checkout has no ownership record");
-                await credentials.GetToken(ct);
-                await Run(AppGitHubCommand.Create(gh, credentials.TokenFile, ["repo", "clone", repository.Remote, root]), ct);
+                await Run(AppGitHubCommand.Create(gh, await credentials.GetCredential(ct), credentials.CredentialDirectory,
+                    ["repo", "clone", repository.Remote, root]), ct);
             }
             var git = AppGitHubCommand.FindExecutable("git");
             var commit = await Inspect(git, root, repository, ct);
@@ -158,7 +158,7 @@ internal sealed class ManagedCheckout : IDisposable
         CheckPath(fetched);
         try
         {
-            var start = new ProcessStartInfo(Path.Combine(Path.GetDirectoryName(credentials.TokenFile)!, "bin", "repoagent-git")) { UseShellExecute = false };
+            var start = new ProcessStartInfo(Path.Combine(credentials.CredentialDirectory, "bin", "repoagent-git")) { UseShellExecute = false };
             foreach (var arg in new[] { "fetch", "--directory", Root }) start.ArgumentList.Add(arg);
             await Run(start, ct);
             CheckPath(fetched);

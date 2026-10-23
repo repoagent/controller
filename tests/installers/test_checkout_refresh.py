@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import urllib.request
 import unittest
 
-from test_managed_git import CONTROLLER, ROOT, GitProvider
+from test_managed_git import CONTROLLER, ROOT, CredentialManager, GitProvider
 
 
 @unittest.skipIf(os.name == 'nt', 'Managed checkout uses the Linux shipping tools')
@@ -69,6 +69,7 @@ class CheckoutRefreshTests(unittest.TestCase):
         if build.returncode:
             raise RuntimeError(build.stdout + build.stderr)
         print('REFRESH_BUILD ' + build.stdout.strip(), flush=True)
+        CredentialManager.build()
         controller = os.environ.get('CHECKOUT_CONTROLLER')
         if controller and not Path(controller).is_absolute():
             raise RuntimeError('CHECKOUT_CONTROLLER must be an absolute executable path')
@@ -131,11 +132,16 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertNotEqual(before, after)
             self.assertEqual(git('--git-dir', directory / 'repositories/owner/project.git', 'rev-parse', 'HEAD'), after)
             # Prove existing authenticated helper/HTTPS Git transport can fetch B,
-            # without fetching into or updating the subject's owned checkout.
+            # without fetching into or updating the subject's owned checkout. The
+            # stopped controller kept no lease, so a live manager holds one meanwhile.
             helpers = Path(str(state) + '.github-app') / 'bin'
             control = directory / 'fetch-control'
-            run([str(helpers / 'gh'), 'repo', 'clone', 'https://github.com/owner/project.git', str(control)])
-            run([str(helpers / 'repoagent-git'), 'fetch', '--directory', str(control)])
+            manager = CredentialManager(enrollment, helpers.parent, environment)
+            try:
+                run([str(helpers / 'gh'), 'repo', 'clone', 'https://github.com/owner/project.git', str(control)])
+                run([str(helpers / 'repoagent-git'), 'fetch', '--directory', str(control)])
+            finally:
+                manager.stop()
             self.assertEqual(git('-C', control, 'rev-parse', 'FETCH_HEAD'), after)
             self.assertEqual(git('-C', checkout, 'rev-parse', 'HEAD'), before)
             output = run(command)

@@ -26,8 +26,8 @@ public sealed class BrokerAuthenticationTests
             "--clone", "--webhook-url", "https://controller.example.org", "--installation-id", "234", "--repository-id", "345",
             "--azure-work-queue", endpoint], fixture.Http, fixture.Gh));
         Assert.Empty(fixture.Transport.Requests);
-        Assert.Contains("prior-token", File.ReadAllText(fixture.TokenFile));
-        Assert.Equal("prior-temporary-token", File.ReadAllText(fixture.TokenFile + ".tmp"));
+        Assert.Contains("prior-token", File.ReadAllText(fixture.LegacyTokenFile));
+        Assert.Equal("prior-temporary-token", File.ReadAllText(fixture.LegacyTokenFile + ".tmp"));
         Assert.False(File.Exists(fixture.State));
     }
 
@@ -38,7 +38,7 @@ public sealed class BrokerAuthenticationTests
         fixture.SeedCache();
         Assert.Equal(1, await fixture.Start("--azure-work-queue", "https://account.queue.core.windows.net/controller-work"));
         Assert.Empty(fixture.Transport.Requests);
-        Assert.Contains("prior-token", File.ReadAllText(fixture.TokenFile));
+        Assert.Contains("prior-token", File.ReadAllText(fixture.LegacyTokenFile));
         Assert.False(File.Exists(fixture.State));
     }
 
@@ -62,16 +62,19 @@ public sealed class BrokerAuthenticationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Real_startup_accepts_the_enrolled_bot_without_a_PEM(bool webhooks)
+    public async Task Real_startup_accepts_the_enrolled_bot_without_a_PEM_and_leaves_no_usable_credential(bool webhooks)
     {
         using var fixture = new Fixture(webhooks);
+        fixture.SeedCache(); // An earlier controller version persisted its token here.
         Assert.Equal(0, await fixture.Start());
+        Assert.Single(fixture.Transport.Requests);
+        Assert.False(File.Exists(fixture.LegacyTokenFile));
+        Assert.False(File.Exists(fixture.LegacyTokenFile + ".tmp"));
+        // The checked lifetime has ended: its wrapper neither reuses that lease nor falls back to ambient sign-in.
         var result = await fixture.InvokeWrapper();
-        Assert.Equal(0, result.Exit);
-        Assert.Contains("opaque-token-1", result.Output);
-        Assert.DoesNotContain("human-token", result.Output);
-        if (!OperatingSystem.IsWindows())
-            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(fixture.TokenFile));
+        Assert.NotEqual(0, result.Exit);
+        Assert.DoesNotContain("gh-invoked", result.Output);
+        Assert.DoesNotContain("opaque-token-1", result.Output);
     }
 
     [Fact]
@@ -81,22 +84,28 @@ public sealed class BrokerAuthenticationTests
         fixture.SeedCache();
         fixture.Viewer("human-user");
         Assert.Equal(1, await fixture.Start());
-        Assert.False(File.Exists(fixture.TokenFile));
-        Assert.False(File.Exists(fixture.TokenFile + ".tmp"));
+        Assert.False(File.Exists(fixture.LegacyTokenFile));
+        Assert.False(File.Exists(fixture.LegacyTokenFile + ".tmp"));
         var result = await fixture.InvokeWrapper();
         Assert.NotEqual(0, result.Exit);
         Assert.DoesNotContain("gh-invoked", result.Output);
     }
 
     [Fact]
-    public async Task Losing_the_state_lock_preserves_the_active_owners_cache()
+    public async Task Losing_the_state_lock_preserves_the_active_owners_credential()
     {
         using var fixture = new Fixture();
-        fixture.SeedCache();
         using var owner = new FileStream(fixture.State + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        using var active = fixture.Credentials();
+        await active.Initialize(null, TestContext.Current.CancellationToken);
+        fixture.SeedCache();
         Assert.Equal(1, await fixture.Start());
-        Assert.Contains("prior-token", File.ReadAllText(fixture.TokenFile));
-        Assert.Empty(fixture.Transport.Requests);
+        Assert.Contains("prior-token", File.ReadAllText(fixture.LegacyTokenFile));
+        Assert.Single(fixture.Transport.Requests); // Only the active owner's acquisition.
+        var served = await fixture.InvokeWrapper();
+        Assert.Equal(0, served.Exit);
+        Assert.Contains("gh-invoked", served.Output);
+        Assert.Contains("opaque-token-1", served.Output);
     }
 
     [Fact]
@@ -109,17 +118,17 @@ public sealed class BrokerAuthenticationTests
             fixture.SeedCache();
             var denied = await Contender();
             Assert.Equal(1, denied.Exit);
-            Assert.True(File.Exists(fixture.TokenFile), "A losing contender cleared the active owner's cache");
-            Assert.Equal(token, File.ReadAllText(fixture.TokenFile));
-            Assert.Equal("prior-temporary-token", File.ReadAllText(fixture.TokenFile + ".tmp"));
+            Assert.True(File.Exists(fixture.LegacyTokenFile), "A losing contender cleared the active owner's cache");
+            Assert.Equal(token, File.ReadAllText(fixture.LegacyTokenFile));
+            Assert.Equal("prior-temporary-token", File.ReadAllText(fixture.LegacyTokenFile + ".tmp"));
             Assert.DoesNotContain("Unrecognized", denied.Output);
             if (!OperatingSystem.IsWindows()) Assert.Contains("errno=", denied.Output);
         }
         // A fresh process can acquire after explicit disposal and reach the missing-key refusal.
         var released = await Contender();
         Assert.Equal(1, released.Exit);
-        Assert.False(File.Exists(fixture.TokenFile));
-        Assert.False(File.Exists(fixture.TokenFile + ".tmp"));
+        Assert.False(File.Exists(fixture.LegacyTokenFile));
+        Assert.False(File.Exists(fixture.LegacyTokenFile + ".tmp"));
         Assert.Contains("missing-key.pem", released.Output);
 
         async Task<(int Exit, string Output)> Contender()
@@ -150,7 +159,7 @@ public sealed class BrokerAuthenticationTests
         fixture.SeedCache();
         File.WriteAllText(fixture.State, "{}");
         Assert.Equal(1, await fixture.Start());
-        Assert.False(File.Exists(fixture.TokenFile));
+        Assert.False(File.Exists(fixture.LegacyTokenFile));
     }
 
     [Fact]
@@ -168,7 +177,6 @@ public sealed class BrokerAuthenticationTests
         fixture.Transport.Status = HttpStatusCode.Unauthorized;
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
         Assert.DoesNotContain("DO-NOT-LOG", error.ToString());
-        Assert.False(File.Exists(fixture.TokenFile));
         var failed = await fixture.InvokeWrapper();
         Assert.NotEqual(0, failed.Exit);
         Assert.DoesNotContain("gh-invoked", failed.Output);
@@ -210,7 +218,6 @@ public sealed class BrokerAuthenticationTests
         fixture.Clock.Advance(TimeSpan.FromMinutes(56));
         fixture.Transport.Defect = defect;
         await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
-        Assert.False(File.Exists(fixture.TokenFile));
         var result = await fixture.InvokeWrapper();
         Assert.NotEqual(0, result.Exit);
         Assert.DoesNotContain("gh-invoked", result.Output);
@@ -224,7 +231,6 @@ public sealed class BrokerAuthenticationTests
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         await credentials.Initialize(null, cancellation.Token);
         Assert.Contains("opaque-token-1", (await fixture.InvokeWrapper()).Output);
-        File.WriteAllText(fixture.TokenFile + ".tmp", "prior-temporary-token");
         fixture.Clock.Advance(TimeSpan.FromMinutes(56));
         using var stalledBody = new StalledBody();
         fixture.Transport.Body = stalledBody;
@@ -237,8 +243,6 @@ public sealed class BrokerAuthenticationTests
             var error = await Record.ExceptionAsync(() => renewal.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
             Assert.IsAssignableFrom<OperationCanceledException>(error);
             Assert.False(cancellation.IsCancellationRequested);
-            Assert.False(File.Exists(fixture.TokenFile));
-            Assert.False(File.Exists(fixture.TokenFile + ".tmp"));
             var failed = await fixture.InvokeWrapper();
             Assert.NotEqual(0, failed.Exit);
             Assert.DoesNotContain("gh-invoked", failed.Output);
@@ -277,7 +281,7 @@ public sealed class BrokerAuthenticationTests
         fixture.SeedCache();
         Assert.Equal(1, await fixture.Start());
         Assert.Empty(fixture.Transport.Requests);
-        Assert.False(File.Exists(fixture.TokenFile));
+        Assert.False(File.Exists(fixture.LegacyTokenFile));
     }
 
     [Theory]
@@ -308,8 +312,8 @@ public sealed class BrokerAuthenticationTests
         recreated.SeedCache();
         Assert.Equal(1, await recreated.Start("--repository-id", "345"));
         Assert.Empty(recreated.Transport.Requests);
-        Assert.False(File.Exists(recreated.TokenFile));
-        Assert.False(File.Exists(recreated.TokenFile + ".tmp"));
+        Assert.False(File.Exists(recreated.LegacyTokenFile));
+        Assert.False(File.Exists(recreated.LegacyTokenFile + ".tmp"));
         Assert.NotEqual(0, (await recreated.InvokeWrapper()).Exit);
     }
 
@@ -373,7 +377,7 @@ public sealed class BrokerAuthenticationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Clone_consumer_selects_v2_and_renewal_preserves_exact_profile(bool webhooks)
+    public async Task Clone_consumer_selects_v2_and_renewal_keeps_the_repository_bound_Git_credential(bool webhooks)
     {
         using var fixture = new Fixture(webhooks, clone: true);
         using var credentials = fixture.Credentials();
@@ -382,9 +386,12 @@ public sealed class BrokerAuthenticationTests
         fixture.Clock.Advance(TimeSpan.FromMinutes(56));
         await credentials.GetToken(TestContext.Current.CancellationToken);
         Assert.Equal(2, fixture.Transport.Requests.Count);
-        var cached = JsonNode.Parse(File.ReadAllText(fixture.TokenFile))!;
-        Assert.Equal(webhooks ? "webhook-clone" : "polling-clone", cached["profile"]!.GetValue<string>());
-        Assert.Equal("owner/repository", cached["repository"]!.GetValue<string>());
+        var renewed = await fixture.InvokeGitHelper("owner/repository.git");
+        Assert.Equal(0, renewed.Exit);
+        Assert.Equal("username=x-access-token\npassword=opaque-token-2\n\n", renewed.Output);
+        var other = await fixture.InvokeGitHelper("owner/other.git");
+        Assert.NotEqual(0, other.Exit);
+        Assert.DoesNotContain("opaque-token-", other.Output);
     }
 
     [Theory]
@@ -407,7 +414,9 @@ public sealed class BrokerAuthenticationTests
         fixture.Clock.Advance(TimeSpan.FromMinutes(56));
         fixture.Transport.Defect = defect;
         await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
-        Assert.False(File.Exists(fixture.TokenFile));
+        var denied = await fixture.InvokeGitHelper("owner/repository.git");
+        Assert.NotEqual(0, denied.Exit);
+        Assert.Equal("quit=true\n\n", denied.Output);
         Assert.Equal(2, fixture.Transport.Requests.Count);
         Assert.All(fixture.Transport.Requests, uri => Assert.Contains("/v2/", uri.AbsolutePath));
     }
@@ -430,7 +439,7 @@ public sealed class BrokerAuthenticationTests
         public string Directory { get; } = Path.Combine(Path.GetTempPath(), "broker-tests-" + Guid.NewGuid().ToString("N"));
         public string State => Path.Combine(Directory, "state.json");
         public string CredentialDirectory => State + ".github-app";
-        public string TokenFile => Path.Combine(CredentialDirectory, "installation-token.json");
+        public string LegacyTokenFile => Path.Combine(CredentialDirectory, "installation-token.json");
         public string EnrollmentFile => Path.Combine(Directory, "enrollment.json");
         public string Gh => Path.Combine(Directory, "gh-stub");
         public FakeTimeProvider Clock { get; } = new(DateTimeOffset.UtcNow);
@@ -461,7 +470,7 @@ public sealed class BrokerAuthenticationTests
             Transport = new Transport(Clock, Enrollment);
             http = new HttpClient(Transport);
             Viewer("test-app[bot]");
-            wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(CredentialDirectory, "bin"), Gh, TokenFile);
+            wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(CredentialDirectory, "bin"), Gh, CredentialDirectory);
         }
 
         public void SaveEnrollment()
@@ -478,8 +487,8 @@ public sealed class BrokerAuthenticationTests
 
         public void SeedCache()
         {
-            File.WriteAllText(TokenFile, "{\"token\":\"prior-token\",\"expiresAt\":\"2099-01-01T00:00:00Z\"}");
-            File.WriteAllText(TokenFile + ".tmp", "prior-temporary-token");
+            File.WriteAllText(LegacyTokenFile, "{\"token\":\"prior-token\",\"expiresAt\":\"2099-01-01T00:00:00Z\"}");
+            File.WriteAllText(LegacyTokenFile + ".tmp", "prior-temporary-token");
         }
 
         public HttpClient Http => http;
@@ -510,6 +519,24 @@ public sealed class BrokerAuthenticationTests
             var error = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
             await process.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
             return (process.ExitCode, await output + await error);
+        }
+
+        // The real controller Git credential-helper entry, as Git invokes it for an HTTPS repository path.
+        public async Task<(int Exit, string Output)> InvokeGitHelper(string path)
+        {
+            var apphost = Path.Combine(AppContext.BaseDirectory, "RepoAgentController");
+            var start = File.Exists(apphost) ? new ProcessStartInfo(apphost) : new ProcessStartInfo("dotnet")
+            {
+                ArgumentList = { Path.Combine(AppContext.BaseDirectory, "RepoAgentController.dll") }
+            };
+            foreach (var argument in new[] { "git-helper", CredentialDirectory, "get" }) start.ArgumentList.Add(argument);
+            start.RedirectStandardInput = start.RedirectStandardOutput = true;
+            using var process = Process.Start(start)!;
+            await process.StandardInput.WriteAsync($"protocol=https\nhost=github.com\npath={path}\n\n");
+            process.StandardInput.Close();
+            var output = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await process.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+            return (process.ExitCode, await output);
         }
         public void Dispose() { http.Dispose(); System.IO.Directory.Delete(Directory, true); }
     }
