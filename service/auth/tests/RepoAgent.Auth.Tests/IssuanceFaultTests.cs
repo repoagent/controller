@@ -6,13 +6,15 @@ namespace RepoAgent.Auth.Tests;
 public sealed class IssuanceFaultTests
 {
     private static CancellationToken Token => TestContext.Current.CancellationToken;
+    // Six-minute runtime leases enter the five-minute renewal margin at the next test minute.
+    // These cases exercise new mints; published-lease reuse is covered separately.
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Competing_global_reservation_retries_before_observation_without_duplicate_charges(bool existingQuota)
     {
-        await using var f = await IssuanceFixture.CreateAsync();
+        await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(6));
         // Keep the two-second contention delay inside one fixed UTC quota window.
         var midMinute = DateTimeOffset.FromUnixTimeSeconds(f.Clock.GetUtcNow().ToUnixTimeSeconds() / 60 * 60 + 90);
         f.Clock.Advance(midMinute - f.Clock.GetUtcNow());
@@ -85,7 +87,7 @@ public sealed class IssuanceFaultTests
     [InlineData("device")]
     public async Task Transient_admission_conflict_rereads_authority_before_first_approval_observation(string changed)
     {
-        await using var f = await IssuanceFixture.CreateAsync();
+        await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(6));
         Assert.Equal(200, (await f.IssueAsync(Token)).Status);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var reservedAt = f.Clock.GetUtcNow();
@@ -119,7 +121,7 @@ public sealed class IssuanceFaultTests
     [Fact]
     public async Task Admission_conflict_budget_is_shared_by_verifier_and_runtime_without_duplicate_global_charges()
     {
-        await using var f = await IssuanceFixture.CreateAsync();
+        await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(6));
         var reservedAt = f.Clock.GetUtcNow();
         var batches = 0;
         var conflicts = 0;
@@ -157,7 +159,7 @@ public sealed class IssuanceFaultTests
     [InlineData("secret")]
     public async Task Changed_authority_during_admission_retry_cannot_inherit_the_original_authentication(string changed)
     {
-        await using var f = await IssuanceFixture.CreateAsync();
+        await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(6));
         Assert.Equal(200, (await f.IssueAsync(Token)).Status);
         var lastActivity = (await f.DeviceAsync()).GetDateTimeOffset("LastActivityAt");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
@@ -199,7 +201,7 @@ public sealed class IssuanceFaultTests
     [InlineData(5, true, "released")]
     public async Task Lost_Table_transport_never_refunds_reservations_or_replays_an_attempt(int stage, bool afterCommit, string? expectedState)
     {
-        await using var f = await IssuanceFixture.CreateAsync();
+        await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(6));
         Assert.Equal(200, (await f.IssueAsync(Token)).Status);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var beforeIds = (await f.AttemptsAsync()).Select(a => a.RowKey).ToHashSet();
@@ -252,7 +254,7 @@ public sealed class IssuanceFaultTests
     [Fact]
     public async Task Concurrent_verifier_acquisition_never_duplicates_the_inflight_mint()
     {
-        await using var f = await IssuanceFixture.CreateAsync();
+        await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(6));
         var signingEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var continueSigning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         f.Signing.Before = async () =>
@@ -279,7 +281,7 @@ public sealed class IssuanceFaultTests
     [Fact]
     public async Task Revocation_after_admission_stops_a_late_worker_before_mint()
     {
-        await using var f = await IssuanceFixture.CreateAsync();
+        await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(6));
         Assert.Equal(200, (await f.IssueAsync(Token)).Status);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var revoked = false;
@@ -306,7 +308,7 @@ public sealed class IssuanceFaultTests
     [Fact]
     public async Task Repository_capacity_stays_bounded_across_restarts_and_minute_windows()
     {
-        await using var f = await IssuanceFixture.CreateAsync();
+        await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(6));
         for (var i = 0; i < 6; i++)
         {
             Assert.Equal(200, (await f.IssueAsync(Token)).Status);
@@ -328,9 +330,14 @@ public sealed class IssuanceFaultTests
     [Fact]
     public async Task Global_capacity_and_fixed_window_cost_bound_a_restarted_request_storm()
     {
-        await using var f = await IssuanceFixture.CreateAsync();
+        await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(6));
         var limits = new IssuanceLimits(GlobalAttempts: 4);
         Assert.Equal(200, (await f.Issuer(limits: limits).IssueAsync(f.Device.DeviceId, f.Device.Secret, Token)).Status);
+        // Model a historical device without the optional published-lease pointer.
+        var legacy = await f.DeviceAsync();
+        legacy.Remove("RuntimeAttempt");
+        legacy.Remove("RuntimeExpiresAt");
+        await f.Storage.Table.UpdateEntityAsync(legacy, legacy.ETag, TableUpdateMode.Replace, Token);
         // The verifier and first runtime consume this minute's repository signing budget.
         for (var i = 0; i < 12; i++)
             Assert.Equal(429, (await f.Issuer(limits: limits).IssueAsync(f.Device.DeviceId, f.Device.Secret, Token)).Status);

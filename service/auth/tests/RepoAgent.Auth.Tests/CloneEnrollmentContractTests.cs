@@ -76,8 +76,10 @@ public sealed class CloneEnrollmentContractTests
         Assert.Equal(mints, f.GitHub.Mints);
         // No durable quota, attempt, slot or enrollment write may precede family rejection.
         Assert.Equal(beforeMismatch, await DurableVersions(f));
+        JsonElement? previousLease = null;
         for (var renewal = 0; renewal < 2; renewal++)
         {
+            if (renewal > 0) await f.RestartAsync();
             f.Clock.Advance(TimeSpan.FromMinutes(1));
             using var runtime = await f.Send(route, secret: secret);
             Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
@@ -87,12 +89,19 @@ public sealed class CloneEnrollmentContractTests
             Assert.Equal("owner/project", lease.GetProperty("repository").GetString());
             AssertPermissions(profile, lease.GetProperty("permissions"));
             Assert.False(string.IsNullOrWhiteSpace(lease.GetProperty("token").GetString()));
+            if (previousLease is { } previous)
+            {
+                Assert.Equal(previous.GetProperty("token").GetString(), lease.GetProperty("token").GetString());
+                Assert.Equal(previous.GetProperty("expiresAt").GetString(), lease.GetProperty("expiresAt").GetString());
+            }
+            previousLease = lease.Clone();
             if (runtimeVersion == 2)
             {
                 Assert.Equal(profile, lease.GetProperty("profile").GetString());
                 Assert.Equal(policy, lease.GetProperty("policyVersion").GetString());
             }
         }
+        Assert.Equal(mints + 1, f.GitHub.Mints);
         if (runtimeVersion == 2)
         {
             f.GitHub.Marker = "";
@@ -184,7 +193,7 @@ public sealed class CloneEnrollmentContractTests
                     AssertPermissions(profile, permissions);
                     return GitHubTransport.Json(new
                     {
-                        token = "runtime-token-" + f.GitHub.Mints, expires_at = f.Clock.GetUtcNow().AddHours(1),
+                        token = "runtime-token-" + f.GitHub.Mints, expires_at = f.Clock.GetUtcNow().Add(f.GitHub.RuntimeLifetime),
                         repository_selection = "selected", permissions,
                         repositories = new[] { new { id = 123456, full_name = "owner/project" } }
                     }, HttpStatusCode.Created);

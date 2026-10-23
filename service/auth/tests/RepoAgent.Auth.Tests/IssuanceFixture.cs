@@ -15,7 +15,8 @@ internal sealed class IssuanceFixture : IAsyncDisposable
     public EnrolledDevice Device { get; private set; } = null!;
     public IssuanceClock Clock { get; } = new();
     public SigningTransport Signing { get; } = new();
-    public GitHubTransport GitHub { get; } = new();
+    public GitHubTransport GitHub { get; }
+    public IssuanceFixture() => GitHub = new(Clock);
     private readonly DirectoryInfo keyDirectory = new(Path.Combine(Path.GetTempPath(), "issuer-keys-" + Guid.NewGuid().ToString("N")));
     public BrokerOptions Options => new(new Uri("https://example.table.core.windows.net"), Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15);
     public IssuanceStore Store(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) => new(Storage.CreateClient(transport), Options,
@@ -23,9 +24,10 @@ internal sealed class IssuanceFixture : IAsyncDisposable
     public InstallationTokenIssuer Issuer(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) => new(Store(transport, limits),
         new GitHubIssuance(new HttpClient(GitHub), Clock), new AppJwtSigner(Signing, Clock), Clock);
 
-    public static async Task<IssuanceFixture> CreateAsync()
+    public static async Task<IssuanceFixture> CreateAsync(TimeSpan? runtimeLifetime = null)
     {
         var f = new IssuanceFixture();
+        if (runtimeLifetime is { } lifetime) f.GitHub.RuntimeLifetime = lifetime;
         await f.Storage.InitializeAsync();
         f.Device = await f.Storage.EnrollAsync();
         var d = (await f.Storage.Table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "device:" + f.Device.DeviceId)).Value;
@@ -82,9 +84,10 @@ internal sealed class SigningTransport : CryptographyClient
         return CryptographyModelFactory.SignResult("https://example.vault.azure.net/keys/app/version", new byte[256], algorithm);
     }
 }
-internal sealed class GitHubTransport : HttpMessageHandler
+internal sealed class GitHubTransport(TimeProvider? clock = null) : HttpMessageHandler
 {
     public string Marker = "";
+    public TimeSpan RuntimeLifetime = TimeSpan.FromHours(1);
     public int Reads, Mints, Revokes, VerifierMints;
     public Func<HttpRequestMessage, Task<HttpResponseMessage?>>? Before;
     public List<string> Requests { get; } = [];
@@ -106,7 +109,7 @@ internal sealed class GitHubTransport : HttpMessageHandler
             var verifier = permissions.TryGetProperty("environments", out _);
             if (verifier) VerifierMints++;
             return Json(new { token = verifier ? "verifier-token" : "runtime-token-" + Mints,
-                expires_at = DateTimeOffset.UtcNow.AddHours(1), repository_selection = "selected", permissions,
+                expires_at = (clock ?? TimeProvider.System).GetUtcNow().Add(verifier ? TimeSpan.FromHours(1) : RuntimeLifetime), repository_selection = "selected", permissions,
                 repositories = new[] { new { id = 123456, full_name = "owner/project" } } }, HttpStatusCode.Created);
         }
         if (path.EndsWith("/installation", StringComparison.Ordinal)) return Json(new

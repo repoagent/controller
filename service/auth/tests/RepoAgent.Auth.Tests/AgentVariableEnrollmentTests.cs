@@ -105,7 +105,7 @@ public sealed class AgentVariableEnrollmentTests
                 else Assert.Single(permissions.EnumerateObject());
                 return GitHubTransport.Json(new
                 {
-                    token = "runtime-token-" + f.GitHub.Mints, expires_at = f.Clock.GetUtcNow().AddHours(1),
+                    token = "runtime-token-" + f.GitHub.Mints, expires_at = f.Clock.GetUtcNow().Add(f.GitHub.RuntimeLifetime),
                     repository_selection = "selected", permissions,
                     repositories = new[] { new { id = 123456, full_name = "owner/project" } }
                 }, HttpStatusCode.Created);

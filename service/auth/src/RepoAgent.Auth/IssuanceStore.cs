@@ -8,7 +8,7 @@ namespace RepoAgent.Auth;
 
 // One Table-specific module owns the two-part conservative reservation and repository EGTs.
 // Capacity release is owned by BrokerCapacityReclamation after repository settlement.
-public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDataProtectionProvider protection, TimeProvider clock, IssuanceLimits? configuredLimits = null)
+public sealed partial class IssuanceStore(TableClient table, BrokerOptions options, IDataProtectionProvider protection, TimeProvider clock, IssuanceLimits? configuredLimits = null)
 {
     private readonly RetainedState retained = new(table, options);
     private readonly IssuanceLimits limits = configuredLimits ?? new();
@@ -218,6 +218,8 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
         attempt["State"] = "released";
         PayloadClock.FirstTerminal(attempt, clock.GetUtcNow());
         if (!attempt.ContainsKey("ReleasedAt")) attempt["ReleasedAt"] = clock.GetUtcNow();
+        grant.Device["RuntimeAttempt"] = Text(attempt, "OperationId");
+        grant.Device["RuntimeExpiresAt"] = Date(attempt, "ExpiresAt");
         grant.Device["LastActivityAt"] = clock.GetUtcNow();
         grant.Device["ExpiresAt"] = clock.GetUtcNow().AddDays(90);
         await CommitAsync(grant, [Update(attempt), Update(verifier)], ct);
@@ -276,7 +278,7 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
     {
         ["Window"] = 0L, ["Admissions"] = 0L, ["Reads"] = 0L, ["Signs"] = 0L, ["Mints"] = 0L, ["Slots"] = 0L
     };
-    private static void Charge(TableEntity quota, DateTimeOffset now, int reads, long admissions, long readLimit, long signLimit, long mintLimit)
+    private static void Charge(TableEntity quota, DateTimeOffset now, int reads, long admissions, long readLimit, long signLimit, long mintLimit, bool mint = true)
     {
         var window = now.ToUnixTimeSeconds() / 60;
         if (Number(quota, "Window") > window) throw new IssuanceDenied();
@@ -286,10 +288,10 @@ public sealed class IssuanceStore(TableClient table, BrokerOptions options, IDat
             foreach (var field in new[] { "Admissions", "Reads", "Signs", "Mints" }) quota[field] = 0L;
         }
         if (Number(quota, "Admissions") + 1 > admissions || Number(quota, "Reads") + reads > readLimit
-            || Number(quota, "Signs") + 1 > signLimit || Number(quota, "Mints") + 1 > mintLimit) throw new IssuanceDenied(429);
+            || Number(quota, "Signs") + 1 > signLimit || Number(quota, "Mints") + (mint ? 1 : 0) > mintLimit) throw new IssuanceDenied(429);
         quota["Admissions"] = Number(quota, "Admissions") + 1;
         quota["Reads"] = Number(quota, "Reads") + reads;
         quota["Signs"] = Number(quota, "Signs") + 1;
-        quota["Mints"] = Number(quota, "Mints") + 1;
+        quota["Mints"] = Number(quota, "Mints") + (mint ? 1 : 0);
     }
 }

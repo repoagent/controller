@@ -102,7 +102,9 @@ public sealed partial class CapacityReclamationTests
     public async Task Revoked_acknowledged_owner_with_unknown_runtime_send_cannot_be_replaced()
     {
         await using var f = await EnrollmentFixture.CreateAsync();
+        f.GitHub.RuntimeLifetime = TimeSpan.FromMinutes(6);
         var old = await AcknowledgedOwner(f);
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var normal = f.GitHub.Before!;
         f.GitHub.Before = request => request.Method == HttpMethod.Post
             ? throw new HttpRequestException("Uncertain provider response") : normal(request);
