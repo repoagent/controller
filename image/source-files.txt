@@ -5,6 +5,7 @@ src/RepoAgentController/AppGitCredential.cs
 src/RepoAgentController/AppGitHubCommand.cs
 src/RepoAgentController/Bridge.cs
 src/RepoAgentController/BridgeCommand.cs
+src/RepoAgentController/CategoryEnrollment.cs
 src/RepoAgentController/BrokerTokenSource.cs
 src/RepoAgentController/Codex.cs
 src/RepoAgentController/DirectAppTokenSource.cs

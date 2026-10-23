@@ -171,7 +171,7 @@ public static class BridgeCommand
                         if (reconciliation is not null) await reconciliation.Start(codex,
                             durable is null ? TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)) : Timeout.InfiniteTimeSpan, runtimeToken);
                         await using var outbox = new GitHubOutbox(statePath + ".outbox", github, clock ?? TimeProvider.System);
-                        var bridge = new Bridge(github, codex, store, outbox, numbers, reconciliation);
+                        var bridge = new Bridge(github, codex, store, outbox, numbers, reconciliation, new CategoryEnrollment(settings, github, store));
                         if (!result.GetValue(once)) outbox.Start(runtimeToken);
                         using var dispatchStop = CancellationTokenSource.CreateLinkedTokenSource(runtimeToken);
                         var dispatcher = bridge.DispatchWhenIdle(dispatchStop.Token, runtimeToken);

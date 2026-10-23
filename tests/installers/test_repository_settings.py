@@ -14,6 +14,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SETTING = 'REPOAGENT_MAX_ACTIVE_SESSIONS'
+CATEGORIES = 'REPOAGENT_ENROLLMENT_CATEGORIES'
+CATEGORY_REASON = 'must list 1 to 25 distinct Discussion category names separated by commas, each at most 100 characters'
 VARIABLES = 'repos/example/project/actions/variables'
 APPROVAL = 'REPOAGENT_APPROVAL'  # #184's default approval-marker Actions variable.
 
@@ -60,10 +62,14 @@ class RepositorySettingsTests(unittest.TestCase):
     def remote(self):
         return json.loads(self.model.read_text(encoding='utf-8'))['variables']
 
+    @staticmethod
+    def reported(outcome, name=SETTING):
+        return [setting for setting in outcome['settings'] if setting['name'] == name]
+
     def test_inspection_reports_supported_settings_with_host_reads_only(self):
         result, outcome = self.run_settings(variables={SETTING: '4', 'UNRELATED': 'kept-private'})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(outcome['settings'], [{'name': SETTING, 'state': 'configured', 'value': '4'}])
+        self.assertEqual(self.reported(outcome), [{'name': SETTING, 'state': 'configured', 'value': '4'}])
         self.assertEqual((outcome['changes'], outcome['applied']), ([], False))
         self.assertEqual({method for method, _, _ in self.requests()}, {'GET'})
         self.assertIn(('GET', VARIABLES + '/' + SETTING, None), self.requests())
@@ -72,14 +78,14 @@ class RepositorySettingsTests(unittest.TestCase):
     def test_an_invalid_remote_value_is_reported_without_echoing_it(self):
         result, outcome = self.run_settings(variables={SETTING: 'unlimited'})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(outcome['settings'], [{'name': SETTING, 'state': 'invalid', 'reason': 'must be an integer from 1 to 64'}])
+        self.assertEqual(self.reported(outcome), [{'name': SETTING, 'state': 'invalid', 'reason': 'must be an integer from 1 to 64'}])
         self.assertNotIn('unlimited', result.stdout + result.stderr)
 
     def test_apply_creates_then_updates_with_the_controller_normalized_value(self):
         result, outcome = self.run_settings('-Setting', SETTING + '= 06 ', '-Apply')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(outcome['changes'], [{'name': SETTING, 'action': 'create', 'value': '6'}])
-        self.assertEqual(outcome['settings'], [{'name': SETTING, 'state': 'configured', 'value': '6'}])
+        self.assertEqual(self.reported(outcome), [{'name': SETTING, 'state': 'configured', 'value': '6'}])
         self.assertIn(('POST', VARIABLES, {'name': SETTING, 'value': '6'}), self.requests())
         self.assertEqual(self.remote(), {SETTING: '6'})
 
@@ -103,7 +109,7 @@ class RepositorySettingsTests(unittest.TestCase):
     def test_clear_removes_only_the_selected_setting(self):
         result, outcome = self.run_settings('-ClearSetting', SETTING, '-Apply', variables={SETTING: '4', 'OTHER': 'x'})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(outcome['settings'], [{'name': SETTING, 'state': 'absent'}])
+        self.assertEqual(self.reported(outcome), [{'name': SETTING, 'state': 'absent'}])
         self.assertEqual([request for request in self.requests() if request[0] != 'GET'], [('DELETE', VARIABLES + '/' + SETTING, None)])
         self.assertEqual(self.remote(), {'OTHER': 'x'})
 
@@ -122,7 +128,7 @@ class RepositorySettingsTests(unittest.TestCase):
         marker = {APPROVAL: '{"version":3,"marker":"approval-marker-value"}'}
         result, outcome = self.run_settings(variables={SETTING: '4', **marker})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual([setting['name'] for setting in outcome['settings']], [SETTING])
+        self.assertEqual([setting['name'] for setting in outcome['settings']], [SETTING, CATEGORIES])
         self.assertFalse([request for request in self.requests() if APPROVAL in request[1]])
         self.assertNotIn('approval-marker-value', result.stdout + result.stderr)
 
@@ -138,7 +144,7 @@ class RepositorySettingsTests(unittest.TestCase):
     def test_a_failed_read_is_not_mistaken_for_absence(self):
         result, outcome = self.run_settings(read_status={SETTING: 502})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(outcome['settings'], [{'name': SETTING, 'state': 'read-failed', 'reason': 'HTTP 502'}])
+        self.assertEqual(self.reported(outcome), [{'name': SETTING, 'state': 'read-failed', 'reason': 'HTTP 502'}])
 
         result, outcome = self.run_settings('-Setting', SETTING + '=6', '-Apply', read_status={SETTING: 502})
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
@@ -154,6 +160,32 @@ class RepositorySettingsTests(unittest.TestCase):
         self.assertIn('HTTP 403', result.stdout + result.stderr)
         self.assertIn('write access', result.stdout + result.stderr)
         self.assertEqual(self.remote(), {SETTING: '4'})
+
+    def test_enrollment_categories_are_written_as_the_controller_normalized_name_list(self):
+        result, outcome = self.run_settings('-Setting', CATEGORIES + '= Agents ,Q&A,  Show and tell ', '-Apply')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(outcome['changes'], [{'name': CATEGORIES, 'action': 'create', 'value': 'Agents, Q&A, Show and tell'}])
+        self.assertEqual(self.reported(outcome, CATEGORIES), [{'name': CATEGORIES, 'state': 'configured', 'value': 'Agents, Q&A, Show and tell'}])
+        self.assertIn(('POST', VARIABLES, {'name': CATEGORIES, 'value': 'Agents, Q&A, Show and tell'}), self.requests())
+
+        result, outcome = self.run_settings('-Setting', CATEGORIES + '=Research', '-Apply', variables={CATEGORIES: 'Agents, Q&A'})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(outcome['changes'], [{'name': CATEGORIES, 'action': 'update', 'value': 'Research'}])
+        self.assertEqual(self.remote(), {CATEGORIES: 'Research'})
+
+    def test_invalid_enrollment_category_lists_are_rejected_before_github_and_never_echoed(self):
+        for value in ['', ' , ', 'Agents,,Q&A', 'Agents, agents', ','.join('C%d' % n for n in range(26)), 'x' * 101]:
+            with self.subTest(value=value):
+                result, outcome = self.run_settings('-Setting', CATEGORIES + '=' + value, '-Apply')
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIsNone(outcome)
+                self.assertIn(CATEGORY_REASON, result.stdout + result.stderr)
+                self.assertEqual((self.requests(), self.remote()), ([], {}))
+
+        result, outcome = self.run_settings(variables={CATEGORIES: 'Agents, AGENTS'})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.reported(outcome, CATEGORIES), [{'name': CATEGORIES, 'state': 'invalid', 'reason': CATEGORY_REASON}])
+        self.assertNotIn('AGENTS', result.stdout + result.stderr)
 
 
 if __name__ == '__main__':

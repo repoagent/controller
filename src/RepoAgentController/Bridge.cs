@@ -6,7 +6,8 @@ namespace RepoAgentController;
 /// Observes Discussions into an ordered per-Discussion waiting queue in the state store, then dispatches the next
 /// size-bounded batch only to a natively idle session. EYES follow native acceptance of the batch carrying the source.
 /// </summary>
-sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll, CheckoutRefresh? refresh = null)
+sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll, CheckoutRefresh? refresh = null,
+    CategoryEnrollment? categories = null)
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
@@ -72,12 +73,17 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 // Read every page, including reactions to agent-authored messages.
                 var sources = await github.Sources(discussion, ct);
                 var bootstrap = record is null || record.Text("sessionId").Length == 0;
-                if (bootstrap && record?["waiting"] is null && !enroll.Contains(discussion["number"]!.GetValue<int>()) && !sources.Any(github.IsEnrollmentMention)) continue;
+                var byCategory = false;
+                if (bootstrap && record?["waiting"] is null && !enroll.Contains(discussion["number"]!.GetValue<int>()) && !sources.Any(github.IsEnrollmentMention))
+                {
+                    if (categories?.Selects(discussion) is not true) continue;
+                    byCategory = true;
+                }
                 if (record is null)
                 {
                     record = new JsonObject { ["url"] = discussion.Text("url"), ["sources"] = new JsonObject() };
                     store.Discussions[id] = record;
-                    Log.Write("discovered", discussion.Text("url"));
+                    Log.Write("discovered", discussion.Text("url") + (byCategory ? " enrollment=category" : ""));
                 }
                 var previous = record["sources"]!.AsObject();
                 var current = new JsonObject();
