@@ -237,6 +237,52 @@ class ContainerConfigurationTests(unittest.TestCase):
                 runtime.configure(args)
             self.assertEqual(runtime.CONFIG.read_bytes(), saved)
 
+    def test_external_credentials_reach_only_the_controller_and_configuration_is_never_saved(self):
+        runtime = load_runtime()
+        secret = '{"deviceSecret":"external-canary"}'  # Opaque here; the controller validates the document.
+        external = {'REPOAGENT_ENROLLMENT': secret, 'REPOAGENT_REPOSITORY': 'example/project', 'REPOAGENT_APP_ID': '123',
+                    'REPOAGENT_BROKER_URL': 'https://broker.example', 'REPOAGENT_CLONE': 'true', 'REPOAGENT_REPOSITORY_ID': '345',
+                    'REPOAGENT_TOOL_UPDATES': 'pinned', 'REPOAGENT_MODEL': 'external-model'}
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.CONFIG = Path(directory) / 'config/settings.json'
+            runtime.CODEX = Path(directory) / 'codex'
+            children = []
+            def child(arguments, **options):
+                children.append((arguments, dict(options.get('env') or os.environ)))
+                return subprocess.CompletedProcess(arguments, 0)
+            with patch.dict(os.environ, external), patch.object(sys, 'argv', ['runtime.py', 'start']), \
+                 patch.object(runtime.subprocess, 'run', side_effect=child), patch.object(runtime.os, 'execve') as controller:
+                runtime.main()
+            arguments, environment = controller.call_args.args[1], controller.call_args.args[2]
+            self.assertEqual(arguments[arguments.index('--enrollment-environment') + 1], 'REPOAGENT_ENROLLMENT')
+            self.assertNotIn('--enrollment-file', arguments)
+            self.assertEqual(arguments[arguments.index('--repository-id') + 1], '345')
+            self.assertIn('--clone', arguments)
+            self.assertEqual(environment['REPOAGENT_ENROLLMENT'], secret)
+            self.assertNotIn(secret, ' '.join(arguments))
+            self.assertEqual([command for command, _ in children], [['codex', 'login', 'status']])
+            self.assertNotIn('REPOAGENT_ENROLLMENT', children[0][1])
+            self.assertFalse(runtime.CONFIG.exists(), 'External configuration was saved')
+            self.assertIn('model = "external-model"', (runtime.CODEX / 'config.toml').read_text())
+
+            for name, changes, message in [
+                    ('credential without configuration', {'REPOAGENT_REPOSITORY': None}, 'supply REPOAGENT_REPOSITORY'),
+                    ('configuration without credential', {'REPOAGENT_ENROLLMENT': None}, 'requires the REPOAGENT_ENROLLMENT'),
+                    ('ambiguous clone', {'REPOAGENT_CLONE': 'yes'}, 'REPOAGENT_CLONE must be true or false'),
+                    ('mixed with saved configuration', {}, 'saved configuration')]:
+                selected = {key: value for key, value in (external | changes).items() if value is not None}
+                if name == 'mixed with saved configuration':
+                    runtime.CONFIG.parent.mkdir(parents=True, exist_ok=True)
+                    runtime.CONFIG.write_text(json.dumps({'repository': 'example/project', 'appId': '123'}))
+                with self.subTest(name), patch.dict(os.environ, selected), patch.object(sys, 'argv', ['runtime.py', 'start']), \
+                     patch.object(runtime.subprocess, 'run') as started, patch.object(runtime.os, 'execve') as launched:
+                    for key in external.keys() - selected.keys():
+                        os.environ.pop(key, None)
+                    with self.assertRaisesRegex(ValueError, message):
+                        runtime.main()
+                    started.assert_not_called()
+                    launched.assert_not_called()
+
     def test_dashboard_category_is_an_optional_retained_controller_choice(self):
         runtime = load_runtime()
         with tempfile.TemporaryDirectory() as directory:
@@ -323,7 +369,7 @@ class ContainerConfigurationTests(unittest.TestCase):
                     with patch.object(sys, 'argv', ['runtime.py', 'start']), \
                          patch.object(runtime.update_tools, 'update') as download, \
                          patch.object(runtime.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)), \
-                         patch.object(runtime.os, 'execv') as controller:
+                         patch.object(runtime.os, 'execve') as controller:
                         runtime.main()
                     tools = os.environ['PATH'].split(os.pathsep)
                 self.assertEqual(download.called, updated)
@@ -373,7 +419,7 @@ class ContainerConfigurationTests(unittest.TestCase):
 
             def start():
                 with patch.object(sys, 'argv', ['runtime.py', 'start']), \
-                     patch.object(runtime.subprocess, 'run') as tools, patch.object(runtime.os, 'execv') as controller:
+                     patch.object(runtime.subprocess, 'run') as tools, patch.object(runtime.os, 'execve') as controller:
                     runtime.main()
                 return tools.call_args_list, controller.call_args.args[1]
 

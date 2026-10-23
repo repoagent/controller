@@ -41,6 +41,13 @@ public sealed class GitHubAppCredentials : IDisposable
         new(credentialDirectory, clock ?? TimeProvider.System, time => new BrokerTokenSource(http, brokerOrigin, enrollmentFile, appId, repository,
             time, repositoryWebhooks, clone, expectedRepositoryId, expectedInstallationId));
 
+    /// <summary>Uses an enrollment supplied without a file, such as one injected through the environment.</summary>
+    internal static GitHubAppCredentials FromBroker(HttpClient http, string brokerOrigin, Func<ReadOnlyMemory<byte>> readEnrollment,
+        string appId, string repository, string credentialDirectory, TimeProvider? clock, bool repositoryWebhooks, bool clone,
+        long? expectedRepositoryId, long? expectedInstallationId) =>
+        new(credentialDirectory, clock ?? TimeProvider.System, time => new BrokerTokenSource(http, brokerOrigin, readEnrollment, appId, repository,
+            time, repositoryWebhooks, clone, expectedRepositoryId, expectedInstallationId));
+
     public async Task Initialize(long? expectedInstallation, CancellationToken ct)
     {
         try

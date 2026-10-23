@@ -9,6 +9,7 @@ namespace RepoAgentController;
 internal sealed class BrokerTokenSource : IInstallationTokenSource
 {
     const int MaximumBytes = 64 * 1024;
+    const string VariableName = @"\A[A-Za-z_][A-Za-z0-9_]{0,127}\z";
     static readonly string[] BindingFields = ["protocolVersion", "appId", "appSlug", "installationId", "repositoryId", "repository", "permissions"];
     readonly HttpClient http;
     readonly Uri origin;
@@ -27,6 +28,11 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
 
     public BrokerTokenSource(HttpClient http, string brokerOrigin, string enrollmentFile, string appId, string repository,
         TimeProvider clock, bool repositoryWebhooks, bool clone = false, long? expectedRepositoryId = null, long? expectedInstallationId = null)
+        : this(http, brokerOrigin, () => ReadFile(enrollmentFile), appId, repository, clock, repositoryWebhooks, clone, expectedRepositoryId, expectedInstallationId) { }
+
+    /// <param name="readEnrollment">Supplies the protected enrollment document; every source gets the same validation.</param>
+    internal BrokerTokenSource(HttpClient http, string brokerOrigin, Func<ReadOnlyMemory<byte>> readEnrollment, string appId, string repository,
+        TimeProvider clock, bool repositoryWebhooks, bool clone = false, long? expectedRepositoryId = null, long? expectedInstallationId = null)
     {
         this.http = http;
         this.clock = clock;
@@ -34,19 +40,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         this.clone = clone;
         origin = ParseOrigin(brokerOrigin);
         if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Broker credentials require the Linux or macOS controller runtime");
-        if ( (File.GetUnixFileMode(enrollmentFile) & ~(UnixFileMode.UserRead | UnixFileMode.UserWrite)) != 0)
-            throw Invalid("enrollment file must have owner-only read/write permissions (0600)");
-        using var file = File.OpenRead(enrollmentFile);
-        if (file.Length > MaximumBytes) throw Invalid("enrollment exceeds 64 KiB");
-        var bytes = new byte[MaximumBytes + 1];
-        var length = 0;
-        while (length < bytes.Length)
-        {
-            var read = file.Read(bytes, length, bytes.Length - length);
-            if (read == 0) break;
-            length += read;
-        }
-        enrollment = Parse(bytes.AsMemory(0, length));
+        enrollment = Parse(readEnrollment());
         try
         {
             var root = enrollment.RootElement;
@@ -70,6 +64,45 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         }
         catch { enrollment.Dispose(); throw; }
     }
+
+    static ReadOnlyMemory<byte> ReadFile(string enrollmentFile)
+    {
+        if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Broker credentials require the Linux or macOS controller runtime");
+        if ((File.GetUnixFileMode(enrollmentFile) & ~(UnixFileMode.UserRead | UnixFileMode.UserWrite)) != 0)
+            throw Invalid("enrollment file must have owner-only read/write permissions (0600)");
+        using var file = File.OpenRead(enrollmentFile);
+        if (file.Length > MaximumBytes) throw Invalid("enrollment exceeds 64 KiB");
+        var bytes = new byte[MaximumBytes + 1];
+        var length = 0;
+        while (length < bytes.Length)
+        {
+            var read = file.Read(bytes, length, bytes.Length - length);
+            if (read == 0) break;
+            length += read;
+        }
+        return bytes.AsMemory(0, length);
+    }
+
+    /// <summary>
+    /// Removes an externally injected enrollment from this process environment and returns it, so no
+    /// later gh, Git or native child can inherit it. Returns null when no variable is selected.
+    /// </summary>
+    internal static string? TakeInjected(string? variable)
+    {
+        if (variable is null || !Regex.IsMatch(variable, VariableName)) return null;
+        var value = Environment.GetEnvironmentVariable(variable);
+        Environment.SetEnvironmentVariable(variable, null);
+        return value;
+    }
+
+    /// <summary>Validates an injected enrollment taken by <see cref="TakeInjected"/> as the same bounded document as a file.</summary>
+    internal static Func<ReadOnlyMemory<byte>> Injected(string variable, string? value) => () =>
+    {
+        if (!Regex.IsMatch(variable, VariableName)) throw Invalid("invalid enrollment environment variable name");
+        if (string.IsNullOrEmpty(value)) throw Invalid($"enrollment environment variable {variable} is missing or empty");
+        if (System.Text.Encoding.UTF8.GetByteCount(value) > MaximumBytes) throw Invalid("enrollment exceeds 64 KiB");
+        return System.Text.Encoding.UTF8.GetBytes(value);
+    };
 
     public static Uri ParseOrigin(string value)
     {

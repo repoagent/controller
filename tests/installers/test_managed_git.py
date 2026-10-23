@@ -544,8 +544,14 @@ class GitProvider:
                     self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
                     return
                 if host == 'broker.fixture':
+                    # Optional: only the enrolled device secret authorizes a lease.
+                    secret = getattr(provider, 'broker_secret', None)
+                    if secret is not None and self.headers.get('Authorization') != 'Bearer ' + secret:
+                        return self.reply({}, 401)
                     return self.reply(provider.lease() if provider.lease_status == 200 else {}, provider.lease_status)
                 if host == 'api.github.com':
+                    if hasattr(provider, 'api_authorizations'):
+                        provider.api_authorizations.append(self.headers.get('Authorization', ''))
                     if getattr(provider, 'webhooks', False) and self.command in ('POST', 'PATCH') and self.path in ('/repos/' + repository + '/hooks', '/repos/' + repository + '/hooks/456'):
                         hook = json.loads(body); provider.hooks.append(hook)
                         return self.reply(dict(id=456, **hook))

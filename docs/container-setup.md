@@ -215,6 +215,66 @@ To intentionally remove this instance's stored credentials, selected skills, wor
 
 This does not revoke upstream OAuth authorizations or uninstall the GitHub App. Live-test evidence volumes and retained failed Discussions have separate cleanup described in the [acceptance catalog](acceptance-cases.md).
 
+## External controller credentials
+
+The same image can start from broker enrollment and configuration supplied at startup. This path needs no `configure`, no `import-enrollment` and no enrollment volume, so no second durable copy of the credential exists in the container. It suits hosts that inject secrets as environment variables. It supports broker enrollment only; direct-App instances keep their PEM mount.
+
+Supply these container environment variables. They are not repository Actions variables.
+
+| Variable | Contents |
+| --- | --- |
+| `REPOAGENT_ENROLLMENT` | **Secret.** The complete private `enrollment.json` from [host enrollment](host-enrollment.md), unchanged |
+| `REPOAGENT_REPOSITORY`, `REPOAGENT_APP_ID`, `REPOAGENT_BROKER_URL` | Required binding: `OWNER/REPO`, numeric App ID and the broker's HTTPS origin |
+| `REPOAGENT_CLONE` | `true` for clone enrollments; omitted or `false` otherwise |
+| `REPOAGENT_REPOSITORY_ID`, `REPOAGENT_INSTALLATION_ID` | Optional expected immutable identities |
+| `REPOAGENT_MENTION_USER`, `REPOAGENT_MODEL`, `REPOAGENT_WEB_SEARCH`, `REPOAGENT_TOOL_UPDATES`, `REPOAGENT_MODE`, `REPOAGENT_PUBLIC_URL`, `REPOAGENT_LISTEN_PORT`, `REPOAGENT_RECONCILE_INTERVAL`, `REPOAGENT_DASHBOARD_CATEGORY` | Optional runtime choices |
+
+Each configuration variable stands for the `configure` option of the same name, with the same values, defaults and validation. `check` and `start` validate them on every start and never save them. An instance uses either saved configuration from `configure` or external configuration, never both. An injected credential without the three required variables is refused.
+
+The entrypoint passes `REPOAGENT_ENROLLMENT` only to the controller process; tool updates, the Codex sign-in check and the tunnel never receive it. The controller reads the variable once and removes it from its environment before it starts `gh`, Git or Codex. It then validates the document exactly as it validates an enrollment file: format, the repository/App/installation/broker binding, profile and permissions. Missing, empty or mismatched input stops startup before any broker contact. A refused secret stops startup before any GitHub work. Diagnostics name the variable, never its value. Nothing falls back to an enrollment volume, a PEM, a personal `gh` sign-in or an ambient `GH_TOKEN`.
+
+Keep the credentials, workspace, history, state and tools volumes. Native sessions, history, the checkpoint, Codex sign-in and installed tools persist as before: injecting credentials does not make the agent stateless. Mount a config volume only for optional skills, and only if it holds no saved settings.
+
+Put the nonsecret variables in an env file, for example `repoagent.env`:
+
+```sh
+REPOAGENT_REPOSITORY=my-org/my-repo
+REPOAGENT_APP_ID=5387625
+REPOAGENT_BROKER_URL=https://credentials.example.org
+REPOAGENT_CLONE=true
+```
+
+Then give `docker run` the secret by name only. Docker copies the value from the client's own environment, so it never appears on a command line:
+
+```sh
+REPOAGENT_ENROLLMENT=$(cat "$HOME/project-enrollment/enrollment.json") \
+docker run -d --init --name repoagent-external \
+  --env REPOAGENT_ENROLLMENT --env-file ./repoagent.env \
+  --mount type=volume,src=repoagent-external-credentials,dst=/data/credentials \
+  --mount type=volume,src=repoagent-external-workspace,dst=/workspace \
+  --mount type=volume,src=repoagent-external-history,dst=/data/history \
+  --mount type=volume,src=repoagent-external-state,dst=/data/state \
+  --mount type=volume,src=repoagent-external-tools,dst=/data/tools \
+  ghcr.io/repoagent/controller@sha256:IMAGE_DIGEST start
+```
+
+In PowerShell, read the file with the installer's private-file check, and clear the variable afterwards:
+
+```powershell
+Import-Module ./scripts/private-file.psm1
+$env:REPOAGENT_ENROLLMENT = [Text.Encoding]::UTF8.GetString((Read-PrivateFileBytes "$HOME/project-enrollment/enrollment.json"))
+try { docker run -d --init --name repoagent-external --env REPOAGENT_ENROLLMENT --env-file ./repoagent.env @mounts ghcr.io/repoagent/controller@sha256:IMAGE_DIGEST start }
+finally { Remove-Item Env:REPOAGENT_ENROLLMENT }
+```
+
+Here `@mounts` holds the same five `--mount` arguments. Sign Codex in once into the credentials volume, for example with `docker run --rm -it` and the same mounts plus `login`, or stage [separately supplied Codex account credentials](#replace-codex-credentials-without-restarting-the-container) with `supply-codex-auth`. Codex credentials stay a separate input; `REPOAGENT_ENROLLMENT` never carries them. Run `check` instead of `start` to verify authorization without starting the agent.
+
+To restart, stop and remove the container, then run it again with the same volumes and the injected value. Docker keeps an injected value in the container's configuration until the container is removed, so `docker restart` reuses it. Anyone with access to the Docker daemon can read it with `docker inspect`, and processes running as the container user can read the controller's initial environment, just as they could read the former 0600 enrollment file. Remove stopped containers, and replace the container to rotate or withdraw the value.
+
+Your host enrollment state directory stays the authoritative secret and recovery source. Only `enrollment.json` is injected; `approval.json` and `recovery.json` never enter the container. Revoke and broker self-revoke continue to use that host state, as described in [host enrollment](host-enrollment.md#revoke-and-prototype-compatibility).
+
+Instances managed by `repoagent.ps1` or `install.ps1 -Action Install` keep their enrollment volume. That volume also holds the disable marker and launch state used by Update, Rollback and Uninstall. Do not mix the two paths on one instance.
+
 ## Installer verification
 
 Run the host orchestration checks without Docker or account credentials:
