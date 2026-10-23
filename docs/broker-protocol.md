@@ -91,3 +91,22 @@ Use the sibling `repoagent-git fetch --directory CHECKOUT` wrapper for later fet
 The helper validates HTTPS, github.com and the exact repository path, requests the running controller's current validated lease on every request, never stores Git credentials, and forwards a rejected lease to the controller, which drops it only if it is still the current one so old A cannot erase new B. No token is embedded in a wrapper, remote URL or command argument. Child processes isolate ambient helpers, gh/human tokens, askpass, netrc and Git configuration without changing global settings. Normal TLS verification remains required. Background renewal remains owned by the existing credential manager; an unavailable lease denies new launches. Already copied bearer tokens retain the existing revocation/expiry limits.
 
 Supported native wrappers remain Linux/macOS, including the Linux container/AOT runtime; Windows is the PowerShell installation host. Source tests and local transport fixtures do not prove actual App permission approval, private GitHub clone/renewed fetch, deployed Azure signing or pilot acceptance.
+
+## Explicit repository-settings consumer v3
+
+Repository-settings enrollment is a third explicit authority family ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md)). It exists only under Actions-variable approval (setup and marker version 3); Agent-variable and Environment setup refuse its profiles with `400`. Select one of these profiles in host enrollment, or `-RepositorySettings` in the guided installer:
+
+| Profile | Exact runtime grants |
+| --- | --- |
+| `polling-settings` | Discussions write, Actions variables read |
+| `webhook-settings` | Discussions write, repository hooks write, Actions variables read |
+| `polling-clone-settings` | Discussions write, Contents read, Actions variables read |
+| `webhook-clone-settings` | Discussions write, Contents read, repository hooks write, Actions variables read |
+
+Only implicit Metadata read may additionally appear. All four use the single immutable policy `repository-actions-settings-approval-v3`, and the approval marker names the profile. The frozen `polling`, `webhook`, `polling-clone` and `webhook-clone` profiles keep their exact grants: the broker never requests `actions_variables` for them and treats a GitHub response that adds it as an invalid scope. Existing owners, markers and enrollment files are never upgraded; moving to or from this family needs revocation, settlement and a fresh enrollment (see [repository settings](repository-settings.md#broker-enrollments)).
+
+The v3 private file and lease contain precisely the v1 fields plus required string fields `profile` and `policyVersion`. `protocolVersion` is 3. The profile must be one of the four settings profiles and the policy must be `repository-actions-settings-approval-v3`. Permissions must be exactly the profile's grants with `actions_variables` equal to `read`. Every lease must repeat the enrolled file's profile family, policy and exact grants. All original size, strict-field, identity, expiry, origin and private-file rules apply.
+
+Selection is explicit on both sides. Start the controller with `--repository-settings` (plus `--clone` for the clone variants) to consume a v3 file; a v3 file without the flag, or the flag with a v1 or v2 file, is refused before any broker request. Container configuration stores the choice for the instance: changing it later requires a fresh instance and enrollment. Externally supplied enrollments select it with `REPOAGENT_REPOSITORY_SETTINGS=true`.
+
+Renewal uses empty-body `POST /v3/devices/{id}/installation-token`; self-revocation uses `DELETE /v3/devices/{id}`. The broker checks the route against the durable family before reservation or mint, so a settings device gets `401` on the v1 and v2 runtime routes and a frozen device gets `401` on the v3 routes. Setup completion and acknowledgment use the ordinary `/v3` setup routes. An older controller rejects a v3 file, and an older broker refuses the settings profiles, so neither side fails open.

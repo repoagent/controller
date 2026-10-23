@@ -19,5 +19,9 @@ The nonsecret, enrollment-specific representation of a repository-held approval.
 **Approval authority**:
 A principal GitHub permits to manage the selected repository-held approval. This authority does not identify a particular human approver.
 
+**Repository-settings profile**:
+A controller enrollment profile, chosen explicitly at enrollment, whose runtime authority adds read-only access to repository settings. Other enrollment profiles are frozen and never gain it.
+_Avoid_: settings upgrade, widened profile
+
 **Repository setting**:
 A nonsecret controller setting held in a direct repository Actions variable named `REPOAGENT_*`. Host GitHub authority writes it; the controller's runtime credential may only read it. Absence, an invalid value and a failed read are distinct states.
