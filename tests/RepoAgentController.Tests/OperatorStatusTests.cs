@@ -134,7 +134,7 @@ public sealed class OperatorStatusTests
         "--workspace", fixture.Directory, .. extra
     ];
 
-    static async Task<JsonNode> Eventually(string state, Func<JsonNode, bool> condition)
+    internal static async Task<JsonNode> Eventually(string state, Func<JsonNode, bool> condition)
     {
         var deadline = Stopwatch.StartNew();
         var last = "";
@@ -148,14 +148,14 @@ public sealed class OperatorStatusTests
         throw new TimeoutException("Expected controller status was not reported: " + last);
     }
 
-    static async Task<JsonNode> Status(string state)
+    internal static async Task<JsonNode> Status(string state)
     {
         var (exit, output, error) = await Controller("status", "--state", state);
         Assert.True(exit == 0, error);
         return JsonNode.Parse(output)!;
     }
 
-    static async Task<string> RetainedLogs(string state)
+    internal static async Task<string> RetainedLogs(string state)
     {
         var (exit, output, error) = await Controller("logs", "--state", state);
         Assert.True(exit == 0, error);

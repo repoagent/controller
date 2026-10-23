@@ -4,7 +4,7 @@ namespace RepoAgentController;
 
 sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll, CheckoutRefresh? refresh = null)
 {
-    readonly HashSet<string> blockedLogged = [];
+    readonly HashSet<string> blockedLogged = [], held = [];
 
     public async Task<bool> Poll(CancellationToken ct)
     {
@@ -37,6 +37,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
     async Task<bool> Observe(List<JsonNode> discussions, CancellationToken ct)
     {
         var succeeded = true;
+        if (codex.AuthenticationFailure is null) held.Clear();
         foreach (var discussion in discussions)
         {
             ct.ThrowIfCancellationRequested();
@@ -105,6 +106,13 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 {
                     // Quietly remember agent output so later human reactions can be compared.
                     if (!JsonNode.DeepEquals(previous, current)) { record["sources"] = current; store.Save(); }
+                    continue;
+                }
+                if (codex.AuthenticationFailure is not null)
+                {
+                    // A turn would fail after its EYES receipt; the unadvanced checkpoint redelivers this once credentials work.
+                    if (held.Add(id)) Log.Write("input-held", $"{discussion.Text("url")} changes={changes.Count}: Codex account credentials were rejected; input waits for replacement credentials");
+                    succeeded = false;
                     continue;
                 }
                 var envelope = new JsonObject
