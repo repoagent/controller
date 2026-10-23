@@ -141,9 +141,27 @@ $selection = @{
 ./scripts/update-azure-controller.ps1 @selection -Action Rollback -Apply
 ```
 
-Pass `-Image ghcr.io/repoagent/controller@sha256:...` to select another published controller digest. The command copies the retained revision and changes its main controller image, preserving the initializer image, startup settings, NFS mounts, managed identity, versioned secret references and stable app origin. Bicep remains the source for initial resources/settings; changing those settings needs a separately reviewed deployment rather than an image update.
+Pass `-Image ghcr.io/repoagent/controller@sha256:...` to select another published controller digest. The command copies the retained revision and changes its main controller image, preserving the initializer image, startup settings, persistent mounts, managed identity, enrollment references and stable app origin. It recognizes the original NFS/versioned-Key-Vault profile and the explicit [SMB conversation profile](SMB.md). Bicep remains the source for initial resources/settings; changing those settings needs a separately reviewed deployment rather than an image update.
 
 Preview runs the same source, recovery and anonymous-image checks as Apply, without changing the journal or Azure resources. It can download image layers. `Status` reports inventory without those action checks. A subsequent update must start from the exact revision and image recorded by the completed update or rollback; unexpected revisions require inspection.
+
+The SMB profile must retain its `nativePersistence=conversation-rollouts` tag,
+private/executable views, locking options and fixed local SQLite setting. Only
+its dedicated native `controller-enrollment` app secret is supported. Because a
+native secret name does not pin its value, each protected configuration read
+retrieves that value through the app's `listSecrets` action and fingerprints it
+in memory. The operator needs that existing app-secret read authority, including
+for `Status`; no broader role is assigned. No raw value enters command arguments,
+console output or the update journal. `Status` exposes the configuration hash for
+inspection. The NFS path still requires versioned managed-identity Key Vault
+references and never reads their values.
+
+These are sampled readbacks: a detected change invalidates journal continuity,
+but they do not provide an atomic lock against another Azure administrator or
+prove that a value never changed between reads. Serialize operator changes and
+retain the private journal on uncertainty. Secret rotation, storage migration
+and persistence-policy changes require their own lifecycle operation.
+[Microsoft list-secrets API](https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/container-apps/list-secrets?view=rest-resource-manager-containerapps-2026-07-01).
 
 Updates deliberately interrupt service. The command saves a private atomic journal, takes a host process lock, selects multiple-revision control, deactivates the previous revision and checks actual replicas before starting the replacement. It routes traffic after platform readiness and records the transition. Verify a native turn and signed webhook afterward. Keep other Azure resource writers fenced; the host lock does not serialize other machines or portal changes.
 

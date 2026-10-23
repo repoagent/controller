@@ -243,9 +243,11 @@ resource here; operators with app-secret management authority can access that
 credential. Restrict that authority and rotate through the supported enrollment
 lifecycle. Do not log template parameters or dump app secrets/runtime environment.
 
-This is a first-activation path. Do not apply it over a running active controller,
-reapply the original setup template, or use the NFS-only image updater for this
-profile. Image replacement still requires deliberate stop/drain, old-replica and
+This is a first-activation path. Do not apply it over a running active controller
+or reapply the original setup template. For later image replacement, use the
+[controlled image updater](README.md#subsequent-controller-image-updates), which
+checks this persistence policy and fingerprints the native enrollment secret.
+Image replacement still requires deliberate stop/drain, old-replica and
 outstanding-authority settlement, preserved state and readiness before routing.
 Real signed webhook/native/history/restart and active-turn survival beyond the
 cooldown remain hosted acceptance gates under #37/#38.

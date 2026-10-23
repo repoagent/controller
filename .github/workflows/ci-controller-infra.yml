@@ -40,3 +40,5 @@ jobs:
         run: |
           python -m unittest discover -s tests/controller -p test_azure_update_state.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests/controller -p test_controller_profile.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

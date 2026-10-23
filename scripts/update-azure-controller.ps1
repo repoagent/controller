@@ -19,6 +19,7 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'host-enrollment.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'azure/update-state.psm1') -DisableNameChecking
 Import-Module (Join-Path $PSScriptRoot 'azure/lifecycle-command.psm1') -DisableNameChecking
+Import-Module (Join-Path $PSScriptRoot 'azure/controller-profile.psm1') -DisableNameChecking
 $context = $null
 
 function Invoke-Azure([string[]]$Arguments, [int]$Timeout = 30) {
@@ -126,18 +127,7 @@ function Read-App {
     $ingress = $app.properties.configuration.ingress
     if ($ingress.external -isnot [bool] -or -not $ingress.external -or $ingress.allowInsecure -ne $false -or
             $ingress.fqdn -cnotmatch '\A[a-z0-9.-]+\.azurecontainerapps\.io\z') { throw 'Require the retained HTTPS app origin.' }
-    foreach ($secret in @($app.properties.configuration.secrets | Where-Object { $null -ne $_ })) {
-        if ($secret.keyVaultUrl -cnotmatch '\Ahttps://[a-z0-9-]+\.vault\.azure\.net/secrets/[a-zA-Z0-9-]+/[0-9a-f]{32}\z' -or
-                [string]::IsNullOrWhiteSpace($secret.identity)) { throw 'Require versioned managed-identity secret references.' }
-    }
-    $mounts = @($template.containers[0].volumeMounts)
-    foreach ($pair in @(@('/data','runtime/data'),@('/workspace','runtime/workspace'))) {
-        $mount = @($mounts | Where-Object { $_.mountPath -ceq $pair[0] })
-        if ($mount.Count -ne 1 -or $mount[0].subPath -cne $pair[1] -or
-                @($template.volumes | Where-Object { $_.name -ceq $mount[0].volumeName -and $_.storageType -ceq 'NfsAzureFile' }).Count -ne 1) {
-            throw 'Retained private persistent storage differs.'
-        }
-    }
+    Assert-ControllerStorageProfile $app.tags $template @($app.properties.configuration.secrets)
     return $app
 }
 function Get-ConfigurationHash($App) {
@@ -151,6 +141,18 @@ function Get-ConfigurationHash($App) {
     $snapshot.template.containers[0].Remove('image')
     $snapshot.configuration.Remove('activeRevisionsMode')
     $snapshot.configuration.ingress.Remove('traffic')
+    $nativeSecrets = @($App.properties.configuration.secrets | Where-Object { $null -ne $_ })
+    if ($App.tags.nativePersistence -ceq 'conversation-rollouts' -and $nativeSecrets.Count) {
+        # App GET exposes names, not native values. Protect their observed value
+        # without writing it into the journal, CLI arguments or console output.
+        try {
+            $inventory = Invoke-Azure @('rest','--method','POST','--url',"$resourceUrl/listSecrets?api-version=2026-07-01")
+            if ($inventory -isnot [Collections.IDictionary] -or $inventory.value -isnot [array] -or $inventory.nextLink) {
+                throw 'Incomplete native secret response.'
+            }
+            $snapshot.nativeEnrollmentSha256 = Get-NativeEnrollmentFingerprint $nativeSecrets $inventory.value
+        } catch { throw 'Native enrollment fingerprint could not be read; provider details were withheld.' }
+    }
     return Get-ValueHash ((Convert-Canonical $snapshot) | ConvertTo-Json -Depth 50 -Compress)
 }
 function Assert-Configuration([string]$Hash) {
@@ -248,7 +250,8 @@ try {
     if ($Action -eq 'Status') {
         $selectedImage = if ($active.Count -eq 1) { $active[0].properties.template.containers[0].image } else { $null }
         @{ action=$Action; apply=$false; resourceId=$resourceId; image=$selectedImage; journalPhase=$journal.phase
-           activeRevisions=@($active.name); nativeAcceptance='requires native and signed-webhook verification' } | ConvertTo-Json -Depth 8
+           configurationSha256=$hash; activeRevisions=@($active.name)
+           nativeAcceptance='requires native and signed-webhook verification' } | ConvertTo-Json -Depth 8
         return
     }
     $dockerConfig = Initialize-PrivateDirectory (Join-Path ([IO.Path]::GetFullPath($StateDirectory)) ('docker-' + [Guid]::NewGuid().ToString('N')))
