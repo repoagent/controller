@@ -20,7 +20,7 @@ Create an immutable version tag on a reviewed main commit containing the deliver
 gh workflow run release-controller.yml --ref main -f tag=v1.2.3
 ```
 
-The job validates the tag, checks its commit belongs to main, checks out that source, verifies it and packages it. Ordinary PRs/pushes never publish. An existing release, including a partial upload, is refused to preserve assets; inspect and resolve a partial release explicitly.
+The job validates the tag, checks its commit belongs to main, checks out that source, verifies it and packages it. Pull requests publish nothing, and ordinary pushes to main publish only [baseline image releases](#baseline-releases), never a native distribution. An existing release, including a partial upload, is refused to preserve assets; inspect and resolve a partial release explicitly.
 
 Local packaging does not publish:
 
@@ -43,13 +43,40 @@ Verify the archive checksum before extraction, then run `sha256sum -c SHA256SUMS
 
 ## Public controller container image
 
-`Publish controller image` builds and smokes the real default Linux amd64 image on relevant pull requests with read-only permissions, then uploads and downloads the exact artifact ID into a second job to verify its checksum and loaded image identity. It uses the existing explicit source inventory; no enrollment, Codex sign-in or host GitHub credential enters the build.
+`Publish controller image` builds and smokes the real default Linux amd64 image on relevant pull requests with read-only permissions, then uploads and downloads the exact artifact ID into a second job to verify its checksum and loaded image identity. It records the image's own `versions` output and embedded `image-inventory.json` in the checksummed artifact and checks that the reported gh and Codex versions match the inventory. It uses the existing explicit source inventory; no enrollment, Codex sign-in or host GitHub credential enters the build. Pull requests never publish.
 
-Dispatch `gh workflow run publish-controller-image.yml --ref main` to prepare a publication. The build uploads its Docker archive, build metadata and checksums for seven days before publication proceeds through the main-only `controller-release` environment. The publish job loads that same artifact, checks its checksum/platform/UID/controller role/source revision, and receives `packages: write` only in that job. It publishes `ghcr.io/repoagent/controller:sha-FULL_SOURCE_SHA-RUN_ID-ATTEMPT`; reruns use fresh coordinates, and no `latest` tag or executable release assets are changed.
+A push to `main` that changes the same image inputs (controller source, container, image manifest, bundled skill, composition or release scripts, or this workflow) publishes automatically. Main runs also execute the full `scripts/delivery/verify.sh` gate, because `main` has no required status checks; publication waits for it and for the artifact verification. One `main` publication runs at a time; a newer pending `main` run replaces an older pending one, so a burst of merges publishes the newest commit. Documentation-only and auth-service changes do not publish a controller image.
 
-Initial GHCR packages are private by default. An account with package administration rights must make `repoagent/controller` public under package **Settings > Danger Zone > Change visibility**, and grant this repository **Write** under **Manage Actions access** if access was not inherited. The workflow cannot report success until a clean anonymous registry client downloads the immutable image and all its layers into empty storage and confirms that its image config matches the approved build. A visibility failure can therefore leave a published private image; inspect the package and rerun deliberately after fixing access. No personal registry token or ACR is required. Use the public `ghcr.io/repoagent/controller@sha256:...` reference from the run summary for Azure; publication does not deploy or prove storage/ownership compatibility.
+The build uploads its Docker archive, build metadata, versions output, inventory and checksums for seven days before publication proceeds through the main-only `controller-release` environment. The publish job loads that same artifact, checks its checksum/platform/UID/controller role/source revision, and receives `packages: write` only in that job. It publishes `ghcr.io/repoagent/controller:sha-FULL_SOURCE_SHA-RUN_ID-ATTEMPT`; reruns use fresh coordinates, and no `latest` tag is changed. A separate release job with only `contents: write` then creates the [baseline release](#baseline-releases).
+
+Manual recovery stays available: `gh workflow run publish-controller-image.yml --ref main` rebuilds, verifies and publishes current `main` with a new release. If only the release job failed, re-run that failed job in the same workflow run; it reuses the already published image coordinates.
+
+Initial GHCR packages are private by default. An account with package administration rights must make `repoagent/controller` public under package **Settings > Danger Zone > Change visibility**, and grant this repository **Write** under **Manage Actions access** if access was not inherited. The workflow cannot report success until a clean anonymous registry client downloads the immutable image and all its layers into empty storage and confirms that its image config matches the approved build. A visibility failure can therefore leave a published private image; inspect the package and rerun deliberately after fixing access. No personal registry token or ACR is required. Use the public `ghcr.io/repoagent/controller@sha256:...` reference from the release or run summary for Azure; publication does not deploy or prove storage/ownership compatibility.
 
 Action versions are pinned to current release commits. See [GitHub's image publication guidance](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images), [artifact upload](https://github.com/actions/upload-artifact) and [download](https://github.com/actions/download-artifact) documentation.
+
+### Baseline releases
+
+Each successful publication creates one GitHub Release for the anonymously verified image. Publication never updates a running controller; operators adopt a release deliberately through [local image update](local-runtime.md#update-an-immutable-image-or-restore-the-prior-image) or the [Azure controller image update](../infra/controller/README.md).
+
+- Tag `baseline-RUN_ID.ATTEMPT`, created on the published source commit. It corresponds one-to-one with the GHCR tag `sha-FULL_SOURCE_SHA-RUN_ID-ATTEMPT`. Run IDs increase across the repository, so a larger `RUN_ID` (then `ATTEMPT`) is a later publication.
+- Title `Controller baseline SHORT_SHA (gh GH_VERSION, Codex CODEX_VERSION)`, and a body with the `docker pull` immutable reference and a version table.
+- Machine-readable metadata: the body line `<!-- repoagent.baseline-release/v1 -->` followed by one fenced `json` block:
+
+| Field | Meaning |
+| --- | --- |
+| `schema` | `repoagent.baseline-release/v1`; incompatible changes use a new schema name |
+| `release` | The release tag |
+| `image` | Immutable `ghcr.io/repoagent/controller@sha256:...` manifest reference that was pulled anonymously |
+| `imageTag` | The GHCR tag pushed for that run; registry tags can move, so pull by `image` |
+| `imageConfigDigest` | Image config digest from the build; Docker's classic image store reports it as the image ID |
+| `platform` | `linux/amd64` |
+| `versions.controller` | Full source commit |
+| `versions.gh`, `versions.codex` | Versions reported by the image's own `gh --version`/`codex --version`, which must equal the inventory |
+| `inventorySha256` | SHA-256 of the image's `/opt/repoagent/image-inventory.json` bytes; a running container can recompute it to find its own release. No match means a derived, local or otherwise unreleased image |
+| `run` | The verification and publication workflow run |
+
+Consumers should select releases by the `baseline-` tag prefix and this marker rather than GitHub's **Latest** badge, which manual `v*` controller releases can also hold. An existing release with the same tag is never replaced. Baseline tags are not covered by the `v*` tag ruleset; add `refs/tags/baseline-*` to the tag ruleset to block their update or deletion.
 
 ## Automatic auth-service delivery
 
