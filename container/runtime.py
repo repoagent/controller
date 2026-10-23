@@ -20,6 +20,7 @@ import yaml
 CONFIG = Path('/data/config/settings.json')
 CODEX = Path('/data/credentials/codex')
 SKILLS = Path('/data/config/skills')
+REQUIRED_SKILLS = ('github-discussion', 'repoagent-orientation')  # Packaged beside the controller.
 STATE = '/data/state/bridge.json'
 CONTROLLER = ['/opt/repoagent/controller/RepoAgentController']
 
@@ -261,7 +262,7 @@ def install_skills(selection_path, token_path=None):
             name = metadata['name']
             if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', name):
                 raise ValueError(f'Invalid skill name at {repo}:{location}.')
-            if name == 'github-discussion' or (staging / name).exists():
+            if name in REQUIRED_SKILLS or (staging / name).exists():
                 raise ValueError(f'Duplicate or reserved skill name: {name}.')
             if any(p.is_symlink() for p in source.rglob('*')):
                 raise ValueError(f'Skill {name} contains symlinks; use regular files.')
@@ -274,7 +275,7 @@ def install_skills(selection_path, token_path=None):
             else: old.unlink()
         for skill in staging.iterdir(): shutil.move(str(skill), SKILLS / skill.name)
     (CONFIG.parent / 'skills.json').write_text(json.dumps(resolved, indent=2) + '\n')
-    print(json.dumps({'required': 'github-discussion', 'selected': resolved}, indent=2))
+    print(json.dumps({'required': list(REQUIRED_SKILLS), 'selected': resolved}, indent=2))
 
 
 def main():
@@ -303,7 +304,7 @@ def main():
     get = sub.add_parser('get'); get.add_argument('key')
     login = sub.add_parser('login')
     login.add_argument('--non-interactive', action='store_true')
-    for name in ['import-enrollment', 'versions', 'check', 'start', 'participant-login', 'participant-identity', 'state', 'skills']:
+    for name in ['import-enrollment', 'versions', 'check', 'start', 'participant-login', 'participant-identity', 'state', 'skills', 'status', 'logs']:
         sub.add_parser(name)
     skills = sub.add_parser('install-skills'); skills.add_argument('selection'); skills.add_argument('--token-file')
     enroll = sub.add_parser('enroll'); enroll.add_argument('urls', nargs='+')
@@ -339,6 +340,9 @@ def main():
                 raise ValueError('Enrollment URL must belong to the configured repository.')
         config['enroll'] = list(dict.fromkeys(config.get('enroll', []) + args.urls)); save(config)
     elif args.command == 'state': print(Path(STATE).read_text())
+    elif args.command in ('status', 'logs'):
+        # Operator status and retained logs come from the controller; neither takes its lease.
+        os.execv(CONTROLLER[0], CONTROLLER + [args.command, '--state', STATE])
     elif args.command in ('check', 'start'):
         config = settings()
         if args.command == 'start' and config.get('toolUpdates', 'latest') == 'latest':

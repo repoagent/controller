@@ -113,7 +113,11 @@ case "${1:-help}" in
   start) start ;;
   stop) docker stop --timeout 20 "$name" ;;
   restart) "$root/repoagent" stop; start ;;
-  logs) shift; docker logs "$name" "$@" ;;
+  logs)
+    shift
+    # Retained logs live in the state volume and survive container replacement.
+    if [[ $# -eq 1 && $1 == --retained ]]; then config logs; else docker logs "$name" "$@"; fi ;;
+  status) config status ;;
   versions) config versions ;;
   state) config state ;;
   enroll) stopped; shift; config enroll "$@" ;;
@@ -148,7 +152,9 @@ Usage: ./repoagent COMMAND
   skills install /path/skills.json [/path/private-source-token]
   skills | versions | check       Inspect selection/tools or check real authentication
   start | stop | restart          Operate the agent; replacement retains its volumes
+  status                          Show identity, lifetime, auth health, sessions, work and recent failures (JSON)
   logs [--follow] | state         Inspect operational output or conversation checkpoint
+  logs --retained                 Show bounded retained logs from the state volume, oldest first
   enroll DISCUSSION_URL ...       Persist explicit enrollments while stopped
   participant-login              Separate human gh browser sign-in for live tests
   participant-identity           Show the separate participant login

@@ -4,14 +4,18 @@ These tests cover our orchestration. They do not claim Windows Docker Desktop,
 real GitHub installation, or Codex OAuth compatibility.
 """
 import argparse
+from contextlib import nullcontext
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import call, patch
 
@@ -241,6 +245,36 @@ class ContainerConfigurationTests(unittest.TestCase):
                 runtime.configure(broker)
             self.assertFalse(runtime.CONFIG.exists())
             runtime.CONFIG.write_bytes(saved)
+
+    def test_status_and_retained_logs_are_read_by_the_controller_from_the_runtime_state(self):
+        runtime = load_runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.CONFIG = Path(directory) / 'config/settings.json'
+            for command in ('status', 'logs'):
+                with patch.object(sys, 'argv', ['runtime.py', command]), \
+                     patch.object(runtime.os, 'execv') as controller:
+                    runtime.main()
+                controller.assert_called_once_with(runtime.CONTROLLER[0], runtime.CONTROLLER + [command, '--state', runtime.STATE])
+
+    def test_optional_skills_cannot_shadow_required_packaged_skills(self):
+        runtime = load_runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            runtime.CONFIG, runtime.SKILLS = directory / 'config/settings.json', directory / 'config/skills'
+            (runtime.SKILLS / 'selected-earlier').mkdir(parents=True)
+            selection = directory / 'skills.json'
+            selection.write_text(json.dumps([dict(repository='owner/skills', revision='a' * 40, path='skills/shadow')]))
+            for name in ('github-discussion', 'repoagent-orientation'):
+                # Only the GitHub source archive transport is controlled; extraction and validation are real.
+                archive, text = io.BytesIO(), f'---\nname: {name}\ndescription: Shadowing fixture.\n---\nShadow.\n'.encode()
+                with tarfile.open(fileobj=archive, mode='w:gz') as tar:
+                    member = tarfile.TarInfo('owner-skills-0000000/skills/shadow/SKILL.md'); member.size = len(text)
+                    tar.addfile(member, io.BytesIO(text))
+                source = SimpleNamespace(open=lambda request, timeout: nullcontext(io.BytesIO(archive.getvalue())))
+                with self.subTest(name=name), patch.object(runtime.urllib.request, 'build_opener', return_value=source):
+                    with self.assertRaisesRegex(ValueError, 'reserved skill name: ' + name):
+                        runtime.install_skills(selection)
+                    self.assertEqual([path.name for path in runtime.SKILLS.iterdir()], ['selected-earlier'])
 
     def test_unattended_runtime_login_never_starts_device_auth(self):
         runtime = load_runtime()

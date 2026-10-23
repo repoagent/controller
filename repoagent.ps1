@@ -80,8 +80,8 @@ function Import-Enrollment([byte[]]$Bytes) {
 }
 
 function Invoke-Config {
-    $mounts = if ($brokerMode -and $Command -in @('get', 'state', 'versions', 'skills') -and @($CommandArguments)[0] -ne 'install') { @($volumeArguments | ForEach-Object { if ($_ -like 'type=volume,*') { $_ + ',readonly' } else { $_ } }) } else { $volumeArguments }
-    $network = if ($brokerMode -and $Command -in @('get', 'state', 'versions', 'skills') -and @($CommandArguments)[0] -ne 'install') { @('--network', 'none') } else { @() }
+    $mounts = if ($brokerMode -and $Command -in @('get', 'state', 'versions', 'skills', 'status', 'logs') -and @($CommandArguments)[0] -ne 'install') { @($volumeArguments | ForEach-Object { if ($_ -like 'type=volume,*') { $_ + ',readonly' } else { $_ } }) } else { $volumeArguments }
+    $network = if ($brokerMode -and $Command -in @('get', 'state', 'versions', 'skills', 'status', 'logs') -and @($CommandArguments)[0] -ne 'install') { @('--network', 'none') } else { @() }
     Invoke-Docker run --rm --init @network @mounts $image @args
 }
 
@@ -265,7 +265,12 @@ switch ($Command) {
     'start' { Start-Agent }
     'stop' { if ($brokerMode) { Stop-LocalRuntime } else { Test-CompatibleRuntime; Invoke-Docker stop --timeout 20 $containerName } }
     'restart' { if ($brokerMode) { Stop-LocalRuntime } else { Test-CompatibleRuntime; Invoke-Docker stop --timeout 20 $containerName }; Start-Agent }
-    'logs' { Invoke-Docker logs $containerName @CommandArguments }
+    'logs' {
+        # Retained logs live in the state volume and survive container replacement.
+        if (@($CommandArguments).Count -eq 1 -and $CommandArguments[0] -eq '--retained') { Invoke-Config logs }
+        else { Invoke-Docker logs $containerName @CommandArguments }
+    }
+    'status' { Invoke-Config status }
     'versions' { Invoke-Config versions }
     'state' { Invoke-Config state }
     'enroll' { Assert-Stopped; Invoke-Config enroll @CommandArguments }
@@ -286,7 +291,7 @@ switch ($Command) {
         Write-Host @'
 Usage: .\repoagent.ps1 COMMAND [arguments]
   build | setup | configure | get | login | import-codex-auth | import-enrollment
-  check | start | stop | restart | logs [--follow] | versions | state
+  check | start | stop | restart | logs [--follow] | logs --retained | status | versions | state
   enroll DISCUSSION_URL ... | skills [install SKILLS_JSON [TOKEN_FILE]]
 Configure uses --repository and --app-id with either --key-path or
 --broker-url HTTPS_ORIGIN --enrollment-file PRIVATE_FILE. Broker configure imports the file.
