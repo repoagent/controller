@@ -22,6 +22,7 @@ param storageType string = 'NfsAzureFile'
 param workQueueAccountName string = ''
 param workQueueName string = 'controller-work'
 @description('First activation only, after supported old-owner settlement and private enrollment persistence.')
+@allowed([false])
 param activate bool = false
 @secure()
 param enrollment string = ''

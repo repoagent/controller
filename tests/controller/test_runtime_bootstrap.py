@@ -73,6 +73,17 @@ if queue:
         raise AssertionError('Conflicting queue accepted')
     assert p('/data/enrollment/enrollment.json').read_bytes() == b'SYNTHETIC_ENROLLMENT_TRANSPORT'
     assert (config.read_bytes(), native.read_bytes(), auth.read_bytes()) == before
+    # Direct reconfiguration must also preserve the enrollment's installation.
+    import subprocess
+    changed = subprocess.run([sys.executable, '-E', '/opt/repoagent/runtime.py', 'configure',
+        '--repository', settings['repository'], '--app-id', settings['appId'],
+        '--broker-url', settings['brokerUrl'], '--enrollment-file', '/data/enrollment/enrollment.json',
+        '--clone', '--repository-id', str(settings['repositoryId']), '--installation-id', '457',
+        '--mode', settings['mode'], '--public-url', settings['publicUrl'], '--azure-work-queue', queue],
+        capture_output=True, text=True, timeout=10)
+    assert changed.returncode != 0, 'Changed retained installation was accepted'
+    assert (config.read_bytes(), native.read_bytes(), auth.read_bytes()) == before
+    assert p('/data/enrollment/enrollment.json').read_bytes() == b'SYNTHETIC_ENROLLMENT_TRANSPORT'
 print('BOOTSTRAP_RETENTION_AND_CONFLICT_OK')
 '''
 
@@ -95,6 +106,31 @@ for endpoint, mode in cases:
     assert not pathlib.Path('/data/enrollment/enrollment.json').exists()
     assert not pathlib.Path('/data/credentials/codex/config.toml').exists()
 print('UNSAFE_QUEUE_CONFIGURATION_REFUSED_BEFORE_PRIVATE_EFFECTS')
+'''
+
+BOOTSTRAP_REFUSALS = r'''
+import json, pathlib, subprocess, sys
+queue = sys.argv[1]
+for endpoint in (queue + '?sig=SYNTHETIC_QUEUE_CANARY',
+                 queue.replace('https://', 'https://PRIVATE_USER_CANARY:PRIVATE_PASSWORD_CANARY@')):
+    settings = dict(repository='owner/repo', repositoryId=345, appId='123', installationId=456,
+        brokerUrl='https://broker.example.org', mode='fixed-url', publicUrl='https://controller.example.org',
+        mentionUser='repoagent', model='gpt-6.1-sol', webSearch='live', toolUpdates='pinned',
+        listenPort=8080, reconcileInterval=300, azureWorkQueue=endpoint)
+    secret = pathlib.Path('/tmp/enrollment')
+    secret.write_bytes(b'SYNTHETIC_ENROLLMENT_TRANSPORT')
+    secret.chmod(0o600)
+    result = subprocess.run([sys.executable, '-E', '-c',
+        "import json,pathlib,runpy,sys; runpy.run_path('/acceptance/controller-runtime.py')['prepare_runtime'](json.loads(sys.argv[1]),pathlib.Path('/tmp/enrollment'))",
+        json.dumps(settings)], capture_output=True, text=True, timeout=15)
+    assert result.returncode != 0, 'Unsafe bootstrap configuration was accepted'
+    assert 'Azure work queue' in result.stdout + result.stderr, 'Queue validation was not reached'
+    for canary in ('SYNTHETIC_QUEUE_CANARY', 'PRIVATE_USER_CANARY', 'PRIVATE_PASSWORD_CANARY'):
+        assert canary not in result.stdout + result.stderr, 'Bootstrap logged rejected credentials'
+    for target in ('/data/config/settings.json', '/data/enrollment/enrollment.json',
+                   '/data/credentials/codex/config.toml'):
+        assert not pathlib.Path(target).exists(), 'Refusal changed private state'
+print('BOOTSTRAP_REJECTED_CREDENTIALS_REMAIN_PRIVATE')
 '''
 
 
@@ -121,6 +157,12 @@ class RuntimeBootstrapTests(unittest.TestCase):
                                   journey=QUEUE_REFUSALS)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('UNSAFE_QUEUE_CONFIGURATION_REFUSED_BEFORE_PRIVATE_EFFECTS', result.stdout)
+
+    def test_bootstrap_does_not_log_rejected_queue_credentials(self):
+        result = self.run_journey(SOURCE, queue='https://storageexample123.queue.core.windows.net/controller-work',
+                                  journey=BOOTSTRAP_REFUSALS)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('BOOTSTRAP_REJECTED_CREDENTIALS_REMAIN_PRIVATE', result.stdout)
 
     @staticmethod
     def run_journey(source, *, queue='', journey=JOURNEY):

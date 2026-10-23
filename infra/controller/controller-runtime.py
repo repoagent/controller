@@ -114,7 +114,12 @@ def prepare_runtime(settings, secret_path):
             arguments.extend((option, str(settings[key])))
         if settings.get('azureWorkQueue'):
             arguments.extend(('--azure-work-queue', settings['azureWorkQueue']))
-        subprocess.run(runtime + arguments, check=True)
+        try:
+            subprocess.run(runtime + arguments, check=True)
+        except subprocess.CalledProcessError:
+            # Rejected URLs may contain credentials. Never include the command
+            # from CalledProcessError in a bootstrap traceback.
+            raise ValueError('Runtime configuration was refused.') from None
     # The existing transport secures the target. Only the native consumer owns
     # enrollment parsing, scope, expiry and broker authorization policy.
     subprocess.run(runtime + ['import-enrollment'], input=enrollment, check=True)

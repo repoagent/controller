@@ -118,6 +118,8 @@ def configure(args):
         raise ValueError('Changing repository/App requires a new REPOAGENT_INSTANCE to preserve existing conversations.')
     if args.installation_id is not None and args.installation_id <= 0:
         raise ValueError('Expected installation ID must be positive.')
+    if config.get('installationId') is not None and config['installationId'] != args.installation_id:
+        raise ValueError('Changing expected installation identity requires a fresh instance and enrollment.')
     if not 1 <= args.listen_port <= 65535 or args.reconcile_interval < 1:
         raise ValueError('Listener port must be 1..65535 and reconciliation seconds must be positive.')
     if args.mode == 'fixed-url':
