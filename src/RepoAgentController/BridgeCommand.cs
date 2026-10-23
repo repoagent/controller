@@ -190,7 +190,8 @@ public static class BridgeCommand
                         await codex.Initialize(runtimeToken);
                         if (reconciliation is not null) await reconciliation.Start(codex,
                             durable is null ? TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)) : Timeout.InfiniteTimeSpan, runtimeToken);
-                        var bridge = new Bridge(github, codex, store, outbox, numbers, reconciliation);
+                        var bridge = new Bridge(github, codex, store, outbox, numbers, reconciliation, clock);
+                        bridge.ResumeInterrupted();
                         dashboard?.Start(runtimeToken);
                         // Replaced agent credentials apply between dispatches at a global idle boundary: the checkout journal's in
                         // clone mode, else the native's. Dispatch holds its gate before refresh admission, so this order matches.

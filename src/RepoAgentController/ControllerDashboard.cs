@@ -145,6 +145,7 @@ sealed class ControllerDashboard : IAsyncDisposable
             text.AppendLine($"- {Link(session.Text("discussion"))}: " + session.Text("state") switch
             {
                 "pending" => "awaiting native acknowledgement",
+                "retrying" => $"delivery failed or was unacknowledged; attempt {Count(session["attempts"]) + 1} at {Time(session.Text("retryAt"))}",
                 "running" => "running a turn",
                 "accepted" => "earlier input accepted; turns are not tracked in this mode",
                 var state => state

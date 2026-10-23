@@ -9,6 +9,9 @@ sealed class Codex : IAsyncDisposable
     /// <summary>Native-reported runtime status of a session in this app-server process. Only Idle admits input.</summary>
     public enum SessionStatus { Unknown, NotLoaded, Idle, Active, SystemError }
 
+    /// <summary>The native answered a request with an error, so it did not perform it. Timeouts and transport loss are not rejections.</summary>
+    public sealed class RequestRejected(string message) : IOException(message);
+
     Transport transport;
     readonly string githubCommand, configurationDirectory;
     readonly CheckoutRefresh? refresh;
@@ -94,6 +97,9 @@ sealed class Codex : IAsyncDisposable
     SessionStatus Native(string id) => statuses.TryGetValue(id, out var value) ? value.Status : SessionStatus.Unknown;
     // An accepted turn holds its session until that turn's completion, whatever status the native reports meanwhile.
     SessionStatus Current(string id) => turns.ContainsKey(id) ? SessionStatus.Active : Native(id);
+
+    /// <summary>Broker credential loss has begun terminating the native process; this controller lifetime is ending.</summary>
+    public bool CredentialLost => credentialLost.IsCancellationRequested;
 
     public SessionStatus Status(string id) { lock (statusLock) return Current(id); }
     public bool Loaded(string id) { lock (statusLock) return resumed.Contains(id); }
@@ -372,7 +378,7 @@ sealed class Codex : IAsyncDisposable
                     }
                     if (message["id"] is JsonValue idValue && idValue.TryGetValue<int>(out var id) && pending.TryRemove(id, out var completion))
                     {
-                        if (message["error"] is { } error) completion.TrySetException(new IOException($"Native request failed: {error}"));
+                        if (message["error"] is { } error) completion.TrySetException(new RequestRejected($"Native request failed: {error}"));
                         else completion.TrySetResult(message["result"] ?? throw new IOException("Native response has no result"));
                     }
                 }

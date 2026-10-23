@@ -230,6 +230,28 @@ sealed class CheckoutRefresh : IAsyncDisposable
             }
             owner.Signal();
         }
+        /// <summary>
+        /// Releases an admission whose input the native may have accepted without acknowledgement. It stays recorded, so
+        /// the checkout remains excluded and that thread's lifecycle events still match, until a later acknowledged turn on
+        /// the same thread completes. Only the newest such admission per thread is kept, since it settles the same way.
+        /// </summary>
+        public void Unconfirmed()
+        {
+            lock (owner.journalLock)
+            {
+                owner.CheckAdmission();
+                var thread = record.Text("thread");
+                if (thread.Length == 0) owner.active.Remove(id); // No session, so no native turn can hold the input.
+                else
+                {
+                    foreach (var older in owner.active.Where(operation => operation.Key != id && Unsettled(operation.Value!, thread)).ToArray())
+                        owner.active.Remove(older.Key);
+                    record["unconfirmed"] = true;
+                }
+                owner.Save(); confirmed = true;
+            }
+            owner.Signal();
+        }
         public void Confirm()
         {
             lock (owner.journalLock)
@@ -267,8 +289,16 @@ sealed class CheckoutRefresh : IAsyncDisposable
         foreach (var operation in active.ToArray())
             if (operation.Value!["confirmed"]?.GetValue<bool>() == true &&
                 turns.TryGetValue((operation.Value!.Text("thread"), operation.Value!.Text("turn")), out var turn) && turn.Done)
+            {
                 active.Remove(operation.Key);
+                // A thread runs one turn at a time, so an earlier unacknowledged input to it cannot outlast this completion.
+                var since = operation.Value!["since"]!.GetValue<long>();
+                foreach (var earlier in active.Where(item => Unsettled(item.Value!, operation.Value!.Text("thread")) && item.Value!["since"]!.GetValue<long>() < since).ToArray())
+                    active.Remove(earlier.Key);
+            }
     }
+    static bool Unsettled(JsonNode operation, string thread) =>
+        operation["unconfirmed"]?.GetValue<bool>() == true && operation.Text("thread") == thread;
     public void NewEpoch(int value)
     {
         lock (journalLock)

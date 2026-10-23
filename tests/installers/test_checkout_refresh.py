@@ -289,7 +289,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             try: process.wait(timeout=10)
             except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
             reader.join(timeout=5); process.stdout.close()
-            print('MATRIX_CONTROLLER exit=' + str(process.returncode) + ' ' + ''.join(line for line in lines if any(s in line for s in ('checkout-refreshed', 'refresh-pending', 'refresh-blocked', 'manual-recovery'))), flush=True)
+            print('MATRIX_CONTROLLER exit=' + str(process.returncode) + ' ' + ''.join(line for line in lines if any(s in line for s in ('checkout-refreshed', 'refresh-pending', 'refresh-blocked', 'manual-recovery', 'delivery-retry'))), flush=True)
 
     def publish(self, f, name='README', content='remote B\n'):
         seed = f.directory / 'seed'
@@ -581,6 +581,117 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertNotIn('waiting', json.loads(f.state.read_text())['discussions']['D1'])
             print('IDLE_SPLIT batches=' + str(turn - 1) + ' changes=' + str(len(delivered)) + ' order=preserved', flush=True)
 
+    def test_rejected_native_input_is_retried_after_backoff_as_a_marked_redelivery(self):
+        with self.fixture(protocol=True) as f, self.controller(f):
+            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+            request = self.rpc(f, 'thread/start')
+            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+            self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+            self.eyes(f, ['D1'])
+            f.provider.comments = {'D1': [self.comment(1, 'alice', 'please answer')]}
+            request = self.rpc(f, 'turn/start')
+            first = self.dispatched(request)
+            self.assertNotIn('redelivery', first['_bridge'])
+            self.reject(f, request)
+            for _ in range(2):  # Neither a blocked Discussion nor a retry on every poll.
+                self.assertIsNotNone(f.wait_or_native('poll-completed'), 'Rejected input was retried without backoff')
+            request = self.rpc(f, 'turn/start')
+            retried = self.dispatched(request)
+            self.assertIs(retried['_bridge'].get('redelivery'), True)
+            self.assertEqual(self.subjects(retried), [('C1', 'alice', 'please answer')])
+            self.assertEqual(f.provider.reactions, ['D1'], 'EYES preceded acceptance of the redelivery')
+            self.reply(f, request, dict(turn=dict(id='T2')))
+            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-1')
+            self.assertEqual(f.provider.reactions, ['D1', 'C1'])
+            self.terminal(f, 'S1', 'T2'); f.wait('native-event')
+            # Input observed after the accepted redelivery is ordinary again.
+            f.provider.comments['D1'].append(self.comment(2, 'bob', 'follow-up'))
+            request = self.rpc(f, 'turn/start')
+            envelope = self.dispatched(request)
+            self.assertNotIn('redelivery', envelope['_bridge'])
+            self.assertEqual(self.subjects(envelope), [('C2', 'bob', 'follow-up')])
+            self.reply(f, request, dict(turn=dict(id='T3')))
+            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-2')
+            saved = json.loads(f.state.read_text())['discussions']['D1']
+            self.assertNotIn('pending', saved); self.assertNotIn('waiting', saved)
+            self.assertFalse(json.loads(f.journal.read_text())['blocked'])
+            self.terminal(f, 'S1', 'T3'); f.wait('native-event')
+            print('REDELIVERY rejected=retried marker=_bridge.redelivery eyes-after-acceptance=true', flush=True)
+
+    def test_unacknowledged_native_input_is_redelivered_once_idle_while_the_checkout_stays_excluded(self):
+        with self.fixture(protocol=True) as f, self.controller(f):
+            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+            request = self.rpc(f, 'thread/start')
+            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+            self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+            initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+            f.provider.comments = {'D1': [self.comment(1, 'alice', 'please answer')]}
+            request = self.rpc(f, 'turn/start')
+            self.assertEqual(self.subjects(self.dispatched(request)), [('C1', 'alice', 'please answer')])
+            target = self.publish(f)
+            f.wait('delivery-retry', timeout=90)  # The acknowledgement is lost: the controller's native request deadline passes.
+            self.pending(f)
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial, 'Checkout refreshed while delivery was uncertain')
+            # The native accepted the input after all; its late turn runs past the retry backoff.
+            self.notify(f, 'thread/status/changed', threadId='S1', status=dict(type='active'))
+            self.notify(f, 'turn/started', threadId='S1', turn=dict(id='T2', status='inProgress'))
+            deadline = time.monotonic() + 7
+            while time.monotonic() < deadline:
+                self.assertIsNotNone(f.wait_or_native('poll-completed'), 'Redelivery reached a session that was not idle')
+            journal = json.loads(f.journal.read_text())
+            self.assertFalse(journal['blocked'], journal.get('reason'))
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial, 'Checkout refreshed under the late native turn')
+            self.terminal(f, 'S1', 'T2')
+            request = self.rpc(f, 'turn/start')
+            redelivered = self.dispatched(request)
+            self.assertIs(redelivered['_bridge'].get('redelivery'), True)
+            self.assertEqual(self.subjects(redelivered), [('C1', 'alice', 'please answer')])
+            self.assertEqual(f.provider.reactions, ['D1'], 'EYES preceded acknowledged acceptance')
+            self.reply(f, request, dict(turn=dict(id='T3')))
+            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-1')
+            self.assertEqual(f.provider.reactions, ['D1', 'C1'])
+            self.terminal(f, 'S1', 'T3')
+            # The acknowledged redelivery completed, so no native turn can still hold the input: refresh resumes.
+            f.wait('checkout-refreshed'); self.settled(f)
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+            self.assertEqual(json.loads(f.journal.read_text())['active'], {})
+            self.assertNotIn('waiting', json.loads(f.state.read_text())['discussions']['D1'])
+            print('REDELIVERY lost-ack=redelivered late-native-turn=held-until-idle checkout=excluded-until-resolved', flush=True)
+
+    def test_delivery_interrupted_by_restart_is_redelivered_and_a_failed_receipt_never_resends_it(self):
+        with self.fixture(protocol=True, clone=False) as f:
+            with self.controller(f):
+                f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+                request = self.rpc(f, 'thread/start'); self.reply(f, request, dict(thread=dict(id='S1')))
+                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+                self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+                self.eyes(f, ['D1'])
+                f.provider.comments = {'D1': [self.comment(1, 'alice', 'please answer')]}
+                request = self.rpc(f, 'turn/start')  # The controller stops before any acknowledgement arrives.
+                self.assertNotIn('redelivery', self.dispatched(request)['_bridge'])
+            f.provider.reaction_status = 403  # GitHub will refuse EYES for the accepted redelivery.
+            with self.controller(f, 'mode=polling'):
+                request = self.rpc(f, 'thread/resume'); self.reply(f, request, dict(thread=dict(id='S1')))
+                request = self.rpc(f, 'turn/start')
+                redelivered = self.dispatched(request)
+                self.assertIs(redelivered['_bridge'].get('redelivery'), True)
+                self.assertEqual(self.subjects(redelivered), [('C1', 'alice', 'please answer')])
+                self.reply(f, request, dict(turn=dict(id='T2')))
+                f.wait('receipt-error https://github.com/owner/project/discussions/1#discussioncomment-1')
+                self.terminal(f, 'S1', 'T2'); f.wait('native-event')
+                for _ in range(2):
+                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Accepted input was resent after its receipt failed')
+            with self.controller(f, 'mode=polling'):
+                for _ in range(2):
+                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Accepted input was resent after a restart')
+                self.assertNotIn(f.provider.token, ''.join(f.lines))
+            self.assertEqual(f.provider.reactions, ['D1'])
+            saved = json.loads(f.state.read_text())['discussions']['D1']
+            self.assertNotIn('pending', saved); self.assertNotIn('waiting', saved)
+            print('REDELIVERY restart=redelivered receipt-failure=no-resend', flush=True)
+
     def rpc(self, f, method):
         self.assertTrue(select.select([f.responses], [], [], 20)[0], 'Missing native request ' + method)
         message = json.loads(f.responses.readline())
@@ -592,6 +703,9 @@ class CheckoutRefreshTests(unittest.TestCase):
         if request['method'] in ('thread/start', 'thread/resume') and 'thread' in result:
             result['thread'].setdefault('status', dict(type=status))
         f.commands.write(json.dumps(dict(id=request['id'], result=result)) + '\n'); f.commands.flush()
+
+    def reject(self, f, request, message='fixture rejection'):
+        f.commands.write(json.dumps(dict(id=request['id'], error=dict(code=-32600, message=message))) + '\n'); f.commands.flush()
 
     def notify(self, f, method, **params):
         f.commands.write(json.dumps(dict(method=method, params=params)) + '\n'); f.commands.flush()
@@ -825,11 +939,21 @@ class CheckoutRefreshTests(unittest.TestCase):
                     if case == 'save-failure': Path(str(f.state) + '.tmp').mkdir()
                     self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
                     if case == 'save-failure':
-                        f.wait('manual-recovery')
-                        self.assertTrue(json.loads(f.journal.read_text())['blocked'])
-                        self.assertTrue(json.loads(f.state.read_text())['discussions']['D1']['pending'])
-                        self.assertFalse(select.select([f.responses], [], [], 0)[0])
-                        self.assertEqual(len(f.provider.git_tokens), requests)
+                        # Nothing was sent, so the idle refresh may proceed while the batch waits to retry.
+                        f.wait('checkout-refreshed')
+                        self.assertTrue(any(' delivery-retry ' in line for line in f.lines))
+                        self.assertFalse(json.loads(f.journal.read_text())['blocked'])
+                        self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+                        self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Input was sent without a durable checkpoint')
+                        Path(str(f.state) + '.tmp').rmdir()  # Release only the fixture write fault.
+                        request = self.rpc(f, 'thread/resume')  # The refresh reloaded the native.
+                        self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+                        request = self.rpc(f, 'turn/start')
+                        envelope = self.dispatched(request)
+                        self.assertEqual(envelope['_bridge']['mode'], 'bootstrap')
+                        self.assertNotIn('redelivery', envelope['_bridge'], 'No earlier turn/start carried this input')
+                        self.reply(f, request, dict(turn=dict(id='T1')))
+                        self.terminal(f, 'S1', 'T1'); f.wait('native-event')
                     else:
                         request = self.rpc(f, 'turn/start')
                         turn = 'T2' if case == 'resume' else 'T1'
@@ -837,10 +961,6 @@ class CheckoutRefreshTests(unittest.TestCase):
                         self.terminal(f, 'S1', turn)
                         f.wait('checkout-refreshed'); self.settled(f)
                         self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
-                if case == 'save-failure':
-                    Path(str(f.state) + '.tmp').rmdir()  # Release only the fixture write fault.
-                    result = subprocess.run(f.command + ['--once'], env=f.environment, capture_output=True, text=True, timeout=20)
-                    self.assertEqual(result.returncode, 1); self.assertIn('uncertain', result.stdout)
                 print('GAP case=' + case + ' reservation-and-first-send=protected', flush=True)
 
 

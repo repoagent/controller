@@ -17,7 +17,7 @@ Build/run inside a Linux container, inspect `--help`, and start the long-running
 | Existing EYES reuse | Edit an acknowledged source; `receipt-reused`; no duplicate work from the receipt itself |
 | Quiet polls and own output | At least two unchanged polls; own comment/reaction causes no forwarding/response loop |
 | Normal restart | Same state and session ID; a new participant message resumes native history and replies in GitHub |
-| Failed input | With disposable state, make a recorded session ID invalid, post a new source without EYES, confirm native rejection leaves `pending` and no new EYES; restore/reconcile manually |
+| Failed input | With disposable state, make a recorded session ID invalid, post a new source without EYES, confirm native rejection logs `delivery-retry` with growing backoff and no acceptance or new EYES; restore the session ID while stopped and confirm the retry delivers and answers it |
 | Receipt failure | With accepted native input, provoke a real receipt permission failure; log error and verify next unchanged poll does not resend input |
 
 For every failure record whether GitHub observation, native acceptance, checkpoint persistence, receipt, or agent publication failed. Avoid declaring full acceptance from a build or transport-only probe. Input acceptance and successful GitHub publication are separate observations.
