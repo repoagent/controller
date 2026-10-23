@@ -40,9 +40,9 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
             work.Fresh(started);
             throw new ApprovalChanged();
         }
-        if (grant.Approval.IsAgent)
+        if (grant.Approval.IsRepositoryVariable)
         {
-            var approved = await ObserveAgentVariableAsync(grant.Repository, grant.Variable, grant.Marker, verifier, work);
+            var approved = await ObserveRepositoryVariableAsync(grant.Approval, grant.Repository, grant.Variable, grant.Marker, verifier, work);
             // A negative observation is authority to close only while all contributing
             // evidence is fresh. Stale evidence must leave the grant recoverable.
             work.Fresh(started);
@@ -60,15 +60,18 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         return started;
     }
 
-    internal async Task<bool> ObserveAgentVariableAsync(string repository, string selected, string marker, string token, IssuanceWork work)
+    // Reads only the direct repository listing selected by the durable approval kind:
+    // Agent variables for setup v2, Actions variables for setup v3. Both APIs page at 30.
+    internal async Task<bool> ObserveRepositoryVariableAsync(ApprovalContract approval, string repository, string selected, string marker, string token, IssuanceWork work)
     {
         var path = string.Join('/', repository.Split('/').Select(Uri.EscapeDataString));
+        var listing = approval.VariablesPath;
         var seen = new HashSet<string>(StringComparer.Ordinal);
         int? total = null;
         bool? approved = null;
         for (var page = 1; page <= 2; page++)
         {
-            using var response = await ReadAsync($"repos/{path}/agents/variables?per_page=30&page={page}", token, work);
+            using var response = await ReadAsync($"repos/{path}/{listing}?per_page=30&page={page}", token, work);
             var root = response.RootElement;
             var count = root.GetProperty("total_count").GetInt32();
             if (count < 0 || count > 60 || total is not null && total != count) throw new IssuanceDenied();

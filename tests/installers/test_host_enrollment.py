@@ -31,22 +31,34 @@ class LostResponse(Exception):
 
 class EnrollmentJourney:
     """Real process/TLS/filesystem; GitHub, Docker and broker are external doubles."""
-    def __init__(self, case, *, variable='TEAM_CONTROLLER_APPROVAL', fault=None, profile='polling'):
+    def __init__(self, case, *, variable='TEAM_CONTROLLER_APPROVAL', fault=None, profile='polling', location='actions'):
         self.case, self.variable, self.fault, self.profile = case, variable, fault, profile
         self.clone = profile.endswith('-clone')
+        # Setup v3 approves through direct repository Actions variables; setup v2 Agent
+        # variables remain an explicitly selected legacy location.
+        self.location = location
+        self.setup = 3 if location == 'actions' else 2
+        self.kind = 'repository-actions-variable' if location == 'actions' else 'repository-agent-variable'
+        self.listing = 'repos/example/project/' + ('actions/variables' if location == 'actions' else 'agents/variables')
+        self.other_listing = 'repos/example/project/' + ('agents/variables' if location == 'actions' else 'actions/variables')
+        self.store = 'variables' if location == 'actions' else 'agent_variables'
+        self.default_variable = 'REPOAGENT_APPROVAL' if location == 'actions' else 'APPROVED_CONTROLLER'
+        self.start_path = f'/v{self.setup}/enrollments'
+        family = ('repository-actions-{}approval-v3' if location == 'actions' else 'repository-agent-{}approval-v2')
+        self.policy = family.format('clone-' if self.clone else '')
         self.directory = Path(case.enterContext(tempfile.TemporaryDirectory(prefix='host enrollment ')))
         self.state = self.directory / 'private-state'
         self.model = self.directory / 'github.json'
-        self.model.write_text(json.dumps({'variables': {}}), encoding='utf-8')
+        self.model.write_text(json.dumps({'variables': {}, 'agent_variables': {}}), encoding='utf-8')
         self.log = self.directory / 'github.jsonl'
         self.events, self.errors = [], []
         self.responses = {}
         self.observation_times = []
         self.deadline = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=15)).isoformat()
-        self.marker = json.dumps(dict(version=2, approvalKind='repository-agent-variable', githubHost='github.com',
+        self.marker = json.dumps(dict(version=self.setup, approvalKind=self.kind, githubHost='github.com',
             appId=5387625, appSlug='repo-agent-connector', repositoryId=123, repository='example/project',
             installationId=789, deviceId='d' * 32, challenge='c' * 43, profile=profile,
-            policyVersion='repository-agent-clone-approval-v2' if self.clone else 'repository-agent-approval-v2', epoch='test-epoch', variable=variable), separators=(',', ':'))
+            policyVersion=self.policy, epoch='test-epoch', variable=variable), separators=(',', ':'))
         for artifact in case.fixture_build.iterdir():
             shutil.copy2(artifact, self.directory / artifact.name)
         if case.native:
@@ -217,7 +229,7 @@ class EnrollmentJourney:
         self.case.assertNotEqual(credential, 'Bearer ' + self.environment['GH_TOKEN'])
         self.events.append({'path': request.path, 'body': body, 'credential': credential})
         self.observation_times.append((request.path, time.monotonic()))
-        if request.path == '/v2/enrollments':
+        if request.path == self.start_path:
             self.private()
             self.case.assertEqual(body, recovery['request'])
             self.case.assertEqual(set(body), {'idempotencyId', 'repositoryId', 'repository', 'variable', 'profile'})
@@ -230,16 +242,16 @@ class EnrollmentJourney:
                 raise LostResponse()
             return result
         if request.path.endswith('/completion'):
+            self.case.assertEqual(request.path, f'{self.start_path}/123_{recovery["request"]["idempotencyId"]}/completion')
             self.case.assertEqual(credential, 'Bearer ' + recovery['secret'])
             remote = json.loads(self.model.read_text(encoding='utf-8'))
-            self.case.assertEqual(remote['variables'][self.variable], self.marker)
+            self.case.assertEqual(remote[self.store][self.variable], self.marker)
             result = dict(completionId='a' * 32, enrollment=dict(protocolVersion=1, brokerOrigin=self.origin,
                 githubHost='github.com', deviceId='d' * 32, deviceSecret='s' * 43, appId=5387625,
                 appSlug='repo-agent-connector', installationId=789, repositoryId=123,
                 repository='example/project', permissions={'discussions': 'write'}))
             if self.clone:
-                result['enrollment'].update(protocolVersion=2, profile=self.profile,
-                    policyVersion='repository-agent-clone-approval-v2')
+                result['enrollment'].update(protocolVersion=2, profile=self.profile, policyVersion=self.policy)
                 result['enrollment']['permissions']['contents'] = 'read'
             if self.profile.startswith('webhook'):
                 result['enrollment']['permissions']['repository_hooks'] = 'write'
@@ -247,7 +259,7 @@ class EnrollmentJourney:
                 self.fault = None
                 raise LostResponse()
             return result
-        self.case.assertEqual(request.path, '/v2/devices/' + 'd' * 32 + '/acknowledgment')
+        self.case.assertEqual(request.path, f'/v{self.setup}/devices/' + 'd' * 32 + '/acknowledgment')
         self.case.assertEqual(body, {'completionId': 'a' * 32})
         saved = self.read('enrollment.json')
         self.case.assertEqual(saved['deviceSecret'], 's' * 43)
@@ -268,8 +280,10 @@ class EnrollmentJourney:
             args += ['-Repository', 'example/project', '-BrokerOrigin', self.origin]
             if self.profile != 'polling':
                 args += ['-EnrollmentProfile', self.profile]
-            if self.variable != 'APPROVED_CONTROLLER':
+            if self.variable != self.default_variable:
                 args += ['-ApprovalVariable', self.variable.lower()]
+            if self.location != 'actions':
+                args += ['-ApprovalLocation', 'AgentVariable']
         result = subprocess.run(args + list(extra), cwd=self.directory, env=self.environment,
                                 input='', capture_output=True, text=True, encoding='utf-8', timeout=timeout)
         output = result.stdout + result.stderr
@@ -300,6 +314,8 @@ class EnrollmentJourney:
             argv = event['argv']
             self.case.assertEqual(argv[:3], ['api', '--hostname', 'github.com'])
             self.case.assertNotIn('/environments', ' '.join(argv))
+            # Only the selected approval location is read or written; never a fallback.
+            self.case.assertNotIn(self.other_listing, ' '.join(argv))
             self.case.assertNotIn('PATCH', argv)
             self.case.assertNotIn('s' * 43, json.dumps(event))
             recovery_path = self.state / 'recovery.json'
@@ -359,7 +375,7 @@ class HostEnrollmentTests(unittest.TestCase):
                     peer.close()
                     cleanup.join(5)
 
-    def test_preview_identifies_selected_repository_agent_variable_without_mutations(self):
+    def test_preview_identifies_selected_repository_actions_variable_without_mutations(self):
         with tempfile.TemporaryDirectory(prefix='enrollment preview ') as temporary:
             directory = Path(temporary)
             for artifact in self.fixture_build.iterdir():
@@ -401,8 +417,9 @@ class HostEnrollmentTests(unittest.TestCase):
                 self.assertEqual(argv[argv.index('--method') + 1], 'GET', event)
                 self.assertNotIn('/environments', argv[-1], event)
             self.assertIn('TEAM_CONTROLLER_APPROVAL', output)
-            self.assertRegex(output, r'(?i)agent[- ]variable',
-                             'Preview must identify the repository Agent-variable approval coordinate')
+            self.assertRegex(output, r'(?i)actions[- ]variable',
+                             'Preview must identify the repository Actions-variable approval coordinate')
+            self.assertNotRegex(output, r'(?i)agent[- ]variable')
             self.assertNotIn('GitHub Environment', output)
 
     def test_create_and_saved_resume_preserve_exact_marker_and_private_receipt(self):
@@ -413,7 +430,11 @@ class HostEnrollmentTests(unittest.TestCase):
         approval = journey.read('approval.json')
         self.assertEqual(approval['marker'], journey.marker)
         self.assertEqual(approval['expectedValueSha256'], hashlib.sha256(journey.marker.encode()).hexdigest())
+        self.assertEqual((approval['version'], approval['setupVersion'], approval['approvalKind']), (3, 3, 'repository-actions-variable'))
         self.assertIsNone(journey.read('recovery.json')['secret'])
+        self.assertEqual([event['path'] for event in journey.events][:1], ['/v3/enrollments'])
+        writes = [event for event in journey.github() if 'POST' in event['argv']]
+        self.assertEqual([event['argv'][-3] for event in writes], ['repos/example/project/actions/variables'])
         first_events = list(journey.events)
         result = journey.run(saved=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -429,8 +450,10 @@ class HostEnrollmentTests(unittest.TestCase):
         outcome = json.loads(next(line for line in result.stdout.splitlines() if line.startswith('{')))
         self.assertEqual((outcome['githubMarker'], outcome['brokerClosure'], outcome['outstandingTokens']),
                          ('removed', 'confirmed', 'unsettled'))
+        self.assertEqual(outcome['approvalKind'], 'repository-actions-variable')
         self.assertNotIn('environmentId', outcome)
-        self.assertEqual(sum('DELETE' in event['argv'] for event in journey.github()), 1)
+        deletes = [event['argv'][-1] for event in journey.github() if 'DELETE' in event['argv']]
+        self.assertEqual(deletes, ['repos/example/project/actions/variables/' + journey.variable])
         self.assertEqual(journey.errors, [])
 
     def test_clone_profiles_persist_private_receipt_before_ack_and_select_v2_revoke(self):
@@ -442,7 +465,7 @@ class HostEnrollmentTests(unittest.TestCase):
                 receipt = journey.read('enrollment.json')
                 self.assertEqual(receipt['protocolVersion'], 2)
                 self.assertEqual(receipt['profile'], profile)
-                self.assertEqual(receipt['policyVersion'], 'repository-agent-clone-approval-v2')
+                self.assertEqual(receipt['policyVersion'], 'repository-actions-clone-approval-v3')
                 self.assertEqual(receipt['permissions']['contents'], 'read')
                 self.assertEqual('repository_hooks' in receipt['permissions'], profile == 'webhook-clone')
                 self.assertTrue(journey.read('recovery.json')['acknowledged'])
@@ -489,6 +512,41 @@ class HostEnrollmentTests(unittest.TestCase):
         self.assertEqual(journey.events, [])
         self.assertFalse(journey.log.exists())
 
+    def test_agent_variable_location_is_explicit_legacy_and_never_reinterpreted(self):
+        # Explicit legacy selection is the rollback path for a broker or App
+        # installation that cannot yet verify repository Actions variables.
+        journey = EnrollmentJourney(self, location='agent')
+        result = journey.run()
+        self.assertEqual(result.returncode, 0, journey.diagnostic(result))
+        approval = journey.read('approval.json')
+        self.assertEqual((approval['version'], approval['setupVersion'], approval['approvalKind']), (2, 2, 'repository-agent-variable'))
+        writes = [event['argv'][-3] for event in journey.github() if 'POST' in event['argv']]
+        self.assertEqual(writes, ['repos/example/project/agents/variables'])
+        self.assertTrue(all(event['path'].startswith(('/v2/', '/v1/')) for event in journey.events), journey.events)
+
+        # A saved Agent enrollment resumes in place without naming its location again.
+        resumed = journey.run(saved=True)
+        self.assertEqual(resumed.returncode, 0, journey.diagnostic(resumed))
+        self.assertEqual(journey.events[-1]['path'], '/v2/devices/' + 'd' * 32 + '/acknowledgment')
+        # Requesting the new location for that saved grant is refused before any work.
+        saved, calls, events = (journey.state / 'approval.json').read_bytes(), len(journey.github()), len(journey.events)
+        refused = journey.run(saved=True, extra=['-ApprovalLocation', 'ActionsVariable'])
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('cannot be reinterpreted', refused.stdout)
+        self.assertEqual(((journey.state / 'approval.json').read_bytes(), len(journey.github()), len(journey.events)),
+                         (saved, calls, events))
+
+        revoked = journey.run(saved=True, action='Revoke', extra=[
+            '-ApprovalStatePath', str(journey.state / 'approval.json'),
+            '-EnrollmentFile', str(journey.state / 'enrollment.json')])
+        self.assertEqual(revoked.returncode, 0, journey.diagnostic(revoked))
+        outcome = json.loads(next(line for line in revoked.stdout.splitlines() if line.startswith('{')))
+        self.assertEqual((outcome['approvalKind'], outcome['githubMarker'], outcome['brokerClosure']),
+                         ('repository-agent-variable', 'removed', 'confirmed'))
+        deletes = [event['argv'][-1] for event in journey.github() if 'DELETE' in event['argv']]
+        self.assertEqual(deletes, ['repos/example/project/agents/variables/' + journey.variable])
+        self.assertEqual(journey.errors, [])
+
     def test_marker_removal_reports_unconfirmed_optional_self_revoke_separately(self):
         journey = EnrollmentJourney(self, fault='revoke-unavailable')
         result = journey.run()
@@ -503,7 +561,7 @@ class HostEnrollmentTests(unittest.TestCase):
         self.assertEqual(sum('DELETE' in event['argv'] for event in journey.github()), 1)
 
     def test_default_name_matching_approval_and_lost_ack_resume_without_new_setup(self):
-        journey = EnrollmentJourney(self, variable='APPROVED_CONTROLLER', fault='lost-ack')
+        journey = EnrollmentJourney(self, variable='REPOAGENT_APPROVAL', fault='lost-ack')
         journey.model.write_text(json.dumps({'variables': {journey.variable: journey.marker}}), encoding='utf-8')
         result = journey.run()
         self.assertNotEqual(result.returncode, 0)
@@ -537,7 +595,7 @@ class HostEnrollmentTests(unittest.TestCase):
         journey.responses['enrollments'] = [(429, None)]
         result = journey.run(timeout=100)
         self.assertEqual(result.returncode, 0, journey.diagnostic(result))
-        starts = [event for event in journey.events if event['path'] == '/v2/enrollments']
+        starts = [event for event in journey.events if event['path'] == journey.start_path]
         self.assertEqual(len(starts), 2)
         self.assertEqual(starts[0], starts[1])
         self.assertGreaterEqual(journey.observation_times[1][1] - journey.observation_times[0][1], 60)
@@ -650,7 +708,7 @@ class HostEnrollmentTests(unittest.TestCase):
                 first_completion = journey.read('recovery.json')['completionId']
                 result = journey.run(saved=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                starts = [event for event in journey.events if event['path'] == '/v2/enrollments']
+                starts = [event for event in journey.events if event['path'] == journey.start_path]
                 self.assertIn(len(starts), (1, 2))
                 self.assertTrue(all(event == starts[0] for event in starts))
                 self.assertEqual(original_request, journey.read('recovery.json')['request'])
@@ -686,7 +744,9 @@ class HostEnrollmentTests(unittest.TestCase):
                     marker['repositoryId'] = 999
                     journey.marker = json.dumps(marker)
                 elif fault == 'duplicate':
-                    journey.marker = journey.marker.replace('"version":2', '"version":2,"version":2')
+                    version = f'"version":{journey.setup}'
+                    self.assertIn(version, journey.marker)
+                    journey.marker = journey.marker.replace(version, version + ',' + version)
                 elif fault == 'unknown-environment':
                     marker = json.loads(journey.marker)
                     marker['environment'] = 'repoagent'
