@@ -9,6 +9,7 @@ The catalogue's `reserved` list names `REPOAGENT_` variables that other features
 | Name | Value | Status |
 | --- | --- | --- |
 | `REPOAGENT_MAX_ACTIVE_SESSIONS` | Integer from 1 to 64 | The most native Discussion turns running at once. Default `4`. See [Active-session limit](#active-session-limit). |
+| `REPOAGENT_ENROLLMENT_CATEGORIES` | 1 to 25 Discussion category names, separated by commas | New Discussions in these categories enroll without a mention. Absent means no category enrollment. See [Category enrollment](#category-enrollment). |
 
 ## Inspect or change settings
 
@@ -50,8 +51,31 @@ At the limit, newly observed input waits in the controller, as it does for a bus
 - **Refresh.** A change applies within one settings refresh, at most one minute. Raising the limit dispatches waiting input right after that refresh. Lowering it never stops or steers a running turn; new turns wait until running turns fall below the new limit. An invalid value or a failed read keeps the last effective limit.
 - **Order.** There is no fairness guarantee. When a slot frees, the controller tries the oldest waiting input first, but an observation that finds a free slot can dispatch its own Discussion first. Each Discussion still runs at most one turn at a time.
 
+## Category enrollment
+
+`REPOAGENT_ENROLLMENT_CATEGORIES` selects Discussion categories whose new Discussions start their native session without a mention. Mentions and `--enroll` URLs keep working in every category. Each Discussion still has one native session; labels never enroll a Discussion.
+
+**Value format.** List 1 to 25 category names, separated by commas, as they appear in the repository's Discussion categories. Matching ignores letter case and the spaces around each name. A name has at most 100 characters, no control characters, and appears once. A category whose name contains a comma cannot be selected. The controller and the settings command use the normalized form, for example `Agents, Q&A`. In PowerShell, quote the whole argument, because an unquoted comma makes an array:
+
+```powershell
+./install.ps1 -Action Settings -Repository owner/repo -Setting 'REPOAGENT_ENROLLMENT_CATEGORIES=Agents, Q&A' -Apply
+```
+
+**New and preexisting Discussions.** For each selected category, the controller records in its state file when its settings read first saw that category selected. A Discussion in the category enrolls at its next observation (poll, webhook or reconciliation) when GitHub's creation time is at or after the recorded time. Its body and existing comments form the bootstrap input, as for a mention. A Discussion created earlier is preexisting and never enrolls by category, even if it moves into the category later; mention the App or pass its URL to `--enroll` instead. A Discussion created after the recorded time in another category enrolls when it moves into a selected category.
+
+**Timing and changes.**
+
+- A running controller reads a change within one minute. A Discussion created between the variable change and that read counts as preexisting, so wait for the `repository-setting name=REPOAGENT_ENROLLMENT_CATEGORIES state=configured` log line before relying on a new category.
+- The recorded time survives restarts, so Discussions created while the controller is stopped enroll when it starts again. A category first selected while the controller is stopped is recorded when the controller next starts.
+- Removing a category stops new enrollment from it and forgets its recorded time. Discussions already enrolled keep their sessions. Selecting the category again starts afresh, so Discussions created while it was unselected stay preexisting.
+- Clearing the variable, or running without `--repository-settings`, removes every selection. An invalid value or a failed read keeps the previous selection.
+
+**Never enrolled by category.** Discussions authored by the controller's own App, such as its status dashboard, never enroll by category. This prevents a controller-written Discussion from starting agent work.
+
+Category enrollment needs no permission beyond Discussions read and the Variables read that settings already require. Broker-enrolled controllers cannot read settings yet (see [Controller behavior](#controller-behavior)), so they enroll only by mention or URL.
+
 ## Adding a setting
 
-1. Add an entry to the catalogue. It has `name` (`REPOAGENT_` plus uppercase letters, digits or `_`, and not a `reserved` name), `description`, `type`, `minimum` and `maximum`. Only `integer` exists today. A new type needs matching validation in `RepositorySetting.Normalize` and in `Get-Normalized` in [`scripts/repository-settings.ps1`](../scripts/repository-settings.ps1).
+1. Add an entry to the catalogue. It has `name` (`REPOAGENT_` plus uppercase letters, digits or `_`, and not a `reserved` name), `description`, `type`, `minimum` and `maximum`. Types are `integer` (bounded by `minimum` and `maximum`) and `category-names` (whose `minimum` and `maximum` bound the name count). A new type needs matching validation in `RepositorySetting.Normalize` and in `Get-Normalized` in [`scripts/repository-settings.ps1`](../scripts/repository-settings.ps1).
 2. Read the effective value from the `RepositorySettings` instance that `BridgeCommand` creates, as `settings["REPOAGENT_…"].Value`. A `null` value means the feature's own default applies. The value changes at most once per refresh, so read it at each decision point instead of caching it.
 3. Document the default and when a change takes effect. Then add a row to the table above.

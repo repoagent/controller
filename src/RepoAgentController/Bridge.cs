@@ -20,6 +20,8 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
     // Delivery retries back off from five seconds, doubling up to five minutes, with no attempt limit.
     static readonly TimeSpan FirstRetry = TimeSpan.FromSeconds(5), LastRetry = TimeSpan.FromMinutes(5);
     readonly TimeProvider clock = time ?? TimeProvider.System;
+    // Reads the same repository settings as the active-session limit.
+    readonly CategoryEnrollment categories = new(settings, github, store);
     // Serializes observation and idle dispatch over the shared state store.
     readonly SemaphoreSlim gate = new(1, 1), wake = new(0, 1);
     volatile bool inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
@@ -89,12 +91,17 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 // Read every page, including reactions to agent-authored messages.
                 var sources = await github.Sources(discussion, ct);
                 var bootstrap = record is null || record.Text("sessionId").Length == 0;
-                if (bootstrap && record?["waiting"] is null && !enroll.Contains(discussion["number"]!.GetValue<int>()) && !sources.Any(github.IsEnrollmentMention)) continue;
+                var byCategory = false;
+                if (bootstrap && record?["waiting"] is null && !enroll.Contains(discussion["number"]!.GetValue<int>()) && !sources.Any(github.IsEnrollmentMention))
+                {
+                    if (!categories.Selects(discussion)) continue;
+                    byCategory = true;
+                }
                 if (record is null)
                 {
                     record = new JsonObject { ["url"] = discussion.Text("url"), ["sources"] = new JsonObject() };
                     store.Discussions[id] = record;
-                    Log.Write("discovered", discussion.Text("url"));
+                    Log.Write("discovered", discussion.Text("url") + (byCategory ? " enrollment=category" : ""));
                 }
                 var previous = record["sources"]!.AsObject();
                 var current = new JsonObject();
