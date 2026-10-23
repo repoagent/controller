@@ -218,6 +218,16 @@ class ContainerConfigurationTests(unittest.TestCase):
                 runtime.configure(args)
             self.assertEqual(runtime.CONFIG.read_bytes(), saved)
 
+    def test_status_and_retained_logs_are_read_by_the_controller_from_the_runtime_state(self):
+        runtime = load_runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.CONFIG = Path(directory) / 'config/settings.json'
+            for command in ('status', 'logs'):
+                with patch.object(sys, 'argv', ['runtime.py', command]), \
+                     patch.object(runtime.os, 'execv') as controller:
+                    runtime.main()
+                controller.assert_called_once_with(runtime.CONTROLLER[0], runtime.CONTROLLER + [command, '--state', runtime.STATE])
+
     def test_unattended_runtime_login_never_starts_device_auth(self):
         runtime = load_runtime()
         with tempfile.TemporaryDirectory() as directory:

@@ -43,7 +43,7 @@ $env:REPOAGENT_INSTANCE = 'my-repo'
 .\repoagent.ps1 restart
 ```
 
-Ctrl+C exits the log viewer; the container keeps running. Keep Docker Desktop and the machine running for the agent to receive activity. The launcher does not install a Windows service or configure startup at login. It also supports `get`, `configure`, `check`, `login`, `import-codex-auth`, `versions`, `state`, `enroll` and `skills`. The Bash-only live-test runner remains available from a Bash environment.
+Ctrl+C exits the log viewer; the container keeps running. Keep Docker Desktop and the machine running for the agent to receive activity. The launcher does not install a Windows service or configure startup at login. It also supports `get`, `configure`, `check`, `login`, `import-codex-auth`, `versions`, `status`, `logs --retained`, `state`, `enroll` and `skills`. The Bash-only live-test runner remains available from a Bash environment.
 
 After startup, use the actor login printed in the logs, including `[bot]`, in a Discussion body or comment. A 👀 receipt means Codex accepted the input; wait for the App-authored reply. Alternatively, stop the agent, explicitly enroll a Discussion, then start it:
 
@@ -173,7 +173,7 @@ The supplied credential must be authorized to read that exact source repository/
 | `repoagent-default-credentials` | Codex sign-in/configuration |
 | `repoagent-default-workspace` | Agent working files |
 | `repoagent-default-history` | Native Codex session histories |
-| `repoagent-default-state` | JSON checkpoint, lease and renewable GitHub App credential/wrapper |
+| `repoagent-default-state` | JSON checkpoint, lease, renewable GitHub App credential/wrapper, operator status and bounded retained logs |
 | `repoagent-default-tools` | Updated `gh` and managed Codex executables and update metadata |
 | `repoagent-default-participant` | Separate human GitHub sign-in, used only by opt-in live tests |
 
@@ -189,6 +189,8 @@ Polling mode publishes no ports. Explicit [fixed-URL webhook mode](webhooks.md) 
 ./repoagent start
 ./repoagent state
 ```
+
+`./repoagent status` (or `.\repoagent.ps1 status`) shows identity, lifetime, authentication health, sessions, pending/running work and recent failures as JSON while the agent runs or after it stops. `./repoagent logs --retained` prints the retained logs from the state volume, which survive container replacement unlike `docker logs`. Retention defaults to five 1 MiB files; see [status and retained logs](../README.md#status-and-retained-logs) for fields, bounds and exclusions.
 
 Keep one running bridge per repository/App; separate instances do not make concurrent processing of the same conversations safe. Back up the state and native history before any manual recovery described in the [README](../README.md#checkpoints-and-manual-recovery).
 

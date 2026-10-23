@@ -288,7 +288,7 @@ sealed class Codex : IAsyncDisposable
                         else
                         {
                             if (Volatile.Read(ref closing) == 0) observe(epoch, message.Text("method"), message["params"]);
-                            if (message.Text("method") is "turn/completed" or "error") Log.Write("native-event", line);
+                            if (message.Text("method") is "turn/completed" or "error") Log.Write("native-event", Describe(message));
                         }
                         continue;
                     }
@@ -306,6 +306,18 @@ sealed class Codex : IAsyncDisposable
                 foreach (var completion in pending.Values) completion.TrySetException(error);
                 Log.Write("native-disconnected", error.Message);
             }
+        }
+
+        // Lifecycle identity and error text only: turn items can carry private transcript content.
+        static string Describe(JsonNode message)
+        {
+            static string Field(JsonNode? node, string name) => (node as JsonObject)?[name] is JsonValue value ? value.ToString() : "";
+            var parameters = message["params"];
+            var turn = (parameters as JsonObject)?["turn"];
+            var error = (turn as JsonObject)?["error"] ?? (parameters as JsonObject)?["error"];
+            var turnId = Field(turn, "id");
+            return $"method={Field(message, "method")} thread={Field(parameters, "threadId")} turn={(turnId.Length == 0 ? Field(parameters, "turnId") : turnId)}" +
+                $" status={Field(turn, "status")} will-retry={Field(parameters, "willRetry")} error={Field(error, "message")}";
         }
 
         public async ValueTask DisposeAsync()

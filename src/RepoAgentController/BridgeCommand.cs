@@ -32,7 +32,9 @@ public static class BridgeCommand
         var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (native work may still be running)" };
         var clone = new Option<bool>("--clone") { Description = "Use explicitly approved clone-capable credentials" };
         var checkAuth = new Option<bool>("--check-auth") { Description = "Verify App installation identity and prepare authenticated gh, then exit without starting Codex" };
-        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, azureWorkQueue, disableWebhook, once, checkAuth, clone };
+        var logFileBytes = new Option<long>("--log-file-bytes") { DefaultValueFactory = _ => RetainedLog.DefaultFileBytes, Description = $"Maximum bytes per retained log file beside --state ({RetainedLog.MinimumFileBytes}..{RetainedLog.MaximumFileBytes}); retained logs never exceed --log-files × this size" };
+        var logFiles = new Option<int>("--log-files") { DefaultValueFactory = _ => RetainedLog.DefaultFiles, Description = $"Retained log files, including the active file (1..{RetainedLog.MaximumFiles}); the oldest file is deleted on rotation" };
+        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, azureWorkQueue, disableWebhook, once, checkAuth, clone, logFileBytes, logFiles };
         var tokenFile = new Option<FileInfo>("--token-file") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
@@ -43,6 +45,20 @@ public static class BridgeCommand
             catch (Exception error) { Log.Write("app-command-error", error.Message); return 1; }
         });
         root.Subcommands.Add(githubCommand);
+        var statusState = new Option<FileInfo>("--state") { DefaultValueFactory = _ => new(".bridge-state.json") };
+        var statusCommand = new Command("status", "Print operator status as JSON: repository identity, lifetime, authentication, sessions, work and recent failures. Excludes credentials and transcript content; reads without the controller lease.") { statusState };
+        statusCommand.SetAction(result =>
+        {
+            var path = result.GetValue(statusState)!.FullName;
+            if (ControllerStatus.Read(path) is not { } snapshot) { Console.Error.WriteLine($"No controller state or status at {path}"); return 1; }
+            Console.WriteLine(ControllerStatus.Render(snapshot));
+            return 0;
+        });
+        root.Subcommands.Add(statusCommand);
+        var logsState = new Option<FileInfo>("--state") { DefaultValueFactory = _ => new(".bridge-state.json") };
+        var logsCommand = new Command("logs", "Print retained controller logs, oldest first; they survive restarts within the configured --log-files × --log-file-bytes bound") { logsState };
+        logsCommand.SetAction(result => Console.Write(RetainedLog.Read(RetainedLog.DirectoryFor(result.GetValue(logsState)!.FullName))));
+        root.Subcommands.Add(logsCommand);
         root.SetAction(async (result, cancellationToken) =>
         {
             try
@@ -78,6 +94,7 @@ public static class BridgeCommand
                 else if (workQueue is not null) throw new ArgumentException("An injected work queue requires --azure-work-queue");
                 var cwd = result.GetValue(workspace)!.FullName;
                 if (!Directory.Exists(cwd)) throw new ArgumentException("--workspace must exist");
+                RetainedLog.Validate(result.GetValue(logFileBytes), result.GetValue(logFiles));
                 var numbers = (result.GetValue(enroll) ?? []).Select(url =>
                 {
                     if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Host != "github.com" || uri.Scheme != "https")
@@ -90,6 +107,11 @@ public static class BridgeCommand
                 var statePath = result.GetValue(state)!.FullName;
                 var credentialDirectory = statePath + ".github-app";
                 using var store = new StateStore(statePath, repo, () => GitHubAppCredentials.ClearCache(credentialDirectory));
+                // Only the lease holder retains logs and records status for this state.
+                using var retained = new RetainedLog(RetainedLog.DirectoryFor(statePath), result.GetValue(logFileBytes), result.GetValue(logFiles));
+                using var status = new ControllerStatus(statePath, repo, result.GetValue(checkAuth) ? "check-auth" : result.GetValue(disableWebhook) ? "disable-webhook" :
+                    queue is not null ? "durable-webhook" : publicUrl is not null ? "webhook" : "polling");
+                using var observation = Log.Observe(entry => { retained.Append(entry); status.Record(entry); });
                 try
                 {
                     var broker = result.GetValue(brokerUrl);
@@ -175,6 +197,12 @@ public static class BridgeCommand
                         await refreshCancellation.CancelAsync();
                         await refresh;
                     }
+                }
+                catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                {
+                    GitHubAppCredentials.ClearCache(credentialDirectory);
+                    Log.Write("fatal", error.Message); // While leased, so status and retained logs record it.
+                    return 1;
                 }
                 catch { GitHubAppCredentials.ClearCache(credentialDirectory); throw; }
             }
