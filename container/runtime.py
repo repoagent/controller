@@ -20,6 +20,7 @@ import yaml
 CONFIG = Path('/data/config/settings.json')
 CODEX = Path('/data/credentials/codex')
 SKILLS = Path('/data/config/skills')
+REQUIRED_SKILLS = ('github-discussion', 'repoagent-orientation')  # Packaged beside the controller.
 STATE = '/data/state/bridge.json'
 CONTROLLER = ['/opt/repoagent/controller/RepoAgentController']
 
@@ -251,7 +252,7 @@ def install_skills(selection_path, token_path=None):
             name = metadata['name']
             if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', name):
                 raise ValueError(f'Invalid skill name at {repo}:{location}.')
-            if name == 'github-discussion' or (staging / name).exists():
+            if name in REQUIRED_SKILLS or (staging / name).exists():
                 raise ValueError(f'Duplicate or reserved skill name: {name}.')
             if any(p.is_symlink() for p in source.rglob('*')):
                 raise ValueError(f'Skill {name} contains symlinks; use regular files.')
@@ -264,7 +265,7 @@ def install_skills(selection_path, token_path=None):
             else: old.unlink()
         for skill in staging.iterdir(): shutil.move(str(skill), SKILLS / skill.name)
     (CONFIG.parent / 'skills.json').write_text(json.dumps(resolved, indent=2) + '\n')
-    print(json.dumps({'required': 'github-discussion', 'selected': resolved}, indent=2))
+    print(json.dumps({'required': list(REQUIRED_SKILLS), 'selected': resolved}, indent=2))
 
 
 def main():

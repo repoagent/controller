@@ -10,6 +10,7 @@ on:
       - 'image/**'
       - 'global.json'
       - '.agents/skills/github-discussion/**'
+      - '.agents/skills/repoagent-orientation/**'
       - 'scripts/compose-image.py'
       - '.github/workflows/publish-controller-image.yml'
 permissions:

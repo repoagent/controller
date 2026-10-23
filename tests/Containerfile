@@ -3,6 +3,7 @@ WORKDIR /workspace
 COPY global.json ./
 COPY src/ ./src/
 COPY .agents/skills/github-discussion/ ./.agents/skills/github-discussion/
+COPY .agents/skills/repoagent-orientation/ ./.agents/skills/repoagent-orientation/
 COPY tests/RepoAgentController.Tests/ ./tests/RepoAgentController.Tests/
 RUN dotnet build tests/RepoAgentController.Tests --nologo
 ENTRYPOINT ["dotnet", "run", "--no-build", "--project", "tests/RepoAgentController.Tests"]
