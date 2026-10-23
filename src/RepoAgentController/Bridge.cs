@@ -84,41 +84,45 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 var current = new JsonObject();
                 var changes = new JsonArray();
                 var receipts = new List<string>(); // Receipt source of each change, by index.
+                // The bootstrap context captured by this observation already carries every existing body.
+                var snapshot = bootstrap && record["waiting"]?["context"] is null;
                 foreach (var source in sources)
                 {
                     var sourceId = source.Text("id");
                     var version = Checkpoint(source);
                     current[sourceId] = version;
                     var old = previous[sourceId];
-                    var context = new JsonObject { ["discussion"] = Public(discussion) };
-                    var rootId = source["replyTo"]?.Text("id");
-                    if (rootId is { Length: > 0 }) context["threadRoot"] = Public(sources.Single(s => s.Text("id") == rootId));
-                    var target = new JsonObject { ["discussionId"] = id, ["replyToId"] = sourceId == id ? null : rootId ?? sourceId };
-                    void Add(string kind, JsonNode? reaction = null)
+                    // The Discussion ID travels once per dispatched batch; each change keeps its own thread root.
+                    var target = new JsonObject { ["replyToId"] = sourceId == id ? null : source["replyTo"]?.Text("id") ?? sourceId };
+                    var state = Changed(old?["state"], version["state"]!);
+                    void Add(string kind, JsonObject? content = null, JsonNode? reaction = null)
                     {
-                        var change = new JsonObject
-                        {
-                            ["kind"] = kind, ["subject"] = Public(source), ["context"] = context.Copy(), ["replyTarget"] = target.Copy()
-                        };
-                        if (old is not null && reaction is null) change["previous"] = old["content"]!.Copy();
+                        var subject = Subject(source);
+                        foreach (var field in content ?? []) subject[field.Key] = field.Value?.Copy();
+                        var change = new JsonObject { ["kind"] = kind, ["subject"] = subject, ["replyTarget"] = target.Copy() };
                         if (reaction is not null) change["reaction"] = reaction.Copy();
                         changes.Add((JsonNode)change);
                         receipts.Add(sourceId);
                     }
                     if (!Own(source["author"]) && !JsonNode.DeepEquals(old?["content"], version["content"]))
-                        Add(sourceId == id ? (old is null ? "discussion.created" : "discussion.changed") : (old is null ? "comment.created" : "comment.edited"));
+                    {
+                        var content = new JsonObject { ["body"] = source.Text("body") };
+                        foreach (var field in state) content[field.Key] = field.Value?.Copy();
+                        Add(sourceId == id ? (old is null ? "discussion.created" : "discussion.changed") : (old is null ? "comment.created" : "comment.edited"),
+                            snapshot && old is null ? null : content);
+                    }
                     // Discussion state can change independently of its original author.
-                    else if (sourceId == id && !bootstrap && !JsonNode.DeepEquals(old?["state"], version["state"])) Add("discussion.stateChanged");
+                    else if (sourceId == id && !bootstrap && !JsonNode.DeepEquals(old?["state"], version["state"])) Add("discussion.stateChanged", state);
                     var oldReactions = old?["reactions"]?.AsObject() ?? new JsonObject();
                     var newReactions = version["reactions"]!.AsObject();
                     foreach (var reaction in newReactions)
-                        if (!oldReactions.ContainsKey(reaction.Key)) Add("reaction.added", reaction.Value);
+                        if (!oldReactions.ContainsKey(reaction.Key)) Add("reaction.added", reaction: reaction.Value);
                     foreach (var reaction in oldReactions)
-                        if (!newReactions.ContainsKey(reaction.Key)) Add("reaction.removed", reaction.Value);
+                        if (!newReactions.ContainsKey(reaction.Key)) Add("reaction.removed", reaction: reaction.Value);
                 }
                 if (bootstrap && changes.Count == 0 && record["waiting"] is null)
                 {
-                    changes.Add((JsonNode)new JsonObject { ["kind"] = "discussion.enrolled", ["subject"] = Public(discussion), ["replyTarget"] = new JsonObject { ["discussionId"] = id, ["replyToId"] = null } });
+                    changes.Add((JsonNode)new JsonObject { ["kind"] = "discussion.enrolled", ["subject"] = Subject(discussion), ["replyTarget"] = new JsonObject { ["replyToId"] = null } });
                     receipts.Add(id);
                 }
                 if (changes.Count != 0) Queue(record, discussion, sources, changes, receipts, bootstrap, current);
@@ -217,12 +221,15 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         if (!create && codex.Loaded(session) && codex.Status(session) != Codex.SessionStatus.Idle) return false;
         var inputs = waiting["inputs"]!.AsArray();
         var bootstrap = waiting["context"] is not null;
+        // Bootstrap supplies the initial Discussion; a continuation shares only its identity, once per batch.
+        var discussion = waiting["discussion"]!;
         var envelope = new JsonObject
         {
             ["_bridge"] = new JsonObject { ["channel"] = "github-discussions", ["mode"] = bootstrap ? "bootstrap" : "continue", ["repository"] = github.Repository, ["agentLogin"] = github.AgentLogin, ["mentionLogin"] = github.MentionUser?.Login },
-            ["discussion"] = waiting["discussion"]!.Copy(), ["changes"] = new JsonArray()
+            ["discussion"] = bootstrap ? discussion.Copy() : new JsonObject { ["id"] = discussion.Text("id"), ["number"] = discussion["number"]?.Copy(), ["url"] = discussion.Text("url") }
         };
         if (bootstrap) envelope["context"] = waiting["context"]!.Copy();
+        envelope["changes"] = new JsonArray();
         var count = Batch(envelope, inputs, record);
         envelope["changes"] = new JsonArray(inputs.Take(count).Select(input => input!["change"]!.Copy()).ToArray());
         var receipts = inputs.Take(count).Select(input => input!["receipt"]!).DistinctBy(receipt => receipt.Text("id")).ToArray();
@@ -300,6 +307,24 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
             if (!Own(reaction!["user"])) reactions[reaction.Text("id")] = reaction.Copy();
         // updatedAt changes for our receipt/output too; content and actor-filtered reactions determine work.
         return new JsonObject { ["content"] = content, ["state"] = state, ["reactions"] = reactions };
+    }
+
+    // A change subject's identity and attribution. Unchanged bodies, titles and parent comments are left out; the agent
+    // has them from earlier input or fetches them by ID.
+    static JsonObject Subject(JsonNode source)
+    {
+        var subject = new JsonObject { ["id"] = source.Text("id"), ["url"] = source.Text("url"), ["author"] = source["author"]?.Copy() };
+        if (source["replyTo"] is { } parent) subject["replyTo"] = parent.Copy();
+        return subject;
+    }
+
+    // The checkpointed state fields whose values differ, with their current values.
+    static JsonObject Changed(JsonNode? before, JsonNode after)
+    {
+        var changed = new JsonObject();
+        foreach (var field in after.AsObject())
+            if (!JsonNode.DeepEquals(before?[field.Key], field.Value)) changed[field.Key] = field.Value?.Copy();
+        return changed;
     }
 
     static JsonNode Public(JsonNode source)
