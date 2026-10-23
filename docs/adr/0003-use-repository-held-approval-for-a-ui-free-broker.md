@@ -1,6 +1,6 @@
 # Use repository-held approval for a UI-free broker
 
-Environment storage choice superseded on 2026-10-20 by [ADR 0006](0006-use-repository-agent-variables-for-approval.md). The UI-free repository-held approval and authority model below remain accepted; Environment-specific text records the earlier storage choice.
+Environment storage choice superseded on 2026-10-20 by [ADR 0006](0006-use-repository-agent-variables-for-approval.md), whose location was in turn superseded on 2026-10-23 by [ADR 0007](0007-use-repository-actions-variables-for-approval.md) (direct repository Actions variables). The UI-free repository-held approval and authority model below remain accepted; Environment-specific text records the earlier storage choice.
 
 Accepted on 2026-10-20. Supersedes [ADR 0002](0002-bind-enrollment-renewal-to-the-approving-administrator.md).
 

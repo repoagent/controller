@@ -120,7 +120,7 @@ class CloneAssembledTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, journey.diagnostic(result) + output.read_text())
             receipt = journey.read('enrollment.json')
             self.assertEqual(receipt['protocolVersion'], 2)
-            self.assertEqual(receipt['policyVersion'], 'repository-agent-clone-approval-v2')
+            self.assertEqual(receipt['policyVersion'], 'repository-actions-clone-approval-v3')
             journey.private()
             self.assertTrue(any((directory / 'keys').glob('*.xml')))
             self.assertTrue(journey.read('recovery.json')['acknowledged'])
@@ -153,7 +153,7 @@ class CloneAssembledTests(unittest.TestCase):
                                 event['path'].endswith('/installation-token') and event['status'] == 200 for event in recorded))
             self.assertTrue(any(event.get('receiptBeforeAck') for event in recorded))
             scopes = [event['permissions'] for event in recorded if 'permissions' in event]
-            self.assertEqual(scopes, [{'agent_variables': 'read'}, {'discussions': 'write', 'contents': 'read'}])
+            self.assertEqual(scopes, [{'actions_variables': 'read'}, {'discussions': 'write', 'contents': 'read'}])
         finally:
             if broker.poll() is None:
                 broker.communicate('clean\n', timeout=20)

@@ -94,14 +94,16 @@ vault_name=$(az deployment group show --resource-group rg-storybeam-repoagent-co
 
 After preflight, stop the local controller with its existing instance selection (`repoagent.ps1 stop`). Use `scripts/revoke-approval.ps1` with its exact saved `-ApprovalStatePath`, `-EnrollmentFile` and `-Apply -NonInteractive` to withdraw the selected marker and close that device. Its result deliberately reports outstanding tokens as unsettled: closure alone does not release ownership. Observe positive broker cleanup/settlement and old-device denial before creating the cloud enrollment. Unknown capabilities remain blocked; never repair this with owner/counter/epoch resets.
 
-Use a fresh host state directory for the cloud device. The normal host flow saves the private enrollment before acknowledging it; retry with the same directory if interrupted. Run this only after settlement:
+Use a fresh host state directory for the cloud device. The normal host flow saves the private enrollment before acknowledging it; retry with the same directory if interrupted.
+
+The example keeps the deployed Agent-variable approval explicit. Once the deployed broker serves `/v3` setup and the App installation has accepted **Variables: Read**, drop `-ApprovalLocation AgentVariable` and `-ApprovalVariable` to use the default Actions variable `REPOAGENT_APPROVAL` ([ADR 0007](../../docs/adr/0007-use-repository-actions-variables-for-approval.md)). Run this only after settlement:
 
 ```sh
 cloud_state="$HOME/.repoagent/enrollment/storybeam-azure"
 pwsh -NoProfile -File scripts/enroll-controller.ps1 \
   -Repository StoryBeam/StoryBeam \
   -BrokerOrigin https://repoagent-auth.livelydune-309701b4.swedencentral.azurecontainerapps.io \
-  -ApprovalVariable APPROVED_CONTROLLER -Profile webhook-clone \
+  -ApprovalLocation AgentVariable -ApprovalVariable APPROVED_CONTROLLER -Profile webhook-clone \
   -StateDirectory "$cloud_state" -Apply -NonInteractive
 secret_uri=$(az keyvault secret set --vault-name "$vault_name" \
   --name controller-enrollment --file "$cloud_state/enrollment.json" --encoding utf-8 \

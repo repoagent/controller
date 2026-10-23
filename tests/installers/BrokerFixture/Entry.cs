@@ -164,7 +164,8 @@ internal sealed class GitHubBoundary : HttpMessageHandler
             var permissions=input.GetProperty("permissions");
             var ids=input.GetProperty("repository_ids");
             if (ids.GetArrayLength()!=1 || ids[0].GetInt64()!=123) throw new InvalidOperationException("Wrong provider repository scope");
-            var verifier=permissions.TryGetProperty("agent_variables",out var approval);
+            // Setup v3 verifies Actions variables; setup v2 retains Agent-variable verification.
+            var verifier=permissions.TryGetProperty("actions_variables",out var approval) || permissions.TryGetProperty("agent_variables",out approval);
             var clone = permissions.TryGetProperty("contents", out var contents);
             var hooks = permissions.TryGetProperty("repository_hooks", out var hookAccess);
             if (verifier ? approval.GetString()!="read" || permissions.EnumerateObject().Count()!=1 :
@@ -177,11 +178,12 @@ internal sealed class GitHubBoundary : HttpMessageHandler
             return new(HttpStatusCode.Created) { Content=JsonContent.Create(result) };
         }
         if (path.EndsWith("/installation")) result=new { id=789,app_id=5387625,app_slug="repo-agent-connector",suspended_at=(string?)null,
-            permissions=new { discussions="write",agent_variables="read",contents="read",repository_hooks="write" } };
+            permissions=new { discussions="write",actions_variables="read",agent_variables="read",contents="read",repository_hooks="write" } };
         else if(path=="/installation/repositories") result=new { total_count=1,repositories=new[]{new{id=123,full_name="example/project"}} };
-        else if(path=="/repos/example/project/agents/variables") {
+        else if(path is "/repos/example/project/actions/variables" or "/repos/example/project/agents/variables") {
             using var model=JsonDocument.Parse(File.ReadAllText(Path.Combine(Entry.DirectoryPath,"github.json")));
-            var variables=model.RootElement.GetProperty("variables").EnumerateObject().Select(p=>new{name=p.Name,value=p.Value.GetString()}).ToArray();
+            var store=path.EndsWith("/actions/variables") ? "variables" : "agent_variables";
+            var variables=model.RootElement.GetProperty(store).EnumerateObject().Select(p=>new{name=p.Name,value=p.Value.GetString()}).ToArray();
             result=new {total_count=variables.Length,variables};
         } else throw new InvalidOperationException("Unexpected provider endpoint "+path);
         Entry.Record(new { provider=request.Method+" "+path });
