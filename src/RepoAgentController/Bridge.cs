@@ -9,11 +9,13 @@ namespace RepoAgentController;
 /// A failed or unacknowledged delivery keeps its batch first in line and retries it with backoff; input that may already
 /// have reached the native is sent again marked as a redelivery, accepting possible duplicate processing.
 /// </summary>
-sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll, CheckoutRefresh? refresh = null,
-    TimeProvider? time = null)
+sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll, RepositorySettings settings,
+    CheckoutRefresh? refresh = null, TimeProvider? time = null)
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
+    /// <summary>Native turns that may run at once across Discussions while REPOAGENT_MAX_ACTIVE_SESSIONS has no effective value.</summary>
+    const int DefaultActiveSessions = 4;
     readonly HashSet<string> held = [];
     // Delivery retries back off from five seconds, doubling up to five minutes, with no attempt limit.
     static readonly TimeSpan FirstRetry = TimeSpan.FromSeconds(5), LastRetry = TimeSpan.FromMinutes(5);
@@ -24,6 +26,10 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
 
     /// <summary>True while any observed Discussion input waits in the controller for idle dispatch.</summary>
     public bool HasWaitingInput => inputWaiting;
+
+    // Read at each admission decision, so a refreshed repository value applies to the next dispatch.
+    int ActiveSessionLimit => settings["REPOAGENT_MAX_ACTIVE_SESSIONS"].Value is { } value
+        ? int.Parse(value, CultureInfo.InvariantCulture) : DefaultActiveSessions;
 
     /// <summary>Retries every delivery an earlier controller lifetime left unacknowledged. Call once, before observing.</summary>
     public void ResumeInterrupted()
@@ -156,7 +162,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 else if (!JsonNode.DeepEquals(previous, current)) { record["sources"] = current; store.Save(); }
                 if (record["waiting"] is not JsonObject waiting) continue;
                 if (!await Dispatch(record, ct) && changes.Count != 0)
-                    Log.Write("input-waiting", $"{discussion.Text("url")} session={record.Text("sessionId")} status={(record.Text("sessionId") is { Length: > 0 } session ? codex.Status(session).ToString() : "none")} waiting={waiting["inputs"]!.AsArray().Count} sources={string.Join(',', receipts.OfType<string>().Distinct())}");
+                    Log.Write("input-waiting", $"{discussion.Text("url")} session={record.Text("sessionId")} status={(record.Text("sessionId") is { Length: > 0 } session ? codex.Status(session).ToString() : "none")} waiting={waiting["inputs"]!.AsArray().Count} sources={string.Join(',', receipts.OfType<string>().Distinct())} active={codex.ActiveTurns} limit={ActiveSessionLimit}");
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
@@ -176,13 +182,14 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
     }
 
     /// <summary>
-    /// Wakes on native session status changes, or when the earliest scheduled delivery retry falls due, and dispatches
-    /// waiting input, oldest first, until stopped.
+    /// Wakes on native session status and repository setting changes, or when the earliest scheduled delivery retry falls
+    /// due, and dispatches waiting input, oldest first, until stopped.
     /// </summary>
     /// <remarks>An in-flight dispatch finishes on <paramref name="ct"/>; <paramref name="stop"/> only ends waiting.</remarks>
     public async Task DispatchWhenIdle(CancellationToken stop, CancellationToken ct)
     {
         codex.StatusChanged += Wake;
+        settings.Changed += Wake; // A raised active-session limit admits waiting input without another native event.
         try
         {
             TimeSpan delay;
@@ -210,7 +217,11 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
-        finally { codex.StatusChanged -= Wake; }
+        finally
+        {
+            codex.StatusChanged -= Wake;
+            settings.Changed -= Wake;
+        }
     }
 
     void Wake() { if (wake.CurrentCount == 0) try { wake.Release(); } catch (SemaphoreFullException) { } }
@@ -280,6 +291,8 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         if (!create && codex.Loaded(session) && codex.Status(session) != Codex.SessionStatus.Idle) return false;
         // After a failed attempt the batch waits for its backoff.
         if (RetryAt(waiting) > clock.GetUtcNow()) return false;
+        // Global capacity counts running native turns only; stored idle sessions and retrying deliveries take no slot.
+        if (codex.ActiveTurns >= ActiveSessionLimit) return false;
         var inputs = waiting["inputs"]!.AsArray();
         var bootstrap = waiting["context"] is not null;
         // Bootstrap supplies the initial Discussion; a continuation shares only its identity, once per batch.
@@ -297,7 +310,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var count = Batch(envelope, inputs, record);
         envelope["changes"] = new JsonArray(inputs.Take(count).Select(input => input!["change"]!.Copy()).ToArray());
         var receipts = inputs.Take(count).Select(input => input!["receipt"]).OfType<JsonNode>().DistinctBy(receipt => receipt.Text("id")).ToArray();
-        // Global admission: checkout refresh exclusion today; capacity limits can further hold dispatch here.
+        // Global admission: checkout refresh exclusion; the active-session limit was checked above.
         using var admission = refresh is null ? null : await refresh.Admit(ct);
         // Durable while the native outcome is unknown; an interrupted lifetime leaves it for redelivery at the next start.
         var pending = new JsonObject { ["operation"] = create ? "create-and-send" : "send", ["since"] = DateTimeOffset.UtcNow.ToString("O"), ["sourceIds"] = new JsonArray(receipts.Select(receipt => (JsonNode?)JsonValue.Create(receipt.Text("id"))).ToArray()), ["inputs"] = count };

@@ -32,6 +32,9 @@ sealed class RepositorySettings(GitHub? github, TimeProvider clock)
 
     public SettingValue this[string name] => Volatile.Read(ref values)[name];
 
+    /// <summary>Raised after a refresh that changed any setting's state, value or reason.</summary>
+    public event Action? Changed;
+
     public async Task Refresh(CancellationToken ct)
     {
         if (github is null)
@@ -41,6 +44,7 @@ sealed class RepositorySettings(GitHub? github, TimeProvider clock)
         }
         var previous = Volatile.Read(ref values);
         var next = new Dictionary<string, SettingValue>();
+        var changed = false;
         foreach (var setting in Catalogue)
         {
             var retained = previous[setting.Name].Value;
@@ -57,9 +61,10 @@ sealed class RepositorySettings(GitHub? github, TimeProvider clock)
                 observed = new("read-failed", retained, error is GitHub.StatusException status ? $"HTTP {status.Status}" : "GitHub read failed");
             }
             next[setting.Name] = observed;
-            if (observed != previous[setting.Name]) Log.Write("repository-setting", Describe(setting.Name, observed));
+            if (observed != previous[setting.Name]) { changed = true; Log.Write("repository-setting", Describe(setting.Name, observed)); }
         }
         Volatile.Write(ref values, next);
+        if (changed) Changed?.Invoke();
     }
 
     public async Task RefreshUntilCancelled(CancellationToken ct)
