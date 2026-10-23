@@ -15,9 +15,11 @@ src/RepoAgentController/GitHub.cs
 src/RepoAgentController/GitHubAppCredentials.cs
 src/RepoAgentController/ManagedCheckout.cs
 src/RepoAgentController/CheckoutRefresh.cs
+src/RepoAgentController/ControllerStatus.cs
 src/RepoAgentController/MentionUser.cs
 src/RepoAgentController/Program.cs
 src/RepoAgentController/RepoAgentController.csproj
+src/RepoAgentController/RetainedLog.cs
 src/RepoAgentController/StateStore.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs
