@@ -309,13 +309,13 @@ public sealed class RepositorySettingsTests
         sys.stderr.write('Unexpected GitHub command\n');sys.exit(2)
         """;
 
-    // Only the native JSON-RPC peer is controlled; it answers initialization and receives no turns here.
+    // Only the native JSON-RPC peer is controlled; it acknowledges startup requests and receives no turns here.
     const string Native = """
         #!/usr/bin/python3
         import json,os,sys
         for line in sys.stdin:
          request=json.loads(line)
-         if request.get('method')=='initialize':print(json.dumps({'id':request['id'],'result':{'codexHome':os.getcwd()}}),flush=True)
+         if 'id' in request:print(json.dumps({'id':request['id'],'result':{'codexHome':os.getcwd()} if request.get('method')=='initialize' else {}}),flush=True)
         """;
 
     // An external transport stub for App authentication; it is not GitHub compatibility evidence.
