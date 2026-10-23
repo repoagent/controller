@@ -16,10 +16,13 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
 
     public async Task<JsonNode> Query(string query, JsonObject variables, CancellationToken ct)
     {
-        var response = JsonNode.Parse(await Api("POST", "graphql", Json.Object(("query", query), ("variables", variables)), ct)) ?? throw new IOException("Empty GraphQL response");
+        var response = await GraphQL(query, variables, ct);
         if (response["errors"] is { } errors) throw new IOException($"GraphQL errors: {errors}");
         return response["data"] ?? throw new IOException("No GraphQL data");
     }
+
+    async Task<JsonNode> GraphQL(string query, JsonObject variables, CancellationToken ct) =>
+        JsonNode.Parse(await Api("POST", "graphql", Json.Object(("query", query), ("variables", variables)), ct)) ?? throw new IOException("Empty GraphQL response");
 
     public async Task<JsonNode?> Rest(string method, string resource, JsonNode? input, CancellationToken ct)
     {
@@ -76,8 +79,15 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         try { await process.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromSeconds(60), ct); }
         catch { if (!process.HasExited) process.Kill(true); throw; }
         var text = await output;
-        if (process.ExitCode != 0) throw new IOException($"gh failed: {await error}");
+        // gh exits nonzero for a GraphQL error response but still prints it; keep its typed errors for the caller.
+        if (process.ExitCode != 0 && !(resource == "graphql" && HasGraphQLErrors(text))) throw new IOException($"gh failed: {await error}");
         return text;
+    }
+
+    static bool HasGraphQLErrors(string text)
+    {
+        try { return JsonNode.Parse(text) is JsonObject response && response["errors"] is JsonArray { Count: > 0 }; }
+        catch (System.Text.Json.JsonException) { return false; }
     }
 
     public async Task VerifyIdentity(CancellationToken ct)
@@ -118,12 +128,20 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return discussions;
     }
 
+    /// <summary>Returns null only when GitHub confirms that the configured repository has no Discussion with this number.</summary>
     public async Task<JsonNode?> Discussion(int number, CancellationToken ct)
     {
         var parts = Repository.Split('/');
-        var data = await Query("query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { discussion(number:$number) { " + DiscussionFields + " } } }",
+        var response = await GraphQL("query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { discussion(number:$number) { " + DiscussionFields + " } } }",
             Json.Object(("owner", parts[0]), ("name", parts[1]), ("number", number)), ct);
-        return data["repository"]?["discussion"]?.Copy();
+        // Only the typed NOT_FOUND for this field inside the resolved repository confirms deletion. Message text,
+        // repository access loss, other error types and incomplete data stay failures.
+        if (response["errors"] is JsonArray { Count: 1 } single && single[0] is JsonObject error && JsonNode.DeepEquals(error["type"], "NOT_FOUND") &&
+            JsonNode.DeepEquals(error["path"], new JsonArray("repository", "discussion")) &&
+            response["data"]?["repository"] is JsonObject repository && repository.TryGetPropertyValue("discussion", out var missing) && missing is null)
+            return null;
+        if (response["errors"] is { } errors) throw new IOException($"GraphQL errors: {errors}");
+        return response["data"]?["repository"]?["discussion"]?.Copy() ?? throw new IOException("Incomplete Discussion response");
     }
 
     public async Task<List<JsonNode>> Sources(JsonNode discussion, CancellationToken ct)

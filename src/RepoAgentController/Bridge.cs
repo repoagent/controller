@@ -24,7 +24,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
         {
             var discussion = await github.Discussion(number, ct);
             if (discussion is not null) return await Observe([discussion], ct);
-            Log.Write("discussion-unavailable", $"{github.Repository} discussion={number}");
+            Forget(number);
             return true;
         }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -144,6 +144,16 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
             }
         }
         return succeeded;
+    }
+
+    void Forget(int number)
+    {
+        // GitHub confirmed deletion: end its controller state. Native conversation history is retained separately.
+        var url = $"https://github.com/{github.Repository}/discussions/{number}";
+        var forgotten = store.Discussions.Where(entry => string.Equals(entry.Value?.Text("url"), url, StringComparison.OrdinalIgnoreCase)).ToArray();
+        foreach (var entry in forgotten) { store.Discussions.Remove(entry.Key); blockedLogged.Remove(entry.Key); }
+        if (forgotten.Length != 0) store.Save();
+        Log.Write("discussion-forgotten", $"{url} reason=not-found session={string.Join(',', forgotten.Select(entry => entry.Value!.Text("sessionId")))}");
     }
 
     bool Own(JsonNode? actor) => github.IsAgentActor(actor);

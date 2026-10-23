@@ -55,10 +55,19 @@ Safe deferred refreshes retry the retained generation at idle with a five-second
 backoff. Temporary lookup failures need no new delivery; uncertain updates still
 require manual recovery and retain their work.
 
-Lease loss, failed observation, unknown native activity and failed checkpoint
-or queue completion stop the runtime while retaining recovery evidence.
-Uncertain native work is not automatically replayed. Backlog or manual
-recovery can therefore keep compute active; that condition is not idle.
+Lease loss, lost broker credentials, unknown native activity, failed checkpoint
+and failed queue send, receive, retry or completion stop the runtime while
+retaining recovery evidence. A failed observation does not: its hint returns to
+the queue, invisible for 5 seconds doubling per delivery up to 10 minutes,
+while later hints continue (`durable-work-retry`). Only GitHub's typed
+`NOT_FOUND` for the Discussion itself in the resolved configured repository
+confirms deletion. The controller then forgets that Discussion's state,
+including its session mapping, checkpoints and pending marker, and completes
+its work (`discussion-forgotten`); native conversation history is retained.
+Timeouts, incomplete reads, access loss, rate limits and provider errors are
+never treated as deletion.
+Uncertain native work is not automatically replayed. Backlog, retried failures
+or manual recovery can therefore keep compute active; that condition is not idle.
 
 ## Scaling and stopping
 
