@@ -99,9 +99,9 @@ internal sealed class CredentialHandoff : IDisposable
     public static async Task<InstallationCredential> Request(string credentialDirectory, CancellationToken ct)
     {
         var response = await Exchange(credentialDirectory, Json.Object(("operation", "get")), ct);
-        var token = response?["token"] is JsonValue value && value.TryGetValue<string>(out var text) ? text : "";
+        var token = response["token"] is JsonValue value && value.TryGetValue<string>(out var text) ? text : "";
         if (token.Length == 0 || token.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)) ||
-            !DateTimeOffset.TryParse(response!.Text("expiresAt"), CultureInfo.InvariantCulture, DateTimeStyles.None, out var expiry) ||
+            !DateTimeOffset.TryParse(response.Text("expiresAt"), CultureInfo.InvariantCulture, DateTimeStyles.None, out var expiry) ||
             expiry <= DateTimeOffset.UtcNow.AddSeconds(30))
             throw Unavailable();
         Log.Protect(token);
@@ -112,7 +112,7 @@ internal sealed class CredentialHandoff : IDisposable
     public static async Task Reject(string credentialDirectory, string token, CancellationToken ct) =>
         await Exchange(credentialDirectory, Json.Object(("operation", "reject"), ("token", token)), ct);
 
-    static async Task<JsonNode?> Exchange(string credentialDirectory, JsonNode request, CancellationToken ct)
+    static async Task<JsonNode> Exchange(string credentialDirectory, JsonNode request, CancellationToken ct)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(10));
