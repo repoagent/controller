@@ -110,21 +110,44 @@ public sealed class RepositorySettingsTests
         Assert.Contains(fixture.Log, line => line.Contains(" fatal ") && line.Contains("Variables: read"));
     }
 
-    [Fact]
-    public async Task Broker_enrollment_profiles_cannot_be_silently_widened_for_settings()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_repository_settings_broker_enrollment_reads_settings_with_its_brokered_lease(bool clone)
     {
         using var fixture = new Fixture();
-        var enrollment = Path.Combine(fixture.Directory, "enrollment.json");
-        File.WriteAllText(enrollment, "{}");
-        File.SetUnixFileMode(enrollment, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        using var broker = new HttpClient(fixture.Provider, disposeHandler: false);
+        using var broker = new BrokerAuthenticationTests.Fixture(clone: clone, settings: true);
+        fixture.Variables[Setting] = "4";
 
-        Assert.Equal(1, await BridgeCommand.Run(["--repo", "owner/repository", "--app-id", "123",
-            "--broker-url", "https://credentials.example.org", "--enrollment-file", enrollment, "--check-auth",
-            "--state", Path.Combine(fixture.Directory, "bridge.json"), "--repository-settings"], broker, "/missing/gh", shutdownToken: TestContext.Current.CancellationToken));
+        Assert.Equal(0, await fixture.CheckBroker(broker, [.. clone ? ["--clone"] : Array.Empty<string>(), "--repository-settings"]));
 
-        Assert.Empty(fixture.Provider.TokenRequests);
-        Assert.Contains(fixture.Log, line => line.Contains(" fatal ") && line.Contains("--repository-settings") && line.Contains("broker"));
+        Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=configured value=4"));
+        Assert.Equal("/v3/devices/device-1/installation-token", Assert.Single(broker.Transport.Requests).AbsolutePath);
+        // Every catalogue read is a direct Actions-variable GET with the brokered lease.
+        var reads = fixture.GitHubRequests().Where(request => request.Endpoint != "graphql").ToArray();
+        Assert.Contains(reads, read => read.Endpoint == "repos/owner/repository/actions/variables/" + Setting);
+        Assert.All(reads, read =>
+        {
+            Assert.Equal(("GET", "opaque-token-1"), (read.Method, read.Token));
+            Assert.StartsWith("repos/owner/repository/actions/variables/REPOAGENT_", read.Endpoint);
+        });
+        Assert.Empty(fixture.Provider.TokenRequests); // No App key or direct token request exists in broker mode.
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Frozen_broker_enrollments_still_refuse_repository_settings_and_are_not_widened(bool clone)
+    {
+        using var fixture = new Fixture();
+        using var broker = new BrokerAuthenticationTests.Fixture(clone: clone);
+        fixture.Variables[Setting] = "4";
+
+        Assert.Equal(1, await fixture.CheckBroker(broker, [.. clone ? ["--clone"] : Array.Empty<string>(), "--repository-settings"]));
+
+        Assert.Empty(broker.Transport.Requests);
+        Assert.Empty(fixture.GitHubRequests());
+        Assert.Contains(fixture.Log, line => line.Contains(" fatal ") && line.Contains("--repository-settings requires a repository-settings enrollment"));
     }
 
     [Fact]
@@ -244,6 +267,14 @@ public sealed class RepositorySettingsTests
             Save();
             using var http = new HttpClient(Provider, disposeHandler: false);
             return await BridgeCommand.Run([.. Arguments(), "--check-auth", .. options], http, gh, shutdownToken: TestContext.Current.CancellationToken);
+        }
+
+        public async Task<int> CheckBroker(BrokerAuthenticationTests.Fixture broker, params string[] options)
+        {
+            Save();
+            return await BridgeCommand.Run(["--repo", "owner/repository", "--app-id", "123", "--broker-url", "https://credentials.example.org",
+                "--enrollment-file", broker.EnrollmentFile, "--state", Path.Combine(Directory, "bridge.json"), "--workspace", Directory,
+                "--check-auth", .. options], broker.Http, gh, shutdownToken: TestContext.Current.CancellationToken);
         }
 
         public async Task<RunningController> Run(params string[] options)

@@ -4,7 +4,7 @@ param(
     [string]$Repository,
     [string]$BrokerOrigin,
     [string]$ApprovalVariable,
-    [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone')][string]$Profile,
+    [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone', 'polling-settings', 'webhook-settings', 'polling-clone-settings', 'webhook-clone-settings')][string]$Profile,
     [string]$StateDirectory,
     # Fresh setup v3 approves through a direct repository Actions variable. AgentVariable
     # explicitly selects legacy setup v2. Saved state always keeps its own location.
@@ -131,16 +131,19 @@ function Check-Marker([string]$Text) {
 }
 function Check-Enrollment($Enrollment, $Marker) {
     $bindingFields = @('protocolVersion','brokerOrigin','githubHost','deviceId','deviceSecret','appId','appSlug','installationId','repositoryId','repository','permissions')
-    if ($clone) { $bindingFields += @('profile','policyVersion') }
+    # Clone (runtime v2) and repository-settings (runtime v3) files name their profile and policy.
+    if ($runtimeVersion -gt 1) { $bindingFields += @('profile','policyVersion') }
     Assert-Fields $Enrollment $bindingFields
-    if ($clone -and ($Enrollment.profile -cne $Profile -or $Enrollment.policyVersion -cne $policy)) { Stop-Enrollment 'Clone policy differs.' }
+    if ($runtimeVersion -gt 1 -and ($Enrollment.profile -cne $Profile -or $Enrollment.policyVersion -cne $policy)) { Stop-Enrollment 'Enrollment profile policy differs.' }
     foreach ($key in @('protocolVersion','appId','installationId','repositoryId')) { Assert-Id $Enrollment[$key] }
     if ($Enrollment.protocolVersion -ne $runtimeVersion -or (Get-BrokerOrigin $Enrollment.brokerOrigin) -cne $BrokerOrigin -or $Enrollment.githubHost -cne 'github.com' -or $Enrollment.deviceId -cne $Marker.deviceId -or $Enrollment.appId -ne $Marker.appId -or $Enrollment.appSlug -cne $Marker.appSlug -or $Enrollment.installationId -ne $Marker.installationId -or $Enrollment.repositoryId -ne $Marker.repositoryId -or $Enrollment.repository -ine $Repository) { Stop-Enrollment 'Completion binding differs from the approved enrollment.' }
     Assert-Text $Enrollment.deviceSecret '\A[A-Za-z0-9_-]{43,128}\z'
-    $fields = @('discussions'); if ($Profile -in @('webhook','webhook-clone')) { $fields += 'repository_hooks' }
-    if ($clone) { $fields += 'contents'; if ($Enrollment.permissions.Contains('metadata')) { $fields += 'metadata' } }
+    $fields = @('discussions'); if ($Profile.StartsWith('webhook', [StringComparison]::Ordinal)) { $fields += 'repository_hooks' }
+    if ($clone) { $fields += 'contents' }
+    if ($settings) { $fields += 'actions_variables' }
+    if ($runtimeVersion -gt 1 -and $Enrollment.permissions.Contains('metadata')) { $fields += 'metadata' }
     Assert-Fields $Enrollment.permissions $fields
-    foreach ($key in $fields) { if ($Enrollment.permissions[$key] -cne $(if ($key -in @('contents','metadata')) { 'read' } else { 'write' })) { Stop-Enrollment 'Completion permission profile differs.' } }
+    foreach ($key in $fields) { if ($Enrollment.permissions[$key] -cne $(if ($key -in @('contents','metadata','actions_variables')) { 'read' } else { 'write' })) { Stop-Enrollment 'Completion permission profile differs.' } }
 }
 function Wait-Work([switch]$AcknowledgmentRecovery) {
     if (-not $AcknowledgmentRecovery -and $config.deadline -and [DateTimeOffset]::Parse($config.deadline) -le [DateTimeOffset]::UtcNow.AddSeconds(5)) { Stop-Enrollment 'Original enrollment deadline reached; private recovery state retained.' }
@@ -185,14 +188,20 @@ try {
     if (-not $BrokerOrigin -and -not $NonInteractive) { $BrokerOrigin = Read-Host 'Trusted broker HTTPS origin' }
     if (-not $ApprovalVariable) { $ApprovalVariable = if ($NonInteractive) { $defaultVariable } else { $answer = Read-Host "Approval variable [$defaultVariable]"; if ($answer) { $answer } else { $defaultVariable } } }
     if (-not $Profile) { $Profile = 'polling' }
-    Assert-Text $Profile '\A(?:polling|webhook|polling-clone|webhook-clone)\z'
-    $clone = $Profile.EndsWith('-clone', [StringComparison]::Ordinal)
-    $runtimeVersion = if ($clone) { 2 } else { 1 }
-    $policy = if ($actions) { if ($clone) { 'repository-actions-clone-approval-v3' } else { 'repository-actions-approval-v3' } }
+    Assert-Text $Profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?\z'
+    $clone = $Profile.Contains('-clone', [StringComparison]::Ordinal)
+    # The repository-settings family (runtime v3) adds exactly Actions variables read to a frozen
+    # profile. It exists only under Actions-variable approval; frozen profiles are never widened.
+    $settings = $Profile.EndsWith('-settings', [StringComparison]::Ordinal)
+    if ($settings -and -not $actions) { Stop-Enrollment 'Repository-settings profiles require Actions-variable approval (setup v3); Agent-variable approval serves only the frozen profiles.' }
+    $runtimeVersion = if ($settings) { 3 } elseif ($clone) { 2 } else { 1 }
+    $policy = if ($settings) { 'repository-actions-settings-approval-v3' }
+        elseif ($actions) { if ($clone) { 'repository-actions-clone-approval-v3' } else { 'repository-actions-approval-v3' } }
         elseif ($clone) { 'repository-agent-clone-approval-v2' } else { 'repository-agent-approval-v2' }
     $permissionPreview = 'discussions:write'
     if ($clone) { $permissionPreview += ', contents:read' }
-    if ($Profile -in @('webhook','webhook-clone')) { $permissionPreview += ', repository_hooks:write' }
+    if ($Profile.StartsWith('webhook', [StringComparison]::Ordinal)) { $permissionPreview += ', repository_hooks:write' }
+    if ($settings) { $permissionPreview += ', actions_variables:read' }
     $script:Diagnostic = "Supply OWNER/REPO, a trusted HTTPS broker origin, and a valid $($script:Label) approval variable of at most 100 characters."
     Assert-Text $Repository '\A[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\z'
     if (@($Repository.Split('/') | Where-Object { $_ -in @('.', '..') }).Count) { Stop-Enrollment 'Invalid repository.' }

@@ -24,8 +24,11 @@ param(
     [ValidateSet('Broker', 'OwnApp')][string]$Authentication,
     [string]$BrokerOrigin,
     [string]$StateDirectory,
-    [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone')][string]$EnrollmentProfile,
+    [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone', 'polling-settings', 'webhook-settings', 'polling-clone-settings', 'webhook-clone-settings')][string]$EnrollmentProfile,
     [switch]$Clone,
+    # Read REPOAGENT_ repository settings: selects the explicit repository-settings enrollment
+    # profile (runtime v3, Actions variables read) for Broker, or the direct-App flag for OwnApp.
+    [switch]$RepositorySettings,
     [string]$ApprovalStatePath,
     [string]$EnrollmentFile,
     [string]$GitHubEnvironment,
@@ -189,6 +192,7 @@ try {
         'mentionUser','model','mode','publicUrl','listenPort','reconcileInterval','toolUpdates','webSearch','codexAuthPath')
     if ($saved) {
         if ($saved.Contains('clone')) { $fields += 'clone' }
+        if ($saved.Contains('repositorySettings')) { $fields += 'repositorySettings' }
         if ($saved.Contains('launchState')) { $fields += 'launchState' }
         Assert-Fields $saved $fields
         if ($saved.schemaVersion -ne 1 -or $saved.instance -cne $Instance -or -not $(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase.Equals($saved.stateDirectory, $StateDirectory) } else { [StringComparer]::Ordinal.Equals($saved.stateDirectory, $StateDirectory) })) { Stop-Install 'Saved launch coordinates differ from the selected instance/state directory.' }
@@ -202,6 +206,12 @@ try {
     if ($saved -and $saved.Contains('clone') -and $saved.clone -cnotin @('true','false')) { Stop-Install 'Invalid saved clone selection.' }
     $resolvedClone = if ($provided.ContainsKey('Clone')) { [bool]$Clone } else { [bool]$savedClone }
     if ($saved -and $resolvedClone -ne [bool]$savedClone) { Stop-Install 'Changing clone authority requires a fresh instance and enrollment.' }
+    # Likewise, older records have no repository-settings choice. Reading settings is a separate
+    # authority (the explicit v3 broker profile or the direct-App flag); it is never added in place.
+    $savedSettings = $saved -and $saved.Contains('repositorySettings') -and $saved.repositorySettings -ceq 'true'
+    if ($saved -and $saved.Contains('repositorySettings') -and $saved.repositorySettings -cnotin @('true','false')) { Stop-Install 'Invalid saved repository-settings selection.' }
+    $resolvedSettings = if ($provided.ContainsKey('RepositorySettings')) { [bool]$RepositorySettings } else { [bool]$savedSettings }
+    if ($saved -and $resolvedSettings -ne [bool]$savedSettings) { Stop-Install 'Changing repository-settings authority requires a fresh instance and enrollment.' }
     $Authentication = Setting Authentication $(if ($AppId -or $KeyPath) { 'OwnApp' } else { 'Broker' })
     if ($Authentication -notin @('Broker','OwnApp')) { Stop-Install 'Authentication must be Broker or OwnApp.' }
     $approvalPath = Join-Path $StateDirectory 'approval.json'
@@ -242,11 +252,12 @@ try {
         $BrokerOrigin = Get-BrokerOrigin $BrokerOrigin
         Select-RepositoryContext
         $expectedProfile = if ($resolvedClone) { if ($Mode -eq 'polling') { 'polling-clone' } else { 'webhook-clone' } } else { 'polling' }
+        if ($resolvedSettings) { $expectedProfile += '-settings' }
         $resolvedProfile = Setting EnrollmentProfile $(if ($EnrollmentProfile) { $EnrollmentProfile } else { $expectedProfile })
         if ($resolvedProfile -cne $expectedProfile -or (-not $resolvedClone -and $Mode -ne 'polling')) {
             Stop-Install 'Mode and clone selection must match the enrollment profile; ordinary guided setup supports polling only.'
         }
-        if ($resolvedClone -and $approval -and $approval.profile -cne $expectedProfile) { Stop-Install 'Changing clone authority requires a fresh instance and enrollment.' }
+        if (($resolvedClone -or $resolvedSettings) -and $approval -and $approval.profile -cne $expectedProfile) { Stop-Install 'Changing clone or repository-settings authority requires a fresh instance and enrollment.' }
         $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
         $enrollOptions = @{ Repository=$Repository; BrokerOrigin=$BrokerOrigin; ApprovalVariable=$ApprovalVariable; Profile=$resolvedProfile; StateDirectory=$StateDirectory; NonInteractive=$true }
         if ($ApprovalLocation) { $enrollOptions.ApprovalLocation = $ApprovalLocation }
@@ -319,7 +330,7 @@ try {
         $match = [regex]::Match((Get-Content "$PSScriptRoot/scripts/compose-image.py" -Raw), "(?m)^RUNTIME = '([^']+)'\r?$")
         if (-not $match.Success) { Stop-Install 'Cannot read the maintained base image selection.' }; $match.Groups[1].Value
     }
-    $plan = [ordered]@{ clone=$(if ($resolvedClone) { 'true' } else { 'false' }); schemaVersion=1; instance=$Instance; stateDirectory=$StateDirectory; authentication=$Authentication; repository=$Repository;
+    $plan = [ordered]@{ clone=$(if ($resolvedClone) { 'true' } else { 'false' }); repositorySettings=$(if ($resolvedSettings) { 'true' } else { 'false' }); schemaVersion=1; instance=$Instance; stateDirectory=$StateDirectory; authentication=$Authentication; repository=$Repository;
         brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; enrollmentProfile=$resolvedProfile; imageManifest=$ImageManifest;
         imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
@@ -332,6 +343,10 @@ try {
     if ($resolvedClone) {
         Write-Host "Repository context: $resolvedProfile; Contents read, Discussions write$(if ($Mode -ne 'polling') { ', repository hooks write' }). Fresh instance and approval required."
         Write-Host 'Persistent checkout: /workspace/repository. Trust this exact repository root for native instructions, project configuration and local skills.'
+    }
+    if ($resolvedSettings) {
+        if ($Authentication -eq 'Broker') { Write-Host "Repository settings: $resolvedProfile adds Actions variables read for REPOAGENT_ settings (runtime v3). Fresh instance and approval required." }
+        else { Write-Host 'Repository settings: the runtime token adds Actions variables read for REPOAGENT_ settings; the App installation must grant Variables: read.' }
     }
     Write-Host "Host launch/recovery state: $StateDirectory"
     Write-Host "Image: $(if ($runtimeImageId) { $runtimeImageId } else { 'pending build' }); base: $baseImage; platform: linux/amd64; maintained compatibility: Ubuntu 26.04."
@@ -390,6 +405,7 @@ try {
     $stage = 'configure and privately import enrollment'
     $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--tool-updates', $ToolUpdates, '--web-search', $WebSearch)
     if ($resolvedClone) { $configuration += '--clone' }
+    if ($resolvedSettings) { $configuration += '--repository-settings' }
     if ($InstallationId) { $configuration += @('--installation-id', $InstallationId) }
     $configuration += @('--listen-port', $ListenPort, '--reconcile-interval', $ReconcileInterval, "--public-url=$PublicUrl")
     if ($Authentication -eq 'Broker') { $configuration += @('--broker-url', $BrokerOrigin, '--enrollment-file', $enrollmentPath) }

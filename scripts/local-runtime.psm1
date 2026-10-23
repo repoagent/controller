@@ -278,7 +278,7 @@ function Invoke-LocalUninstall([hashtable]$Options) {
     Assert-Text $binding.deviceId '\A[A-Za-z0-9_-]{1,128}\z'
     Assert-Text $binding.expectedValueSha256 '\A[0-9a-f]{64}\z'
     Assert-Text $binding.approvalVariable '\A[A-Z_][A-Z0-9_]{0,99}\z'
-    Assert-Text $binding.profile '\A(?:polling|webhook)(?:-clone)?\z'
+    Assert-Text $binding.profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?\z'
     $null = Get-BrokerOrigin $binding.brokerOrigin
     $context = Initialize-LocalRuntime $Options.Instance $(if ($env:REPOAGENT_IMAGE) { $env:REPOAGENT_IMAGE } else { 'repoagent:local' }) $false $false $stateDirectory (-not $Options.Apply)
     if (-not $context.Managed) { throw 'Uninstall requires a proven managed instance.' }
@@ -416,7 +416,7 @@ function Get-LaunchChoices($Record) {
     $choices = [ordered]@{}
     foreach ($key in $Record.currentLaunch.settings.Keys | Where-Object { $_ -notin @('keyPath','enroll') }) {
         $field = if ($key -eq 'brokerUrl') { 'brokerOrigin' } else { $key }
-        $choices[$field] = if ($key -eq 'clone') { ([string]$Record.currentLaunch.settings[$key]).ToLowerInvariant() } else { [string]$Record.currentLaunch.settings[$key] }
+        $choices[$field] = if ($key -in @('clone','repositorySettings')) { ([string]$Record.currentLaunch.settings[$key]).ToLowerInvariant() } else { [string]$Record.currentLaunch.settings[$key] }
     }
     $choices['enrollmentProfile'] = $Record.currentLaunch.binding.profile
     return $choices

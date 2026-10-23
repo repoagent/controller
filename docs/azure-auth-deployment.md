@@ -76,11 +76,20 @@ Use the IDs and resource-group name in the tables above. Updating a repository v
 
 [ADR 0007](adr/0007-use-repository-actions-variables-for-approval.md) selects direct repository Actions variables in the controlled repository for controller approval. It supersedes the Agent-variable location of [ADR 0006](adr/0006-use-repository-agent-variables-for-approval.md). [#184](https://github.com/repoagent/controller/issues/184) implements the [v3 setup/marker source contract](../service/auth/README.md#repository-actions-variable-enrollment-v3). Existing [v2 Agent-variable](../service/auth/README.md#repository-agent-variable-enrollment-v2) and legacy Environment bindings keep their kinds, and controller files and runtime routes are unchanged. Azure, live App-installation and native Windows acceptance remain release gates. The flow requires no GitHub Environment creation, name, numeric identity or deployment settings. Azure Container Apps environments remain a separate infrastructure concept. The deployment variables in the configuration table above are Actions variables of this repository. They are unrelated to a controlled repository's approval variable (default `REPOAGENT_APPROVAL`), and deployment tooling must never write that name.
 
-The host needs GitHub-authorized write access to the selected Actions variable. Only the broker's internal verifier receives `actions_variables: read`, subject to live installation-scope proof, and runtime controller profiles never get approval-variable access. Operator actions before the installer default reaches operators:
+The host needs GitHub-authorized write access to the selected Actions variable. The broker's internal verifier receives `actions_variables: read`, subject to live installation-scope proof. Runtime controller profiles never get variables write access. Only the explicit repository-settings profiles ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md)) add `actions_variables: read` to their runtime tokens. Operator actions before the installer default reaches operators:
 
 1. Add Repository permission **Variables: Read** to the shared App, and have each installation accept it.
 2. Deploy a broker build that serves the `/v3` setup routes. An older broker answers `/v3` with 404, and installers then fail before writing any approval.
 3. Keep `-ApprovalLocation AgentVariable` available as the explicit rollback.
+
+Repository-settings profiles reuse the same App permission. Their order of operations is:
+
+1. Confirm that **Variables: Read** is on the shared App and accepted by the target installation. Settings runtime mints request `actions_variables: read`, and GitHub refuses them otherwise.
+2. Deploy a broker build that serves runtime v3 (`POST /v3/devices/{id}/installation-token` and `DELETE /v3/devices/{id}`) before operators use `-RepositorySettings` or a `*-settings` profile. An older broker refuses settings profiles at setup with `400` and answers the v3 runtime routes with `404`, so nothing is enrolled with a scope it cannot serve.
+3. Deploy the matching controller image. An older controller rejects a v3 enrollment file before contacting the broker.
+4. Re-enroll each controller that should read settings: revoke, wait for settlement, and enroll a new instance with the settings profile. Existing grants are never widened.
+
+To roll back, re-enroll with a frozen profile. Rolling the broker back below runtime v3 makes settings controllers fail closed until they are re-enrolled. See [migration and rollback](repository-settings.md#broker-enrollments).
 
 This change modifies no deployment resources, workflow, OIDC trust or live variable; hosted acceptance remains required. See [the approval contract](auth-repository-approval.md).
 

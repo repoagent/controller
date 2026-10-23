@@ -278,6 +278,7 @@ public sealed class ActionsVariableEnrollmentTests
         public Func<HttpRequestMessage, HttpResponseMessage?>? Fault { get; set; }
         public int VerifierMints;
         public string? VerifierPermission;
+        public List<Dictionary<string, string>> RuntimePermissions { get; } = [];
 
         public static Repository Configure(EnrollmentFixture f)
         {
@@ -292,10 +293,9 @@ public sealed class ActionsVariableEnrollmentTests
                     var permissions = input.GetProperty("permissions");
                     Assert.Equal(123456, Assert.Single(input.GetProperty("repository_ids").EnumerateArray()).GetInt64());
                     var names = permissions.EnumerateObject().Select(p => p.Name).ToArray();
-                    if (names.Any(name => name.EndsWith("variables", StringComparison.Ordinal)))
+                    if (names is [var permission] && permission.EndsWith("variables", StringComparison.Ordinal))
                     {
-                        // Only the broker-internal verifier may read approval, and only read.
-                        var permission = Assert.Single(names);
+                        // The broker-internal verifier reads approval with exactly one read-only grant.
                         Assert.Equal("read", permissions.GetProperty(permission).GetString());
                         repository.VerifierPermission = permission;
                         repository.VerifierMints++;
@@ -306,9 +306,12 @@ public sealed class ActionsVariableEnrollmentTests
                             repositories = new[] { new { id = 123456, full_name = "owner/project" } }
                         }, HttpStatusCode.Created);
                     }
-                    // Controller runtime credentials never receive approval read or write access.
-                    Assert.DoesNotContain(names, name => name is "actions" or "environments" or "variables" or "secrets");
+                    // Runtime credentials never write variables or read other approval locations; only
+                    // the explicit settings family may add Actions variables read (asserted per test).
+                    Assert.DoesNotContain(names, name => name is "actions" or "environments" or "variables" or "secrets" or "agent_variables");
+                    if (permissions.TryGetProperty("actions_variables", out var variables)) Assert.Equal("read", variables.GetString());
                     Assert.Equal("write", permissions.GetProperty("discussions").GetString());
+                    repository.RuntimePermissions.Add(permissions.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString()!));
                     return GitHubTransport.Json(new
                     {
                         token = "runtime-token-" + f.GitHub.Mints, expires_at = f.Clock.GetUtcNow().Add(f.GitHub.RuntimeLifetime),

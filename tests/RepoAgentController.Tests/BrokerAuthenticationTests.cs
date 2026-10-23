@@ -502,6 +502,83 @@ public sealed class BrokerAuthenticationTests
         Assert.Empty(fixture.Transport.Requests);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Settings_consumer_selects_v3_only_with_explicit_repository_settings(bool webhooks, bool clone)
+    {
+        using var fixture = new Fixture(webhooks, clone, settings: true);
+        Assert.Equal(0, await fixture.Start());
+        Assert.Equal("/v3/devices/device-1/installation-token", Assert.Single(fixture.Transport.Requests).AbsolutePath);
+
+        // Without the explicit selection the same file is never consumed as a frozen profile.
+        fixture.RepositorySettings = false;
+        Assert.Equal(1, await fixture.Start());
+        Assert.Single(fixture.Transport.Requests);
+        Assert.Contains("repository-settings enrollment requires --repository-settings", fixture.RetainedLog);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Frozen_enrollments_still_refuse_repository_settings_before_broker_contact(bool webhooks, bool clone)
+    {
+        using var fixture = new Fixture(webhooks, clone) { RepositorySettings = true };
+        Assert.Equal(1, await fixture.Start());
+        Assert.Empty(fixture.Transport.Requests);
+        Assert.Contains("--repository-settings requires a repository-settings enrollment", fixture.RetainedLog);
+    }
+
+    [Theory]
+    [InlineData("profile", "polling-clone")]
+    [InlineData("policyVersion", "repository-actions-clone-approval-v3")]
+    [InlineData("protocolVersion", "2")]
+    [InlineData("without-variables", "")]
+    [InlineData("variables-write", "write")]
+    public void Settings_file_must_name_its_exact_family_and_grants_before_contact(string field, string value)
+    {
+        using var fixture = new Fixture(clone: true, settings: true);
+        switch (field)
+        {
+            case "without-variables": fixture.Enrollment["permissions"]!.AsObject().Remove("actions_variables"); break;
+            case "variables-write": fixture.Enrollment["permissions"]!["actions_variables"] = value; break;
+            case "protocolVersion": fixture.Enrollment[field] = int.Parse(value); break;
+            default: fixture.Enrollment[field] = value; break;
+        }
+        fixture.SaveEnrollment();
+        Assert.Throws<InvalidOperationException>(() => fixture.Credentials());
+        Assert.Empty(fixture.Transport.Requests);
+    }
+
+    [Theory]
+    [InlineData("profile")]
+    [InlineData("policyVersion")]
+    [InlineData("frozen-policy")]
+    [InlineData("protocolVersion")]
+    [InlineData("without-variables")]
+    [InlineData("variables-write")]
+    [InlineData("permissions")]
+    public async Task Settings_lease_must_repeat_the_enrolled_family_and_exact_grants_on_renewal(string defect)
+    {
+        using var fixture = new Fixture(clone: true, settings: true);
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        var current = await fixture.InvokeGitHelper("owner/repository.git");
+        Assert.Equal("username=x-access-token\npassword=opaque-token-1\n\n", current.Output);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        fixture.Transport.Defect = defect;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
+        var denied = await fixture.InvokeGitHelper("owner/repository.git");
+        Assert.NotEqual(0, denied.Exit);
+        Assert.Equal("quit=true\n\n", denied.Output);
+        Assert.Equal(2, fixture.Transport.Requests.Count);
+        Assert.All(fixture.Transport.Requests, uri => Assert.Contains("/v3/", uri.AbsolutePath));
+    }
+
     internal sealed class Fixture : IDisposable
     {
         public string Directory { get; } = Path.Combine(Path.GetTempPath(), "broker-tests-" + Guid.NewGuid().ToString("N"));
@@ -518,16 +595,28 @@ public sealed class BrokerAuthenticationTests
         readonly bool clone;
         readonly string wrapper;
 
-        public Fixture(bool webhooks = false, bool clone = false, string clonePolicy = "repository-agent-clone-approval-v2")
+        // The CLI's explicit --repository-settings selection; it defaults to the enrolled family.
+        public bool RepositorySettings { get; set; }
+
+        public Fixture(bool webhooks = false, bool clone = false, string clonePolicy = "repository-agent-clone-approval-v2", bool settings = false)
         {
             this.webhooks = webhooks;
             this.clone = clone;
+            RepositorySettings = settings;
             System.IO.Directory.CreateDirectory(Directory);
             Enrollment = JsonNode.Parse("""
                 {"protocolVersion":1,"brokerOrigin":"https://credentials.example.org","githubHost":"github.com","deviceId":"device-1","deviceSecret":"abcdefghijklmnopqrstuvwxyz_0123456789-ABCDEFG","appId":123,"appSlug":"test-app","installationId":234,"repositoryId":345,"repository":"owner/repository","permissions":{"discussions":"write"}}
                 """)!.AsObject();
             if (webhooks) Enrollment["permissions"]!["repository_hooks"] = "write";
-            if (clone)
+            if (settings)
+            {
+                Enrollment["protocolVersion"] = 3;
+                Enrollment["profile"] = (webhooks ? "webhook" : "polling") + (clone ? "-clone" : "") + "-settings";
+                Enrollment["policyVersion"] = "repository-actions-settings-approval-v3";
+                if (clone) Enrollment["permissions"]!["contents"] = "read";
+                Enrollment["permissions"]!["actions_variables"] = "read";
+            }
+            else if (clone)
             {
                 Enrollment["protocolVersion"] = 2;
                 Enrollment["profile"] = webhooks ? "webhook-clone" : "polling-clone";
@@ -561,13 +650,15 @@ public sealed class BrokerAuthenticationTests
 
         public HttpClient Http => http;
 
-        public GitHubAppCredentials Credentials() => GitHubAppCredentials.FromBroker(http, "https://credentials.example.org/", EnrollmentFile, "123", "OWNER/Repository", CredentialDirectory, Clock, webhooks, clone);
+        public GitHubAppCredentials Credentials() => GitHubAppCredentials.FromBroker(http, "https://credentials.example.org/", EnrollmentFile, "123", "OWNER/Repository", CredentialDirectory, Clock, webhooks, clone,
+            repositorySettings: RepositorySettings);
 
         public Task<int> Start(string? option = null, string? value = null, bool keepFile = false)
         {
             var args = new List<string> { "--repo", "owner/repository", "--app-id", "123", "--state", State, "--broker-url", "https://credentials.example.org", "--enrollment-file", EnrollmentFile, "--check-auth" };
             if (option == "--enrollment-environment" && !keepFile) args.RemoveRange(args.IndexOf("--enrollment-file"), 2);
             if (clone) args.Add("--clone");
+            if (RepositorySettings) args.Add("--repository-settings");
             if (webhooks) args.AddRange(["--webhook-url", "https://controller.example.org"]);
             if (option is not null)
             {
@@ -607,6 +698,7 @@ public sealed class BrokerAuthenticationTests
             await process.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
             return (process.ExitCode, await output);
         }
+        public string RetainedLog => string.Concat(System.IO.Directory.EnumerateFiles(State + ".logs").Select(File.ReadAllText));
         public void Dispose() { http.Dispose(); System.IO.Directory.Delete(Directory, true); }
     }
 
@@ -646,6 +738,9 @@ public sealed class BrokerAuthenticationTests
                 case "appSlug": result[Defect] = "other-app"; break;
                 case "repository": result[Defect] = "owner/other"; break;
                 case "permissions": result["permissions"]!["contents"] = "write"; break;
+                case "frozen-policy": result["policyVersion"] = "repository-actions-clone-approval-v3"; break;
+                case "without-variables": result["permissions"]!.AsObject().Remove("actions_variables"); break;
+                case "variables-write": result["permissions"]!["actions_variables"] = "write"; break;
                 case "permission-level": result["permissions"]!["discussions"] = "read"; break;
                 case "token": result["token"] = ""; break;
                 case "whitespace-token": result["token"] = "token with space"; break;

@@ -226,6 +226,7 @@ Supply these container environment variables. They are not repository Actions va
 | `REPOAGENT_ENROLLMENT` | **Secret.** The complete private `enrollment.json` from [host enrollment](host-enrollment.md), unchanged |
 | `REPOAGENT_REPOSITORY`, `REPOAGENT_APP_ID`, `REPOAGENT_BROKER_URL` | Required binding: `OWNER/REPO`, numeric App ID and the broker's HTTPS origin |
 | `REPOAGENT_CLONE` | `true` for clone enrollments; omitted or `false` otherwise |
+| `REPOAGENT_REPOSITORY_SETTINGS` | `true` for [repository-settings enrollments](repository-settings.md#broker-enrollments) (runtime v3); omitted or `false` otherwise |
 | `REPOAGENT_REPOSITORY_ID`, `REPOAGENT_INSTALLATION_ID` | Optional expected immutable identities |
 | `REPOAGENT_MENTION_USER`, `REPOAGENT_MODEL`, `REPOAGENT_WEB_SEARCH`, `REPOAGENT_TOOL_UPDATES`, `REPOAGENT_MODE`, `REPOAGENT_PUBLIC_URL`, `REPOAGENT_LISTEN_PORT`, `REPOAGENT_RECONCILE_INTERVAL`, `REPOAGENT_DASHBOARD_CATEGORY` | Optional runtime choices |
 

@@ -15,23 +15,31 @@ internal sealed record ApprovalContract(string Kind, long SetupVersion, string P
     // kind and policy: v2 Agent grants are never reinterpreted as, or migrated to, v3.
     public static readonly ApprovalContract Actions = new("repository-actions-variable", 3, "repository-actions-approval-v3", "actions-variable-verification");
     public static readonly ApprovalContract ActionsClone = new("repository-actions-variable", 3, "repository-actions-clone-approval-v3", "actions-variable-verification");
+    // The repository-settings family (runtime v3) adds exactly Actions variables read to a frozen
+    // profile. It exists only under setup v3 Actions approval; frozen families never gain it.
+    public static readonly ApprovalContract ActionsSettings = new("repository-actions-variable", 3, "repository-actions-settings-approval-v3", "actions-variable-verification");
     public bool IsAgent => this == Agent || this == AgentClone;
-    public bool IsActions => this == Actions || this == ActionsClone;
+    public bool IsActions => this == Actions || this == ActionsClone || this == ActionsSettings;
     // Agent and Actions approvals are direct repository variables without Environment identity.
     public bool IsRepositoryVariable => IsAgent || IsActions;
     public bool IsClone => this == AgentClone || this == ActionsClone;
-    public int RuntimeVersion => IsClone ? 2 : 1;
-    public bool Allows(string profile) => IsClone ? profile is "polling-clone" or "webhook-clone" : profile is "polling" or "webhook";
+    public bool IsSettings => this == ActionsSettings;
+    public int RuntimeVersion => IsSettings ? 3 : IsClone ? 2 : 1;
+    // Runtime v2 and v3 files and leases name their profile and approval policy explicitly.
+    public bool NamesProfile => RuntimeVersion > 1;
+    public bool Allows(string profile) => IsSettings ? profile is "polling-settings" or "webhook-settings" or "polling-clone-settings" or "webhook-clone-settings"
+        : IsClone ? profile is "polling-clone" or "webhook-clone" : profile is "polling" or "webhook";
     // Only the bound kind's direct listing is authority; locations never fall back to each other.
     public string VariablesPath => IsActions ? "actions/variables" : IsAgent ? "agents/variables" : throw new IssuanceDenied();
 
     public static ApprovalContract ForSetup(int setupVersion, string profile)
     {
+        var settings = profile.EndsWith("-settings", StringComparison.Ordinal);
         var clone = profile.EndsWith("-clone", StringComparison.Ordinal);
         return setupVersion switch
         {
-            2 => clone ? AgentClone : Agent,
-            3 => clone ? ActionsClone : Actions,
+            2 when !settings => clone ? AgentClone : Agent,
+            3 => settings ? ActionsSettings : clone ? ActionsClone : Actions,
             _ => throw new IssuanceDenied(400)
         };
     }
@@ -49,7 +57,12 @@ internal sealed record ApprovalContract(string Kind, long SetupVersion, string P
         {
             "environment-variable" => Legacy,
             "repository-agent-variable" => Text(entity, "PolicyVersion") == AgentClone.Policy ? AgentClone : Agent,
-            "repository-actions-variable" => Text(entity, "PolicyVersion") == ActionsClone.Policy ? ActionsClone : Actions,
+            "repository-actions-variable" => Text(entity, "PolicyVersion") switch
+            {
+                var policy when policy == ActionsClone.Policy => ActionsClone,
+                var policy when policy == ActionsSettings.Policy => ActionsSettings,
+                _ => Actions
+            },
             _ => throw new IssuanceDenied()
         };
         if (Number(entity, "SetupVersion") != contract.SetupVersion || Text(entity, "PolicyVersion") != contract.Policy)

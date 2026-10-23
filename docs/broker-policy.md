@@ -24,7 +24,7 @@ Report GitHub removal acknowledgment, durable broker closure and outstanding-tok
 
 ## Finite verification and service cost
 
-Preapproval verification is a separate internal capability: exact-repository `actions_variables:read` (`agent_variables:read` for legacy v2 grants), plus implicit metadata, with actual installation scope still requiring live proof, never returned to a controller. Runtime tokens exclude those grants. Verification before activation or after closure must not depend on permission to issue runtime tokens.
+Preapproval verification is a separate internal capability: exact-repository `actions_variables:read` (`agent_variables:read` for legacy v2 grants), plus implicit metadata, with actual installation scope still requiring live proof, never returned to a controller. Runtime tokens exclude those grants, except that the explicit repository-settings profiles ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md)) add exactly `actions_variables:read` to their frozen grants. Verification before activation or after closure must not depend on permission to issue runtime tokens.
 
 Anonymous start/poll requests must not mint a token on every poll. Reuse an appropriately scoped verifier token within its lifetime, while re-reading approval for each authorization operation; do not reuse a positive approval decision across operations. Reserve durable mint attempts before outbound calls, account for known and unknown outcomes, and do not automatically retry an ambiguous mint POST.
 

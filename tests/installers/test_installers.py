@@ -242,7 +242,7 @@ class ContainerConfigurationTests(unittest.TestCase):
         secret = '{"deviceSecret":"external-canary"}'  # Opaque here; the controller validates the document.
         external = {'REPOAGENT_ENROLLMENT': secret, 'REPOAGENT_REPOSITORY': 'example/project', 'REPOAGENT_APP_ID': '123',
                     'REPOAGENT_BROKER_URL': 'https://broker.example', 'REPOAGENT_CLONE': 'true', 'REPOAGENT_REPOSITORY_ID': '345',
-                    'REPOAGENT_TOOL_UPDATES': 'pinned', 'REPOAGENT_MODEL': 'external-model'}
+                    'REPOAGENT_TOOL_UPDATES': 'pinned', 'REPOAGENT_MODEL': 'external-model', 'REPOAGENT_REPOSITORY_SETTINGS': 'true'}
         with tempfile.TemporaryDirectory() as directory:
             runtime.CONFIG = Path(directory) / 'config/settings.json'
             runtime.CODEX = Path(directory) / 'codex'
@@ -258,6 +258,7 @@ class ContainerConfigurationTests(unittest.TestCase):
             self.assertNotIn('--enrollment-file', arguments)
             self.assertEqual(arguments[arguments.index('--repository-id') + 1], '345')
             self.assertIn('--clone', arguments)
+            self.assertIn('--repository-settings', arguments)
             self.assertEqual(environment['REPOAGENT_ENROLLMENT'], secret)
             self.assertNotIn(secret, ' '.join(arguments))
             self.assertEqual([command for command, _ in children], [['codex', 'login', 'status']])
@@ -269,6 +270,7 @@ class ContainerConfigurationTests(unittest.TestCase):
                     ('credential without configuration', {'REPOAGENT_REPOSITORY': None}, 'supply REPOAGENT_REPOSITORY'),
                     ('configuration without credential', {'REPOAGENT_ENROLLMENT': None}, 'requires the REPOAGENT_ENROLLMENT'),
                     ('ambiguous clone', {'REPOAGENT_CLONE': 'yes'}, 'REPOAGENT_CLONE must be true or false'),
+                    ('ambiguous settings', {'REPOAGENT_REPOSITORY_SETTINGS': '1'}, 'REPOAGENT_REPOSITORY_SETTINGS must be true or false'),
                     ('mixed with saved configuration', {}, 'saved configuration')]:
                 selected = {key: value for key, value in (external | changes).items() if value is not None}
                 if name == 'mixed with saved configuration':
@@ -329,7 +331,7 @@ class ContainerConfigurationTests(unittest.TestCase):
         self.assertNotIn('--image-inventory', without)
         self.assertNotIn('--startup-tool-updates', without)
 
-    def test_repository_settings_are_an_explicit_direct_App_runtime_choice(self):
+    def test_repository_settings_are_an_explicit_runtime_choice_and_fixed_for_a_broker_instance(self):
         runtime = load_runtime()
         with tempfile.TemporaryDirectory() as directory:
             runtime.CONFIG = Path(directory) / 'config/settings.json'
@@ -344,14 +346,32 @@ class ContainerConfigurationTests(unittest.TestCase):
             config = json.loads(runtime.CONFIG.read_text())
             self.assertIn('--repository-settings', runtime.bridge_args(config))
             self.assertIn('--repository-settings', runtime.bridge_args(config, check_auth=True))
-            saved = runtime.CONFIG.read_bytes()
+            # A direct-App instance may turn reads off again; its token request follows the flag.
+            args.repository_settings = False
+            runtime.configure(args)
+            self.assertNotIn('repositorySettings', json.loads(runtime.CONFIG.read_text()))
+            # A broker instance selects the explicit repository-settings enrollment family once.
             broker = argparse.Namespace(**dict(vars(args), key_path=None, broker_url='https://broker.example',
-                enrollment_file='/data/enrollment/enrollment.json'))
+                enrollment_file='/data/enrollment/enrollment.json', repository_settings=True))
             runtime.CONFIG.unlink()
-            with self.assertRaisesRegex(ValueError, 'Variables: read'):
+            runtime.configure(broker)
+            config = json.loads(runtime.CONFIG.read_text())
+            self.assertIs(config['repositorySettings'], True)
+            bridge = runtime.bridge_args(config)
+            self.assertIn('--repository-settings', bridge)
+            self.assertEqual(bridge[bridge.index('--enrollment-file') + 1], '/data/enrollment/enrollment.json')
+            # The enrollment family is fixed for the instance in both directions.
+            frozen = argparse.Namespace(**dict(vars(broker), repository_settings=False))
+            saved = runtime.CONFIG.read_bytes()
+            with self.assertRaisesRegex(ValueError, 'fresh instance and enrollment'):
+                runtime.configure(frozen)
+            self.assertEqual(runtime.CONFIG.read_bytes(), saved)
+            runtime.CONFIG.unlink()
+            runtime.configure(frozen)
+            saved = runtime.CONFIG.read_bytes()
+            with self.assertRaisesRegex(ValueError, 'fresh instance and enrollment'):
                 runtime.configure(broker)
-            self.assertFalse(runtime.CONFIG.exists())
-            runtime.CONFIG.write_bytes(saved)
+            self.assertEqual(runtime.CONFIG.read_bytes(), saved)
 
     def test_container_starts_with_image_tools_unless_startup_updates_are_chosen(self):
         runtime = load_runtime()

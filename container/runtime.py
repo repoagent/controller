@@ -31,9 +31,10 @@ INVENTORY = '/opt/repoagent/image-inventory.json'
 # controller process receives it; it is never written, logged or passed as an argument.
 ENROLLMENT_VARIABLE = 'REPOAGENT_ENROLLMENT'
 # Nonsecret configuration supplied with it, one REPOAGENT_<OPTION> per configure option.
-EXTERNAL_OPTIONS = ('repository', 'app-id', 'broker-url', 'clone', 'installation-id', 'repository-id', 'mention-user',
-                    'model', 'web-search', 'tool-updates', 'mode', 'public-url', 'listen-port', 'reconcile-interval',
-                    'dashboard-category')
+EXTERNAL_OPTIONS = ('repository', 'app-id', 'broker-url', 'clone', 'repository-settings', 'installation-id', 'repository-id',
+                    'mention-user', 'model', 'web-search', 'tool-updates', 'mode', 'public-url', 'listen-port',
+                    'reconcile-interval', 'dashboard-category')
+FLAG_OPTIONS = ('clone', 'repository-settings')
 
 
 def external_name(option):
@@ -172,8 +173,10 @@ def configure(args, *, persist=True):
         if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment:
             raise ValueError('Fixed URL needs a public HTTPS origin without credentials, path, query or fragment.')
     repository_settings = getattr(args, 'repository_settings', False)
-    if repository_settings and broker:
-        raise ValueError('Repository settings need a Variables: read runtime grant; broker enrollment profiles do not include it.')
+    # Broker reads need the explicit repository-settings enrollment family (runtime v3), so the choice is
+    # fixed for the instance like clone. Direct-App instances only change their own token request.
+    if config and broker and bool(config.get('repositorySettings', False)) != repository_settings:
+        raise ValueError('Changing repository-settings authority requires a fresh instance and enrollment.')
     clone = getattr(args, 'clone', False)
     if config and bool(config.get('clone', False)) != clone:
         raise ValueError('Changing clone authority requires a fresh instance and enrollment.')
@@ -206,7 +209,7 @@ def configure(args, *, persist=True):
             config['dashboardCategory'] = dashboard
         else:
             config.pop('dashboardCategory', None)
-    # Only direct-App configurations carry this key; broker binding checks keep their exact field set.
+    # Only configurations that read settings carry this key, so others keep their exact field set.
     if repository_settings:
         config['repositorySettings'] = True
     else:
@@ -241,10 +244,10 @@ def runtime_settings(injected):
                          f'{ENROLLMENT_VARIABLE} configuration, not both; choose a fresh instance to switch.')
     arguments = []
     for option, value in supplied.items():
-        if option == 'clone':
+        if option in FLAG_OPTIONS:
             if value not in ('true', 'false'):
                 raise ValueError(external_name(option) + ' must be true or false.')
-            arguments += ['--clone'] if value == 'true' else []
+            arguments += ['--' + option] if value == 'true' else []
         elif value or option in ('mention-user', 'public-url'):
             arguments.append(f'--{option}={value}')
     try:
