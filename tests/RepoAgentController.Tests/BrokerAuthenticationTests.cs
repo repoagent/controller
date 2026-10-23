@@ -434,7 +434,9 @@ public sealed class BrokerAuthenticationTests
         fixture.Clock.Advance(TimeSpan.FromMinutes(56));
         fixture.Transport.Defect = "other-clone-policy";
         await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
-        Assert.False(File.Exists(fixture.TokenFile));
+        var denied = await fixture.InvokeGitHelper("owner/repository.git");
+        Assert.NotEqual(0, denied.Exit);
+        Assert.Equal("quit=true\n\n", denied.Output);
         Assert.Equal(3, fixture.Transport.Requests.Count);
     }
 
