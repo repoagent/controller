@@ -2,7 +2,7 @@ using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
 
-sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> enroll, CheckoutRefresh? refresh = null)
+sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll, CheckoutRefresh? refresh = null)
 {
     readonly HashSet<string> blockedLogged = [];
 
@@ -132,10 +132,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
                 admission?.Confirm();
                 Log.Write("forwarded", $"{discussion.Text("url")} session={record.Text("sessionId")} changes={changes.Count} sources={string.Join(',', receipts)}");
                 foreach (var source in sources.Where(s => receipts.Contains(s.Text("id"))))
-                {
-                    try { await github.Receipt(source, ct); }
-                    catch (Exception error) when (error is not OperationCanceledException) { succeeded = false; Log.Write("receipt-error", $"{source.Text("url")}: {error.Message}; accepted input will not be replayed"); }
-                }
+                    outbox.Receipt(source);
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
