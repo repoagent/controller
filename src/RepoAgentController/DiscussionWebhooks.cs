@@ -105,7 +105,9 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
     async Task CompleteDurable(CancellationToken ct)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-        while (await timer.WaitForNextTickAsync(ct)) await durable!.CompleteAtIdle(refresh!.CommitAtIdle, ct);
+        // Input still waiting in the controller keeps its durable wake hint, even when every native turn is idle.
+        while (await timer.WaitForNextTickAsync(ct))
+            await durable!.CompleteAtIdle((commit, token) => refresh!.CommitAtIdle(commit, token, () => bridge.HasWaitingInput), ct);
     }
 
     async Task Receive(HttpListener listener, string secret, CancellationToken ct)
