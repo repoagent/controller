@@ -28,7 +28,7 @@ Inspection needs repository Variables read access, and changes need write access
 
 ## Controller behavior
 
-Enable reading with `--repository-settings`. For the container runtime, run `repoagent configure ... --repository-settings`. The GitHub App installation must grant **Variables: read**. In direct-App mode, the flag makes the runtime token request `actions_variables: read` in addition to its existing permissions. In broker mode, the flag selects a repository-settings enrollment (below). It never requests write, even when the installation grants write. Without the flag, the controller requests no new permission and logs `repository-settings state=disabled`.
+Enable reading with `--repository-settings`. For the container runtime, run `repoagent configure ... --repository-settings`. The GitHub App installation must grant **Variables: read**. In direct-App mode, the flag makes the runtime token request `actions_variables: read` in addition to its existing permissions. It never requests write, even when the installation grants write. In broker mode, the flag selects a repository-settings enrollment (below). Without the flag, the controller requests no new permission and logs `repository-settings state=disabled`.
 
 ### Broker enrollments
 
