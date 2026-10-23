@@ -262,7 +262,7 @@ class RefreshStepTests(unittest.TestCase):
         self.assertIn('createCommitOnBranch', request['query'])
         change = request['variables']['input']
         self.assertEqual(change['branch'], {'repositoryNameWithOwner': 'repoagent/controller', 'branchName': 'main'})
-        self.assertEqual(change['expectedHeadOid'], SHA, 'Only the verified main commit may receive the pin')
+        self.assertEqual(change.get('expectedHeadOid'), SHA,'Only the verified main commit may receive the pin')
         self.assertEqual(set(change['fileChanges']), {'additions'})
         files = {item['path']: base64.b64decode(item['contents']) for item in change['fileChanges']['additions']}
         self.assertEqual(set(files), {'scripts/compose-image.py', 'image/default.json'})
