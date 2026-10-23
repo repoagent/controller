@@ -67,6 +67,8 @@ def bridge_args(config, *, check_auth=False):
             args += ['--webhook-url', config['publicUrl']]
     if config.get('azureWorkQueue') and not check_auth:
         args += ['--azure-work-queue', config['azureWorkQueue']]
+    if config.get('dashboardCategory') and not check_auth:
+        args += ['--dashboard-category', config['dashboardCategory']]
     for url in config.get('enroll', []):
         args += ['--enroll', url]
     return args
@@ -74,7 +76,7 @@ def bridge_args(config, *, check_auth=False):
 
 def select_tools(config):
     paths = [p for p in os.environ['PATH'].split(os.pathsep) if p != '/data/tools/bin']
-    if config.get('toolUpdates', 'latest') == 'latest':
+    if config.get('toolUpdates') == 'latest':
         paths.insert(0, '/data/tools/bin')
     os.environ['PATH'] = os.pathsep.join(paths)
 
@@ -155,6 +157,15 @@ def configure(args):
         if config.get('azureWorkQueue') is not None and config['azureWorkQueue'] != queue:
             raise ValueError('Changing work queue requires a fresh instance after queued work is settled.')
         config['azureWorkQueue'] = queue
+    dashboard = getattr(args, 'dashboard_category', None)
+    if dashboard is not None:
+        if dashboard and (not dashboard.strip() or len(dashboard) > 100 or any(not c.isprintable() for c in dashboard)):
+            raise ValueError('Dashboard category must be an existing Discussion category name of at most 100 printable characters.')
+        # Only a configured dashboard carries this key, so other configurations keep their exact field set.
+        if dashboard:
+            config['dashboardCategory'] = dashboard
+        else:
+            config.pop('dashboardCategory', None)
     # Only direct-App configurations carry this key; broker binding checks keep their exact field set.
     if repository_settings:
         config['repositorySettings'] = True
@@ -295,12 +306,13 @@ def main():
     configure_parser.add_argument('--mention-user', default='repoagent')
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
     configure_parser.add_argument('--web-search', choices=['live', 'cached', 'disabled'], default='live')
-    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='latest')
+    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='pinned')
     configure_parser.add_argument('--mode', choices=['polling', 'fixed-url', 'quick-tunnel'], default='polling')
     configure_parser.add_argument('--public-url', default='')
     configure_parser.add_argument('--listen-port', type=int, default=8080)
     configure_parser.add_argument('--reconcile-interval', type=int, default=300)
     configure_parser.add_argument('--azure-work-queue')
+    configure_parser.add_argument('--dashboard-category')
     get = sub.add_parser('get'); get.add_argument('key')
     login = sub.add_parser('login')
     login.add_argument('--non-interactive', action='store_true')
@@ -345,7 +357,7 @@ def main():
         os.execv(CONTROLLER[0], CONTROLLER + [args.command, '--state', STATE])
     elif args.command in ('check', 'start'):
         config = settings()
-        if args.command == 'start' and config.get('toolUpdates', 'latest') == 'latest':
+        if args.command == 'start' and config.get('toolUpdates') == 'latest':
             update_tools.update()
         run(['codex', 'login', 'status'])
         if args.command == 'check':

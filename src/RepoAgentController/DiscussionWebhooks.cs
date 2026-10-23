@@ -193,6 +193,10 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
         var action = payload["action"]?.ToString() ?? "";
         if (action.Length is 0 or > 64 || action.Any(c => !char.IsAsciiLetterLower(c) && c != '_')) return 400;
         if (payload["discussion"]?["number"] is not JsonValue value || !value.TryGetValue<int>(out var number) || number < 1) return 400;
+        var discussion = payload["discussion"]!;
+        // Every heartbeat edit of the controller's own status Discussion is notified too; none of it is agent input.
+        if (github.IsDashboard(Json.Object(("author", Json.Object(("login", discussion["user"]?["login"]?.ToString()),
+            ("__typename", discussion["user"]?["type"]?.ToString()))), ("body", discussion["body"]?.ToString())))) return 204;
         var sender = Json.Object(("login", payload["sender"]?["login"]?.ToString()), ("__typename", payload["sender"]?["type"]?.ToString()));
         if (eventName == "discussion_comment" && github.IsAgentActor(sender))
         {
