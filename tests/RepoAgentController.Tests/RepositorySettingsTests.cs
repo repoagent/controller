@@ -11,6 +11,7 @@ namespace RepoAgentController.Tests;
 
 // Console output and PATH are process-wide, so share the serialized environment collection.
 [Collection("Managed checkout environment")]
+[System.Runtime.Versioning.UnsupportedOSPlatform("windows")] // The App gh wrapper is Linux/macOS only.
 public sealed class RepositorySettingsTests
 {
     const string Setting = "REPOAGENT_MAX_ACTIVE_SESSIONS";
@@ -116,10 +117,11 @@ public sealed class RepositorySettingsTests
         var enrollment = Path.Combine(fixture.Directory, "enrollment.json");
         File.WriteAllText(enrollment, "{}");
         File.SetUnixFileMode(enrollment, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        using var broker = new HttpClient(fixture.Provider, disposeHandler: false);
 
         Assert.Equal(1, await BridgeCommand.Run(["--repo", "owner/repository", "--app-id", "123",
             "--broker-url", "https://credentials.example.org", "--enrollment-file", enrollment, "--check-auth",
-            "--state", Path.Combine(fixture.Directory, "bridge.json"), "--repository-settings"], new HttpClient(fixture.Provider), "/missing/gh"));
+            "--state", Path.Combine(fixture.Directory, "bridge.json"), "--repository-settings"], broker, "/missing/gh", shutdownToken: TestContext.Current.CancellationToken));
 
         Assert.Empty(fixture.Provider.TokenRequests);
         Assert.Contains(fixture.Log, line => line.Contains(" fatal ") && line.Contains("--repository-settings") && line.Contains("broker"));
@@ -240,8 +242,8 @@ public sealed class RepositorySettingsTests
         public async Task<int> Check(params string[] options)
         {
             Save();
-            using var http = new HttpClient(Provider);
-            return await BridgeCommand.Run([.. Arguments(), "--check-auth", .. options], http, gh);
+            using var http = new HttpClient(Provider, disposeHandler: false);
+            return await BridgeCommand.Run([.. Arguments(), "--check-auth", .. options], http, gh, shutdownToken: TestContext.Current.CancellationToken);
         }
 
         public async Task<RunningController> Run(params string[] options)
@@ -255,7 +257,7 @@ public sealed class RepositorySettingsTests
             Environment.SetEnvironmentVariable("PATH", tools + Path.PathSeparator + previousPath);
             var clock = new Clock();
             var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-            var http = new HttpClient(Provider);
+            var http = new HttpClient(Provider, disposeHandler: false);
             var run = Task.Run(async () =>
             {
                 using (http) return await BridgeCommand.Run([.. Arguments(), "--interval", "3600", .. options], http, gh, clock, shutdown.Token);
