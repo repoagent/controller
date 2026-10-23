@@ -98,7 +98,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         try { await process.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromSeconds(60), ct); }
         catch { if (!process.HasExited) process.Kill(true); throw; }
         var text = await output;
-        // With --include, gh reports HTTP failures in-band; the caller classifies the status line.
+        // With --include, gh prints any HTTP response it received, including rejections, for classification.
         if (process.ExitCode != 0 && !(include && text.StartsWith("HTTP/", StringComparison.Ordinal))) throw new IOException($"gh failed: {await error}");
         return text;
     }
@@ -179,15 +179,85 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
 
     static string? Next(JsonNode connection) => connection["pageInfo"]!["hasNextPage"]!.GetValue<bool>() ? connection["pageInfo"]!.Text("endCursor") : null;
 
-    public async Task Receipt(JsonNode source, CancellationToken ct)
+    public static bool HasViewerReceipt(JsonNode source) =>
+        source["reactionGroups"]?.AsArray().Any(g => g!.Text("content") == "EYES" && g!["viewerHasReacted"]!.GetValue<bool>()) ?? false;
+
+    public async Task AddReceipt(string subjectId, CancellationToken ct)
     {
-        if (source["reactionGroups"]!.AsArray().Any(g => g!.Text("content") == "EYES" && g!["viewerHasReacted"]!.GetValue<bool>()))
+        var data = await Send("mutation($id:ID!) { addReaction(input:{subjectId:$id,content:EYES}) { reaction { id } } }", Json.Object(("id", subjectId)), ct);
+        if (data["addReaction"]?["reaction"]?["id"] is null)
+            throw new GitHubWriteException(GitHubFailure.Transient, "receipt mutation returned no reaction", uncertain: true);
+    }
+
+    /// <summary>Reads whether the App's EYES receipt exists, to reconcile an uncertain earlier write.</summary>
+    public async Task<bool> HasReceipt(string subjectId, CancellationToken ct)
+    {
+        var node = (await Send("query($id:ID!) { node(id:$id) { ... on Reactable { reactionGroups { content viewerHasReacted } } } }", Json.Object(("id", subjectId)), ct))["node"];
+        return node is null ? throw new GitHubWriteException(GitHubFailure.Permanent, "receipt subject no longer exists") : HasViewerReceipt(node);
+    }
+
+    // Controller-owned requests: classify by HTTP status, rate-limit headers and GraphQL error type.
+    async Task<JsonNode> Send(string query, JsonObject variables, CancellationToken ct)
+    {
+        string response;
+        try { response = await Api("POST", "graphql", Json.Object(("query", query), ("variables", variables)), ct, include: true); }
+        catch (Exception error) when (error is not OperationCanceledException)
         {
-            Log.Write("receipt-reused", source.Text("url"));
-            return;
+            // No HTTP response was observed, so the request may still have been applied.
+            throw new GitHubWriteException(GitHubFailure.Transient, error.Message, uncertain: true);
         }
-        var data = await Query("mutation($id:ID!) { addReaction(input:{subjectId:$id,content:EYES}) { reaction { id } } }", Json.Object(("id", source.Text("id"))), ct);
-        if (data["addReaction"]?["reaction"]?["id"] is null) throw new IOException("Receipt mutation returned no reaction");
-        Log.Write("receipt", source.Text("url"));
+        return GitHubWriteException.Classify(response);
+    }
+}
+
+enum GitHubFailure { Transient, RateLimited, Permanent }
+
+/// <summary>A classified controller-owned GitHub request failure. Uncertain means GitHub may have applied it.</summary>
+sealed class GitHubWriteException(GitHubFailure kind, string message, bool uncertain = false, TimeSpan? retryAfter = null,
+    DateTimeOffset? resetAt = null) : IOException(message)
+{
+    static readonly string[] Rejections = ["NOT_FOUND", "FORBIDDEN", "UNPROCESSABLE"];
+    public GitHubFailure Kind { get; } = kind;
+    public bool Uncertain { get; } = uncertain;
+
+    /// <summary>The earliest retry GitHub signalled, if any.</summary>
+    public DateTimeOffset? NotBefore(DateTimeOffset now)
+    {
+        var after = retryAfter is { } delay ? now + delay : (DateTimeOffset?)null;
+        return after is null ? resetAt : resetAt is null || after > resetAt ? after : resetAt;
+    }
+
+    /// <summary>Returns GraphQL data from gh --include output, or throws the classified failure.</summary>
+    public static JsonNode Classify(string response)
+    {
+        var lines = response.Split('\n');
+        if (!int.TryParse(lines[0].Split(' ', 3).ElementAtOrDefault(1), out var status))
+            throw new GitHubWriteException(GitHubFailure.Transient, "unrecognized gh response", uncertain: true);
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var index = 1;
+        for (; index < lines.Length && lines[index].TrimEnd('\r').Length != 0; index++)
+            if (lines[index].Split(':', 2) is [var name, var field]) headers[name.Trim()] = field.Trim();
+        JsonNode? body = null;
+        try { body = JsonNode.Parse(string.Join('\n', lines.Skip(index + 1))); } catch (System.Text.Json.JsonException) { }
+        var errors = body?["errors"] as JsonArray ?? [];
+        var types = errors.Select(error => error?["type"] is JsonValue type && type.TryGetValue<string>(out var text) ? text : "").ToArray();
+        var detail = (errors.FirstOrDefault()?["message"] ?? body?["message"]) is JsonValue value && value.TryGetValue<string>(out var message) ? message : "";
+        var description = $"HTTP {status}{(types.FirstOrDefault(t => t.Length != 0) is { } first ? " " + first : "")}{(detail.Length != 0 ? ": " + detail : "")}";
+        var exhausted = headers.GetValueOrDefault("X-RateLimit-Remaining") == "0";
+        TimeSpan? retryAfter = int.TryParse(headers.GetValueOrDefault("Retry-After"), out var seconds) && seconds >= 0 ? TimeSpan.FromSeconds(seconds) : null;
+        DateTimeOffset? reset = exhausted && long.TryParse(headers.GetValueOrDefault("X-RateLimit-Reset"), out var epoch) ? DateTimeOffset.FromUnixTimeSeconds(epoch) : null;
+        if (status == 429 || types.Contains("RATE_LIMITED") || (status == 403 && (retryAfter is not null || exhausted ||
+            detail.Contains("rate limit", StringComparison.OrdinalIgnoreCase) || detail.Contains("abuse", StringComparison.OrdinalIgnoreCase))))
+            throw new GitHubWriteException(GitHubFailure.RateLimited, description, retryAfter: retryAfter, resetAt: reset);
+        if (status is >= 200 and < 300)
+        {
+            if (errors.Count == 0) return body?["data"] ?? throw new GitHubWriteException(GitHubFailure.Transient, description + ": no data", uncertain: true);
+            if (types.All(Rejections.Contains)) throw new GitHubWriteException(GitHubFailure.Permanent, description);
+            throw new GitHubWriteException(GitHubFailure.Transient, description, uncertain: true);
+        }
+        // 401: renewal may recover the credential. 408, 409 and 5xx may have been applied before failing.
+        if (status == 401) throw new GitHubWriteException(GitHubFailure.Transient, description);
+        if (status is 400 or 403 or 404 or 410 or 422) throw new GitHubWriteException(GitHubFailure.Permanent, description);
+        throw new GitHubWriteException(GitHubFailure.Transient, description, uncertain: true);
     }
 }

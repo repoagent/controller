@@ -170,7 +170,9 @@ public static class BridgeCommand
                         await codex.Initialize(runtimeToken);
                         if (reconciliation is not null) await reconciliation.Start(codex,
                             durable is null ? TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)) : Timeout.InfiniteTimeSpan, runtimeToken);
-                        var bridge = new Bridge(github, codex, store, numbers, reconciliation);
+                        await using var outbox = new GitHubOutbox(statePath + ".outbox", github, clock ?? TimeProvider.System);
+                        var bridge = new Bridge(github, codex, store, outbox, numbers, reconciliation);
+                        if (!result.GetValue(once)) outbox.Start(runtimeToken);
                         if (publicUrl is not null)
                         {
                             await new DiscussionWebhooks(github, bridge, statePath,
@@ -184,7 +186,7 @@ public static class BridgeCommand
                             var pollStarted = Stopwatch.GetTimestamp();
                             var succeeded = await bridge.Poll(runtimeToken);
                             Log.Write("poll-completed", $"success={succeeded} elapsed-ms={Stopwatch.GetElapsedTime(pollStarted).TotalMilliseconds:F0}");
-                            if (result.GetValue(once)) return succeeded ? 0 : 1;
+                            if (result.GetValue(once)) return await outbox.Flush(runtimeToken) && succeeded ? 0 : 1;
                             await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), clock ?? TimeProvider.System, runtimeToken);
                         } while (!runtimeToken.IsCancellationRequested);
                         return 0;
