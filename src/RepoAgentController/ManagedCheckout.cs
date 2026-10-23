@@ -6,7 +6,7 @@ namespace RepoAgentController;
 
 internal sealed record RepositoryCheckout(long Id, string Name, string Remote, string Branch);
 
-/// <summary>Owns one persistent checkout, refusing ambiguous state without repairing user work.</summary>
+/// <summary>Owns one persistent, disposable checkout of the bound origin mainline, refusing foreign or unsafe state.</summary>
 internal sealed class ManagedCheckout : IDisposable
 {
     const UnixFileMode PrivateFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
@@ -66,14 +66,18 @@ internal sealed class ManagedCheckout : IDisposable
                 await Run(AppGitHubCommand.Create(gh, credentials.TokenFile, ["repo", "clone", repository.Remote, root]), ct);
             }
             var git = AppGitHubCommand.FindExecutable("git");
-            var commit = await Inspect(git, root, repository, ct);
             var ownerFile = Path.Combine(root, ".git", "repoagent-owner");
+            string commit;
             if (saved is not null)
             {
-                if (saved.Text("commit") != commit || ReadFile(ownerFile, CheckoutMetadataMode) != saved.Text("owner")) throw Blocked("checkout was replaced or advanced locally");
+                // Local edits, commits and branch switches are not ownership changes; the idle refresh replaces them.
+                await Verify(git, root, repository, ct);
+                if (ReadFile(ownerFile, CheckoutMetadataMode) != saved.Text("owner")) throw Blocked("checkout was replaced");
+                commit = saved.Text("commit");
             }
             else
             {
+                commit = await Inspect(git, root, repository, ct);
                 var remoteCommit = (await Local(git, root, ct, "rev-parse", "--verify", "refs/remotes/origin/" + repository.Branch + "^{commit}")).Trim();
                 if (remoteCommit != commit) throw Blocked("cloned default branch changed during bootstrap");
                 var owner = Guid.NewGuid().ToString("N");
@@ -90,7 +94,9 @@ internal sealed class ManagedCheckout : IDisposable
         catch { lease.Dispose(); throw; }
     }
 
-    static async Task<string> Inspect(string git, string root, RepositoryCheckout repository, CancellationToken ct)
+    // Refuses anything but this repository's own Git directory; defers only while a concurrent Git process or a
+    // multi-step operation that a forced checkout would not discard is present.
+    static async Task Verify(string git, string root, RepositoryCheckout repository, CancellationToken ct)
     {
         CheckPath(root);
         var dotGit = Path.Combine(root, ".git");
@@ -99,8 +105,7 @@ internal sealed class ManagedCheckout : IDisposable
         foreach (var name in new[] { "config", "index", "HEAD", "repoagent-owner", "objects", "refs", "logs", "info" }) CheckPath(Path.Combine(dotGit, name));
         foreach (var name in new[] { "commondir", "gitdir", "objects/info/alternates", "info/grafts" })
             if (Path.Exists(Path.Combine(dotGit, name))) throw Blocked("linked Git storage");
-        foreach (var name in new[] { "MERGE_HEAD",
-            "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-apply", "rebase-merge", "sequencer", "index.lock", "HEAD.lock" })
+        foreach (var name in new[] { "REBASE_HEAD", "BISECT_LOG", "rebase-apply", "rebase-merge", "sequencer", "index.lock", "HEAD.lock" })
             if (Path.Exists(Path.Combine(dotGit, name))) throw Deferred("in-progress Git operation");
         // Read only the local config without includes, before any command that could invoke a filter.
         var config = await Local(git, root, ct, "config", "--no-includes", "--local", "--null", "--list");
@@ -116,32 +121,38 @@ internal sealed class ManagedCheckout : IDisposable
             (await Local(git, root, ct, "rev-parse", "--is-bare-repository")).Trim() != "false" ||
             (await Local(git, root, ct, "config", "--get-all", "remote.origin.url")).TrimEnd() != repository.Remote)
             throw Blocked("Git root or remote differs");
-        if ((await Local(git, root, ct, "symbolic-ref", "--quiet", "HEAD")).Trim() != "refs/heads/" + repository.Branch)
-            throw Deferred("checkout is not on its recorded default branch");
-        var commit = (await Local(git, root, ct, "rev-parse", "--verify", "HEAD^{commit}")).Trim();
-        if (await Local(git, root, ct, "status", "--porcelain=v1", "--untracked-files=all") != "") throw Deferred("checkout has local changes");
-        var flags = await Local(git, root, ct, "ls-files", "-v", "-z");
-        if (flags.Split('\0', StringSplitOptions.RemoveEmptyEntries).Any(line => line[0] == 'S' || char.IsLower(line[0])))
-            throw Deferred("index hides working-tree changes");
-        return commit;
     }
+
+    // A settled checkout is on its default branch, and its index and tracked files match that commit.
+    static async Task<string> Inspect(string git, string root, RepositoryCheckout repository, CancellationToken ct)
+    {
+        await Verify(git, root, repository, ct);
+        if ((await Local(git, root, ct, "symbolic-ref", "--quiet", "HEAD")).Trim() != "refs/heads/" + repository.Branch ||
+            await Local(git, root, ct, "status", "--porcelain=v1", "--untracked-files=no") != "" ||
+            Hidden(await Local(git, root, ct, "ls-files", "-v", "-z")).Any())
+            throw Blocked("checkout does not match its default-branch commit");
+        return (await Local(git, root, ct, "rev-parse", "--verify", "HEAD^{commit}")).Trim();
+    }
+
+    // Index entries whose working-tree changes Git hides (skip-worktree or assume-unchanged).
+    static IEnumerable<string> Hidden(string flags) => flags.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+        .Where(line => line[0] == 'S' || char.IsLower(line[0])).Select(line => line[2..]);
 
     // Safe refusals retain the recorded baseline while existing assistance may continue.
     internal sealed class DeferredRefresh(string reason) : IOException(reason);
     static DeferredRefresh Deferred(string reason) => new(reason);
 
-    async Task VerifyBaseline(CancellationToken ct)
+    async Task VerifyOwnership(CancellationToken ct)
     {
         if (!JsonNode.DeepEquals(metadata, JsonNode.Parse(ReadFile(record, CheckoutMetadataMode))) ||
             ReadFile(Path.Combine(Root, ".git", "repoagent-owner"), CheckoutMetadataMode) != Owner)
             throw Blocked("ownership record changed");
-        if (await Inspect(git, Root, repository, ct) != metadata.Text("commit"))
-            throw Deferred("checkout advanced locally; recorded baseline retained");
+        await Verify(git, Root, repository, ct);
     }
 
     public async Task<bool> Refresh(Action<string, string> beforeApply, CancellationToken ct)
     {
-        await VerifyBaseline(ct);
+        await VerifyOwnership(ct);
         RepositoryCheckout current;
         string target;
         try { current = await github.CheckoutRepository(ct); }
@@ -168,24 +179,35 @@ internal sealed class ManagedCheckout : IDisposable
                 (await Local(git, Root, ct, "rev-parse", "--verify", "FETCH_HEAD^{commit}")).Trim() != target ||
                 await github.CheckoutCommit(repository.Branch, ct) != target)
                 throw Deferred("default branch changed during fetch; retry pending");
-            if ((await Local(git, Root, ct, "merge-base", previous, target)).Trim() != previous)
-                throw Deferred("default branch is not a fast-forward; manual recovery required");
         }
-        catch (IOException error) { throw Deferred("fetch or ancestry check refused: " + error.Message); }
+        catch (IOException error) { throw Deferred("fetch refused: " + error.Message); }
         try { current = await github.CheckoutRepository(ct); }
         catch (IOException error) when (error is not GitHub.CheckoutIdentityException)
         { throw Deferred("authoritative repository lookup unavailable after fetch; retry pending"); }
         if (current.Id != repository.Id || current.Name != repository.Name || current.Remote != repository.Remote)
             throw Blocked("authoritative repository identity changed during fetch");
         if (current.Branch != repository.Branch) throw Deferred("default branch changed during fetch");
-        await VerifyBaseline(ct);
+        await VerifyOwnership(ct);
         beforeApply(previous, target);
-        await Local(git, Root, ct, "-c", "submodule.recurse=false", "merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", target);
+        await Force(target, ct);
         if (await Inspect(git, Root, repository, ct) != target) throw Blocked("applied commit differs");
         metadata["commit"] = target;
         SaveFile(record, metadata.ToJsonString(), CheckoutMetadataMode);
         Log.Write("checkout-refreshed", $"root={Root} commit={target}");
         return true;
+    }
+
+    // Origin is authoritative inside the owned checkout: local edits, commits, branch switches, hidden index flags and
+    // merge-like state are discarded. Ignored files and nested repositories stay; other branches and worktrees are untouched.
+    async Task Force(string target, CancellationToken ct)
+    {
+        var hidden = Hidden(await Local(git, Root, ct, "ls-files", "-v", "-z")).ToArray();
+        if (hidden.Length != 0)
+            foreach (var flag in new[] { "--no-assume-unchanged", "--no-skip-worktree" }) // Git applies one flag change per call.
+                await Local(git, Root, ct, ["update-index", flag, "--", .. hidden]);
+        await Local(git, Root, ct, "-c", "submodule.recurse=false", "checkout", "--quiet", "--force", "--no-recurse-submodules",
+            "-B", repository.Branch, target, "--");
+        await Local(git, Root, ct, "clean", "--quiet", "--force", "-d");
     }
 
     internal static void SavePrivate(string path, string value) => SaveFile(path, value, PrivateFileMode);
