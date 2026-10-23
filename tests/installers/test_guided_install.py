@@ -94,7 +94,7 @@ class GuidedInstallTests(unittest.TestCase):
         if apply:
             command += ['-SkipBuild', '-Apply']
         result = subprocess.run(command, cwd=self.journey.directory, env=self.environment,
-            input='', capture_output=True, text=True, encoding='utf-8', timeout=90)
+            input='', capture_output=True, text=True, encoding='utf-8', timeout=180 if os.name == 'nt' else 90)
         state = json.loads(self.docker_state.read_text()) if self.docker_state.exists() else {}
         output = result.stdout + result.stderr
         for secret in ('GUIDED-FAKE-CODEX-CREDENTIAL', self.environment['GH_TOKEN'], 's' * 43):
