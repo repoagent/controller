@@ -227,7 +227,7 @@ Supply these container environment variables. They are not repository Actions va
 | `REPOAGENT_REPOSITORY`, `REPOAGENT_APP_ID`, `REPOAGENT_BROKER_URL` | Required binding: `OWNER/REPO`, numeric App ID and the broker's HTTPS origin |
 | `REPOAGENT_CLONE` | `true` for clone enrollments; omitted or `false` otherwise |
 | `REPOAGENT_REPOSITORY_ID`, `REPOAGENT_INSTALLATION_ID` | Optional expected immutable identities |
-| `REPOAGENT_MENTION_USER`, `REPOAGENT_MODEL`, `REPOAGENT_WEB_SEARCH`, `REPOAGENT_TOOL_UPDATES`, `REPOAGENT_MODE`, `REPOAGENT_PUBLIC_URL`, `REPOAGENT_LISTEN_PORT`, `REPOAGENT_RECONCILE_INTERVAL` | Optional runtime choices |
+| `REPOAGENT_MENTION_USER`, `REPOAGENT_MODEL`, `REPOAGENT_WEB_SEARCH`, `REPOAGENT_TOOL_UPDATES`, `REPOAGENT_MODE`, `REPOAGENT_PUBLIC_URL`, `REPOAGENT_LISTEN_PORT`, `REPOAGENT_RECONCILE_INTERVAL`, `REPOAGENT_DASHBOARD_CATEGORY` | Optional runtime choices |
 
 Each configuration variable stands for the `configure` option of the same name, with the same values, defaults and validation. `check` and `start` validate them on every start and never save them. An instance uses either saved configuration from `configure` or external configuration, never both. An injected credential without the three required variables is refused.
 
@@ -267,7 +267,7 @@ try { docker run -d --init --name repoagent-external --env REPOAGENT_ENROLLMENT 
 finally { Remove-Item Env:REPOAGENT_ENROLLMENT }
 ```
 
-Here `@mounts` holds the same five `--mount` arguments. Sign Codex in once into the credentials volume, for example with `docker run --rm -it` and the same mounts plus `login`. Run `check` instead of `start` to verify authorization without starting the agent.
+Here `@mounts` holds the same five `--mount` arguments. Sign Codex in once into the credentials volume, for example with `docker run --rm -it` and the same mounts plus `login`, or stage [separately supplied Codex account credentials](#replace-codex-credentials-without-restarting-the-container) with `supply-codex-auth`. Codex credentials stay a separate input; `REPOAGENT_ENROLLMENT` never carries them. Run `check` instead of `start` to verify authorization without starting the agent.
 
 To restart, stop and remove the container, then run it again with the same volumes and the injected value. Docker keeps an injected value in the container's configuration until the container is removed, so `docker restart` reuses it. Anyone with access to the Docker daemon can read it with `docker inspect`, and processes running as the container user can read the controller's initial environment, just as they could read the former 0600 enrollment file. Remove stopped containers, and replace the container to rotate or withdraw the value.
 
