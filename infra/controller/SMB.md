@@ -3,18 +3,30 @@
 [`low-idle-setup.bicep`](low-idle-setup.bicep) prepares three top-level resources:
 a Consumption Container Apps environment on default managed networking, a
 Standard LRS storage account with a classic Hot SMB share, and a setup-only app.
-The share and environment storage definition are child resources. There is no
+The SMB share, dedicated work queue, environment storage definition and queue-scoped role assignment are child resources. The app uses its embedded system-assigned identity; it adds no separate identity resource. There is no
 custom VNet/NSG, separately billed managed network group, NFS, registry, vault,
 user-assigned identity, Log Analytics workspace or compatibility Job in this
-candidate. The public image is the existing immutable selection in `image.json`.
+candidate. Setup defaults to the immutable public selection in `image.json`.
+This SMB profile currently accepts setup-only deployment.
 
-This is a candidate for [#37](https://github.com/repoagent/controller/issues/37),
-prepared by [#145](https://github.com/repoagent/controller/issues/145). It has not
-passed real Azure storage or scale-to-zero acceptance. The exact working local
-Docker controller must keep running. The original NFS resources and their data
-remain in place; creating this candidate would not remove their existing bill.
-No controller enrollment, account credentials or broker/GitHub work occurs during
-this setup deployment.
+Real Azure setup checks passed on 2026-10-22: the three-resource profile reached
+zero replicas, woke through HTTP and an invisible queue message, held the replica
+while that message existed, and returned to zero after its exact deletion. The
+system identity exercised the queue successfully.
+
+**Active controller use is blocked.** Native Codex SQLite initialization fails on
+the actual SMB mount with `SQLITE_BUSY`. The documented `CODEX_SQLITE_HOME`
+override permits startup on ephemeral local storage, but a fresh SQLite directory
+loses native thread metadata when resuming the retained SMB rollout. It is not a
+durable-state workaround. Do not use the first-activation steps below on this
+profile until [#37](https://github.com/repoagent/controller/issues/37) establishes
+a compatible persistence design. Setup health and working queue scaling do not
+establish that result.
+
+The exact working local Docker controller must keep running. Original NFS data
+and the Azure-owned account cache remain preserved; this candidate does not
+remove their existing bill. Setup deployment does not enroll a device or start
+broker, GitHub or native work.
 
 ## Compile and inspect
 
@@ -140,14 +152,74 @@ discounts. Subscription-wide ACA free grants are shared with the auth service.
 See the [dated cost assessment](../../docs/research/2026-10-22-container-apps-idle-cost.md)
 and [Azure Files billing](https://learn.microsoft.com/en-us/azure/storage/files/understanding-billing).
 
-This setup-only host can sleep safely because it runs no agent work. The active
-controller currently returns202 before a native turn finishes and disables its
-webhook during shutdown. `runtime.bicep` and the existing update/rollback command
-remain the NFS active-host path and must not be used to activate this SMB
-candidate. Active-turn scale signalling, durable admission/recovery, preserving
-the wake-up webhook during idle sleep, cold-start delivery and controlled
-activation/update require their own source and real Azure acceptance. A saved
-conversation is not an executing turn and must not require permanent compute.
+## Queue scaling and gated activation design
+
+The profile always provisions `controller-work` in the same Standard account and
+gives the app's system identity **Storage Queue Data Contributor** at that queue
+scope. The nested `queue-access.bicep` deployment receives the created principal;
+its role name also includes that principal so recreating an app cannot update an
+immutable assignment to a different identity. No queue connection string, SAS,
+user-assigned identity or host Azure credential discovery is used at runtime.
+[Queue role](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/storage#storage-queue-data-contributor),
+[managed-identity scaling](https://learn.microsoft.com/en-us/azure/container-apps/scale-app#using-managed-identity)
+
+Both setup and active selections use HTTP wake plus `azure-queue`, minimum zero
+and maximum one, target one and activation zero. `queueLengthStrategy: all` counts
+invisible leases as well as visible messages. The queue profile uses a15-second
+poll interval and60-second cooldown; the original NFS setup defaults are retained.
+A normal idle queue-mode shutdown preserves the wake hook. Unknown native work
+or queue uncertainty stays recoverable and can keep compute allocated; it is not
+idle. See [native work lifetime](../../docs/azure-durable-work.md) and
+[KEDA queue counting](https://keda.sh/docs/2.21/scalers/azure-storage-queue/).
+
+The default `activate=false` still initializes private layout and serves only
+setup metadata. It does not read enrollment, import an account, contact GitHub or
+start native work. Use that selection for actual identity, queue authorization,
+invisible-message counting and zero/wake/zero checks before any owner handover.
+Inspect the real app principal, queue-scoped assignment, both scale rules and
+replica counts; compiled JSON and declared minimums are not acceptance evidence.
+The operator applying this Bicep must be able to assign the narrowly scoped role;
+the auth service's separate Contributor-only OIDC identity is not used or changed.
+
+The following activation design remains unavailable on the current SMB profile;
+`activate` is restricted to `false` until native persistence passes #37. For a
+future compatible profile, select a published immutable `controllerImage` containing
+issues #147/#151/#153/#155. Positively settle the old controller's authority through
+the supported host/broker lifecycle before enrolling a fresh cloud device. Persist
+the private enrollment file before ACK. Preserve or explicitly sign into the cloud
+Codex account; never discover/copy host credentials. Keep the old local controller
+running during setup/provider checks; final selected cutover is a separate step.
+
+The activation input is a private0600 ARM parameter file with `activate=true`,
+`enrollment` containing the private enrollment JSON string, and `controllerImage`
+set to the selected digest. `enrollment` is a secure Bicep parameter and a native
+app secret, mounted read-only at `/run/enrollment`; it is never an output. Pass only
+the parameter-file path on the command line:
+
+```sh
+az deployment group create \
+  --subscription 46f7e5d6-05f3-435b-8089-6c63a203dbfa \
+  --resource-group rg-storybeam-repoagent-controller \
+  --name controller-smb-first-activation \
+  --template-file /tmp/repoagent-low-idle-setup.json \
+  --parameters @/private/path/activation.parameters.json \
+  --query properties.provisioningState
+```
+
+The bootstrap imports into the existing protected0600 enrollment file and checks
+the saved immutable binding/settings before native validation. The queue endpoint
+is retained in configuration and passed to native `--azure-work-queue`. Conflicting
+saved settings refuse before credential replacement. Native secrets avoid a vault
+resource here; operators with app-secret management authority can access that
+credential. Restrict that authority and rotate through the supported enrollment
+lifecycle. Do not log template parameters or dump app secrets/runtime environment.
+
+This is a first-activation path. Do not apply it over a running active controller,
+reapply the original setup template, or use the NFS-only image updater for this
+profile. Image replacement still requires deliberate stop/drain, old-replica and
+outstanding-authority settlement, preserved state and readiness before routing.
+Real signed webhook/native/history/restart and active-turn survival beyond the
+cooldown remain hosted acceptance gates under #37/#38.
 
 No old resource retirement or local-to-cloud handover is part of this candidate.
 Any later selected cutover must positively settle old broker authority and enroll
