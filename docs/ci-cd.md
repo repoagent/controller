@@ -76,7 +76,7 @@ Each successful publication creates one GitHub Release for the anonymously verif
 | `inventorySha256` | SHA-256 of the image's `/opt/repoagent/image-inventory.json` bytes; a running container can recompute it to find its own release. No match means a derived, local or otherwise unreleased image |
 | `run` | The verification and publication workflow run |
 
-Consumers should select releases by the `baseline-` tag prefix and this marker rather than GitHub's **Latest** badge, which manual `v*` controller releases can also hold. An existing release with the same tag is never replaced. Baseline tags are not covered by the `v*` tag ruleset; add `refs/tags/baseline-*` to the tag ruleset to block their update or deletion.
+The controller's [Discussion dashboard](../README.md#discussion-status-dashboard) is one such consumer: it reports a newer release as an operator update notice and never deploys it. Consumers should select releases by the `baseline-` tag prefix and this marker rather than GitHub's **Latest** badge, which manual `v*` controller releases can also hold. An existing release with the same tag is never replaced. Baseline tags are not covered by the `v*` tag ruleset; add `refs/tags/baseline-*` to the tag ruleset to block their update or deletion.
 
 ### Tool refresh
 
