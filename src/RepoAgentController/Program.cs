@@ -5,14 +5,37 @@ return await BridgeCommand.Run(args);
 
 namespace RepoAgentController
 {
+    /// <summary>One redacted controller event, written to stdout and to any observer of this controller lifetime.</summary>
+    readonly record struct LogEntry(DateTimeOffset At, string Kind, string Message)
+    {
+        public string Line => $"{At:O} {Kind} {Message}";
+    }
+
     static class Log
     {
         static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> secrets = new();
+        // Scoped to one controller lifetime's async flow, so concurrent in-process lifetimes stay separate.
+        static readonly AsyncLocal<Action<LogEntry>?> observer = new();
         public static void Protect(string secret) => secrets.TryAdd(secret, 0);
         public static void Write(string kind, string message)
         {
             foreach (var secret in secrets.Keys) message = message.Replace(secret, "<redacted>", StringComparison.Ordinal);
-            Console.WriteLine($"{DateTimeOffset.UtcNow:O} {kind} {message}");
+            var entry = new LogEntry(DateTimeOffset.UtcNow, kind, message);
+            Console.WriteLine(entry.Line);
+            observer.Value?.Invoke(entry);
+        }
+
+        /// <summary>Also delivers this flow's redacted entries to <paramref name="receive"/> until disposed.</summary>
+        public static IDisposable Observe(Action<LogEntry> receive)
+        {
+            var previous = observer.Value;
+            observer.Value = receive;
+            return new Restore(() => observer.Value = previous);
+        }
+
+        sealed class Restore(Action restore) : IDisposable
+        {
+            public void Dispose() => restore();
         }
     }
     static class Json

@@ -131,6 +131,7 @@ class AssembledGuidedInstallTests(unittest.TestCase):
             shutil.copyfile(path, context / path.name)
         shutil.copyfile(native, context / 'RepoAgentController')
         shutil.copyfile(ROOT / '.agents/skills/github-discussion/SKILL.md', context / 'SKILL.md')
+        shutil.copyfile(ROOT / '.agents/skills/repoagent-orientation/SKILL.md', context / 'ORIENTATION.md')
         shutil.copyfile(directory / 'cert.pem', context / 'test-ca.crt')
         # External commands only; these do not emit the controller's ready log.
         (context / 'gh').write_text('''#!/usr/bin/python3
@@ -152,7 +153,7 @@ if sys.argv[1:] == ['login','status']:
 if sys.argv[1:] != ['app-server']: sys.exit(94)
 for line in sys.stdin:
     request=json.loads(line)
-    if request.get('method') == 'initialize':
+    if request.get('method') in ('initialize', 'skills/extraRoots/set'):
         print(json.dumps({'id':request['id'],'result':{}}),flush=True)
     elif request.get('method') != 'initialized': sys.exit(95)
 ''')
@@ -163,6 +164,7 @@ USER root
 COPY *.py /opt/repoagent/
 COPY RepoAgentController /opt/repoagent/controller/RepoAgentController
 COPY SKILL.md /opt/repoagent/controller/github-discussion/SKILL.md
+COPY ORIENTATION.md /opt/repoagent/controller/repoagent-orientation/SKILL.md
 COPY gh codex /opt/repoagent/tools/bin/
 COPY test-ca.crt /usr/local/share/ca-certificates/issue74-test-ca.crt
 RUN chmod 0755 /opt/repoagent/controller/RepoAgentController /opt/repoagent/tools/bin/gh /opt/repoagent/tools/bin/codex && update-ca-certificates
