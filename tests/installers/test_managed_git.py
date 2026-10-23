@@ -425,6 +425,10 @@ class GitProvider:
         self.requests = []
         self.responses, self.model_requests, self.denied = responses, [], []
         self.model_request_limit = 2
+        # Discussion comment/reply nodes keyed by parent node ID, and EYES subjects in mutation order.
+        self.comments, self.reactions = {}, []
+        # Model request number -> threading.Event released by the test before that response streams.
+        self.response_holds = {}
         self.cert = directory / 'cert.pem'
         self.key = directory / 'key.pem'
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
@@ -529,6 +533,9 @@ class GitProvider:
                     provider.model_requests.append(dict(headers=dict(self.headers), body=json.loads(body)))
                     print('RESPONSES_REQUEST ' + json.dumps(provider.model_requests[-1]), flush=True)
                     number = len(provider.model_requests)
+                    hold = provider.response_holds.get(number)
+                    if hold is not None and not hold.wait(60):
+                        return self.reply({}, 503)
                     rid = 'local-response-' + str(number)
                     item = dict(type='message', role='assistant', id='local-message-' + str(number), content=[dict(type='output_text', text='Harmless fixture assistant ' + str(number) + '.')])
                     events = [dict(type='response.created', response=dict(id=rid)), dict(type='response.output_item.done', item=item), dict(type='response.completed', response=dict(id=rid, usage=dict(input_tokens=0, input_tokens_details=None, output_tokens=0, output_tokens_details=None, total_tokens=0)))]
@@ -560,13 +567,18 @@ class GitProvider:
                         print('GIT_PROVIDER_DENIED ' + json.dumps({'method': self.command, 'path': self.path}), flush=True)
                         return self.reply({}, 403)
                     query = json.loads(body).get('query', '')
+                    variables = json.loads(body).get('variables') or {}
+                    if 'addReaction(' in query:
+                        provider.reactions.append(variables['id'])
+                        return self.reply({'data': {'addReaction': {'reaction': {'id': 'EYES-' + str(len(provider.reactions))}}}})
                     if 'discussion(number:' in query:
                         return self.reply({'data': {'repository': {'discussion': provider.discussions[0]}}})
                     if 'discussions(' in query:
                         return self.reply({'data': {'repository': {'discussions': {'nodes': getattr(provider, 'discussions', []), 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'node(id:' in query:
-                        field = 'comments' if 'comments(' in query else 'reactions'
-                        return self.reply({'data': {'node': {field: {'nodes': [], 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
+                        field = 'comments' if 'comments(' in query else 'replies' if 'replies(' in query else 'reactions'
+                        nodes = [] if field == 'reactions' else provider.comments.get(variables.get('id'), [])
+                        return self.reply({'data': {'node': {field: {'nodes': nodes, 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'user(login:' in query:
                         return self.reply({'data': {'user': {'login': 'repoagent'}}})
                     if 'repository' not in query:

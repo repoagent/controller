@@ -265,7 +265,7 @@ public sealed class GitHubOutboxTests
              with open(NATIVE_LOG,'a') as log:log.write(line)
              if 'id' not in request:continue
              method=request['method']
-             result={'codexHome':os.getcwd()} if method=='initialize' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1'}}
+             result={'codexHome':os.getcwd()} if method=='initialize' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1','status':{'type':'idle'}}}
              print(json.dumps({'id':request['id'],'result':result}),flush=True)
             """;
 
