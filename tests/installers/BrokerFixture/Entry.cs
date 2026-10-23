@@ -164,13 +164,16 @@ internal sealed class GitHubBoundary : HttpMessageHandler
             var permissions=input.GetProperty("permissions");
             var ids=input.GetProperty("repository_ids");
             if (ids.GetArrayLength()!=1 || ids[0].GetInt64()!=123) throw new InvalidOperationException("Wrong provider repository scope");
-            // Setup v3 verifies Actions variables; setup v2 retains Agent-variable verification.
-            var verifier=permissions.TryGetProperty("actions_variables",out var approval) || permissions.TryGetProperty("agent_variables",out approval);
+            // Setup v3 verifies Actions variables; setup v2 retains Agent-variable verification. The verifier asks for
+            // exactly one variables grant; repository-settings runtime mints add Actions variables read to frozen grants.
+            var verifier=permissions.EnumerateObject().Count()==1 && permissions.EnumerateObject().Single().Name is "actions_variables" or "agent_variables";
+            var settings=!verifier && permissions.TryGetProperty("actions_variables", out _);
             var clone = permissions.TryGetProperty("contents", out var contents);
             var hooks = permissions.TryGetProperty("repository_hooks", out var hookAccess);
-            if (verifier ? approval.GetString()!="read" || permissions.EnumerateObject().Count()!=1 :
-                permissions.EnumerateObject().Count()!=1+(clone?1:0)+(hooks?1:0) || permissions.GetProperty("discussions").GetString()!="write" ||
-                (clone && contents.GetString()!="read") || (hooks && hookAccess.GetString()!="write"))
+            if (verifier ? permissions.EnumerateObject().Single().Value.GetString()!="read" :
+                permissions.EnumerateObject().Count()!=1+(clone?1:0)+(hooks?1:0)+(settings?1:0) || permissions.GetProperty("discussions").GetString()!="write" ||
+                (clone && contents.GetString()!="read") || (hooks && hookAccess.GetString()!="write") ||
+                (settings && permissions.GetProperty("actions_variables").GetString()!="read"))
                 throw new InvalidOperationException("Wrong provider token scope");
             Entry.Record(new { provider=request.Method+" "+path, permissions });
             result=new { token=verifier?"assembled-verifier-token":"assembled-runtime-token", expires_at=DateTimeOffset.UtcNow.AddHours(1), repository_selection="selected", permissions,

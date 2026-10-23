@@ -10,6 +10,16 @@ if os.environ.get('HOST_ENROLLMENT_NATIVE_CONSUMER') == '1':
     # Actual consumer gh process boundary; never accept the operator credential.
     if os.environ.get('GH_TOKEN') != 'assembled-runtime-token' or sys.argv[1] != 'api':
         sys.exit(91)
+    if sys.argv[2].startswith('repos/example/project/actions/variables/') and sys.argv[sys.argv.index('--method') + 1] == 'GET':
+        # Repository-settings read with the brokered runtime credential; the fixture repository configures one setting.
+        with Path(os.environ['REVOKE_GH_LOG']).open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({'argv': sys.argv[1:], 'runtimeCredentialObserved': True}) + '\n')
+        name = sys.argv[2].rsplit('/', 1)[1]
+        if name != 'REPOAGENT_MAX_ACTIVE_SESSIONS':
+            print('HTTP/2.0 404 Not Found\r\n\r\n{"message":"Not Found"}', end='')
+            sys.exit(1)
+        print('HTTP/2.0 200 OK\r\n\r\n' + json.dumps({'name': name, 'value': '3'}), end='')
+        sys.exit(0)
     payload = json.load(sys.stdin)
     if 'viewer' not in payload.get('query', ''):
         sys.exit(92)

@@ -54,12 +54,18 @@ class CloneAssembledTests(unittest.TestCase):
     def test_completed_private_clone_file_is_consumed_by_current_controller(self):
         self.run_clone_journey()
 
+    def test_completed_repository_settings_file_reads_settings_through_current_controller(self):
+        self.run_clone_journey(profile='polling-clone-settings')
+
     @unittest.skipUnless(os.environ.get('REPOAGENT_TEST_DOCKER_IMAGE'), 'Actual current-component Docker image required')
     def test_private_completed_clone_file_enters_actual_docker_runtime(self):
         self.run_clone_journey(container=True, expected_native=selected_native_sha256())
 
-    def run_clone_journey(self, container=False, expected_native=None):
-        journey = host.EnrollmentJourney(self, profile='polling-clone')
+    def run_clone_journey(self, container=False, expected_native=None, profile='polling-clone'):
+        # The explicit repository-settings family is runtime v3; the frozen clone profile stays runtime v2.
+        settings = profile.endswith('-settings')
+        runtime = 3 if settings else 2
+        journey = host.EnrollmentJourney(self, profile=profile)
         directory = journey.directory
         subprocess.run(['openssl', 'pkcs12', '-export', '-out', str(directory / 'cert.pfx'),
                         '-inkey', str(directory / 'key.pem'), '-in', str(directory / 'cert.pem'),
@@ -119,8 +125,9 @@ class CloneAssembledTests(unittest.TestCase):
                 result = journey.run(saved=True)
             self.assertEqual(result.returncode, 0, journey.diagnostic(result) + output.read_text())
             receipt = journey.read('enrollment.json')
-            self.assertEqual(receipt['protocolVersion'], 2)
-            self.assertEqual(receipt['policyVersion'], 'repository-actions-clone-approval-v3')
+            self.assertEqual(receipt['protocolVersion'], runtime)
+            self.assertEqual(receipt['policyVersion'],
+                             'repository-actions-settings-approval-v3' if settings else 'repository-actions-clone-approval-v3')
             journey.private()
             self.assertTrue(any((directory / 'keys').glob('*.xml')))
             self.assertTrue(journey.read('recovery.json')['acknowledged'])
@@ -141,19 +148,26 @@ class CloneAssembledTests(unittest.TestCase):
             log = directory / 'consumer-gh.jsonl'
             result = subprocess.run(executable + ['--repo', 'example/project', '--app-id', '5387625',
                 '--broker-url', journey.origin, '--enrollment-file', str(journey.state / 'enrollment.json'),
-                '--state', str(directory / 'consumer-state.json'), '--clone', '--check-auth'],
+                '--state', str(directory / 'consumer-state.json'), '--clone', '--check-auth'] +
+                (['--repository-settings'] if settings else []),
                 cwd=directory, env=dict(journey.environment, HOST_ENROLLMENT_NATIVE_CONSUMER='1', REVOKE_GH_LOG=str(log)),
                 capture_output=True, text=True, timeout=45)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr + output.read_text())
-            self.assertTrue(json.loads(log.read_text().splitlines()[0])['runtimeCredentialObserved'])
+            consumed = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertTrue(all(entry['runtimeCredentialObserved'] for entry in consumed))
+            reads = [entry['argv'][1] for entry in consumed if entry['argv'][1].startswith('repos/example/project/actions/variables/')]
+            self.assertEqual(reads, ['repos/example/project/actions/variables/REPOAGENT_MAX_ACTIVE_SESSIONS'] if settings else [])
+            if settings:
+                self.assertIn('name=REPOAGENT_MAX_ACTIVE_SESSIONS state=configured value=3', result.stdout + result.stderr)
             for secret in (receipt['deviceSecret'], 'assembled-runtime-token', journey.environment['GH_TOKEN']):
                 self.assertNotIn(secret, result.stdout + result.stderr)
             recorded = events()
-            self.assertTrue(any(event.get('path', '').startswith('/v2/devices/') and
+            self.assertTrue(any(event.get('path', '').startswith(f'/v{runtime}/devices/') and
                                 event['path'].endswith('/installation-token') and event['status'] == 200 for event in recorded))
             self.assertTrue(any(event.get('receiptBeforeAck') for event in recorded))
             scopes = [event['permissions'] for event in recorded if 'permissions' in event]
-            self.assertEqual(scopes, [{'actions_variables': 'read'}, {'discussions': 'write', 'contents': 'read'}])
+            runtime_scope = {'discussions': 'write', 'contents': 'read'} | ({'actions_variables': 'read'} if settings else {})
+            self.assertEqual(scopes, [{'actions_variables': 'read'}, runtime_scope])
         finally:
             if broker.poll() is None:
                 broker.communicate('clean\n', timeout=20)

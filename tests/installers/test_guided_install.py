@@ -164,6 +164,76 @@ class GuidedInstallTests(unittest.TestCase):
                 self.assertEqual(sum(event['path'] == self.journey.start_path for event in self.journey.events), 1)
                 self.assertEqual(sum('POST' in event['argv'] for event in self.journey.github()), 1)
 
+    def test_repository_settings_selects_the_v3_profile_and_configures_brokered_settings_reads(self):
+        for clone, mode in ((False, 'polling'), (True, 'fixed-url')):
+            with self.subTest(clone=clone, mode=mode):
+                profile = ('webhook' if mode != 'polling' else 'polling') + ('-clone' if clone else '') + '-settings'
+                self.setUp(profile=profile)
+                options = {'RepositorySettings': None, 'Mode': mode}
+                if clone: options['Clone'] = None
+                if mode == 'fixed-url': options['PublicUrl'] = 'https://listener.example'
+                before = snapshot(self.owned)
+                preview, _ = self.run_guided(apply=False, overrides=options)
+                self.assertEqual(preview.returncode, 0, preview.stdout + preview.stderr)
+                self.assert_read_only(before)
+                self.assertIn('Repository settings: ' + profile + ' adds Actions variables read', preview.stdout)
+                self.assertIn('actions_variables:read', preview.stdout)
+
+                result, state = self.run_guided(overrides=options)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                receipt = self.journey.read('enrollment.json')
+                self.assertEqual((receipt['protocolVersion'], receipt['profile'], receipt['policyVersion']),
+                                 (3, profile, 'repository-actions-settings-approval-v3'))
+                self.assertEqual(receipt['permissions']['actions_variables'], 'read')
+                self.assertTrue(any('--repository-settings' in event and 'configure' in event for event in state['events']))
+                self.assertTrue(state['settings']['repositorySettings'])
+                self.assertEqual(state['settings']['clone'], clone)
+                self.assertTrue(state['running'])
+                launch = self.journey.read('launch.json')
+                self.assertEqual((launch['enrollmentProfile'], launch['repositorySettings']), (profile, 'true'))
+                stopped = subprocess.run(['pwsh', '-NoProfile', '-File', str(ROOT / 'repoagent.ps1'), 'stop'],
+                    cwd=self.directory, env=dict(self.environment, REPOAGENT_INSTANCE='guided-red'), capture_output=True, text=True, timeout=45)
+                self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+                resumed, state = self.run_guided(saved=True)
+                self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+                self.assertTrue(state['settings']['repositorySettings'])
+                self.assertEqual(self.journey.read('enrollment.json'), receipt)
+                self.assertEqual(sum(event['path'] == self.journey.start_path for event in self.journey.events), 1)
+
+    def test_saved_frozen_enrollment_cannot_be_widened_by_the_repository_settings_flag(self):
+        result, state = self.run_guided()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.journey.read('enrollment.json')['protocolVersion'], 1)
+        self.assertNotIn('repositorySettings', state['settings'])
+        self.assertEqual(self.journey.read('launch.json')['repositorySettings'], 'false')
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                if legacy:
+                    # Launch records written before this option have no repository-settings choice.
+                    launch = self.journey.read('launch.json'); del launch['repositorySettings']
+                    (self.journey.state / 'launch.json').write_text(json.dumps(launch))
+                before, count, requests = snapshot(self.owned), len(state['events']), len(self.journey.events)
+                result, state = self.run_guided(saved=True, overrides={'RepositorySettings': None})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('fresh instance', result.stdout + result.stderr)
+                self.assertEqual(snapshot(self.owned), before)
+                self.assertEqual(mutating_docker_commands(event for event in state['events'][count:] if not readonly_lifecycle_inspection(event)), [])
+                self.assertEqual(len(self.journey.events), requests)
+                # The saved frozen choice still resumes unchanged.
+                resumed, _ = self.run_guided(saved=True, apply=False)
+                self.assertEqual(resumed.returncode, 0, resumed.stdout + resumed.stderr)
+                self.assertNotIn('Repository settings:', resumed.stdout)
+                self.assertEqual(snapshot(self.owned), before)
+
+    def test_repository_settings_with_legacy_agent_approval_stops_before_mutation(self):
+        before = snapshot(self.owned)
+        result, state = self.run_guided(overrides={'RepositorySettings': None, 'ApprovalLocation': 'AgentVariable'})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Repository-settings profiles require Actions-variable approval', result.stdout + result.stderr)
+        self.assert_read_only(before)
+        self.assertEqual(mutating_docker_commands(state.get('events', [])), [])
+        self.assertEqual(self.journey.events, [])
+
     def test_saved_ordinary_v1_enrollment_cannot_upgrade_by_clone_flag(self):
         result, state = self.run_guided()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -634,6 +704,22 @@ class GuidedInstallTests(unittest.TestCase):
                 self.assertEqual(mutating_docker_commands(state['events'][event_count:]), [])
                 self.assertEqual(self.journey.events, [])
                 self.assertFalse(self.journey.log.exists())
+
+    def test_own_app_repository_settings_choice_configures_direct_reads_and_survives_resume(self):
+        key = self.owned / 'own-app.pem'
+        key.write_text('FAKE-PEM-CONTENT-NEVER-LOG')
+        key.chmod(0o600)
+        options = {'Authentication': 'OwnApp', 'BrokerOrigin': False, 'AppId': '123456',
+                   'KeyPath': str(key), 'NoStart': None, 'RepositorySettings': None}
+        result, state = self.run_guided(overrides=options)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(any('--repository-settings' in event and 'configure' in event for event in state['events']))
+        self.assertTrue(state['settings']['repositorySettings'])
+        self.assertEqual(self.journey.read('launch.json')['repositorySettings'], 'true')
+        result, state = self.run_guided(saved=True, overrides={'NoStart': None})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(state['settings']['repositorySettings'])
+        self.assertEqual(self.journey.events, [])
 
     def test_only_enrollment_bytes_and_selected_auth_cross_runtime_boundary(self):
         history = self.owned / 'history-sentinel.jsonl'

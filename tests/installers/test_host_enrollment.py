@@ -33,7 +33,10 @@ class EnrollmentJourney:
     """Real process/TLS/filesystem; GitHub, Docker and broker are external doubles."""
     def __init__(self, case, *, variable='TEAM_CONTROLLER_APPROVAL', fault=None, profile='polling', location='actions'):
         self.case, self.variable, self.fault, self.profile = case, variable, fault, profile
-        self.clone = profile.endswith('-clone')
+        self.clone = '-clone' in profile
+        # Repository-settings profiles are the explicit runtime v3 family under Actions approval.
+        self.settings = profile.endswith('-settings')
+        self.runtime = 3 if self.settings else 2 if self.clone else 1
         # Setup v3 approves through direct repository Actions variables; setup v2 Agent
         # variables remain an explicitly selected legacy location.
         self.location = location
@@ -45,7 +48,7 @@ class EnrollmentJourney:
         self.default_variable = 'REPOAGENT_APPROVAL' if location == 'actions' else 'APPROVED_CONTROLLER'
         self.start_path = f'/v{self.setup}/enrollments'
         family = ('repository-actions-{}approval-v3' if location == 'actions' else 'repository-agent-{}approval-v2')
-        self.policy = family.format('clone-' if self.clone else '')
+        self.policy = family.format('settings-' if self.settings else 'clone-' if self.clone else '')
         self.directory = Path(case.enterContext(tempfile.TemporaryDirectory(prefix='host enrollment ')))
         self.state = self.directory / 'private-state'
         self.model = self.directory / 'github.json'
@@ -154,7 +157,7 @@ class EnrollmentJourney:
 
             def do_DELETE(self):
                 try:
-                    case.assertEqual(self.path, ('/v2/devices/' if journey.clone else '/v1/devices/') + 'd' * 32)
+                    case.assertEqual(self.path, f'/v{journey.runtime}/devices/' + 'd' * 32)
                     case.assertEqual(self.headers.get('Authorization'), 'Bearer ' + journey.read('enrollment.json')['deviceSecret'])
                     journey.events.append({'path': self.path, 'method': 'DELETE'})
                     self.send_response(503 if journey.fault == 'revoke-unavailable' else 204)
@@ -250,9 +253,12 @@ class EnrollmentJourney:
                 githubHost='github.com', deviceId='d' * 32, deviceSecret='s' * 43, appId=5387625,
                 appSlug='repo-agent-connector', installationId=789, repositoryId=123,
                 repository='example/project', permissions={'discussions': 'write'}))
+            if self.runtime > 1:
+                result['enrollment'].update(protocolVersion=self.runtime, profile=self.profile, policyVersion=self.policy)
             if self.clone:
-                result['enrollment'].update(protocolVersion=2, profile=self.profile, policyVersion=self.policy)
                 result['enrollment']['permissions']['contents'] = 'read'
+            if self.settings:
+                result['enrollment']['permissions']['actions_variables'] = 'read'
             if self.profile.startswith('webhook'):
                 result['enrollment']['permissions']['repository_hooks'] = 'write'
             if self.fault == 'lost-completion':
@@ -480,6 +486,41 @@ class HostEnrollmentTests(unittest.TestCase):
                 self.assertFalse(journey.errors, journey.errors)
                 self.assertTrue(any(event.get('method') == 'DELETE' and event['path'].startswith('/v2/devices/')
                                     for event in journey.events))
+
+    def test_repository_settings_profiles_select_the_explicit_v3_runtime_family_and_v3_revoke(self):
+        for profile, grants in (('polling-settings', 'discussions:write, actions_variables:read'),
+                                ('webhook-clone-settings', 'discussions:write, contents:read, repository_hooks:write, actions_variables:read')):
+            with self.subTest(profile=profile):
+                journey = EnrollmentJourney(self, profile=profile)
+                result = journey.run()
+                self.assertEqual(result.returncode, 0, journey.diagnostic(result))
+                self.assertIn('Setup/marker: 3; controller/runtime: 3; policy: repository-actions-settings-approval-v3; '
+                              'permissions: ' + grants, result.stdout)
+                receipt = journey.read('enrollment.json')
+                self.assertEqual((receipt['protocolVersion'], receipt['profile'], receipt['policyVersion']),
+                                 (3, profile, 'repository-actions-settings-approval-v3'))
+                self.assertEqual(receipt['permissions']['actions_variables'], 'read')
+                self.assertEqual(journey.read('approval.json')['profile'], profile)
+                self.assertTrue(journey.read('recovery.json')['acknowledged'])
+                resumed = journey.run(saved=True)
+                self.assertEqual(resumed.returncode, 0, journey.diagnostic(resumed))
+                revoked = journey.run(saved=True, action='Revoke', extra=('-ApprovalStatePath', str(journey.state / 'approval.json'),
+                    '-EnrollmentFile', str(journey.state / 'enrollment.json')))
+                self.assertEqual(revoked.returncode, 0, journey.diagnostic(revoked))
+                outcome = json.loads(next(line for line in revoked.stdout.splitlines() if line.startswith('{')))
+                self.assertEqual((outcome['githubMarker'], outcome['brokerClosure']), ('removed', 'confirmed'))
+                self.assertFalse(journey.errors, journey.errors)
+                self.assertEqual([event['path'] for event in journey.events if event.get('method') == 'DELETE'],
+                                 ['/v3/devices/' + 'd' * 32])
+
+    def test_repository_settings_profile_requires_actions_variable_approval_before_any_work(self):
+        journey = EnrollmentJourney(self, profile='polling-settings', location='agent')
+        result = journey.run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Repository-settings profiles require Actions-variable approval', result.stdout + result.stderr)
+        self.assertEqual(journey.events, [])
+        self.assertFalse(journey.log.exists())
+        self.assertFalse((journey.state / 'approval.json').exists())
 
     def test_legacy_saved_enrollment_is_refused_without_remote_work_or_file_changes(self):
         journey = EnrollmentJourney(self)

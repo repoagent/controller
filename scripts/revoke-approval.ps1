@@ -234,22 +234,27 @@ try {
         try {
             $enrollment = Read-PrivateJson ([IO.Path]::GetFullPath($EnrollmentFile))
             $fields = @('protocolVersion','brokerOrigin','githubHost','deviceId','deviceSecret','appId','appSlug','installationId','repositoryId','repository','permissions')
+            # Runtime v2 (clone) and v3 (repository settings) name their profile and policy.
             $clone = $enrollment.protocolVersion -eq 2
-            if ($clone) { $fields += @('profile','policyVersion') }
+            $settings = $enrollment.protocolVersion -eq 3
+            if ($clone -or $settings) { $fields += @('profile','policyVersion') }
             Assert-Fields $enrollment $fields
             $actions = $script:Kind -eq 'repository-actions-variable'
-            $policy = if ($actions) { if ($clone) { 'repository-actions-clone-approval-v3' } else { 'repository-actions-approval-v3' } }
+            if ($settings -and -not $actions) { throw 'Repository-settings enrollment differs.' }
+            $policy = if ($settings) { 'repository-actions-settings-approval-v3' }
+                elseif ($actions) { if ($clone) { 'repository-actions-clone-approval-v3' } else { 'repository-actions-approval-v3' } }
                 elseif ($clone) { 'repository-agent-clone-approval-v2' } else { 'repository-agent-approval-v2' }
             if ($clone -and ($enrollment.profile -cnotin @('polling-clone','webhook-clone') -or $enrollment.policyVersion -cne $policy)) { throw 'Clone enrollment differs.' }
+            if ($settings -and ($enrollment.profile -cnotin @('polling-settings','webhook-settings','polling-clone-settings','webhook-clone-settings') -or $enrollment.policyVersion -cne $policy)) { throw 'Repository-settings enrollment differs.' }
             Assert-Text $enrollment.deviceId '\A[A-Za-z0-9_-]{1,128}\z'
-            if ($enrollment.protocolVersion -notin @(1,2) -or $enrollment.githubHost -cne 'github.com' -or $enrollment.repositoryId -ne $repositoryId -or $enrollment.repository -ine $Repository) { throw 'Private enrollment differs.' }
+            if ($enrollment.protocolVersion -notin @(1,2,3) -or $enrollment.githubHost -cne 'github.com' -or $enrollment.repositoryId -ne $repositoryId -or $enrollment.repository -ine $Repository) { throw 'Private enrollment differs.' }
             # Only a trusted saved setup origin may receive the optional credential.
             if (-not $ApprovalStatePath -or (Get-BrokerOrigin $enrollment.brokerOrigin) -cne (Get-BrokerOrigin $saved.brokerOrigin)) { throw 'Trusted broker origin is required.' }
             $marker = Read-HostJson $saved.marker
             if ($marker.deviceId -cne $enrollment.deviceId -or $marker.repositoryId -ne $repositoryId -or $marker.variable -cne $ApprovalVariable -or $marker.appId -ne $enrollment.appId -or $marker.installationId -ne $enrollment.installationId) { throw 'Private enrollment differs from selected approval.' }
             if ($script:Legacy) {
                 if ($marker.version -ne 1 -or $marker.environmentId -ne $environmentId -or $marker.environment -cne $GitHubEnvironment -or $marker.policyVersion -cne 'repository-approval-v1') { throw 'Legacy marker differs.' }
-            } elseif ($marker.version -ne $(if ($actions) { 3 } else { 2 }) -or $marker.approvalKind -cne $script:Kind -or $marker.policyVersion -cne $policy -or ($clone -and $marker.profile -cne $enrollment.profile)) { throw 'Repository-variable marker differs.' }
+            } elseif ($marker.version -ne $(if ($actions) { 3 } else { 2 }) -or $marker.approvalKind -cne $script:Kind -or $marker.policyVersion -cne $policy -or (($clone -or $settings) -and $marker.profile -cne $enrollment.profile)) { throw 'Repository-variable marker differs.' }
             $closed = Invoke-EnrollmentBroker $saved.brokerOrigin DELETE ('/v' + $enrollment.protocolVersion + '/devices/' + $enrollment.deviceId) $enrollment.deviceSecret
             if ($closed.Status -eq 204) { $script:BrokerClosure = 'confirmed' }
         } catch { $script:BrokerClosure = 'unconfirmed' }
