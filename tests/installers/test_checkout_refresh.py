@@ -721,16 +721,20 @@ class CheckoutRefreshTests(unittest.TestCase):
                 (seed / '.codex/config.toml').write_text('model_reasoning_effort = "' + effort + '"\n')
                 (skill / 'SKILL.md').write_text('---\nname: repo-refresh\ndescription: Fixture scoped skill NATIVE_DESCRIPTION_' + version + '.\n---\nScoped instruction NATIVE_SKILL_BODY_' + version + '.\n')
             context('A', 'low'); self.publish(f, content='native initial A\n')
+            def native_event():
+                # The controller logs lifecycle identity only: method, thread, turn, status, will-retry, then error text.
+                fields, _, error = f.wait('native-event').split(' native-event ', 1)[1].rstrip('\n').partition(' error=')
+                return dict((item.split('=', 1) for item in fields.split(' ')), error=error)
             with self.controller(f):
                 f.provider.discussions = [self.discussion(1)]
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_FIRST'
-                first = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                first = native_event()
                 self.assertEqual(first['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(first), flush=True)
                 self.settled(f)
-                self.assertEqual(first['params']['turn']['status'], 'completed')
+                self.assertEqual(first['status'], 'completed')
                 self.assertEqual(len(f.provider.model_requests), 1)
                 session = json.loads(f.state.read_text())['discussions']['D1']['sessionId']
-                self.assertEqual(first['params']['threadId'], session)
+                self.assertEqual(first['thread'], session)
                 rollout, = home.rglob('rollout-*.jsonl')
                 prefix = rollout.read_bytes()
                 self.assertIn(b'NATIVE_USER_FIRST', prefix)
@@ -755,11 +759,11 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertIn('NATIVE_DESCRIPTION_B', listed)
                 self.assertNotIn('NATIVE_DESCRIPTION_A', listed); self.assertNotIn('NATIVE_DESCRIPTION_LOCAL', listed)
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_SECOND'
-                second = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                second = native_event()
                 self.assertEqual(second['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(second), flush=True)
                 self.settled(f)
-                self.assertEqual(second['params']['turn']['status'], 'completed')
-                self.assertEqual(second['params']['threadId'], session)
+                self.assertEqual(second['status'], 'completed')
+                self.assertEqual(second['thread'], session)
                 self.assertEqual(json.loads(f.state.read_text())['discussions']['D1']['sessionId'], session)
                 self.assertEqual(len(f.provider.model_requests), 2)
                 request_b = json.dumps(f.provider.model_requests[1]['body'])
