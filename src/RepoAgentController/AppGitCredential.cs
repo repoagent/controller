@@ -9,7 +9,7 @@ internal static class AppGitCredential
     // Only clone-capable credentials carry the approved repository binding Git may use.
     static InstallationCredential Lease(InstallationCredential credential)
     {
-        if (credential.Profile is not ("polling-clone" or "webhook-clone") ||
+        if (credential.Profile is not ("polling-clone" or "webhook-clone" or "polling-clone-settings" or "webhook-clone-settings") ||
             credential.Repository?.Split('/') is not [var owner, var name] || !Segment(owner) || !Segment(name))
             throw new IOException("Unavailable Git lease");
         return credential;

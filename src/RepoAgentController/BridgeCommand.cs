@@ -16,7 +16,7 @@ public static class BridgeCommand
         var appId = new Option<string>("--app-id") { Required = true, Description = "GitHub App ID or client ID" };
         var privateKey = new Option<FileInfo>("--private-key") { Description = "GitHub App PEM private-key file" };
         var brokerUrl = new Option<string>("--broker-url") { Description = "Enrolled HTTPS credential broker origin" };
-        var enrollmentFile = new Option<FileInfo>("--enrollment-file") { Description = "Protected broker enrollment file (v1 or explicit clone v2)" };
+        var enrollmentFile = new Option<FileInfo>("--enrollment-file") { Description = "Protected broker enrollment file (v1, explicit clone v2 or repository-settings v3)" };
         var enrollmentEnvironment = new Option<string>("--enrollment-environment") { Description = "Name of an environment variable holding an externally injected broker enrollment; it is removed before any child process starts" };
         var installationId = new Option<long?>("--installation-id") { Description = "Expected installation ID (otherwise discover it for --repo)" };
         var repositoryId = new Option<long?>("--repository-id") { Description = "Expected immutable repository ID for broker clone mode" };
@@ -33,7 +33,7 @@ public static class BridgeCommand
         var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (native work may still be running)" };
         var clone = new Option<bool>("--clone") { Description = "Use explicitly approved clone-capable credentials" };
         var checkAuth = new Option<bool>("--check-auth") { Description = "Verify App installation identity and prepare authenticated gh, then exit without starting Codex" };
-        var repositorySettings = new Option<bool>("--repository-settings") { Description = "Read REPOAGENT_ repository Actions variables with an explicit Variables: read runtime permission" };
+        var repositorySettings = new Option<bool>("--repository-settings") { Description = "Read REPOAGENT_ repository Actions variables with an explicit Variables: read runtime permission (direct App, or a repository-settings v3 broker enrollment)" };
         var logFileBytes = new Option<long>("--log-file-bytes") { DefaultValueFactory = _ => RetainedLog.DefaultFileBytes, Description = $"Maximum bytes per retained log file beside --state ({RetainedLog.MinimumFileBytes}..{RetainedLog.MaximumFileBytes}); retained logs never exceed --log-files × this size" };
         var logFiles = new Option<int>("--log-files") { DefaultValueFactory = _ => RetainedLog.DefaultFiles, Description = $"Retained log files, including the active file (1..{RetainedLog.MaximumFiles}); the oldest file is deleted on rotation" };
         var dashboardCategory = new Option<string?>("--dashboard-category") { Description = "Existing Discussion category for the controller-owned status dashboard; omit to publish no dashboard" };
@@ -98,8 +98,6 @@ public static class BridgeCommand
                     queue = workQueue ?? validated;
                 }
                 else if (workQueue is not null) throw new ArgumentException("An injected work queue requires --azure-work-queue");
-                if (result.GetValue(repositorySettings) && result.GetValue(brokerUrl) is not null)
-                    throw new ArgumentException("--repository-settings needs an explicit Variables: read runtime grant; broker enrollment profiles do not include it and are not widened");
                 var cwd = result.GetValue(workspace)!.FullName;
                 if (!Directory.Exists(cwd)) throw new ArgumentException("--workspace must exist");
                 RetainedLog.Validate(result.GetValue(logFileBytes), result.GetValue(logFiles));
@@ -141,8 +139,10 @@ public static class BridgeCommand
                         ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone),
                             repositorySettings: result.GetValue(repositorySettings))
                         : injected is null
-                            ? GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone), expectedRepositoryId: result.GetValue(repositoryId), expectedInstallationId: result.GetValue(installationId))
-                            : GitHubAppCredentials.FromBroker(http, broker, BrokerTokenSource.Injected(injected, injectedEnrollment), result.GetValue(appId)!, repo, credentialDirectory, clock, publicUrl is not null, result.GetValue(clone), result.GetValue(repositoryId), result.GetValue(installationId));
+                            ? GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone), expectedRepositoryId: result.GetValue(repositoryId), expectedInstallationId: result.GetValue(installationId),
+                                repositorySettings: result.GetValue(repositorySettings))
+                            : GitHubAppCredentials.FromBroker(http, broker, BrokerTokenSource.Injected(injected, injectedEnrollment), result.GetValue(appId)!, repo, credentialDirectory, clock, publicUrl is not null, result.GetValue(clone), result.GetValue(repositoryId), result.GetValue(installationId),
+                                result.GetValue(repositorySettings));
                     await using var durable = queue is null ? null : new DurableWebhookWork(queue, repo, result.GetValue(repositoryId)!.Value,
                         result.GetValue(appId)!, result.GetValue(installationId)!.Value, BrokerTokenSource.ParseOrigin(broker!));
                     if (durable is not null) await durable.Start(cancellationToken);

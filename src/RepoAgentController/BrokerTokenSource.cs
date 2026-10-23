@@ -17,8 +17,11 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
     readonly TimeProvider clock;
     readonly bool repositoryWebhooks;
     readonly bool clone;
+    readonly bool settings;
     readonly int version;
-    string[] Fields => clone ? [.. BindingFields, "profile", "policyVersion"] : BindingFields;
+    // Clone (v2) and repository-settings (v3) files and leases name their profile and approval policy.
+    bool NamesProfile => clone || settings;
+    string[] Fields => NamesProfile ? [.. BindingFields, "profile", "policyVersion"] : BindingFields;
     public long? RepositoryId => clone ? Id(enrollment.RootElement, "repositoryId") : null;
     public string? GitRepository => clone ? Text(enrollment.RootElement, "repository") : null;
     public string? GitProfile => clone ? Text(enrollment.RootElement, "profile") : null;
@@ -27,17 +30,21 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
     public string AppSlug => enrollment.RootElement.GetProperty("appSlug").GetString()!;
 
     public BrokerTokenSource(HttpClient http, string brokerOrigin, string enrollmentFile, string appId, string repository,
-        TimeProvider clock, bool repositoryWebhooks, bool clone = false, long? expectedRepositoryId = null, long? expectedInstallationId = null)
-        : this(http, brokerOrigin, () => ReadFile(enrollmentFile), appId, repository, clock, repositoryWebhooks, clone, expectedRepositoryId, expectedInstallationId) { }
+        TimeProvider clock, bool repositoryWebhooks, bool clone = false, long? expectedRepositoryId = null, long? expectedInstallationId = null,
+        bool repositorySettings = false)
+        : this(http, brokerOrigin, () => ReadFile(enrollmentFile), appId, repository, clock, repositoryWebhooks, clone, expectedRepositoryId, expectedInstallationId,
+            repositorySettings) { }
 
     /// <param name="readEnrollment">Supplies the protected enrollment document; every source gets the same validation.</param>
     internal BrokerTokenSource(HttpClient http, string brokerOrigin, Func<ReadOnlyMemory<byte>> readEnrollment, string appId, string repository,
-        TimeProvider clock, bool repositoryWebhooks, bool clone = false, long? expectedRepositoryId = null, long? expectedInstallationId = null)
+        TimeProvider clock, bool repositoryWebhooks, bool clone = false, long? expectedRepositoryId = null, long? expectedInstallationId = null,
+        bool repositorySettings = false)
     {
         this.http = http;
         this.clock = clock;
         this.repositoryWebhooks = repositoryWebhooks;
         this.clone = clone;
+        settings = repositorySettings;
         origin = ParseOrigin(brokerOrigin);
         if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Broker credentials require the Linux or macOS controller runtime");
         enrollment = Parse(readEnrollment());
@@ -45,7 +52,11 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         {
             var root = enrollment.RootElement;
             version = checked((int)Id(root, "protocolVersion"));
-            if (version != (clone ? 2 : 1)) throw Invalid("explicit runtime selection differs from enrollment version");
+            // The repository-settings family is explicit on both sides: frozen files are never widened, and a
+            // settings file is never consumed as a frozen profile.
+            if (settings && version != 3) throw Invalid("--repository-settings requires a repository-settings enrollment (runtime v3); frozen profiles are not widened");
+            if (!settings && version == 3) throw Invalid("a repository-settings enrollment requires --repository-settings");
+            if (version != (settings ? 3 : clone ? 2 : 1)) throw Invalid("explicit runtime selection differs from enrollment version");
             CheckFields(root, [.. Fields, "brokerOrigin", "githubHost", "deviceId", "deviceSecret"]);
             CheckBinding(root);
             if (Text(root, "githubHost") != "github.com") throw Invalid("only github.com is supported");
@@ -161,7 +172,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
             foreach (var field in new[] { "appSlug", "repository" })
                 if (!string.Equals(Text(result, field), Text(approved, field), StringComparison.OrdinalIgnoreCase))
                     throw Invalid("lease App/repository differs from enrollment");
-            if (clone && Text(result, "policyVersion") != Text(approved, "policyVersion"))
+            if (NamesProfile && Text(result, "policyVersion") != Text(approved, "policyVersion"))
                 throw Invalid("lease approval policy differs from enrollment");
             var token = Text(result, "token");
             var expiryText = Text(result, "expiresAt");
@@ -181,15 +192,20 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         if (!Name(Text(value, "appSlug"))) throw Invalid("invalid App slug");
         var parts = Text(value, "repository").Split('/');
         if (parts.Length != 2 || !parts.All(Name)) throw Invalid("invalid repository name");
-        if (clone && (Text(value, "profile") != (repositoryWebhooks ? "webhook-clone" : "polling-clone") ||
+        if (settings && (Text(value, "profile") != (repositoryWebhooks ? "webhook" : "polling") + (clone ? "-clone" : "") + "-settings" ||
+            Text(value, "policyVersion") != "repository-actions-settings-approval-v3"))
+            throw Invalid("repository-settings policy differs");
+        if (clone && !settings && (Text(value, "profile") != (repositoryWebhooks ? "webhook-clone" : "polling-clone") ||
             Text(value, "policyVersion") is not ("repository-actions-clone-approval-v3" or "repository-agent-clone-approval-v2")))
             throw Invalid("clone policy differs");
         var permissions = value.GetProperty("permissions");
         var required = new List<string> { "discussions" };
         if (repositoryWebhooks) required.Add("repository_hooks");
         if (clone) required.Add("contents");
+        if (settings) required.Add("actions_variables");
         CheckFields(permissions, required.ToArray(), ["metadata"]);
         if (Text(permissions, "discussions") != "write" || (clone && Text(permissions, "contents") != "read") ||
+            (settings && Text(permissions, "actions_variables") != "read") ||
             (repositoryWebhooks && Text(permissions, "repository_hooks") != "write") ||
             (permissions.TryGetProperty("metadata", out var metadata) && (metadata.ValueKind != JsonValueKind.String || metadata.GetString() != "read")))
             throw Invalid("permission profile differs from runtime");
