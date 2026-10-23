@@ -17,7 +17,7 @@ REPOAGENT_LIVE=1 ./repoagent live-test
 
 For C06/C07 install the skill at `tests/fixtures/acceptance-marker` from this repository, pinned to a full commit SHA containing that fixture. Public source credentials are unnecessary; a private source requires the explicitly authorized source-read token. The fixture computes a correlated result using its own script and supports a bounded gate for observing input while native work is active. C07 checks its unexpired active lease after the additional input is accepted; the skill removes the lease on completion or timeout.
 
-The main journey uses explicit `--tool-updates pinned` for reproducibility. Normal agent setup defaults to checking/updating stable releases on every container start. Record separate startup-update evidence using `--tool-updates latest`, including actual before/after versions and a container restart.
+The main journey uses explicit `--tool-updates pinned` for reproducibility. Normal agent setup also defaults to the image's pinned tools. Record separate opt-in startup-update evidence using `--tool-updates latest`, including actual before/after versions and a container restart.
 
 The xUnit suite runs in its own container, with the human `gh` sign-in mounted only there. It operates through real GraphQL mutations and observations. Its mailbox asks the host wrapper for replacement, logs or the documented rejected-session fixture; neither the runner nor agent receives a Docker socket. The agent uses its App installation and container-owned Codex account. No provider mocks are used.
 

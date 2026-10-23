@@ -71,7 +71,7 @@ def bridge_args(config, *, check_auth=False):
 
 def select_tools(config):
     paths = [p for p in os.environ['PATH'].split(os.pathsep) if p != '/data/tools/bin']
-    if config.get('toolUpdates', 'latest') == 'latest':
+    if config.get('toolUpdates') == 'latest':
         paths.insert(0, '/data/tools/bin')
     os.environ['PATH'] = os.pathsep.join(paths)
 
@@ -283,7 +283,7 @@ def main():
     configure_parser.add_argument('--mention-user', default='repoagent')
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
     configure_parser.add_argument('--web-search', choices=['live', 'cached', 'disabled'], default='live')
-    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='latest')
+    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='pinned')
     configure_parser.add_argument('--mode', choices=['polling', 'fixed-url', 'quick-tunnel'], default='polling')
     configure_parser.add_argument('--public-url', default='')
     configure_parser.add_argument('--listen-port', type=int, default=8080)
@@ -330,7 +330,7 @@ def main():
     elif args.command == 'state': print(Path(STATE).read_text())
     elif args.command in ('check', 'start'):
         config = settings()
-        if args.command == 'start' and config.get('toolUpdates', 'latest') == 'latest':
+        if args.command == 'start' and config.get('toolUpdates') == 'latest':
             update_tools.update()
         run(['codex', 'login', 'status'])
         if args.command == 'check':
