@@ -694,6 +694,8 @@ public sealed class ControllerDashboardTests
              if 'id' not in request:continue
              method=request['method'];idle={'type':'idle'}
              if method=='initialize':send({'id':request['id'],'result':{'codexHome':os.getcwd()}});continue
+             if method=='model/list':send({'id':request['id'],'result':{'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]}});continue
+             if method=='config/read':send({'id':request['id'],'result':{'config':{}}});continue
              if method=='turn/start':
               turns+=1;thread=request['params']['threadId'];turn={'id':'native-turn-%d'%turns,'status':'inProgress','items':[]}
               send({'id':request['id'],'result':{'turn':turn}})
@@ -760,6 +762,7 @@ public sealed class ControllerDashboardTests
              elif 'comments(' in query:entry['kind']='comments';data={'node':{'comments':page([message(c) for c in world['comments'] if c['discussion']==variables['id'] and c.get('replyTo') is None])}}
              elif 'replies(' in query:entry['kind']='replies';data={'node':{'replies':page([message(c) for c in world['comments'] if (c.get('replyTo') or {}).get('id')==variables['id']])}}
              elif 'reactions(' in query:entry['kind']='reactions';data={'node':{'reactions':page([])}}
+             elif 'labels(' in query:entry['kind']='labels';data={'node':{'labels':page([])}}
              elif 'reactionGroups' in query and 'node(' in query:
               entry.update(kind='reconcile',subject=variables['id']);data={'node':{'reactionGroups':groups(variables['id'])}}
              else:raise RuntimeError('Unexpected GitHub request: '+query)

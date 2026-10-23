@@ -23,6 +23,7 @@ src/RepoAgentController/ControllerStatus.cs
 src/RepoAgentController/ControllerDashboard.cs
 src/RepoAgentController/BaselineReleases.cs
 src/RepoAgentController/MentionUser.cs
+src/RepoAgentController/ModelSelection.cs
 src/RepoAgentController/Program.cs
 src/RepoAgentController/RepositorySettings.cs
 src/RepoAgentController/repository-settings.json

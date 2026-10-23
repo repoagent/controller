@@ -315,7 +315,7 @@ public sealed class GitHubOutboxTests
              if rejects:
               open(NATIVE_REJECT,'w').write(str(rejects-1))
               print(json.dumps({'id':request['id'],'error':{'code':-32000,'message':'turn rejected'}}),flush=True);continue
-             result={'codexHome':os.getcwd()} if method=='initialize' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1','status':{'type':'idle'}}}
+             result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1','status':{'type':'idle'}}}
              print(json.dumps({'id':request['id'],'result':result}),flush=True)
             """;
 
@@ -347,6 +347,7 @@ public sealed class GitHubOutboxTests
              elif 'comments(' in query:data={'node':{'comments':page([message(c) for c in world['comments'] if c.get('replyTo') is None])}}
              elif 'replies(' in query:data={'node':{'replies':page([message(c) for c in world['comments'] if (c.get('replyTo') or {}).get('id')==variables['id']])}}
              elif 'reactions(' in query:data={'node':{'reactions':page(world['reactions'].get(variables['id'],[]))}}
+             elif 'labels(' in query:data={'node':{'labels':page([])}}
              elif 'reactionGroups' in query and 'node(' in query:
               kind='reconcile';subject=variables['id']
               relay=world['responses'].pop(0) if world['responses'] else {'status':200,'body':json.dumps({'data':{'node':{'reactionGroups':groups(subject)}}})}

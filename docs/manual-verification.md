@@ -12,6 +12,7 @@ Build/run inside a Linux container, inspect `--help`, and start the long-running
 | Edit a message; add and remove a reaction | Source URL, attributed deltas and agent responses when useful, no replay of the reaction subject as a request |
 | React/reply to agent-authored content | Human activity reaches the same native session |
 | Send while the native agent is working | `input-waiting` and no EYES for the new input while the first turn is active; after that turn's idle report, `native-accepted` for a new turn, then `receipt`; subsequent response reflects it |
+| Model label and defaults | With `repoagent:<model>:<reasoning>` applied, the next human post logs `native-accepted … model=… effort=… selection=label`. Changing or removing the label starts no turn. The following post uses the new label, or the defaults (`selection=default`). A second model label, or a model or effort the account does not offer, logs `selection-error` and its input waits. |
 | Exercise an installed skill | Requested skill and visible result in GitHub |
 | Source-specific EYES | Discussion body, comment and reply each get the agent's EYES on the actual source, including reaction subjects |
 | Existing EYES reuse | Edit an acknowledged source; `receipt-reused`; no duplicate work from the receipt itself |

@@ -24,3 +24,6 @@ A nonsecret controller setting held in a direct repository Actions variable name
 
 **Active-session limit**:
 The most native Discussion turns one controller runs at the same time, set by the `REPOAGENT_MAX_ACTIVE_SESSIONS` repository setting. Only running turns count; idle stored sessions do not. Input beyond the limit waits in the controller.
+
+**Model label**:
+A Discussion label `repoagent:<model>:<reasoning>` that selects the Codex model and reasoning effort for that Discussion's next turn, overriding the repository defaults. It is configuration, not input: changing it never starts or steers a turn.

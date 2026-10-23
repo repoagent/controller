@@ -22,6 +22,8 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
     readonly TimeProvider clock = time ?? TimeProvider.System;
     // Reads the same repository settings as the active-session limit.
     readonly CategoryEnrollment categories = new(settings, github, store);
+    // Model label and selection problems by kind and Discussion URL, each reported once until it changes or clears.
+    readonly Dictionary<(string Kind, string Url), string> reported = [];
     // Serializes observation and idle dispatch over the shared state store.
     readonly SemaphoreSlim gate = new(1, 1), wake = new(0, 1);
     volatile bool inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
@@ -103,6 +105,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                     store.Discussions[id] = record;
                     Log.Write("discovered", discussion.Text("url") + (byCategory ? " enrollment=category" : ""));
                 }
+                await ObserveLabels(record, id, ct);
                 var previous = record["sources"]!.AsObject();
                 var current = new JsonObject();
                 var changes = new JsonArray();
@@ -256,6 +259,24 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
 
     static TimeSpan Backoff(int attempts) => TimeSpan.FromTicks(Math.Min(LastRetry.Ticks, FirstRetry.Ticks << Math.Min(attempts - 1, 16)));
 
+    // Caller holds the gate. Model labels are configuration, not input: a change is kept for the next turn and queues nothing.
+    async Task ObserveLabels(JsonObject record, string id, CancellationToken ct)
+    {
+        string[] labels;
+        try { labels = (await github.Labels(id, ct)).Where(ModelSelection.IsLabel).Order(StringComparer.Ordinal).ToArray(); }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            // Conversation continues on the last observed labels; the failure stays visible in logs and status.
+            Report("label-read-error", record.Text("url"), error.Message + "; the last observed model labels still apply");
+            return;
+        }
+        Report("label-read-error", record.Text("url"), null);
+        var observed = labels.Length == 0 ? null : new JsonArray(labels.Select(label => (JsonNode?)JsonValue.Create(label)).ToArray());
+        if (JsonNode.DeepEquals(record["labels"], observed)) return;
+        if (observed is null) record.Remove("labels"); else record["labels"] = observed;
+        store.Save();
+    }
+
     // Caller holds the gate. Observed changes wait durably, in order, with their receipt source; the checkpoint advances.
     void Queue(JsonObject record, JsonNode discussion, List<JsonNode> sources, JsonArray changes, List<string?> receipts, bool bootstrap, JsonObject current)
     {
@@ -319,6 +340,12 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var receipts = inputs.Take(count).Select(input => input!["receipt"]).OfType<JsonNode>().DistinctBy(receipt => receipt.Text("id")).ToArray();
         // Global admission: checkout refresh exclusion; the active-session limit was checked above.
         using var admission = refresh is null ? null : await refresh.Admit(ct);
+        // Selected after admission applied any due checkout refresh, so the refreshed project configuration counts.
+        // Its native queries are read-only, so a failure or unusable selection releases the admission.
+        ModelChoice? selection;
+        try { selection = await Select(record, ct); }
+        catch { admission?.Abandon(); throw; }
+        if (selection is null) { admission?.Abandon(); return false; }
         // Durable while the native outcome is unknown; an interrupted lifetime leaves it for redelivery at the next start.
         var pending = new JsonObject { ["operation"] = create ? "create-and-send" : "send", ["since"] = DateTimeOffset.UtcNow.ToString("O"), ["sourceIds"] = new JsonArray(receipts.Select(receipt => (JsonNode?)JsonValue.Create(receipt.Text("id"))).ToArray()), ["inputs"] = count };
         var offered = false;
@@ -347,7 +374,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
             }
             if (!create) { record["pending"] = pending; store.Save(); }
             offered = true;
-            await codex.Accept(session, envelope, ct, admission);
+            await codex.Accept(session, envelope, selection, ct, admission);
         }
         // A failure while this lifetime stops leaves pending; the next start retries it as an interrupted delivery. Credential
         // loss kills the native before the lifetime token is cancelled, so it is checked directly.
@@ -399,6 +426,37 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         finally
         {
             Log.Write("delivery-retry", $"{record.Text("url")} session={(record.Text("sessionId") is { Length: > 0 } session ? session : "none")} attempt={attempts} redelivery={(offered ? "true" : "false")} inputs={count} sources={string.Join(',', inputs.Take(count).Select(input => input!["receipt"]).OfType<JsonNode>().Select(receipt => receipt.Text("id")).Distinct())} retry-at={after:O}: {reason}");
+        }
+    }
+
+    // Caller holds the gate. The validated selection for the Discussion's next turn, or null after reporting why its input waits.
+    async Task<ModelChoice?> Select(JsonObject record, CancellationToken ct)
+    {
+        var labels = record["labels"]?.AsArray().Select(label => label!.GetValue<string>()).ToArray() ?? [];
+        var (nativeModel, nativeReasoning) = await codex.ConfiguredModel(ct);
+        var catalogue = await codex.Models(ct);
+        try
+        {
+            var selection = ModelSelection.Resolve(labels, settings["REPOAGENT_MODEL"].Value, settings["REPOAGENT_REASONING"].Value,
+                nativeModel, nativeReasoning, catalogue);
+            Report("selection-error", record.Text("url"), null);
+            return selection;
+        }
+        catch (ModelSelectionException error)
+        {
+            // Never substituted: the input waits until the labels, settings or account offer a usable selection.
+            Report("selection-error", record.Text("url"), error.Message);
+            return null;
+        }
+    }
+
+    void Report(string kind, string url, string? problem)
+    {
+        if (problem is null) reported.Remove((kind, url));
+        else if (reported.GetValueOrDefault((kind, url)) != problem)
+        {
+            reported[(kind, url)] = problem;
+            Log.Write(kind, $"{url}: {problem}");
         }
     }
 

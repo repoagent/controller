@@ -15,6 +15,16 @@
       "type": "category-names",
       "minimum": 1,
       "maximum": 25
+    },
+    {
+      "name": "REPOAGENT_MODEL",
+      "description": "Default Codex model, as an alias such as sol6.1 or a model ID, for Discussion turns without a repoagent:<model>:<reasoning> label.",
+      "type": "token"
+    },
+    {
+      "name": "REPOAGENT_REASONING",
+      "description": "Default reasoning effort, such as xhigh, for Discussion turns without a repoagent:<model>:<reasoning> label.",
+      "type": "token"
     }
   ]
 }

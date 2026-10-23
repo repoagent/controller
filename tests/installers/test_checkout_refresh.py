@@ -1040,6 +1040,8 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual(second['thread'], session)
                 self.assertEqual(json.loads(f.state.read_text())['discussions']['D1']['sessionId'], session)
                 self.assertEqual(len(f.provider.model_requests), 2)
+                # Each turn states the reasoning its checkout's project configuration selects at that turn.
+                self.assertEqual([request['body']['reasoning']['effort'] for request in f.provider.model_requests], ['low', 'high'])
                 request_b = json.dumps(f.provider.model_requests[1]['body'])
                 for text in ('NATIVE_USER_FIRST', 'Harmless fixture assistant 1.', 'NATIVE_USER_SECOND', 'NATIVE_AGENTS_B', 'NATIVE_SKILL_BODY_B'):
                     self.assertIn(text, request_b)
@@ -1095,6 +1097,26 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertEqual(f.provider.reactions, ['D1', 'C1'])
             print('NATIVE_IDLE_DISPATCH session=' + session + ' turns=' + first['turn'] + ',' + second['turn']
                   + ' statuses=' + json.dumps([line.split(' ', 2)[2].strip() for line in f.lines if 'session-status' in line]), flush=True)
+
+    def test_pinned_native_turns_use_the_labelled_model_and_reasoning_and_label_removal_restores_the_defaults(self):
+        # Pinned native keeps a turn/start model and effort for later turns, so only an explicit default restores it.
+        with self.fixture(responses=True) as f:
+            config = f.directory / 'home/config.toml'
+            config.write_text(config.read_text() + FIXTURE_MODEL)
+            f.provider.labels = {'D1': ['repoagent:luna6:xhigh']}
+            with self.controller(f):
+                f.provider.discussions = [self.discussion(1)]
+                first = native_event(f.wait('native-event'))
+                f.provider.labels = {}
+                f.wait('poll-completed success=True'); f.wait('poll-completed success=True')
+                self.assertEqual(len(f.provider.model_requests), 1, 'A label-only change invoked the agent')
+                f.provider.discussions[0]['body'] += ' after the label was removed'
+                second = native_event(f.wait('native-event'))
+        self.assertEqual([(event['method'], event['status']) for event in (first, second)], [('turn/completed', 'completed')] * 2)
+        self.assertEqual([(request['body']['model'], request['body']['reasoning']['effort']) for request in f.provider.model_requests],
+                         [('gpt-6-luna', 'xhigh'), ('gpt-6.1-sol', 'low')])
+        print('NATIVE_MODEL_SELECTION ' + json.dumps([dict(model=request['body']['model'], reasoning=request['body']['reasoning'])
+                                                       for request in f.provider.model_requests]), flush=True)
 
     def test_genuine_sessions_discover_packaged_skills_and_receive_orientation_when_started_or_resumed(self):
         packaged = Path(self.controller_command[-1]).parent  # The controller's own installed skill directories.

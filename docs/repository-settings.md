@@ -10,6 +10,8 @@ The catalogue's `reserved` list names `REPOAGENT_` variables that other features
 | --- | --- | --- |
 | `REPOAGENT_MAX_ACTIVE_SESSIONS` | Integer from 1 to 64 | The most native Discussion turns running at once. Default `4`. See [Active-session limit](#active-session-limit). |
 | `REPOAGENT_ENROLLMENT_CATEGORIES` | 1 to 25 Discussion category names, separated by commas | New Discussions in these categories enroll without a mention. Absent means no category enrollment. See [Category enrollment](#category-enrollment). |
+| `REPOAGENT_MODEL` | Model alias such as `sol6.1`, or a model ID such as `gpt-6.1-sol` | Default model for Discussions without a model label. Unset: the native Codex configuration's `model`, then the catalogue's default model. |
+| `REPOAGENT_REASONING` | Reasoning effort such as `xhigh` | Default effort for Discussions without a model label. Unset: the native configuration's `model_reasoning_effort`, then the selected model's default effort. |
 
 ## Inspect or change settings
 
@@ -74,8 +76,48 @@ At the limit, newly observed input waits in the controller, as it does for a bus
 
 Category enrollment needs no permission beyond Discussions read and the Variables read that settings already require. Broker-enrolled controllers cannot read settings yet (see [Controller behavior](#controller-behavior)), so they enroll only by mention or URL.
 
+## Model and reasoning selection
+
+Every native turn carries an explicit model and reasoning effort. Pinned Codex keeps a `turn/start` model or effort for later turns of the same thread, so the defaults are sent explicitly too; that is how removing a label restores them.
+
+For each turn, the controller uses the Discussion's model label if it has one. Otherwise each part falls back separately: the repository default (`REPOAGENT_MODEL`, `REPOAGENT_REASONING`), then the native Codex configuration for the workspace (`model`, `model_reasoning_effort`, read through `config/read`), then the catalogue's default model and that model's default effort.
+
+**Label grammar.** `repoagent:<model>:<reasoning>`, for example `repoagent:sol6.1:xhigh`. Every label whose name starts with `repoagent:` (any case) is a model label:
+
+- `<model>` and `<reasoning>` are names of letters, digits, `.`, `_` or `-`, at most 64 characters. They are compared case-insensitively.
+- `<model>` is a model ID from the account's native catalogue, or its alias. `gpt-<version>-<family>` has the alias `<family><version>`. For example, `gpt-6.1-sol` has the alias `sol6.1`. Other IDs, such as `gpt-5.5`, have no alias.
+- `<reasoning>` must be one of the efforts the catalogue lists for that model.
+
+**Validation.**
+
+- The native catalogue is `model/list` without hidden models. It reflects the signed-in account, so syntax and availability are checked separately.
+- One model label selects that Discussion's model and effort. Several model labels are a conflict.
+- A conflict, a malformed label, an unavailable model or an unsupported effort is never substituted. This applies equally to a default. Without validation, pinned Codex would clamp an unsupported effort, for example `ultra` to `max`. Instead, the Discussion's input waits without taking an [active-session](#active-session-limit) slot, and a `selection-error` names the label or setting, plus the available models or supported efforts. Status lists it under `failures`. The next observation after a fix delivers the waiting input.
+- Each accepted turn logs its selection: `native-accepted session=… model=gpt-6-luna effort=xhigh selection=label turn=…`.
+
+**Label changes.** The controller reads a Discussion's labels each time it observes that Discussion, and keeps them in its state. A label change is not input: it never starts or steers a turn, and it takes effect on the next turn. If labels cannot be read, `label-read-error` is logged once and the last observed labels still apply.
+
+Aliases of the pinned Codex 0.163.0 catalogue without an account (`model/list`, hidden models excluded):
+
+| Alias | Model ID | Supported reasoning | Default |
+| --- | --- | --- | --- |
+| `sol6.1` | `gpt-6.1-sol` (catalogue default) | low, medium, high, xhigh, max, ultra | low |
+| `astra6` | `gpt-6-astra` | low, medium, high, xhigh, max, ultra | low |
+| `sol6` | `gpt-6-sol` | low, medium, high, xhigh, max, ultra | medium |
+| `luna6` | `gpt-6-luna` | low, medium, high, xhigh, max | medium |
+| `sol5.6` | `gpt-5.6-sol` | low, medium, high, xhigh, max, ultra | low |
+| `terra5.6` | `gpt-5.6-terra` | low, medium, high, xhigh, max, ultra | medium |
+| `luna5.6` | `gpt-5.6-luna` | low, medium, high, xhigh, max | medium |
+| none | `gpt-5.5` | low, medium, high, xhigh | medium |
+
+A signed-in account can offer a different list; error messages always show the current one.
+
 ## Adding a setting
 
-1. Add an entry to the catalogue. It has `name` (`REPOAGENT_` plus uppercase letters, digits or `_`, and not a `reserved` name), `description`, `type`, `minimum` and `maximum`. Types are `integer` (bounded by `minimum` and `maximum`) and `category-names` (whose `minimum` and `maximum` bound the name count). A new type needs matching validation in `RepositorySetting.Normalize` and in `Get-Normalized` in [`scripts/repository-settings.ps1`](../scripts/repository-settings.ps1).
+1. Add an entry to the catalogue. It has `name` (`REPOAGENT_` plus uppercase letters, digits or `_`, and not a `reserved` name), `description` and `type`.
+   - `integer` also has `minimum` and `maximum`.
+   - `category-names` also has `minimum` and `maximum`, which bound the name count.
+   - `token` is a lowercase name of letters, digits, `.`, `_` or `-`, at most 64 characters, and has no further fields.
+   - A new type needs matching validation in `RepositorySetting.Normalize` and in `Get-Normalized` in [`scripts/repository-settings.ps1`](../scripts/repository-settings.ps1).
 2. Read the effective value from the `RepositorySettings` instance that `BridgeCommand` creates, as `settings["REPOAGENT_…"].Value`. A `null` value means the feature's own default applies. The value changes at most once per refresh, so read it at each decision point instead of caching it.
 3. Document the default and when a change takes effect. Then add a row to the table above.

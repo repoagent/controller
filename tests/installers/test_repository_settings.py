@@ -95,6 +95,24 @@ class RepositorySettingsTests(unittest.TestCase):
         self.assertIn(('PATCH', VARIABLES + '/' + SETTING, {'name': SETTING, 'value': '8'}), self.requests())
         self.assertEqual(self.remote(), {SETTING: '8', 'OTHER': 'x'})
 
+    def test_model_and_reasoning_defaults_are_written_as_the_names_the_controller_consumes(self):
+        result, outcome = self.run_settings('-Setting', 'REPOAGENT_MODEL= Sol6.1 ', '-Apply')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.remote(), {'REPOAGENT_MODEL': 'sol6.1'})
+        self.assertEqual(self.reported(outcome, 'REPOAGENT_MODEL'), [{'name': 'REPOAGENT_MODEL', 'state': 'configured', 'value': 'sol6.1'}])
+
+        result, outcome = self.run_settings('-Setting', 'REPOAGENT_REASONING=XHigh', '-Apply', variables={'REPOAGENT_MODEL': 'sol6.1'})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.remote(), {'REPOAGENT_MODEL': 'sol6.1', 'REPOAGENT_REASONING': 'xhigh'})
+
+        for value in ('sol 6.1', '-high', 'x' * 65, ''):
+            with self.subTest(value=value):
+                result, outcome = self.run_settings('-Setting', 'REPOAGENT_REASONING=' + value, '-Apply')
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIsNone(outcome)
+                self.assertIn("must be a name of at most 64 letters, digits, '.', '_' or '-'", result.stdout + result.stderr)
+                self.assertEqual(self.requests(), [])
+
     def test_preview_and_unchanged_values_never_write(self):
         for arguments, variables, action in [(('-Setting', SETTING + '=6'), {}, 'create'),
                                              (('-Setting', SETTING + '=6', '-Apply'), {SETTING: '6'}, 'unchanged'),
@@ -128,7 +146,8 @@ class RepositorySettingsTests(unittest.TestCase):
         marker = {APPROVAL: '{"version":3,"marker":"approval-marker-value"}'}
         result, outcome = self.run_settings(variables={SETTING: '4', **marker})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual([setting['name'] for setting in outcome['settings']], [SETTING, CATEGORIES])
+        self.assertIn(SETTING, [setting['name'] for setting in outcome['settings']])
+        self.assertNotIn(APPROVAL, [setting['name'] for setting in outcome['settings']])
         self.assertFalse([request for request in self.requests() if APPROVAL in request[1]])
         self.assertNotIn('approval-marker-value', result.stdout + result.stderr)
 

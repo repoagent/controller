@@ -27,7 +27,7 @@ public sealed class RepositorySettingsTests
         Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=configured value=4"));
         var token = Assert.Single(fixture.Provider.TokenRequests);
         Assert.Equal("read", token["permissions"]!["actions_variables"]!.GetValue<string>());
-        var read = Assert.Single(fixture.GitHubRequests(), request => request.Endpoint.EndsWith("/" + Setting));
+        var read = Assert.Single(fixture.GitHubRequests(), request => request.Endpoint.EndsWith("/" + Setting, StringComparison.Ordinal));
         Assert.Equal(("GET", "repos/owner/repository/actions/variables/" + Setting, "installation-token-1"),
             (read.Method, read.Endpoint, read.Token));
     }
@@ -154,8 +154,8 @@ public sealed class RepositorySettingsTests
         await fixture.WaitForLog($" repository-setting name={Setting} state=absent");
 
         Assert.Equal(0, await controller.Stop());
-        var reads = fixture.GitHubRequests().Where(request => request.Endpoint.EndsWith("/actions/variables/" + Setting)).ToList();
-        Assert.Equal(5, reads.Count);
+        var reads = fixture.GitHubRequests().Where(request => request.Endpoint.Contains("/actions/variables/")).ToList();
+        Assert.Equal(5, reads.Count(request => request.Endpoint.EndsWith("/" + Setting, StringComparison.Ordinal)));
         Assert.All(reads, request => Assert.Equal("GET", request.Method));
         Assert.Single(fixture.Provider.TokenRequests); // Refresh reuses the unexpired read-only runtime token.
     }

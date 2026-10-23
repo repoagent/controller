@@ -177,6 +177,10 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return sources;
     }
 
+    /// <summary>Names of the labels currently applied to a Discussion.</summary>
+    public async Task<List<string>> Labels(string discussionId, CancellationToken ct) =>
+        (await Connection(discussionId, "Discussion", "labels", "name", ct)).Select(label => label.Text("name")).ToList();
+
     async Task<List<JsonNode>> Connection(string id, string type, string field, string fields, CancellationToken ct)
     {
         var nodes = new List<JsonNode>();
