@@ -36,9 +36,10 @@ public static class BridgeCommand
         var logFileBytes = new Option<long>("--log-file-bytes") { DefaultValueFactory = _ => RetainedLog.DefaultFileBytes, Description = $"Maximum bytes per retained log file beside --state ({RetainedLog.MinimumFileBytes}..{RetainedLog.MaximumFileBytes}); retained logs never exceed --log-files × this size" };
         var logFiles = new Option<int>("--log-files") { DefaultValueFactory = _ => RetainedLog.DefaultFiles, Description = $"Retained log files, including the active file (1..{RetainedLog.MaximumFiles}); the oldest file is deleted on rotation" };
         var dashboardCategory = new Option<string?>("--dashboard-category") { Description = "Existing Discussion category for the controller-owned status dashboard; omit to publish no dashboard" };
+        var codexAuth = new Option<FileInfo>("--codex-auth") { Description = "Operator-supplied Codex account credentials (auth.json format), separate from GitHub App credentials. Installed into the private CODEX_HOME when it differs from the last supply; replacing the file while running restarts the owned Codex app-server at idle and resumes sessions" };
         var imageInventory = new Option<FileInfo?>("--image-inventory") { Description = "The running baseline image's inventory (/opt/repoagent/image-inventory.json); the dashboard compares its SHA-256 with published baseline releases" };
         var startupToolUpdates = new Option<bool>("--startup-tool-updates") { Description = "The runtime updates the image's gh and Codex at startup (tool updates: latest), possibly to versions no release records; the dashboard then reports release identity as uncertain" };
-        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, azureWorkQueue, disableWebhook, once, checkAuth, clone, repositorySettings, logFileBytes, logFiles, dashboardCategory, imageInventory, startupToolUpdates };
+        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, azureWorkQueue, disableWebhook, once, checkAuth, clone, repositorySettings, logFileBytes, logFiles, dashboardCategory, codexAuth, imageInventory, startupToolUpdates };
         var ghCredentials = new Option<DirectoryInfo>("--credential-directory") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
@@ -130,6 +131,8 @@ public static class BridgeCommand
                         _ = BrokerTokenSource.ParseOrigin(broker);
                     }
                     else if (pem is null) throw new ArgumentException("Specify --private-key or both --broker-url and --enrollment-file");
+                    // Agent account credentials are checked before, and independently of, any GitHub App credential use.
+                    var agentCredentials = result.GetValue(codexAuth) is { } supplied ? CodexCredentials.Open(supplied.FullName) : null;
                     using var ownedHttp = transport is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(60) } : null;
                     var http = transport ?? ownedHttp!;
                     using var credentials = broker is null
@@ -154,6 +157,7 @@ public static class BridgeCommand
                     var settings = new RepositorySettings(result.GetValue(repositorySettings) ? github : null, clock ?? TimeProvider.System);
                     await settings.Refresh(startToken);
                     if (result.GetValue(checkAuth)) return 0;
+                    agentCredentials?.Install(); // Before any owned native process starts.
                     await using var outbox = new GitHubOutbox(statePath + ".outbox", github, clock ?? TimeProvider.System);
                     // Disposed before the outbox: a stop this lifetime handles is published, then delivery drains within a bound.
                     await using var dashboard = result.GetValue(dashboardCategory) is { } category
@@ -174,13 +178,22 @@ public static class BridgeCommand
                         var reconciliation = checkout is null ? null : new CheckoutRefresh(checkout, statePath,
                             store.Discussions.Any(entry => entry.Value!.Text("sessionId").Length != 0),
                             store.Discussions.Any(entry => entry.Value?["pending"] is not null));
-                        await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, reconciliation, credentials.BrokerCredentialLost);
+                        await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, reconciliation, credentials.BrokerCredentialLost,
+                            suppliedCredentials: agentCredentials is not null);
                         await using var managedRefresh = reconciliation;
                         await codex.Initialize(runtimeToken);
                         if (reconciliation is not null) await reconciliation.Start(codex,
                             durable is null ? TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)) : Timeout.InfiniteTimeSpan, runtimeToken);
                         var bridge = new Bridge(github, codex, store, outbox, numbers, reconciliation);
                         dashboard?.Start(runtimeToken);
+                        // Replaced agent credentials apply between dispatches at a global idle boundary: the checkout journal's in
+                        // clone mode, else the native's. Dispatch holds its gate before refresh admission, so this order matches.
+                        await using var agentRefresh = agentCredentials?.Watch((install, ct) => bridge.ExcludingDispatch(async () =>
+                        {
+                            if (reconciliation is null) return await codex.RestartWhenIdle(install, ct);
+                            var restarted = false;
+                            return await reconciliation.CommitAtIdle(async idle => restarted = await codex.RestartWhenIdle(install, idle), ct) && restarted;
+                        }, ct), clock ?? TimeProvider.System, refreshCancellation.Cancel, runtimeToken);
                         if (!result.GetValue(once)) outbox.Start(runtimeToken);
                         using var dispatchStop = CancellationTokenSource.CreateLinkedTokenSource(runtimeToken);
                         var dispatcher = bridge.DispatchWhenIdle(dispatchStop.Token, runtimeToken);

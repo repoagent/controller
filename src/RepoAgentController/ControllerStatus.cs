@@ -14,7 +14,8 @@ sealed class ControllerStatus : IDisposable
     const int MaximumFailures = 20, MaximumMessage = 2000;
     // Events that report failed or blocked work. New failure events become visible by adding their kind here.
     static readonly HashSet<string> FailureKinds = ["fatal", "poll-error", "observation-error", "dispatch-error", "manual-recovery", "receipt-error", "outbox-error",
-        "app-refresh-error", "native-request-blocked", "refresh-blocked", "durable-work-lost", "webhook-error", "webhook-disable-error", "dashboard-error"];
+        "app-refresh-error", "native-request-blocked", "refresh-blocked", "durable-work-lost", "webhook-error", "webhook-disable-error", "dashboard-error",
+        "codex-auth-failed", "codex-auth-invalid", "codex-auth-error"];
     static readonly HashSet<string> ActivityKinds = ["session-created", "forwarded"];
     // Events after which the state file holds different work, such as input now waiting for its session.
     static readonly HashSet<string> WorkKinds = ["input-waiting"];
@@ -40,6 +41,8 @@ sealed class ControllerStatus : IDisposable
             ["version"] = 1, ["repository"] = repository,
             ["controller"] = Json.Object(("state", "starting"), ("mode", mode), ("startedAt", now), ("updatedAt", now)),
             ["authentication"] = Json.Object(("state", "unknown")),
+            // Agent account credentials, separate from the GitHub App: supplied, healthy (a turn completed) or failed.
+            ["codexAuthentication"] = Json.Object(("state", "unknown")),
             // Earlier failures stay visible after a restart; their timestamps place them before startedAt.
             ["failures"] = previous?["failures"] is JsonArray failures ? failures.Copy() : new JsonArray(),
             ["latestActivity"] = previous?["latestActivity"]?.Copy()
@@ -63,6 +66,9 @@ sealed class ControllerStatus : IDisposable
                 case "fatal": controller["state"] = "failed"; break;
                 case "app-token-refreshed": runtime["authentication"] = Json.Object(("state", "healthy"), ("updatedAt", at)); break;
                 case "app-refresh-error": runtime["authentication"] = Json.Object(("state", "failed"), ("updatedAt", at), ("error", item["message"]!.Copy())); break;
+                case "codex-auth-supplied" or "codex-auth-applied": runtime["codexAuthentication"] = Json.Object(("state", "supplied"), ("updatedAt", at)); break;
+                case "codex-auth-verified": runtime["codexAuthentication"] = Json.Object(("state", "healthy"), ("updatedAt", at)); break;
+                case "codex-auth-failed": runtime["codexAuthentication"] = Json.Object(("state", "failed"), ("updatedAt", at), ("error", item["message"]!.Copy())); break;
                 default: changed = false; break;
             }
             if (FailureKinds.Contains(entry.Kind))
@@ -143,6 +149,7 @@ sealed class ControllerStatus : IDisposable
             ["actor"] = state?["agentLogin"]?.Copy(),
             ["controller"] = recorded?["controller"]?.Copy() ?? Json.Object(("state", "unknown")),
             ["authentication"] = recorded?["authentication"]?.Copy() ?? Json.Object(("state", "unknown")),
+            ["codexAuthentication"] = recorded?["codexAuthentication"]?.Copy() ?? Json.Object(("state", "unknown")),
             ["work"] = Json.Object(("sessions", started), ("pending", pending), ("waiting", waiting), ("running", journal is null ? null : running),
                 ("admissionBlocked", journal?["blocked"]?.Copy())),
             ["sessions"] = sessions,

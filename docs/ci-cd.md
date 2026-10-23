@@ -1,6 +1,6 @@
 # Verification, controller releases and auth-service delivery
 
-`Verify controller` runs on pull requests and pushes to `main`, with read-only permissions and no persisted checkout credentials. It uses the root `global.json` (.NET 11 RC), executes the actual xUnit runner, checks nonzero discovery, runs installer and delivery process tests, then builds Native AOT and executes native help plus NativeSmoke. The auth service independently pins .NET 10 LTS.
+`Verify controller` runs on pull requests and pushes to `main`, with read-only permissions and no persisted checkout credentials. It uses the root `global.json` (.NET 11 RC), executes the actual xUnit runner, checks nonzero discovery, runs installer and delivery process tests, then builds Native AOT and executes native help plus NativeSmoke. The controller project runs the trim and AOT analyzers on every build and treats all warnings as errors, and the Native AOT packaging uses the same warning policy as the image build, so code that would fail image publication (for example IL2026/IL3050) fails this gate first. The auth service independently pins .NET 10 LTS.
 
 ```sh
 bash scripts/delivery/verify.sh /tmp/controller-verification

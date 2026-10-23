@@ -17,6 +17,7 @@ src/RepoAgentController/GitHubOutbox.cs
 src/RepoAgentController/ManagedCheckout.cs
 src/RepoAgentController/CheckoutRefresh.cs
 src/RepoAgentController/CredentialHandoff.cs
+src/RepoAgentController/CodexCredentials.cs
 src/RepoAgentController/ControllerStatus.cs
 src/RepoAgentController/ControllerDashboard.cs
 src/RepoAgentController/BaselineReleases.cs

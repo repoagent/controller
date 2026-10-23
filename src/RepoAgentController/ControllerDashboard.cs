@@ -84,7 +84,8 @@ sealed class ControllerDashboard : IAsyncDisposable
         try
         {
             var snapshot = status.Snapshot();
-            var attention = snapshot["authentication"]?.Text("state") == "failed";
+            // Either credential failing needs the operator: the App's stops GitHub work, the Codex account's holds every turn.
+            var attention = snapshot["authentication"]?.Text("state") == "failed" || snapshot["codexAuthentication"]?.Text("state") == "failed";
             outbox.Dashboard(category, attention ? AttentionTitle : Title, Render(snapshot, clock.GetUtcNow(), stopped, releases.Current));
             return true;
         }
@@ -116,6 +117,14 @@ sealed class ControllerDashboard : IAsyncDisposable
         text.AppendLine("- **Authentication:** " + authentication.Text("state") switch
         {
             "failed" => $"failed at {Time(authentication.Text("updatedAt"))}: {Code(authentication.Text("error"))}. Check the controller's approval and credentials, then restart it.",
+            "" => "unknown",
+            var state => state
+        });
+        var codexAuthentication = snapshot["codexAuthentication"] ?? new JsonObject();
+        text.AppendLine("- **Codex authentication:** " + codexAuthentication.Text("state") switch
+        {
+            "failed" => $"failed at {Time(codexAuthentication.Text("updatedAt"))}: {Code(codexAuthentication.Text("error"))}. New Discussion input is held until the Codex account credentials are replaced.",
+            "supplied" => "supplied credentials installed; not yet verified by a completed turn",
             "" => "unknown",
             var state => state
         });
