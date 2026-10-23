@@ -158,6 +158,19 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertEqual((checkout / 'README').read_text(), 'current default branch B\n')
             self.assertEqual(json.loads(owner.read_text())['commit'], after)
             self.assertEqual(json.loads(state.read_text())['discussions'], {})
+            # Local work left on another branch while origin was force-pushed is replaced at the startup idle boundary.
+            git('-C', checkout, 'checkout', '--quiet', '-b', 'agent-branch')
+            (checkout / 'README').write_text('stopped agent bytes\n')
+            git('-C', checkout, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test', 'commit', '--quiet', '-am', 'agent commit')
+            (checkout / 'agent-notes').write_text('stopped agent notes\n')
+            rewritten = self.force_push(SimpleNamespace(git=git, directory=directory))
+            output = run(command)
+            self.assertIn('poll-completed success=True', output)
+            self.assertEqual(git('-C', checkout, 'rev-parse', 'HEAD'), rewritten)
+            self.assertEqual(git('-C', checkout, 'symbolic-ref', 'HEAD'), 'refs/heads/main')
+            self.assertEqual(git('-C', checkout, 'status', '--porcelain', '--untracked-files=all'), '')
+            self.assertEqual((checkout / 'README').read_text(), 'rewritten history\n')
+            self.assertEqual(json.loads(owner.read_text())['commit'], rewritten)
 
 
     @contextmanager
@@ -247,7 +260,8 @@ class CheckoutRefreshTests(unittest.TestCase):
         def wait(fragment, timeout=20):
             deadline = time.monotonic() + timeout
             while True:
-                line = events.get(timeout=max(0.001, deadline-time.monotonic()))
+                try: line = events.get(timeout=max(0.001, deadline-time.monotonic()))
+                except queue.Empty: self.fail('Timed out before ' + fragment + '; refresh outcomes:\n' + ''.join(item for item in lines if ' refresh-' in item))
                 if line is None: self.fail('Controller closed before ' + fragment + '\n' + ''.join(lines))
                 if fragment in line: return line
         def wait_or_native(fragment, timeout=20):
@@ -286,31 +300,93 @@ class CheckoutRefreshTests(unittest.TestCase):
         files += [root / '.git/MERGE_HEAD'] if (root / '.git/MERGE_HEAD').exists() else []
         return {str(p.relative_to(root)): p.read_bytes() for p in files if p.is_file()}
 
-    def test_periodic_refresh_preserves_local_work_and_refuses_unsafe_remote_changes(self):
-        for case in ('ignored', 'dirty', 'staged', 'untracked', 'commit', 'operation', 'ignored-file', 'ignored-directory', 'nonff', 'identity', 'moving-target'):
+    def force_push(self, f, content='rewritten history\n'):
+        seed = f.directory / 'seed'
+        f.git('-C', seed, 'checkout', '--quiet', '--orphan', 'replacement')
+        f.git('-C', seed, 'rm', '-rf', '--quiet', '.')
+        (seed / 'README').write_text(content)
+        f.git('-C', seed, 'add', '.')
+        f.git('-C', seed, 'commit', '-m', 'rewrite mainline')
+        f.git('-C', seed, 'push', f.directory / 'repositories/owner/project.git', '+HEAD:main')
+        return f.git('-C', seed, 'rev-parse', 'HEAD')
+
+    def diverge(self, f, case):
+        """Leave the owned checkout in one local or diverged state an agent could create."""
+        commit = ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test', 'commit', '--quiet']
+        if case.startswith('ignored'):
+            (f.checkout / '.git/info/exclude').write_text('local-cache\n')
+            if case == 'ignored-directory':
+                (f.checkout / 'local-cache').mkdir(); (f.checkout / 'local-cache/bytes').write_bytes(b'local bytes')
+            else: (f.checkout / 'local-cache').write_bytes(b'local bytes')
+        if case in ('dirty', 'staged', 'commit', 'branch', 'force-push'):
+            if case == 'branch': f.git('-C', f.checkout, 'checkout', '--quiet', '-b', 'agent-branch')
+            (f.checkout / 'README').write_text('user bytes\n')
+            if case != 'dirty': f.git('-C', f.checkout, 'add', '.')
+            if case in ('commit', 'branch', 'force-push'): f.git('-C', f.checkout, *commit, '-m', 'local commit')
+        if case == 'untracked':
+            (f.checkout / 'local-only').write_bytes(b'local bytes')
+            (f.checkout / 'scratch').mkdir(); (f.checkout / 'scratch/notes').write_bytes(b'local bytes')
+        if case in ('skip-worktree', 'assume-unchanged'):
+            f.git('-C', f.checkout, 'update-index', '--' + case, 'README')
+            (f.checkout / 'README').write_text('hidden user bytes\n')
+        if case == 'merge':
+            f.git('-C', f.checkout, 'checkout', '--quiet', '-b', 'agent-side')
+            (f.checkout / 'README').write_text('side bytes\n'); f.git('-C', f.checkout, *commit, '-am', 'side')
+            f.git('-C', f.checkout, 'checkout', '--quiet', 'main')
+            (f.checkout / 'README').write_text('main bytes\n'); f.git('-C', f.checkout, *commit, '-am', 'main')
+            conflict = subprocess.run(['git', '-C', str(f.checkout), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test',
+                                       'merge', 'agent-side'], env=f.environment, capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(conflict.returncode, 0)
+            self.assertTrue((f.checkout / '.git/MERGE_HEAD').is_file(), 'Fixture did not leave an interrupted merge')
+
+    def local_state(self, f):
+        return [f.git('-C', f.checkout, *args) for args in (('symbolic-ref', 'HEAD'), ('rev-parse', 'HEAD'),
+                ('status', '--porcelain', '--untracked-files=all'), ('ls-files', '-v'))]
+
+    def test_idle_refresh_forces_local_and_diverged_checkout_to_origin_and_preserves_outside_work(self):
+        for case in ('ignored', 'dirty', 'staged', 'untracked', 'commit', 'branch', 'skip-worktree', 'assume-unchanged', 'merge',
+                     'ignored-file', 'ignored-directory', 'force-push'):
             with self.subTest(case=case), self.fixture() as f, self.controller(f):
                 initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
-                if case.startswith('ignored'):
-                    (f.checkout / '.git/info/exclude').write_text('local-cache\n')
-                    if case == 'ignored-directory':
-                        (f.checkout / 'local-cache').mkdir(); (f.checkout / 'local-cache/bytes').write_bytes(b'local bytes')
-                    else: (f.checkout / 'local-cache').write_bytes(b'local bytes')
-                if case in ('dirty', 'staged', 'commit'):
-                    (f.checkout / 'README').write_text('user bytes\n')
-                    if case != 'dirty': f.git('-C', f.checkout, 'add', '.')
-                    if case == 'commit': f.git('-C', f.checkout, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'user commit')
-                if case == 'untracked': (f.checkout / 'local-only').write_bytes(b'local bytes')
-                if case == 'operation': (f.checkout / '.git/MERGE_HEAD').write_text(initial + '\n')
+                # Historical/mutating worktrees and runtime artifacts live outside the owned checkout and are never reset.
+                history, artifacts = f.directory / 'history-worktree', f.directory / 'agent-artifacts'
+                f.git('-C', f.checkout, 'worktree', 'add', '--quiet', '-b', 'history', history, initial)
+                (history / 'README').write_text('historical mutation\n')
+                artifacts.mkdir(); (artifacts / 'result').write_bytes(b'retained artifact')
+                clean = self.local_state(f)
+                self.diverge(f, case)
+                if not case.startswith('ignored'): self.assertNotEqual(self.local_state(f), clean, 'Fixture left no local state')
+                agent_branch = f.git('-C', f.checkout, 'rev-parse', 'agent-branch') if case == 'branch' else None
+                if case == 'force-push': target, expected = self.force_push(f), 'rewritten history\n'
+                else:
+                    name = 'local-cache' if case in ('ignored-file', 'ignored-directory') else 'README'
+                    target, expected = self.publish(f, name), 'remote B\n'
+                f.wait('checkout-refreshed')
+                actual = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+                print('MATRIX_FORCE case=' + case + ' baseline=' + initial + ' origin=' + target + ' actual=' + actual, flush=True)
+                self.assertEqual(actual, target)
+                self.assertEqual(f.git('-C', f.checkout, 'symbolic-ref', 'HEAD'), 'refs/heads/main')
+                self.assertEqual(f.git('-C', f.checkout, 'status', '--porcelain', '--untracked-files=all'), '')
+                self.assertFalse(any(line[0] == 'S' or line[0].islower() for line in f.git('-C', f.checkout, 'ls-files', '-v').splitlines()))
+                self.assertFalse((f.checkout / '.git/MERGE_HEAD').exists())
+                self.assertEqual((f.checkout / ('local-cache' if case in ('ignored-file', 'ignored-directory') else 'README')).read_text(), expected)
+                self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
+                if case == 'ignored': self.assertEqual((f.checkout / 'local-cache').read_bytes(), b'local bytes')
+                if case == 'branch': self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'agent-branch'), agent_branch)
+                self.assertEqual((history / 'README').read_text(), 'historical mutation\n')
+                self.assertEqual(f.git('-C', history, 'rev-parse', 'HEAD'), initial)
+                self.assertEqual(f.git('-C', history, 'symbolic-ref', 'HEAD'), 'refs/heads/history')
+                self.assertEqual((artifacts / 'result').read_bytes(), b'retained artifact')
+                self.settled(f)
+
+    def test_periodic_refresh_defers_interrupted_operations_and_refuses_unsafe_remote_changes(self):
+        for case in ('rebase', 'identity', 'moving-target'):
+            with self.subTest(case=case), self.fixture() as f, self.controller(f):
+                initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+                if case == 'rebase': (f.checkout / '.git/rebase-merge').mkdir()
                 before = self.snapshot(f.checkout)
                 requests = len(f.provider.git_tokens)
-                if case == 'nonff':
-                    f.git('-C', f.directory / 'seed', 'checkout', '--orphan', 'replacement')
-                    f.git('-C', f.directory / 'seed', 'rm', '-rf', '.')
-                    (f.directory / 'seed/README').write_text('unrelated history')
-                    f.git('-C', f.directory / 'seed', 'add', '.')
-                    f.git('-C', f.directory / 'seed', 'commit', '-m', 'nonff')
-                    f.git('-C', f.directory / 'seed', 'push', f.directory / 'repositories/owner/project.git', '+HEAD:main')
-                else: target = self.publish(f, 'local-cache' if case in ('ignored-file', 'ignored-directory') else 'README')
+                self.publish(f)
                 if case == 'identity': f.provider.repository_id += 1
                 if case == 'moving-target':
                     captured, release = threading.Event(), threading.Event()
@@ -321,16 +397,10 @@ class CheckoutRefreshTests(unittest.TestCase):
                     try:
                         self.assertTrue(captured.wait(10)); self.publish(f, content='remote C\n')
                     finally: release.set()
-                if case == 'ignored':
-                    f.wait('checkout-refreshed')
-                    self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
-                    self.assertEqual((f.checkout / 'local-cache').read_bytes(), b'local bytes')
-                    self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
-                else:
-                    f.wait('refresh-blocked' if case in ('ignored-file', 'ignored-directory', 'identity') else 'refresh-pending')
-                    self.assertEqual(self.snapshot(f.checkout), before)
-                    self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
-                    if case in ('dirty', 'staged', 'untracked', 'commit', 'operation'): self.assertEqual(len(f.provider.git_tokens), requests)
+                f.wait('refresh-blocked' if case == 'identity' else 'refresh-pending')
+                self.assertEqual(self.snapshot(f.checkout), before)
+                self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
+                if case == 'rebase': self.assertEqual(len(f.provider.git_tokens), requests)
                 print('MATRIX_GIT case=' + case + ' baseline=' + initial + ' preserved=true', flush=True)
 
     def test_changed_identity_blocks_admission_when_branch_ref_is_unavailable(self):
@@ -643,7 +713,7 @@ class CheckoutRefreshTests(unittest.TestCase):
 
 
 
-    def test_safe_dirty_work_defers_refresh_but_allows_existing_discussion_assistance(self):
+    def test_active_turn_delays_forced_refresh_and_next_turn_starts_on_origin(self):
         with self.fixture(protocol=True) as f, self.controller(f):
             f.provider.discussions = [self.discussion(1)]
             request = self.rpc(f, 'thread/start')
@@ -651,22 +721,30 @@ class CheckoutRefreshTests(unittest.TestCase):
             request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
             f.wait('poll-completed success=True')
             initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
-            (f.checkout / 'README').write_text('preserve user bytes\n')
-            before = self.snapshot(f.checkout)
+            # The active turn edits and commits inside the owned checkout while origin is force-pushed.
+            (f.checkout / 'README').write_text('active agent bytes\n')
+            f.git('-C', f.checkout, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test', 'commit', '--quiet', '-am', 'agent commit')
+            (f.checkout / 'agent-notes').write_text('active agent notes\n')
+            during = self.snapshot(f.checkout)
             requests = len(f.provider.git_tokens)
-            self.publish(f); self.pending(f)
-            self.terminal(f, 'S1', 'T1'); f.wait('refresh-pending')
-            f.provider.discussions[0]['body'] += ' assistance with dirty checkout'
-            request = self.rpc(f, 'turn/start')
-            self.reply(f, request, dict(turn=dict(id='T2')))
+            target = self.force_push(f); self.pending(f)
+            self.assertEqual(self.snapshot(f.checkout), during, 'Refresh changed the checkout under an active turn')
+            self.assertEqual(len(f.provider.git_tokens), requests, 'Refresh fetched while native work was active')
+            self.terminal(f, 'S1', 'T1')
+            f.wait('checkout-refreshed'); self.settled(f)
+            f.provider.discussions[0]['body'] += ' next input'
+            request = self.rpc(f, 'thread/resume')
+            # Native has not started the next turn yet; it must already see origin's content.
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+            self.assertEqual((f.checkout / 'README').read_text(), 'rewritten history\n')
+            self.assertFalse((f.checkout / 'agent-notes').exists())
+            self.assertEqual(f.git('-C', f.checkout, 'status', '--porcelain', '--untracked-files=all'), '')
+            self.reply(f, request, dict(thread=dict(id='S1', cwd=str(f.checkout)), cwd=str(f.checkout)))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T2')))
             f.wait('poll-completed success=True')
-            self.assertEqual(self.snapshot(f.checkout), before)
-            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
-            self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
-            self.assertEqual(len(f.provider.git_tokens), requests)
-            self.assertFalse(json.loads(f.journal.read_text())['blocked'])
+            self.assertNotEqual(initial, target)
+            self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
             self.terminal(f, 'S1', 'T2'); f.wait('native-event')
-            print('MATRIX_DIRTY assistance=accepted user-content-index-refs=preserved nofetch=true', flush=True)
 
 
 
@@ -806,7 +884,13 @@ class CheckoutRefreshTests(unittest.TestCase):
                 request_a = json.dumps(f.provider.model_requests[0]['body'])
                 self.assertIn('NATIVE_AGENTS_A', request_a)
                 self.assertIn('NATIVE_SKILL_BODY_A', request_a)
-                context('B', 'high'); target = self.publish(f)
+                # Local instruction/skill edits and a rewritten origin mainline: origin's B must win at idle.
+                (f.checkout / 'AGENTS.md').write_text('Local agent edit NATIVE_AGENTS_LOCAL.\n')
+                (f.checkout / '.agents/skills/repo-refresh/SKILL.md').write_text('---\nname: repo-refresh\ndescription: Local NATIVE_DESCRIPTION_LOCAL.\n---\nLocal NATIVE_SKILL_BODY_LOCAL.\n')
+                context('B', 'high'); f.git('-C', seed, 'add', '.')
+                f.git('-C', seed, 'commit', '--quiet', '--amend', '-m', 'rewrite native context B')
+                f.git('-C', seed, 'push', f.directory / 'repositories/owner/project.git', '+HEAD:main')
+                target = f.git('-C', seed, 'rev-parse', 'HEAD')
                 f.wait('checkout-refreshed'); self.settled(f)
                 probe = native_config(f.checkout, home, discovery=True, environment=f.environment)
                 self.assertEqual(probe['config']['model_reasoning_effort'], 'high')
@@ -815,7 +899,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 listed = json.dumps(probe['fixtureSkills'])
                 self.assertIn(str(f.checkout / '.agents/skills/repo-refresh/SKILL.md'), listed)
                 self.assertIn('NATIVE_DESCRIPTION_B', listed)
-                self.assertNotIn('NATIVE_DESCRIPTION_A', listed)
+                self.assertNotIn('NATIVE_DESCRIPTION_A', listed); self.assertNotIn('NATIVE_DESCRIPTION_LOCAL', listed)
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_SECOND'
                 second = native_event(f.wait('native-event'))
                 self.assertEqual(second['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(second), flush=True)
@@ -827,6 +911,8 @@ class CheckoutRefreshTests(unittest.TestCase):
                 request_b = json.dumps(f.provider.model_requests[1]['body'])
                 for text in ('NATIVE_USER_FIRST', 'Harmless fixture assistant 1.', 'NATIVE_USER_SECOND', 'NATIVE_AGENTS_B', 'NATIVE_SKILL_BODY_B'):
                     self.assertIn(text, request_b)
+                for text in ('NATIVE_AGENTS_LOCAL', 'NATIVE_SKILL_BODY_LOCAL', 'NATIVE_DESCRIPTION_LOCAL'):
+                    self.assertNotIn(text, request_b)
                 self.assertLess(request_b.index('NATIVE_AGENTS_A'), request_b.index('NATIVE_AGENTS_B'))
                 self.assertIn('These AGENTS.md instructions replace all previously provided AGENTS.md instructions.', request_b)
                 self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
