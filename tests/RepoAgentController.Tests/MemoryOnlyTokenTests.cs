@@ -20,7 +20,8 @@ public sealed class MemoryOnlyTokenTests
         using var fixture = new BrokerAuthenticationTests.Fixture();
         using var peers = new Peers(fixture);
         using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = BridgeCommand.Run(Arguments(fixture, "--interval", "3600"), fixture.Http, fixture.Gh, fixture.Clock, shutdown.Token);
+        var clock = new PollClock(fixture.Clock, TimeSpan.FromSeconds(3600));
+        var run = BridgeCommand.Run(Arguments(fixture, "--interval", "3600"), fixture.Http, fixture.Gh, clock, shutdown.Token);
         try
         {
             // A fresh start: the agent's gh, launched by the native session through its wrapper, and the
@@ -30,7 +31,9 @@ public sealed class MemoryOnlyTokenTests
             Assert.Contains(peers.Calls(), call => !call.Agent);
             AssertNotPersisted(fixture, peers);
 
-            // Renewal while running: existing wrappers and later controller calls observe the new token.
+            // Renewal while running: existing wrappers and later controller calls observe the new token. Time moves only
+            // after the first poll has completed, so the next poll is due an interval after start, not after renewal.
+            await Until(() => clock.PollsScheduled == 1);
             fixture.Clock.Advance(TimeSpan.FromMinutes(56));
             await Until(() => fixture.Transport.Requests.Count == 2);
             var renewed = await fixture.InvokeWrapper();
@@ -94,6 +97,24 @@ public sealed class MemoryOnlyTokenTests
     }
 
     sealed record Call(bool Agent, string Token, string[] Arguments);
+
+    // The fixture clock as the controller sees it. The controller schedules its next poll-interval delay only once a
+    // poll has completed, so each registration of that delay observes a completed poll.
+    sealed class PollClock(TimeProvider time, TimeSpan interval) : TimeProvider
+    {
+        int scheduled;
+        public int PollsScheduled => Volatile.Read(ref scheduled);
+        public override DateTimeOffset GetUtcNow() => time.GetUtcNow();
+        public override long GetTimestamp() => time.GetTimestamp();
+        public override long TimestampFrequency => time.TimestampFrequency;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = time.CreateTimer(callback, state, dueTime, period);
+            if (dueTime == interval) Interlocked.Increment(ref scheduled);
+            return timer;
+        }
+    }
 
     // Controlled GitHub (gh) and native peers. Observations go to a test-owned file outside every controller path.
     sealed class Peers : IDisposable
