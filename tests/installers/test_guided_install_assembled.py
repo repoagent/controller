@@ -52,7 +52,7 @@ class AssembledGuidedInstallTests(unittest.TestCase):
     def run_public_install(self, clone=False):
         native = Path(os.environ['REPOAGENT_TEST_NATIVE_CONTROLLER'])
         expected_native = selected_native_sha256()
-        journey = host.EnrollmentJourney(self, variable='APPROVED_CONTROLLER', profile='polling-clone' if clone else 'polling')
+        journey = host.EnrollmentJourney(self, variable='REPOAGENT_APPROVAL', profile='polling-clone' if clone else 'polling')
         directory = journey.directory
         instance = 'guided-actual-' + uuid.uuid4().hex[:12]
         image = 'repoagent:issue74-assembled-' + instance
@@ -279,7 +279,7 @@ USER 1000
             self.assertEqual(json.loads(journey.model.read_text())['variables'][journey.variable], marker)
             self.assertEqual(journey.read('launch.json')['runtimeImageId'], image_id)
             self.assertEqual(sum('POST' in event['argv'] for event in journey.github()), 1)
-            self.assertEqual(sum(event.get('path') == '/v2/enrollments' for event in events()), 1)
+            self.assertEqual(sum(event.get('path') == '/v3/enrollments' for event in events()), 1)
 
         scenario_deadline = time.monotonic() + 300
 
@@ -459,7 +459,7 @@ print(json.dumps(proof))
         recorded = events()
         self.assertEqual([event['activation'] for event in recorded if 'activation' in event],
             ['fresh-created-and-verified', 'resume-existing-fixture-table'])
-        self.assertEqual(sum(event.get('path') == '/v2/enrollments' for event in recorded), 1)
+        self.assertEqual(sum(event.get('path') == '/v3/enrollments' for event in recorded), 1)
         self.assertTrue(any(event.get('path', '').endswith('/installation-token') and
             event.get('status') == 200 for event in recorded))
         print('GUIDED_ASSEMBLED broker events=' + json.dumps(recorded), flush=True)

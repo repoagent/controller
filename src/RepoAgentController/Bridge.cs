@@ -72,6 +72,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         foreach (var discussion in discussions)
         {
             ct.ThrowIfCancellationRequested();
+            if (github.IsDashboard(discussion)) continue; // Operational status, never agent input, however enrolled.
             var id = discussion.Text("id");
             var record = store.Discussions[id]?.AsObject();
             // A delivery still pending in this lifetime failed as its native stopped; the next start retries it.
@@ -305,7 +306,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         store.Save();
         inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
         admission?.Confirm();
-        Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count}" + (redelivery ? " redelivery=true" : ""));
+        Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count} latest={envelope["changes"]!.AsArray()[^1]!["subject"]!.Text("url")}" + (redelivery ? " redelivery=true" : ""));
         foreach (var source in receipts) outbox.Receipt(source);
         return true;
     }
@@ -332,9 +333,13 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var after = clock.GetUtcNow() + (immediate ? TimeSpan.Zero : Backoff(attempts));
         waiting["retry"] = new JsonObject { ["attempts"] = attempts, ["after"] = after.ToString("O") };
         record.Remove("pending");
-        Log.Write("delivery-retry", $"{record.Text("url")} session={(record.Text("sessionId") is { Length: > 0 } session ? session : "none")} attempt={attempts} redelivery={(offered ? "true" : "false")} inputs={count} sources={string.Join(',', inputs.Take(count).Select(input => input!["receipt"]!.Text("id")).Distinct())} retry-at={after:O}: {reason}");
         Wake();
-        store.Save();
+        // Saved first: status and dashboard compose work from the state file when this event is logged.
+        try { store.Save(); }
+        finally
+        {
+            Log.Write("delivery-retry", $"{record.Text("url")} session={(record.Text("sessionId") is { Length: > 0 } session ? session : "none")} attempt={attempts} redelivery={(offered ? "true" : "false")} inputs={count} sources={string.Join(',', inputs.Take(count).Select(input => input!["receipt"]!.Text("id")).Distinct())} retry-at={after:O}: {reason}");
+        }
     }
 
     // Leading inputs whose changes fit one envelope; at least one, so an oversized change is sent alone, never dropped.

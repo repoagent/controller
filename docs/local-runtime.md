@@ -44,7 +44,7 @@ Preview one instance with its original private host state directory:
 ```
 
 Add `-Apply` to disable, stop and remove that selected runtime and clear its
-container enrollment, Codex auth and two installation-token cache files. All seven
+container enrollment, Codex auth and any legacy installation-token cache files. All seven
 volumes, workspace/history, settings, skills, tools and wrappers remain. Preview
 uses host records and Docker metadata only; private-volume binding and disable
 state are unverified until Apply.
@@ -74,7 +74,9 @@ Supplied source enrollment and host Codex auth/key files are never deleted.
 A supplied-enrollment installation can pass complete nonsecret coordinates using
 `-Repository`, `-ExpectedRepositoryId`, `-DeviceId`, `-AppId`, `-InstallationId`,
 `-BrokerOrigin`, `-EnrollmentProfile`, `-ApprovalVariable` and
-`-ExpectedValueSha256`. Legacy approval additionally requires explicit
+`-ExpectedValueSha256`. Without saved state these name an Actions-variable
+approval; add `-ApprovalLocation AgentVariable` for a legacy Agent-variable
+approval. Legacy Environment approval additionally requires explicit
 `-GitHubEnvironment` and `-ExpectedEnvironmentId`. These coordinates identify
 operator scope; they do not authenticate a controller or prove broker closure.
 

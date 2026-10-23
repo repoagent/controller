@@ -82,7 +82,7 @@ Useful options are available in both shells:
 | `-Model MODEL` | `--model MODEL` | Choose Codex model; new-instance default `gpt-6.1-sol` |
 | `-MentionUser LOGIN` | `--mention-user LOGIN` | Optional existing mention account; default empty, using App mentions/enrollment |
 | `-InstallationId ID` | `--installation-id ID` | Check an expected App installation |
-| `-ToolUpdates latest\|pinned` | `--tool-updates latest\|pinned` | Choose startup tool updates; default `latest` |
+| `-ToolUpdates latest\|pinned` | `--tool-updates latest\|pinned` | Opt in to startup tool updates; default `pinned` runs the image's tools |
 | `-WebSearch live\|cached\|disabled` | `--web-search live\|cached\|disabled` | Choose web search; default `live` |
 | `-Mode polling\|fixed-url\|quick-tunnel` | `--mode polling\|fixed-url\|quick-tunnel` | Choose deployment mode; default `polling` |
 | `-PublicUrl`, `-ListenPort`, `-ReconcileInterval` | `--public-url`, `--listen-port`, `--reconcile-interval` | Webhook configuration; see the hosting guides |
@@ -102,11 +102,11 @@ The individual Bash commands remain available when you want to manage each step 
 
 `./repoagent setup` uses the installer wizard with build/start skipped. It accepts the same options, imports a selected Codex auth cache or offers device sign-in, and checks Codex authentication and the actual GitHub App installation. Visit printed device URLs and enter displayed codes in your browser; this also works from tmux. App registration, installation and permission approval happen in GitHub, as described in [App setup](github-app-auth.md).
 
-The built image seeds Codex **0.163.0**, GitHub CLI **2.102.0** and pins the bridge's build SDK **11.0.100-rc.2**. Downloaded seed binaries have checked SHA-256 digests. The bridge is Native AOT compiled; the final image contains no .NET runtime or SDK. `./repoagent versions` reports the selected tools and non-root UID. Linux amd64 and arm64 builds are configured; record the platform actually verified when reporting acceptance.
+The built image bundles the Codex and GitHub CLI versions pinned in `image/default.json`, and pins the bridge's build SDK **11.0.100-rc.2**. Each [baseline release](ci-cd.md#baseline-releases) records the exact bundled versions; newer supported versions arrive as new baseline images through the [tool refresh](ci-cd.md#tool-refresh). Downloaded binaries have checked SHA-256 digests. The bridge is Native AOT compiled; the final image contains no .NET runtime or SDK. `./repoagent versions` reports the selected tools and non-root UID. Linux amd64 and arm64 builds are configured; record the platform actually verified when reporting acceptance.
 
-By default every agent-container start checks for the latest stable CLI versions before agent work, including `docker restart`. Codex is installed through its [official managed installer and `codex update`](https://learn.chatgpt.com/docs/cli/reference#codex-update), including companion binaries. GitHub CLI has no built-in updater; setup installs its latest published Linux release with the release's SHA-256 digest verified. Updates run as UID 1000 in a persistent tools volume, without a root package-manager step. Startup logs report the actual versions. A failed update check stops startup visibly and retains previous files; it does not claim they are current.
+By default a container runs the image's bundled tools, so a published baseline image runs exactly the versions its release records; adopt newer tools by updating to a newer baseline image. Startup updates are an explicit opt-in: with `--tool-updates latest`, every agent-container start checks for the latest stable CLI versions before agent work, including `docker restart`. These versions are not verified with the controller or recorded by any release. Codex is installed through its [official managed installer and `codex update`](https://learn.chatgpt.com/docs/cli/reference#codex-update), including companion binaries. GitHub CLI has no built-in updater; setup installs its latest published Linux release with the release's SHA-256 digest verified. Updates run as UID 1000 in a persistent tools volume, without a root package-manager step. Startup logs report the actual versions. A failed update check stops startup visibly and retains previous files; it does not claim they are current.
 
-For reproducible acceptance or a temporary rollback to the image's seed versions, configure `--tool-updates pinned`. It selects the bundled binaries even if newer tools remain in storage. Configure `--tool-updates latest` to resume normal restart updates. The bridge and base operating-system packages still require an image rebuild to update.
+Existing instances keep their saved choice; rerunning setup does not change it. To return to the image's bundled versions, for reproducible acceptance or as a rollback after a failed startup update, configure `--tool-updates pinned`. It selects the bundled binaries even if newer tools remain in storage. Configure `--tool-updates latest` to opt in to startup updates again. The bridge and base operating-system packages still require an image rebuild to update.
 
 The default toolbox has Bash, Git, `gh`, Codex and its code-mode companion, Python, `ripgrep`, `curl`, `jq`, file/patch/diff tools, SSH client and archive utilities. It does not choose a project language or framework. Add project-specific tools in an image derived from `repoagent:local`, restore `USER agent` after installing them, and select it with `REPOAGENT_IMAGE=your-image ./repoagent start`. A `dotnet-development` build target is available for work on this bridge itself, selected explicitly with `REPOAGENT_TARGET=dotnet-development ./repoagent build`.
 
@@ -173,7 +173,7 @@ The supplied credential must be authorized to read that exact source repository/
 | `repoagent-default-credentials` | Codex sign-in/configuration |
 | `repoagent-default-workspace` | Agent working files |
 | `repoagent-default-history` | Native Codex session histories |
-| `repoagent-default-state` | JSON checkpoint, lease, renewable GitHub App credential/wrapper, operator status and bounded retained logs |
+| `repoagent-default-state` | JSON checkpoint, lease, GitHub App wrappers and credential handoff pointer (no tokens), operator status and bounded retained logs |
 | `repoagent-default-tools` | Updated `gh` and managed Codex executables and update metadata |
 | `repoagent-default-participant` | Separate human GitHub sign-in, used only by opt-in live tests |
 

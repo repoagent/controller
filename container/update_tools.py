@@ -1,4 +1,4 @@
-"""Non-root startup updates; pinned image tools remain available for reproducible runs."""
+"""Opt-in (toolUpdates=latest) non-root startup updates; unverified and unrecorded by baseline releases."""
 import hashlib
 import json
 import os

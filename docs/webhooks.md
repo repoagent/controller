@@ -20,7 +20,7 @@ Provide external HTTPS ingress that forwards `/github/webhook` to the container'
 ./repoagent logs --follow
 ```
 
-The setup wizard offers the same deployment choice. Existing account configuration, optional skills and normal CLI updates still apply. For dedicated live verification, use an isolated instance, empty `--mention-user ''` and explicit `--tool-updates pinned` as described in the acceptance catalog.
+The setup wizard offers the same deployment choice. Existing account configuration, optional skills and the CLI update choice still apply. For dedicated live verification, use an isolated instance, empty `--mention-user ''` and explicit `--tool-updates pinned` as described in the acceptance catalog.
 
 The local Docker wrapper publishes the selected listener port on **127.0.0.1 only**, for an external HTTPS reverse proxy. It does not create that proxy or a public endpoint. For a proxy in another container, connect both containers to an appropriate private Docker network and forward to the agent's container port. Polling mode creates no listener or published port.
 

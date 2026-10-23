@@ -32,16 +32,18 @@ public static class BridgeCommand
         var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (native work may still be running)" };
         var clone = new Option<bool>("--clone") { Description = "Use explicitly approved clone-capable credentials" };
         var checkAuth = new Option<bool>("--check-auth") { Description = "Verify App installation identity and prepare authenticated gh, then exit without starting Codex" };
+        var repositorySettings = new Option<bool>("--repository-settings") { Description = "Read REPOAGENT_ repository Actions variables with an explicit Variables: read runtime permission" };
         var logFileBytes = new Option<long>("--log-file-bytes") { DefaultValueFactory = _ => RetainedLog.DefaultFileBytes, Description = $"Maximum bytes per retained log file beside --state ({RetainedLog.MinimumFileBytes}..{RetainedLog.MaximumFileBytes}); retained logs never exceed --log-files × this size" };
         var logFiles = new Option<int>("--log-files") { DefaultValueFactory = _ => RetainedLog.DefaultFiles, Description = $"Retained log files, including the active file (1..{RetainedLog.MaximumFiles}); the oldest file is deleted on rotation" };
-        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, azureWorkQueue, disableWebhook, once, checkAuth, clone, logFileBytes, logFiles };
-        var tokenFile = new Option<FileInfo>("--token-file") { Required = true };
+        var dashboardCategory = new Option<string?>("--dashboard-category") { Description = "Existing Discussion category for the controller-owned status dashboard; omit to publish no dashboard" };
+        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, azureWorkQueue, disableWebhook, once, checkAuth, clone, repositorySettings, logFileBytes, logFiles, dashboardCategory };
+        var ghCredentials = new Option<DirectoryInfo>("--credential-directory") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
-        var githubCommand = new Command("github-command", "Run gh with the bridge's current App credential (native wrapper entry point)") { tokenFile, ghPath, forwardedArguments };
+        var githubCommand = new Command("github-command", "Run gh with the running controller's current in-memory App credential (native wrapper entry point)") { ghCredentials, ghPath, forwardedArguments };
         githubCommand.SetAction(async (result, ct) =>
         {
-            try { return await AppGitHubCommand.Run(result.GetValue(ghPath)!.FullName, result.GetValue(tokenFile)!.FullName, result.GetValue(forwardedArguments) ?? [], ct); }
+            try { return await AppGitHubCommand.Run(result.GetValue(ghPath)!.FullName, result.GetValue(ghCredentials)!.FullName, result.GetValue(forwardedArguments) ?? [], ct); }
             catch (Exception error) { Log.Write("app-command-error", error.Message); return 1; }
         });
         root.Subcommands.Add(githubCommand);
@@ -92,6 +94,8 @@ public static class BridgeCommand
                     queue = workQueue ?? validated;
                 }
                 else if (workQueue is not null) throw new ArgumentException("An injected work queue requires --azure-work-queue");
+                if (result.GetValue(repositorySettings) && result.GetValue(brokerUrl) is not null)
+                    throw new ArgumentException("--repository-settings needs an explicit Variables: read runtime grant; broker enrollment profiles do not include it and are not widened");
                 var cwd = result.GetValue(workspace)!.FullName;
                 if (!Directory.Exists(cwd)) throw new ArgumentException("--workspace must exist");
                 RetainedLog.Validate(result.GetValue(logFileBytes), result.GetValue(logFiles));
@@ -127,7 +131,8 @@ public static class BridgeCommand
                     using var ownedHttp = transport is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(60) } : null;
                     var http = transport ?? ownedHttp!;
                     using var credentials = broker is null
-                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone))
+                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone),
+                            repositorySettings: result.GetValue(repositorySettings))
                         : GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone), expectedRepositoryId: result.GetValue(repositoryId), expectedInstallationId: result.GetValue(installationId));
                     await using var durable = queue is null ? null : new DurableWebhookWork(queue, repo, result.GetValue(repositoryId)!.Value,
                         result.GetValue(appId)!, result.GetValue(installationId)!.Value, BrokerTokenSource.ParseOrigin(broker!));
@@ -142,12 +147,19 @@ public static class BridgeCommand
                     store.VerifyIdentity(credentials.AgentLogin);
                     if (result.GetValue(disableWebhook))
                         return await DiscussionWebhooks.DeactivateSaved(github, statePath) ? 0 : 1;
-                    if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentials.TokenFile);
-                    var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentials.TokenFile);
+                    if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentialDirectory);
+                    var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentialDirectory);
+                    var settings = new RepositorySettings(result.GetValue(repositorySettings) ? github : null, clock ?? TimeProvider.System);
+                    await settings.Refresh(startToken);
                     if (result.GetValue(checkAuth)) return 0;
+                    await using var outbox = new GitHubOutbox(statePath + ".outbox", github, clock ?? TimeProvider.System);
+                    // Disposed before the outbox: a stop this lifetime handles is published, then delivery drains within a bound.
+                    await using var dashboard = result.GetValue(dashboardCategory) is { } category
+                        ? new ControllerDashboard(category, status, outbox, clock ?? TimeProvider.System) : null;
                     using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(startToken, credentials.BrokerCredentialLost);
                     var runtimeToken = refreshCancellation.Token;
                     var refresh = credentials.RefreshUntilCancelled(runtimeToken);
+                    var settingsRefresh = settings.RefreshUntilCancelled(runtimeToken);
                     try
                     {
                         using var checkout = result.GetValue(clone)
@@ -163,9 +175,9 @@ public static class BridgeCommand
                         await codex.Initialize(runtimeToken);
                         if (reconciliation is not null) await reconciliation.Start(codex,
                             durable is null ? TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)) : Timeout.InfiniteTimeSpan, runtimeToken);
-                        await using var outbox = new GitHubOutbox(statePath + ".outbox", github, clock ?? TimeProvider.System);
                         var bridge = new Bridge(github, codex, store, outbox, numbers, reconciliation, clock);
                         bridge.ResumeInterrupted();
+                        dashboard?.Start(runtimeToken);
                         if (!result.GetValue(once)) outbox.Start(runtimeToken);
                         using var dispatchStop = CancellationTokenSource.CreateLinkedTokenSource(runtimeToken);
                         var dispatcher = bridge.DispatchWhenIdle(dispatchStop.Token, runtimeToken);
@@ -195,19 +207,23 @@ public static class BridgeCommand
                             await dispatcher;
                         }
                     }
+                    catch (Exception error) when (dashboard is not null && !cancellationToken.IsCancellationRequested)
+                    {
+                        dashboard.Failed(error.Message);
+                        throw;
+                    }
                     finally
                     {
                         await refreshCancellation.CancelAsync();
+                        await settingsRefresh;
                         await refresh;
                     }
                 }
                 catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
-                    GitHubAppCredentials.ClearCache(credentialDirectory);
                     Log.Write("fatal", error.Message); // While leased, so status and retained logs record it.
                     return 1;
                 }
-                catch { GitHubAppCredentials.ClearCache(credentialDirectory); throw; }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return 0; }
             catch (Exception error) { Log.Write("fatal", error.Message); return 1; }

@@ -26,6 +26,7 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
     readonly TimeProvider clock;
     readonly bool repositoryWebhooks;
     readonly bool clone;
+    readonly bool repositorySettings;
     long repositoryId;
     string canonicalRepository = "";
     public long? RepositoryId => clone ? repositoryId : null;
@@ -35,8 +36,10 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
     string appSlug = "";
     public string AppSlug => appSlug;
 
-    public DirectAppTokenSource(HttpClient http, string appId, string privateKeyPath, string repository, TimeProvider clock, bool repositoryWebhooks, bool clone = false)
+    public DirectAppTokenSource(HttpClient http, string appId, string privateKeyPath, string repository, TimeProvider clock, bool repositoryWebhooks, bool clone = false,
+        bool repositorySettings = false)
     {
+        this.repositorySettings = repositorySettings;
         this.http = http;
         this.appId = appId;
         this.repository = repository;
@@ -67,6 +70,8 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
             throw new InvalidOperationException("Clone mode requires Contents read permission");
         if (repositoryWebhooks && installation["permissions"]?.Text("repository_hooks") != "write")
             throw new InvalidOperationException("Webhook mode requires Webhooks: read and write; approve the updated App installation permissions");
+        if (repositorySettings && installation["permissions"]?.Text("actions_variables") is not ("read" or "write"))
+            throw new InvalidOperationException("Repository settings require Variables: read; approve the updated App installation permissions");
 
         Log.Write("app-installation", $"app={slug} installation={installationId} repository={repository} actor={appSlug}[bot]");
     }
@@ -76,6 +81,7 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
         var permissions = Json.Object(("discussions", "write"));
         if (repositoryWebhooks) permissions["repository_hooks"] = "write";
         if (clone) permissions["contents"] = "read";
+        if (repositorySettings) permissions["actions_variables"] = "read";
         var request = Json.Object(("permissions", permissions));
         if (clone && repositoryId > 0) request["repository_ids"] = new JsonArray(repositoryId);
         else request["repositories"] = new JsonArray(repository.Split('/')[1]);
