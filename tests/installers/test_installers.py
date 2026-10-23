@@ -222,6 +222,30 @@ class ContainerConfigurationTests(unittest.TestCase):
                 runtime.configure(args)
             self.assertEqual(runtime.CONFIG.read_bytes(), saved)
 
+    def test_repository_settings_are_an_explicit_direct_App_runtime_choice(self):
+        runtime = load_runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.CONFIG = Path(directory) / 'config/settings.json'
+            runtime.CODEX = Path(directory) / 'codex'
+            args = argparse.Namespace(repository='example/project', app_id='123456', key_path='/private/key.pem',
+                installation_id=None, mention_user='', model='test-model', web_search='live', tool_updates='latest',
+                mode='polling', public_url='', listen_port=8080, reconcile_interval=300)
+            runtime.configure(args)
+            self.assertNotIn('--repository-settings', runtime.bridge_args(json.loads(runtime.CONFIG.read_text())))
+            args.repository_settings = True
+            runtime.configure(args)
+            config = json.loads(runtime.CONFIG.read_text())
+            self.assertIn('--repository-settings', runtime.bridge_args(config))
+            self.assertIn('--repository-settings', runtime.bridge_args(config, check_auth=True))
+            saved = runtime.CONFIG.read_bytes()
+            broker = argparse.Namespace(**dict(vars(args), key_path=None, broker_url='https://broker.example',
+                enrollment_file='/data/enrollment/enrollment.json'))
+            runtime.CONFIG.unlink()
+            with self.assertRaisesRegex(ValueError, 'Variables: read'):
+                runtime.configure(broker)
+            self.assertFalse(runtime.CONFIG.exists())
+            runtime.CONFIG.write_bytes(saved)
+
     def test_status_and_retained_logs_are_read_by_the_controller_from_the_runtime_state(self):
         runtime = load_runtime()
         with tempfile.TemporaryDirectory() as directory:
