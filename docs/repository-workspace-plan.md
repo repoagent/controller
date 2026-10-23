@@ -22,6 +22,8 @@ Track actual native turn execution, not just acceptance of `turn/start`. Current
 
 Initially use a conservative shared-checkout policy: defer checkout mutation while native work is active; when idle, update only a clean controller-managed checkout at the expected previously applied commit. Preserve staged, unstaged and untracked files, user branches, local commits and merge/rebase state. Leave refresh pending with actionable status when those conditions are not met; do not auto-stash, clean or reset agent work. A default-branch rename, deletion or force-push must either be reconciled safely under these conditions or report a recoverable blocked state.
 
+Superseded for the owned checkout by [#180](https://github.com/repoagent/controller/issues/180) (spec #171): at idle, the controller now forces the managed checkout to the verified origin commit, including divergence and force-push. It still never resets paths outside that checkout, other branches or separate worktrees. [Local installation](local-installation.md) describes the current behavior.
+
 If later work requires concurrent writable Discussions, assess separate Git worktrees per session rather than allowing competing writers or moving one session's checkout underneath another. That extension does not change the requirement that each native session starts at its own repository root with trust scoped to it.
 
 ## Code evidence and delivery slices
