@@ -114,13 +114,20 @@ public sealed class ControllerDashboardTests
             Assert.Contains("### Active and queued sessions\nNone.", idle.Body);
 
             // The next turn stays active, so a later comment waits in the controller instead of steering it.
+            // The clock moves in steps until the hourly poll that follows each comment has run.
             controller.HoldTurns();
             controller.Comment("C1", "Start the long task.");
-            controller.Clock.Advance(TimeSpan.FromHours(1));
-            await Until(() => controller.Turns == 2 ? controller : null);
+            await Until(() =>
+            {
+                controller.Clock.Advance(TimeSpan.FromMinutes(5));
+                return controller.Turns == 2 ? controller : null;
+            });
             controller.Comment("C2", "One more detail for it.");
-            controller.Clock.Advance(TimeSpan.FromHours(1));
-            var queued = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("1 inputs waiting") ? dashboard : null);
+            var queued = await Until(() =>
+            {
+                controller.Clock.Advance(TimeSpan.FromMinutes(5));
+                return controller.Dashboard() is { } dashboard && dashboard.Body.Contains("1 inputs waiting") ? dashboard : null;
+            });
             Assert.Matches(@"\*\*Sessions:\*\* 1 stored;[^\n]* 1 inputs waiting", queued.Body);
             Assert.Matches(@"### Active and queued sessions\n- \[Discussion #1\]\(" + Regex.Escape(First) + @"\): [^\n]*1 inputs waiting for the session to become idle\n", queued.Body);
             Assert.DoesNotContain("checkout refresh", queued.Body);
@@ -393,7 +400,9 @@ public sealed class ControllerDashboardTests
         }
 
         public Task<int> Run(CancellationToken shutdown, params string[] extra) =>
-            BridgeCommand.Run([.. Arguments, .. extra], appHttp ?? fixture.Http, fixture.Gh, fixture.Clock, shutdown);
+            running = BridgeCommand.Run([.. Arguments, .. extra], appHttp ?? fixture.Http, fixture.Gh, fixture.Clock, shutdown);
+
+        Task<int>? running;
 
         string[] Arguments =>
         [
@@ -446,6 +455,9 @@ public sealed class ControllerDashboardTests
 
         public void Dispose()
         {
+            // A failed test has cancelled its controller but not awaited it; it must stop before its files go.
+            try { running?.Wait(TimeSpan.FromSeconds(10)); }
+            catch (AggregateException) { }
             Environment.SetEnvironmentVariable("PATH", path);
             appHttp?.Dispose();
             fixture.Dispose();
