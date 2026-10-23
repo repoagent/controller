@@ -82,7 +82,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 var previous = record["sources"]!.AsObject();
                 var current = new JsonObject();
                 var changes = new JsonArray();
-                var receipts = new List<string>(); // Receipt source of each change, by index.
+                var receipts = new List<string?>(); // Receipt source of each change, by index; none for a deletion.
                 // The bootstrap context captured by this observation already carries every existing body.
                 var snapshot = bootstrap && record["waiting"]?["context"] is null;
                 foreach (var source in sources)
@@ -119,6 +119,22 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                     foreach (var reaction in oldReactions)
                         if (!newReactions.ContainsKey(reaction.Key)) Add("reaction.removed", reaction: reaction.Value);
                 }
+                // Sources returned every page, so a checkpointed comment it lacks is confirmed deleted; a failed or partial
+                // read throws above and leaves the checkpoint alone. A deletion carries identity, attribution and routing
+                // only, and no receipt: nothing is left to react to. A reply in a thread that is gone too routes top-level.
+                foreach (var (sourceId, old) in previous)
+                {
+                    if (current.ContainsKey(sourceId)) continue;
+                    var subject = new JsonObject { ["id"] = sourceId, ["author"] = old!["content"]!["author"]?.Copy() };
+                    var root = old.Text("replyTo");
+                    if (root.Length != 0) subject["replyTo"] = new JsonObject { ["id"] = root };
+                    changes.Add((JsonNode)new JsonObject
+                    {
+                        ["kind"] = "comment.deleted", ["subject"] = subject,
+                        ["replyTarget"] = new JsonObject { ["replyToId"] = current.ContainsKey(root) ? root : null }
+                    });
+                    receipts.Add(null);
+                }
                 if (bootstrap && changes.Count == 0 && record["waiting"] is null)
                 {
                     changes.Add((JsonNode)new JsonObject { ["kind"] = "discussion.enrolled", ["subject"] = Subject(discussion), ["replyTarget"] = new JsonObject { ["replyToId"] = null } });
@@ -129,7 +145,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 else if (!JsonNode.DeepEquals(previous, current)) { record["sources"] = current; store.Save(); }
                 if (record["waiting"] is not JsonObject waiting) continue;
                 if (!await Dispatch(record, ct) && changes.Count != 0)
-                    Log.Write("input-waiting", $"{discussion.Text("url")} session={record.Text("sessionId")} status={(record.Text("sessionId") is { Length: > 0 } session ? codex.Status(session).ToString() : "none")} waiting={waiting["inputs"]!.AsArray().Count} sources={string.Join(',', receipts.Distinct())}");
+                    Log.Write("input-waiting", $"{discussion.Text("url")} session={record.Text("sessionId")} status={(record.Text("sessionId") is { Length: > 0 } session ? codex.Status(session).ToString() : "none")} waiting={waiting["inputs"]!.AsArray().Count} sources={string.Join(',', receipts.OfType<string>().Distinct())}");
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
@@ -172,7 +188,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
     }
 
     // Caller holds the gate. Observed changes wait durably, in order, with their receipt source; the checkpoint advances.
-    void Queue(JsonObject record, JsonNode discussion, List<JsonNode> sources, JsonArray changes, List<string> receipts, bool bootstrap, JsonObject current)
+    void Queue(JsonObject record, JsonNode discussion, List<JsonNode> sources, JsonArray changes, List<string?> receipts, bool bootstrap, JsonObject current)
     {
         var waiting = record["waiting"] as JsonObject ?? new JsonObject { ["inputs"] = new JsonArray() };
         waiting["discussion"] = Public(discussion);
@@ -182,12 +198,13 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var observed = DateTimeOffset.UtcNow.ToString("O");
         for (var index = 0; index < changes.Count; index++)
         {
-            var source = sources.First(candidate => candidate.Text("id") == receipts[index]);
-            inputs.Add((JsonNode)new JsonObject
+            var input = new JsonObject { ["observedAt"] = observed, ["change"] = changes[index]!.Copy() };
+            if (receipts[index] is { } subject)
             {
-                ["observedAt"] = observed, ["change"] = changes[index]!.Copy(),
-                ["receipt"] = new JsonObject { ["id"] = receipts[index], ["url"] = source.Text("url"), ["reactionGroups"] = source["reactionGroups"]?.Copy() }
-            });
+                var source = sources.First(candidate => candidate.Text("id") == subject);
+                input["receipt"] = new JsonObject { ["id"] = subject, ["url"] = source.Text("url"), ["reactionGroups"] = source["reactionGroups"]?.Copy() };
+            }
+            inputs.Add((JsonNode)input);
         }
         record["waiting"] = waiting;
         record["sources"] = current;
@@ -216,7 +233,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         envelope["changes"] = new JsonArray();
         var count = Batch(envelope, inputs, record);
         envelope["changes"] = new JsonArray(inputs.Take(count).Select(input => input!["change"]!.Copy()).ToArray());
-        var receipts = inputs.Take(count).Select(input => input!["receipt"]!).DistinctBy(receipt => receipt.Text("id")).ToArray();
+        var receipts = inputs.Take(count).Select(input => input!["receipt"]).OfType<JsonNode>().DistinctBy(receipt => receipt.Text("id")).ToArray();
         // Global admission: checkout refresh exclusion today; capacity limits can further hold dispatch here.
         using var admission = refresh is null ? null : await refresh.Admit(ct);
         // A durable stop marker prevents automatic retry after a lost native acknowledgement.
@@ -290,7 +307,10 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         foreach (var reaction in source["reactions"]!.AsArray())
             if (!Own(reaction!["user"])) reactions[reaction.Text("id")] = reaction.Copy();
         // updatedAt changes for our receipt/output too; content and actor-filtered reactions determine work.
-        return new JsonObject { ["content"] = content, ["state"] = state, ["reactions"] = reactions };
+        var version = new JsonObject { ["content"] = content, ["state"] = state, ["reactions"] = reactions };
+        // A reply's thread root, so its deletion can still be attributed and routed. Not compared for work.
+        if (source["replyTo"] is { } parent) version["replyTo"] = parent.Text("id");
+        return version;
     }
 
     // A change subject's identity and attribution. Unchanged bodies, titles and parent comments are left out; the agent

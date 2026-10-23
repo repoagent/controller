@@ -110,4 +110,65 @@ public sealed class DiscussionInputTests
         Assert.Equal(("RE1", "THUMBS_UP", "bob", "C1"), (changes[3]!["reaction"]!["id"]!.GetValue<string>(), changes[3]!["reaction"]!["content"]!.GetValue<string>(),
             changes[3]!["subject"]!["author"]!["login"]!.GetValue<string>(), changes[3]!["subject"]!["replyTo"]!["id"]!.GetValue<string>()));
     }
+
+    [Fact]
+    public async Task Confirmed_deletions_reach_the_existing_session_once_with_attribution_and_surviving_thread_routing()
+    {
+        using var controller = new GitHubOutboxTests.Controller();
+        controller.Comment("C1", "Which release should we test first?", author: "alice");
+        controller.Comment("C2", "Ship the installer now.", author: "dave");
+        controller.Comment("R1", "Release 2.4, please.", author: "bob", replyTo: "C1");
+        controller.Comment("R2", "Agreed, ship it.", author: "erin", replyTo: "C2");
+        Assert.Equal(0, await controller.RunOnce());
+        int Receipts() => controller.Writes("R1") + controller.Writes("R2") + controller.Writes("C2");
+        var receipts = Receipts();
+
+        controller.Delete("R1"); // A reply whose thread remains.
+        controller.Delete("R2"); // A whole thread: its root and reply.
+        controller.Delete("C2");
+        Assert.Equal(0, await controller.RunOnce());
+
+        Assert.Equal(2, controller.Turns);
+        var text = controller.Inputs[1];
+        foreach (var body in new[] { "Release 2.4, please.", "Ship the installer now.", "Agreed, ship it." }) Assert.DoesNotContain(body, text);
+        var envelope = JsonNode.Parse(text)!;
+        Assert.Equal("continue", envelope["_bridge"]!["mode"]!.GetValue<string>());
+        Assert.Equal(
+        [
+            ("comment.deleted", "C2", "dave", null, null),
+            ("comment.deleted", "R1", "bob", "C1", "C1"),
+            ("comment.deleted", "R2", "erin", "C2", null) // Its thread root is gone too, so a response goes top-level.
+        ], envelope["changes"]!.AsArray().Select(change => (
+            change!["kind"]!.GetValue<string>(), change["subject"]!["id"]!.GetValue<string>(), change["subject"]!["author"]!["login"]!.GetValue<string>(),
+            change["subject"]!["replyTo"]?["id"]?.GetValue<string>(), change["replyTarget"]!["replyToId"]?.GetValue<string>())));
+        Assert.Equal(receipts, Receipts()); // A deleted source cannot carry an EYES receipt.
+
+        Assert.Equal(0, await controller.RunOnce());
+        Assert.Equal(2, controller.Turns); // The confirmed deletion is not reported again.
+    }
+
+    [Fact]
+    public async Task Failed_later_page_preserves_the_checkpoint_and_infers_no_deletion_until_a_complete_read_confirms_it()
+    {
+        using var controller = new GitHubOutboxTests.Controller();
+        controller.Paginate(1);
+        controller.Comment("C1", "Which release should we test first?", author: "alice");
+        controller.Comment("C2", "Ship the installer now.", author: "dave");
+        Assert.Equal(0, await controller.RunOnce());
+
+        controller.Paginate(1, failLaterPages: true); // C1's page is read; C2's later page fails.
+        Assert.Equal(1, await controller.RunOnce());
+        Assert.Equal(1, controller.Turns);
+
+        controller.Paginate(1);
+        Assert.Equal(0, await controller.RunOnce());
+        Assert.Equal(1, controller.Turns); // C2 is neither deleted nor re-created: the checkpoint still holds it.
+
+        controller.Delete("C2");
+        Assert.Equal(0, await controller.RunOnce());
+        Assert.Equal(2, controller.Turns);
+        var change = Assert.Single(JsonNode.Parse(controller.Inputs[1])!["changes"]!.AsArray())!;
+        Assert.Equal(("comment.deleted", "C2", "dave", null), (change["kind"]!.GetValue<string>(), change["subject"]!["id"]!.GetValue<string>(),
+            change["subject"]!["author"]!["login"]!.GetValue<string>(), change["replyTarget"]!["replyToId"]?.GetValue<string>()));
+    }
 }
