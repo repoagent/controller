@@ -31,12 +31,14 @@ function GitHub([string]$Method, [string]$Endpoint, $Body = $null) {
 }
 function Read-Catalogue {
     $catalogue = Read-HostJson ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/RepoAgentController/repository-settings.json')))
-    Assert-Fields $catalogue @('schemaVersion', 'settings')
-    if ($catalogue.schemaVersion -ne 1 -or $catalogue.settings -isnot [array]) { throw 'Unsupported repository settings catalogue.' }
+    Assert-Fields $catalogue @('schemaVersion', 'reserved', 'settings')
+    if ($catalogue.schemaVersion -ne 1 -or $catalogue.settings -isnot [array] -or $catalogue.reserved -isnot [array]) { throw 'Unsupported repository settings catalogue.' }
+    foreach ($name in $catalogue.reserved) { Assert-Text $name '\AREPOAGENT_[A-Z0-9_]{1,90}\z' }
+    $script:Reserved = $catalogue.reserved
     foreach ($entry in $catalogue.settings) {
         Assert-Fields $entry @('name', 'description', 'type', 'minimum', 'maximum')
         Assert-Text $entry.name '\AREPOAGENT_[A-Z0-9_]{1,90}\z'
-        if ($entry.type -cne 'integer' -or $entry.minimum -isnot [long] -or $entry.maximum -isnot [long] -or $entry.minimum -lt 0 -or $entry.maximum -lt $entry.minimum) { throw 'Invalid repository settings catalogue entry.' }
+        if ($entry.name -in $script:Reserved -or $entry.type -cne 'integer' -or $entry.minimum -isnot [long] -or $entry.maximum -isnot [long] -or $entry.minimum -lt 0 -or $entry.maximum -lt $entry.minimum) { throw 'Invalid repository settings catalogue entry.' }
     }
     return $catalogue.settings
 }
@@ -50,6 +52,8 @@ function Get-Normalized($Entry, [string]$Value) {
 }
 function Get-Reason($Entry) { return "must be an integer from $($Entry.minimum) to $($Entry.maximum)" }
 function Find-Entry([string]$Name) {
+    $reserved = $script:Reserved | Where-Object { $_ -ieq $Name } | Select-Object -First 1
+    if ($reserved) { Stop-Settings "$reserved is reserved for the controller approval marker; enrollment and revocation manage it. Nothing was written." }
     $entry = $catalogue | Where-Object { $_.name -ieq $Name } | Select-Object -First 1
     if (-not $entry) {
         $shown = if ($Name -cmatch '\A[A-Za-z0-9_]{1,100}\z') { "'$Name'" } else { 'name' }

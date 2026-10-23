@@ -15,6 +15,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 SETTING = 'REPOAGENT_MAX_ACTIVE_SESSIONS'
 VARIABLES = 'repos/example/project/actions/variables'
+APPROVAL = 'REPOAGENT_APPROVAL'  # #184's default approval-marker Actions variable.
 
 
 class RepositorySettingsTests(unittest.TestCase):
@@ -116,6 +117,23 @@ class RepositorySettingsTests(unittest.TestCase):
                 self.assertIsNone(outcome)
                 self.assertEqual(self.requests(), [])
                 self.assertEqual(self.remote(), {'APPROVED_CONTROLLER': 'marker'})
+
+    def test_the_approval_marker_variable_is_reserved_and_never_read_or_changed(self):
+        marker = {APPROVAL: '{"version":3,"marker":"approval-marker-value"}'}
+        result, outcome = self.run_settings(variables={SETTING: '4', **marker})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([setting['name'] for setting in outcome['settings']], [SETTING])
+        self.assertFalse([request for request in self.requests() if APPROVAL in request[1]])
+        self.assertNotIn('approval-marker-value', result.stdout + result.stderr)
+
+        for arguments in [('-Setting', APPROVAL + '=1'), ('-ClearSetting', APPROVAL), ('-ClearSetting', APPROVAL.lower())]:
+            with self.subTest(arguments=arguments):
+                result, outcome = self.run_settings(*arguments, '-Apply', variables=marker)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIsNone(outcome)
+                self.assertIn('reserved for the controller approval marker', result.stdout + result.stderr)
+                self.assertEqual(self.requests(), [])
+                self.assertEqual(self.remote(), marker)
 
     def test_a_failed_read_is_not_mistaken_for_absence(self):
         result, outcome = self.run_settings(read_status={SETTING: 502})

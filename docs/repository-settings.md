@@ -4,6 +4,8 @@ Nonsecret controller settings live in direct repository **Actions variables** na
 
 The supported names and validation rules are in [`src/RepoAgentController/repository-settings.json`](../src/RepoAgentController/repository-settings.json). The controller and the operator script use this same catalogue.
 
+The catalogue's `reserved` list names `REPOAGENT_` variables that other features own. Today it holds `REPOAGENT_APPROVAL`, the default controller approval marker, which enrollment and revocation manage. A reserved name can never be a setting. The controller never reads it as a setting, and the settings command refuses to write or delete it before contacting GitHub.
+
 | Name | Value | Status |
 | --- | --- | --- |
 | `REPOAGENT_MAX_ACTIVE_SESSIONS` | Integer from 1 to 64 | The controller validates and reports it. A separate slice adds active-session admission and its default. |
@@ -40,6 +42,6 @@ repository-setting name=REPOAGENT_MAX_ACTIVE_SESSIONS state=absent
 
 ## Adding a setting
 
-1. Add an entry to the catalogue. It has `name` (`REPOAGENT_` plus uppercase letters, digits or `_`), `description`, `type`, `minimum` and `maximum`. Only `integer` exists today. A new type needs matching validation in `RepositorySetting.Normalize` and in `Get-Normalized` in [`scripts/repository-settings.ps1`](../scripts/repository-settings.ps1).
+1. Add an entry to the catalogue. It has `name` (`REPOAGENT_` plus uppercase letters, digits or `_`, and not a `reserved` name), `description`, `type`, `minimum` and `maximum`. Only `integer` exists today. A new type needs matching validation in `RepositorySetting.Normalize` and in `Get-Normalized` in [`scripts/repository-settings.ps1`](../scripts/repository-settings.ps1).
 2. Read the effective value from the `RepositorySettings` instance that `BridgeCommand` creates, as `settings["REPOAGENT_…"].Value`. A `null` value means the feature's own default applies. The value changes at most once per refresh, so read it at each decision point instead of caching it.
 3. Document the default and when a change takes effect. Then add a row to the table above.

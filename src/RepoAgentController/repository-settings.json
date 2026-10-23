@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "reserved": ["REPOAGENT_APPROVAL"],
   "settings": [
     {
       "name": "REPOAGENT_MAX_ACTIVE_SESSIONS",
