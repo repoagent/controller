@@ -31,11 +31,11 @@ class RepositorySettingsTests(unittest.TestCase):
         gh = directory / 'gh'
         shutil.copyfile(Path(__file__).with_name('gh_fixture.py'), gh)
         gh.chmod(0o755)
-        model = {'variables': {}, 'actions_variables': dict(variables or {})}
+        model = {'variables': dict(variables or {}), 'agent_variables': {}}
         if read_status:
-            model['actions_status'] = read_status
+            model['read_status'] = read_status
         if write_status:
-            model['actions_write_status'] = write_status
+            model['write_status'] = write_status
         self.model = directory / 'github.json'
         self.model.write_text(json.dumps(model), encoding='utf-8')
         self.log = directory / 'github.jsonl'
@@ -58,7 +58,7 @@ class RepositorySettingsTests(unittest.TestCase):
                 for entry in map(json.loads, self.log.read_text(encoding='utf-8').splitlines())]
 
     def remote(self):
-        return json.loads(self.model.read_text(encoding='utf-8'))['actions_variables']
+        return json.loads(self.model.read_text(encoding='utf-8'))['variables']
 
     def test_inspection_reports_supported_settings_with_host_reads_only(self):
         result, outcome = self.run_settings(variables={SETTING: '4', 'UNRELATED': 'kept-private'})

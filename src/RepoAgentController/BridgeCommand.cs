@@ -36,13 +36,13 @@ public static class BridgeCommand
         var logFileBytes = new Option<long>("--log-file-bytes") { DefaultValueFactory = _ => RetainedLog.DefaultFileBytes, Description = $"Maximum bytes per retained log file beside --state ({RetainedLog.MinimumFileBytes}..{RetainedLog.MaximumFileBytes}); retained logs never exceed --log-files × this size" };
         var logFiles = new Option<int>("--log-files") { DefaultValueFactory = _ => RetainedLog.DefaultFiles, Description = $"Retained log files, including the active file (1..{RetainedLog.MaximumFiles}); the oldest file is deleted on rotation" };
         var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, azureWorkQueue, disableWebhook, once, checkAuth, clone, repositorySettings, logFileBytes, logFiles };
-        var tokenFile = new Option<FileInfo>("--token-file") { Required = true };
+        var ghCredentials = new Option<DirectoryInfo>("--credential-directory") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
-        var githubCommand = new Command("github-command", "Run gh with the bridge's current App credential (native wrapper entry point)") { tokenFile, ghPath, forwardedArguments };
+        var githubCommand = new Command("github-command", "Run gh with the running controller's current in-memory App credential (native wrapper entry point)") { ghCredentials, ghPath, forwardedArguments };
         githubCommand.SetAction(async (result, ct) =>
         {
-            try { return await AppGitHubCommand.Run(result.GetValue(ghPath)!.FullName, result.GetValue(tokenFile)!.FullName, result.GetValue(forwardedArguments) ?? [], ct); }
+            try { return await AppGitHubCommand.Run(result.GetValue(ghPath)!.FullName, result.GetValue(ghCredentials)!.FullName, result.GetValue(forwardedArguments) ?? [], ct); }
             catch (Exception error) { Log.Write("app-command-error", error.Message); return 1; }
         });
         root.Subcommands.Add(githubCommand);
@@ -146,8 +146,8 @@ public static class BridgeCommand
                     store.VerifyIdentity(credentials.AgentLogin);
                     if (result.GetValue(disableWebhook))
                         return await DiscussionWebhooks.DeactivateSaved(github, statePath) ? 0 : 1;
-                    if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentials.TokenFile);
-                    var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentials.TokenFile);
+                    if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentialDirectory);
+                    var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentialDirectory);
                     var settings = new RepositorySettings(result.GetValue(repositorySettings) ? github : null, clock ?? TimeProvider.System);
                     await settings.Refresh(startToken);
                     if (result.GetValue(checkAuth)) return 0;
@@ -200,11 +200,9 @@ public static class BridgeCommand
                 }
                 catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
-                    GitHubAppCredentials.ClearCache(credentialDirectory);
                     Log.Write("fatal", error.Message); // While leased, so status and retained logs record it.
                     return 1;
                 }
-                catch { GitHubAppCredentials.ClearCache(credentialDirectory); throw; }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return 0; }
             catch (Exception error) { Log.Write("fatal", error.Message); return 1; }

@@ -29,38 +29,34 @@ if 'HOST_ENROLLMENT_GH_MODEL' in os.environ:
     with Path(os.environ['REVOKE_GH_LOG']).open('a', encoding='utf-8') as stream:
         stream.write(json.dumps({'argv': argv, 'body': body}) + '\n')
     status, value = 500, {}
+    # Direct repository Actions variables ('variables') and legacy Agent variables
+    # ('agent_variables') are separate GitHub stores; neither falls back to the other.
+    location = next((prefix for prefix in ('repos/example/project/actions/variables', 'repos/example/project/agents/variables')
+                     if endpoint == prefix or endpoint.startswith((prefix + '?', prefix + '/'))), None)
+    store = model.setdefault('agent_variables' if location and '/agents/' in location else 'variables', {})
     if endpoint == 'repos/example/project' and method == 'GET':
         status, value = 200, {'id': 123, 'full_name': 'example/project'}
-    elif endpoint.startswith('repos/example/project/actions/variables'):
-        # Direct repository Actions variables (repository settings); names are case-insensitive.
-        variables = model.setdefault('actions_variables', {})
-        name = endpoint.rsplit('/', 1)[1].upper() if endpoint.count('/') == 5 else (body or {}).get('name', '').upper()
-        if method == 'GET':
-            status = model.get('actions_status', {}).get(name, 200 if name in variables else 404)
-            value = {'name': name, 'value': variables[name]} if status == 200 else {'message': 'Fixture'}
-        else:
-            status = model.get('actions_write_status', {'POST': 201, 'PATCH': 204, 'DELETE': 204}[method])
-            if status < 400:
-                if method == 'DELETE':
-                    variables.pop(name, None)
-                else:
-                    variables[name] = body['value']
-                model_path.write_text(json.dumps(model), encoding='utf-8')
-    elif endpoint.startswith('repos/example/project/agents/variables?') and method == 'GET':
-        entries = [{'name': name, 'value': value} for name, value in model['variables'].items()]
+    elif location and endpoint.startswith(location + '?') and method == 'GET':
+        entries = [{'name': name, 'value': value} for name, value in store.items()]
         status = model.get('listing_status', 200)
         value = model.get('listing', {'total_count': len(entries), 'variables': entries})
-    elif endpoint == 'repos/example/project/agents/variables' and method == 'POST':
-        model['variables'][body['name']] = body['value']
-        model_path.write_text(json.dumps(model), encoding='utf-8')
+    elif location and endpoint == location and method == 'POST':
         status = model.get('write_status', 201)
-    elif endpoint.startswith('repos/example/project/agents/variables/'):
+        if not 400 <= status < 500:  # A rejection is never applied; a 5xx write may have been.
+            store[body['name']] = body['value']
+            model_path.write_text(json.dumps(model), encoding='utf-8')
+    elif location and endpoint.startswith(location + '/'):
         name = endpoint.rsplit('/', 1)[1]
         if method == 'GET':
-            status = 200 if name in model['variables'] else 404
-            value = {'name': name, 'value': model['variables'].get(name, '')}
+            status = model.get('read_status', {}).get(name, 200 if name in store else 404)
+            value = {'name': name, 'value': store.get(name, '')} if status == 200 else {'message': 'Fixture'}
+        elif method == 'PATCH':
+            status = model.get('write_status', 204)
+            if not 400 <= status < 500:
+                store[name] = body['value']
+                model_path.write_text(json.dumps(model), encoding='utf-8')
         elif method == 'DELETE':
-            model['variables'].pop(name, None)
+            store.pop(name, None)
             model_path.write_text(json.dumps(model), encoding='utf-8')
             status = 204
     wire = f'HTTP/2.0 {status} Fixture\r\nContent-Type: application/json\r\n\r\n' + json.dumps(value) + '\n'

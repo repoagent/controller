@@ -82,11 +82,13 @@ function Get-ApprovalStateKind($State) {
         Assert-Text $State.repoEnvironment '\A[^\p{Cc}]{1,255}\z'
         Assert-Text $State.profile '\A(?:polling|webhook)\z'
         $kind = 'environment-variable'
-    } elseif ($State.version -eq 2) {
+    } elseif ($State.version -in @(2, 3)) {
+        # Version 2 is legacy repository Agent-variable setup; version 3 is the current
+        # repository Actions-variable setup. Each binds exactly one approval location.
         Assert-Fields $State @('version','setupVersion','approvalKind','repository','repositoryId','brokerOrigin','approvalVariable','profile','pendingId','deadline','marker','expectedValueSha256','approvalWriteAttempted','approvalObserved')
         Assert-Id $State.setupVersion
-        if ($State.setupVersion -ne 2 -or $State.approvalKind -cne 'repository-agent-variable') { throw 'Unsupported approval state binding.' }
-        $kind = 'repository-agent-variable'
+        $kind = if ($State.version -eq 3) { 'repository-actions-variable' } else { 'repository-agent-variable' }
+        if ($State.setupVersion -ne $State.version -or $State.approvalKind -cne $kind) { throw 'Unsupported approval state binding.' }
     } else { throw 'Unsupported approval state version.' }
     Assert-Id $State.repositoryId
     Assert-Text $State.repository '\A[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\z'
@@ -240,9 +242,10 @@ function Invoke-HostGitHub([string]$Method, [string]$Endpoint, $Body = $null) {
 function Invoke-EnrollmentBroker([string]$Origin, [string]$Method, [string]$Path, [string]$Secret, $Body = $null) {
     $origin = Get-BrokerOrigin $Origin
     Assert-Text $Secret '\A[A-Za-z0-9_-]{43,128}\z'
-    if ($Path -cnotmatch '\A(?:/v2/enrollments(?:/[A-Za-z0-9_-]+(?:/completion)?)?|/v2/devices/[A-Za-z0-9_-]+/acknowledgment|/v[12]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker route.' }
+    # Setup v2 (legacy Agent variable) and v3 (Actions variable); runtime revoke stays v1/v2.
+    if ($Path -cnotmatch '\A(?:/v[23]/enrollments(?:/[A-Za-z0-9_-]+(?:/completion)?)?|/v[23]/devices/[A-Za-z0-9_-]+/acknowledgment|/v[12]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker route.' }
     $operation = $Method + ' ' + $Path
-    if ($operation -cnotmatch '\A(?:POST /v2/enrollments|GET /v2/enrollments/[A-Za-z0-9_-]+|POST /v2/enrollments/[A-Za-z0-9_-]+/completion|POST /v2/devices/[A-Za-z0-9_-]+/acknowledgment|DELETE /v[12]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker operation.' }
+    if ($operation -cnotmatch '\A(?:POST /v[23]/enrollments|GET /v[23]/enrollments/[A-Za-z0-9_-]+|POST /v[23]/enrollments/[A-Za-z0-9_-]+/completion|POST /v[23]/devices/[A-Za-z0-9_-]+/acknowledgment|DELETE /v[12]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker operation.' }
     $handler = [Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect = $false; $handler.UseCookies = $false
     $client = [Net.Http.HttpClient]::new($handler)
     $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), $origin + $Path)

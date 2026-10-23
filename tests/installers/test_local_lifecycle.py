@@ -75,8 +75,8 @@ class LocalLifecycleProcessTests(unittest.TestCase):
     def test_uninstall_preview_defers_volume_binding_and_has_no_effects(self):
         self.configure()
         before = self.state()
-        for extra in ((), ('-GitHubEnvironment', 'production-west', '-ExpectedEnvironmentId', '456')):
-            with self.subTest(legacy=bool(extra)):
+        for extra in ((), ('-ApprovalLocation', 'AgentVariable'), ('-GitHubEnvironment', 'production-west', '-ExpectedEnvironmentId', '456')):
+            with self.subTest(extra=extra):
                 result = self.uninstall(*extra)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 outcome = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')][0]
@@ -86,14 +86,14 @@ class LocalLifecycleProcessTests(unittest.TestCase):
                 self.assertFalse((self.private / 'host').exists())
                 self.assert_no_effects(before)
                 revoke = outcome['revoke']
-                if extra:
+                if '-GitHubEnvironment' in extra:
                     self.assertEqual((revoke['approvalKind'], revoke.get('githubEnvironment'), revoke.get('environmentId')),
                                      ('environment-variable', 'production-west', 456), result.stdout)
                     readable = '\n'.join(line for line in result.stdout.splitlines() if not line.startswith('{'))
                     self.assertIn('production-west', readable)
                     self.assertIn('456', readable)
                 else:
-                    self.assertEqual(revoke['approvalKind'], 'repository-agent-variable')
+                    self.assertEqual(revoke['approvalKind'], 'repository-agent-variable' if extra else 'repository-actions-variable')
                     self.assertNotIn('githubEnvironment', revoke)
                     self.assertNotIn('environmentId', revoke)
 
@@ -167,21 +167,24 @@ class LocalLifecycleProcessTests(unittest.TestCase):
         gh = commands / 'gh'
         shutil.copyfile(Path(__file__).with_name('gh_fixture.py'), gh)
         gh.chmod(0o755)
-        scenario, log = self.directory / 'scenario.json', self.directory / 'gh.jsonl'
         value = 'synthetic-approval'
-        scenario.write_text(json.dumps([{'body': {'id': 345, 'full_name': 'owner/repository'}},
-                                       {'body': {'name': 'APPROVED_CONTROLLER', 'value': value}}, {'status': 204}]))
-        environment = dict(self.environment, PATH=str(commands), REVOKE_GH_SCENARIO=str(scenario), REVOKE_GH_LOG=str(log))
-        self.assertIsNone(shutil.which('docker', path=environment['PATH']))
-        result = subprocess.run([shutil.which('pwsh'), '-NoProfile', '-File', str(ROOT / 'install.ps1'),
-            '-Action', 'Revoke', '-Repository', 'owner/repository', '-ApprovalVariable', 'APPROVED_CONTROLLER',
-            '-ExpectedRepositoryId', '345', '-ExpectedValueSha256', hashlib.sha256(value.encode()).hexdigest(),
-            '-Apply', '-NonInteractive'], env=environment, capture_output=True, text=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        outcome = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')][0]
-        self.assertEqual((outcome['githubMarker'], outcome['brokerClosure'], outcome['outstandingTokens']), ('removed', 'unconfirmed', 'unsettled'))
-        self.assertEqual([json.loads(line)['argv'][4] for line in log.read_text().splitlines()], ['GET', 'GET', 'DELETE'])
-        self.assertEqual(json.loads(log.read_text().splitlines()[-1])['argv'][-1], 'repos/owner/repository/agents/variables/APPROVED_CONTROLLER')
+        for location, path in (((), 'actions/variables'), (('-ApprovalLocation', 'AgentVariable'), 'agents/variables')):
+            with self.subTest(location=location):
+                scenario, log = self.directory / 'scenario.json', self.directory / 'gh.jsonl'
+                log.unlink(missing_ok=True)
+                scenario.write_text(json.dumps([{'body': {'id': 345, 'full_name': 'owner/repository'}},
+                                               {'body': {'name': 'APPROVED_CONTROLLER', 'value': value}}, {'status': 204}]))
+                environment = dict(self.environment, PATH=str(commands), REVOKE_GH_SCENARIO=str(scenario), REVOKE_GH_LOG=str(log))
+                self.assertIsNone(shutil.which('docker', path=environment['PATH']))
+                result = subprocess.run([shutil.which('pwsh'), '-NoProfile', '-File', str(ROOT / 'install.ps1'),
+                    '-Action', 'Revoke', '-Repository', 'owner/repository', '-ApprovalVariable', 'APPROVED_CONTROLLER', *location,
+                    '-ExpectedRepositoryId', '345', '-ExpectedValueSha256', hashlib.sha256(value.encode()).hexdigest(),
+                    '-Apply', '-NonInteractive'], env=environment, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                outcome = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')][0]
+                self.assertEqual((outcome['githubMarker'], outcome['brokerClosure'], outcome['outstandingTokens']), ('removed', 'unconfirmed', 'unsettled'))
+                self.assertEqual([json.loads(line)['argv'][4] for line in log.read_text().splitlines()], ['GET', 'GET', 'DELETE'])
+                self.assertEqual(json.loads(log.read_text().splitlines()[-1])['argv'][-1], 'repos/owner/repository/' + path + '/APPROVED_CONTROLLER')
 
 
 def assert_interrupted_image_recovery(test, cut):

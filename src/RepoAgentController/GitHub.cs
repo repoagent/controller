@@ -78,12 +78,12 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
 
     async Task<string> Api(string method, string resource, JsonNode? input, CancellationToken ct, bool include = false)
     {
-        await credentials.GetToken(ct);
+        var credential = await credentials.GetCredential(ct);
         var arguments = new List<string> { "api", resource, "--hostname", "github.com", "--method", method,
             "--header", "X-GitHub-Api-Version: 2026-03-10" };
         if (include) arguments.Add("--include");
         if (input is not null) arguments.AddRange(["--input", "-"]);
-        var start = AppGitHubCommand.Create(executable, credentials.TokenFile, arguments);
+        var start = AppGitHubCommand.Create(executable, credential, credentials.CredentialDirectory, arguments);
         start.RedirectStandardInput = input is not null;
         start.RedirectStandardOutput = true;
         start.RedirectStandardError = true;

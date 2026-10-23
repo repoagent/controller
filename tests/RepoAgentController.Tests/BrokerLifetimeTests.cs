@@ -45,7 +45,7 @@ public sealed class BrokerLifetimeTests
         var settings = new JsonObject
         {
             ["port"] = ((IPEndPoint)ready.LocalEndpoint).Port, ["stage"] = stage,
-            ["tokenFile"] = fixture.TokenFile, ["history"] = history, ["requests"] = requests,
+            ["history"] = history, ["requests"] = requests,
             ["eof"] = eof, ["graceful"] = userCancellation
         };
         File.WriteAllText(settingsPath, settings.ToJsonString());
@@ -172,7 +172,7 @@ public sealed class BrokerLifetimeTests
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
-    // Only the unmanaged JSON-RPC peer is controlled; OS processes, pipes, token cache and locks are real.
+    // Only the unmanaged JSON-RPC peer is controlled; OS processes, pipes, the wrapper credential handoff and locks are real.
     const string Native = """"
         #!/usr/bin/python3
         import json,os,signal,subprocess,sys,threading
@@ -183,9 +183,9 @@ public sealed class BrokerLifetimeTests
         def start_child():
          global child
          code=r"""
-        import json,os,socket,threading
+        import json,os,socket,subprocess,threading
         s=json.load(open(os.environ['NATIVE_DRAIN_SETTINGS']))
-        token=json.load(open(s['tokenFile']))['token']
+        token=subprocess.run(["gh","auth","token"],capture_output=True,text=True).stdout.strip()
         with socket.create_connection(('127.0.0.1',s['port'])) as ready:
          ready.sendall((json.dumps({'parent':os.getppid(),'child':os.getpid(),'credentialCopied':token.startswith('opaque-token-')})+'\n').encode())
          if s['stage']=='teardown':ready.recv(1);os.kill(os.getppid(),signal.SIGUSR1)
@@ -211,7 +211,7 @@ public sealed class BrokerLifetimeTests
 
     const string GitHub = """
         #!/usr/bin/python3
-        import json,sys
+        import json,os,sys
         a=sys.argv[1:]
         if a[:2]==['api','graphql']:
          q=json.load(sys.stdin)['query'];page={'nodes':[],'pageInfo':{'hasNextPage':False,'endCursor':None}}
@@ -222,7 +222,8 @@ public sealed class BrokerLifetimeTests
          print(json.dumps({'data':data}))
         elif len(a)>1 and a[1].startswith('repos/owner/repository/hooks'):
          body=json.load(sys.stdin);print(json.dumps({'id':1,'active':body.get('active',True)}))
-        elif a==['capture']:print('gh-invoked')
+        elif a==["capture"]:print("gh-invoked")
+        elif a==["auth","token"]:print(os.environ.get("GH_TOKEN",""))
         else:raise RuntimeError('Unexpected GitHub command')
         """;
 }

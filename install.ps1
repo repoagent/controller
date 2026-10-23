@@ -4,7 +4,8 @@
 .SYNOPSIS
 Preview or explicitly apply one local RepoAgent installation.
 .DESCRIPTION
-PowerShell 7.4+ composes host Agent-variable enrollment and private Docker startup.
+PowerShell 7.4+ composes host repository Actions-variable enrollment and private Docker startup.
+-ApprovalLocation AgentVariable explicitly selects the legacy repository Agent variable.
 Inputs override saved launch choices; missing required inputs prompt unless
 -NonInteractive. Without -Apply there are no image builds, containers or writes.
 Existing own-App options remain available with -Authentication OwnApp.
@@ -29,6 +30,7 @@ param(
     [string]$EnrollmentFile,
     [string]$GitHubEnvironment,
     [string]$ApprovalVariable,
+    [ValidateSet('ActionsVariable', 'AgentVariable')][string]$ApprovalLocation,
     [string]$ExpectedValueSha256,
     [string]$ExpectedRepositoryId,
     [string]$ExpectedEnvironmentId,
@@ -88,16 +90,19 @@ if ($Action -in @('Install','Enroll')) {
     }
 }
 if ($Action -eq 'Enroll') {
-    if ($GitHubEnvironment -or $ExpectedEnvironmentId) { throw 'Enroll uses a repository Agent variable; Environment inputs are only for explicit legacy revoke.' }
+    if ($GitHubEnvironment -or $ExpectedEnvironmentId) { throw 'Enroll uses a repository variable; Environment inputs are only for explicit legacy revoke.' }
     $enrollOptions = @{}
     if ($EnrollmentProfile) { $enrollOptions.Profile = $EnrollmentProfile }
+    if ($ApprovalLocation) { $enrollOptions.ApprovalLocation = $ApprovalLocation }
     & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions -Repository $Repository -BrokerOrigin $BrokerOrigin `
         -StateDirectory $StateDirectory -ApprovalVariable $ApprovalVariable `
         -Apply:$Apply -NonInteractive:$NonInteractive
     exit $LASTEXITCODE
 }
 if ($Action -eq 'Revoke') {
-    & "$PSScriptRoot/scripts/revoke-approval.ps1" -Repository $Repository `
+    $revokeOptions = @{}
+    if ($ApprovalLocation) { $revokeOptions.ApprovalLocation = $ApprovalLocation }
+    & "$PSScriptRoot/scripts/revoke-approval.ps1" @revokeOptions -Repository $Repository `
         -GitHubEnvironment $GitHubEnvironment -ApprovalVariable $ApprovalVariable `
         -ExpectedValueSha256 $ExpectedValueSha256 -ExpectedRepositoryId $ExpectedRepositoryId `
         -ExpectedEnvironmentId $ExpectedEnvironmentId -ApprovalStatePath $ApprovalStatePath `
@@ -212,7 +217,8 @@ try {
     $Mode = Setting Mode 'polling'
     $resolvedProfile = ''
     $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin
-    $ApprovalVariable = Setting ApprovalVariable $(if ($ApprovalVariable) { $ApprovalVariable } else { 'APPROVED_CONTROLLER' })
+    # Saved names are reused; fresh Actions-variable approval uses a REPOAGENT_ name.
+    $ApprovalVariable = Setting ApprovalVariable $(if ($ApprovalVariable) { $ApprovalVariable } elseif ($ApprovalLocation -eq 'AgentVariable') { 'APPROVED_CONTROLLER' } else { 'REPOAGENT_APPROVAL' })
     $AppId = Setting AppId
     $KeyPath = Setting KeyPath
     $InstallationId = Setting InstallationId
@@ -243,11 +249,12 @@ try {
         if ($resolvedClone -and $approval -and $approval.profile -cne $expectedProfile) { Stop-Install 'Changing clone authority requires a fresh instance and enrollment.' }
         $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
         $enrollOptions = @{ Repository=$Repository; BrokerOrigin=$BrokerOrigin; ApprovalVariable=$ApprovalVariable; Profile=$resolvedProfile; StateDirectory=$StateDirectory; NonInteractive=$true }
+        if ($ApprovalLocation) { $enrollOptions.ApprovalLocation = $ApprovalLocation }
         $global:LASTEXITCODE = 0
         & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions | Out-Host
         if ($LASTEXITCODE -ne 0) { Stop-Install 'Host enrollment plan failed. Check the selected coordinates/private state; no runtime work was attempted.' }
     } else {
-        if ($BrokerOrigin -or $provided.ContainsKey('ApprovalVariable') -or $provided.ContainsKey('EnrollmentProfile')) { Stop-Install 'OwnApp cannot use broker enrollment selectors.' }
+        if ($BrokerOrigin -or $provided.ContainsKey('ApprovalVariable') -or $provided.ContainsKey('EnrollmentProfile') -or $provided.ContainsKey('ApprovalLocation')) { Stop-Install 'OwnApp cannot use broker enrollment selectors.' }
         $AppId = Setting AppId -Required; $KeyPath = Input-File (Setting KeyPath -Required)
         Select-RepositoryContext
         if ($AppId -cnotmatch '^(?:[0-9]+|Iv[A-Za-z0-9.]+)$') { Stop-Install 'Supply an App ID or client ID, not a token.' }
