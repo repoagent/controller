@@ -95,10 +95,12 @@ function Get-ComparableControllerTemplate($Template, $RetainedTemplate) {
     # app template may supply them. Explicit revision values are never replaced.
     foreach ($field in @('pollingInterval','cooldownPeriod')) {
         $expected = $RetainedTemplate.scale[$field]
+        if ($null -eq $expected) { $expected = if ($field -ceq 'pollingInterval') { 30 } else { 300 } }
         if ($expected -isnot [int] -and $expected -isnot [long]) { throw 'Retained scaling interval is absent or invalid.' }
         if ($null -eq $snapshot.scale[$field]) { $snapshot.scale[$field] = $expected }
     }
-    $rules = @($snapshot.scale.rules)
+    $rules = @()
+    if ($null -ne $snapshot.scale.rules) { $rules = @($snapshot.scale.rules) }
     $names = @($rules | ForEach-Object { $_.name })
     if (@($names | Where-Object { $_ -isnot [string] -or -not $_ }).Count -or
             @($names | Sort-Object -CaseSensitive -Unique).Count -ne $rules.Count) { throw 'Scale rule names must be unique.' }

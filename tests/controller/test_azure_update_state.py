@@ -199,6 +199,25 @@ $p=New-ControllerImagePatch $t 'new' 'next' 'swedencentral'
         self.assertEqual(expected['scale']['cooldownPeriod'], 60)
         self.assertEqual([r['name'] for r in expected['scale']['rules']], ['controller-http', 'controller-work'])
 
+    def test_ruleless_profiles_accept_missing_and_null_rules_with_retained_defaults(self):
+        for fields in ("", "rules=$null;"):
+            result = self.run_profile("""
+$t=@{containers=@(@{name='controller';resources=@{cpu=0.25}});
+ initContainers=@(@{name='private-layout';resources=@{cpu=0.25}});
+ scale=@{minReplicas=1;maxReplicas=1;pollingInterval=30;cooldownPeriod=300;RULE_FIELDS}}
+$a=Get-ComparableControllerTemplate $t $t
+$t.scale.Remove('pollingInterval');$t.scale.Remove('cooldownPeriod')
+$b=Get-ComparableControllerTemplate $t $t
+$t.scale.rules=@($null);$refused=$false
+try {$null=Get-ComparableControllerTemplate $t $t} catch {$refused=$true}
+if (-not $refused) {throw 'Malformed rule entry was accepted'}
+@($a,$b)|ConvertTo-Json -Depth 30 -Compress
+""".replace('RULE_FIELDS', fields))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for template in json.loads(result.stdout):
+                self.assertEqual(template['scale']['rules'], [])
+                self.assertEqual((template['scale']['pollingInterval'], template['scale']['cooldownPeriod']), (30, 300))
+
     def test_private_request_roundtrips_fractional_cpu_before_any_cloud_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             result = self.run_profile("""
