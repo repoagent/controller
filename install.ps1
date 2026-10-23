@@ -224,7 +224,7 @@ try {
     $InstallationId = Setting InstallationId
     $MentionUser = Setting MentionUser
     $Model = Setting Model 'gpt-6.1-sol'
-    $ToolUpdates = Setting ToolUpdates 'latest'
+    $ToolUpdates = Setting ToolUpdates 'pinned'
     $WebSearch = Setting WebSearch 'live'
     $PublicUrl = Setting PublicUrl
     $ListenPort = Setting ListenPort '8080'
