@@ -209,6 +209,22 @@ public sealed class GitHubOutboxTests
             });
         });
 
+        /// <summary>Serves every GitHub read connection in pages of <paramref name="size"/>; with <paramref name="failLaterPages"/>,
+        /// each request for a page after the first fails as gh does on an HTTP 502.</summary>
+        public void Paginate(int size, bool failLaterPages = false) => Update(state =>
+        {
+            state["pageSize"] = size;
+            state["failLaterPages"] = failLaterPages;
+        });
+
+        /// <summary>Deletes a comment or reply, with its reactions, from what GitHub returns.</summary>
+        public void Delete(string id) => Update(state =>
+        {
+            var comments = state["comments"]!.AsArray();
+            comments.Remove(comments.Single(c => c!["id"]!.GetValue<string>() == id));
+            state["reactions"]!.AsObject().Remove(id);
+        });
+
         /// <summary>Adds a participant's reaction to the Discussion or a comment.</summary>
         public void React(string subject, string id, string content, string actor) => Update(state =>
         {
@@ -303,11 +319,15 @@ public sealed class GitHubOutboxTests
             args=sys.argv[1:]
             request=json.loads(sys.stdin.read()) if '--input' in args else {}
             query=request.get('query','');variables=request.get('variables') or {}
-            page=lambda nodes:{'nodes':nodes,'pageInfo':{'hasNextPage':False,'endCursor':None}}
             relay=None;kind='read';data=None
             with open(WORLD,'r+') as handle:
              fcntl.flock(handle,fcntl.LOCK_EX)
              world=json.load(handle)
+             size=world.get('pageSize') or 0;cursor=variables.get('cursor')
+             if cursor and world.get('failLaterPages'):sys.stderr.write('gh: HTTP 502: Bad Gateway (https://api.github.com/graphql)\n');sys.exit(1)
+             def page(nodes):
+              end=int(cursor or 0)+size if size else len(nodes)
+              return {'nodes':nodes[int(cursor or 0):end],'pageInfo':{'hasNextPage':end<len(nodes),'endCursor':str(end) if end<len(nodes) else None}}
              groups=lambda id:[{'content':'EYES','viewerHasReacted':id in world['eyes']}]
              message=lambda item:dict(item,reactionGroups=groups(item['id']))
              if 'addReaction' in query:
