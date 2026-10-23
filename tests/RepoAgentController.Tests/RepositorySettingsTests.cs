@@ -123,8 +123,14 @@ public sealed class RepositorySettingsTests
 
         Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=configured value=4"));
         Assert.Equal("/v3/devices/device-1/installation-token", Assert.Single(broker.Transport.Requests).AbsolutePath);
-        var read = Assert.Single(fixture.GitHubRequests(), request => request.Endpoint != "graphql");
-        Assert.Equal(("GET", "repos/owner/repository/actions/variables/" + Setting, "opaque-token-1"), (read.Method, read.Endpoint, read.Token));
+        // Every catalogue read is a direct Actions-variable GET with the brokered lease.
+        var reads = fixture.GitHubRequests().Where(request => request.Endpoint != "graphql").ToArray();
+        Assert.Contains(reads, read => read.Endpoint == "repos/owner/repository/actions/variables/" + Setting);
+        Assert.All(reads, read =>
+        {
+            Assert.Equal(("GET", "opaque-token-1"), (read.Method, read.Token));
+            Assert.StartsWith("repos/owner/repository/actions/variables/REPOAGENT_", read.Endpoint);
+        });
         Assert.Empty(fixture.Provider.TokenRequests); // No App key or direct token request exists in broker mode.
     }
 
