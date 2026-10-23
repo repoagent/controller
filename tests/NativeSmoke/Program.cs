@@ -25,5 +25,11 @@ try
     if (await BridgeCommand.Run(arguments) != 1 || File.Exists(cache))
         throw new InvalidOperationException("Native AOT lease was not acquired after disposal.");
     Console.WriteLine("Native AOT exclusive state lease smoke passed.");
+    // The lease holder's failed lifetime is reported through the trimmed status and retained-log commands.
+    var status = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(state + ".status.json"))!;
+    if (status["controller"]?["state"]?.GetValue<string>() != "failed" || !File.ReadAllText(Path.Combine(state + ".logs", "controller.log")).Contains(" fatal ") ||
+        await BridgeCommand.Run(["status", "--state", state]) != 0 || await BridgeCommand.Run(["logs", "--state", state]) != 0)
+        throw new InvalidOperationException("Native AOT status or retained logs did not report the failed lifetime.");
+    Console.WriteLine("Native AOT status and retained-log smoke passed.");
 }
 finally { Directory.Delete(directory, recursive: true); }
