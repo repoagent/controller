@@ -103,6 +103,35 @@ public sealed class ControllerDashboardTests
     }
 
     [Fact]
+    public async Task Input_waiting_for_an_active_session_is_listed_as_queued()
+    {
+        using var controller = new Controller();
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = controller.Run(shutdown.Token, "--dashboard-category", Category);
+        try
+        {
+            var idle = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains(First) ? dashboard : null);
+            Assert.Contains("### Active and queued sessions\nNone.", idle.Body);
+
+            // The next turn stays active, so a later comment waits in the controller instead of steering it.
+            controller.HoldTurns();
+            controller.Comment("C1", "Start the long task.");
+            controller.Clock.Advance(TimeSpan.FromHours(1));
+            await Until(() => controller.Turns == 2 ? controller : null);
+            controller.Comment("C2", "One more detail for it.");
+            controller.Clock.Advance(TimeSpan.FromHours(1));
+            var queued = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("1 inputs waiting") ? dashboard : null);
+            Assert.Matches(@"\*\*Sessions:\*\* 1 stored;[^\n]* 1 inputs waiting", queued.Body);
+            Assert.Matches(@"### Active and queued sessions\n- \[Discussion #1\]\(" + Regex.Escape(First) + @"\): [^\n]*1 inputs waiting for the session to become idle\n", queued.Body);
+            Assert.DoesNotContain("checkout refresh", queued.Body);
+            Assert.Equal(2, controller.Turns);
+            Assert.False(controller.HasEyes("C2"));
+        }
+        finally { await shutdown.CancelAsync(); }
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Owned_dashboard_is_found_again_and_never_becomes_agent_input_while_a_participant_copy_stays_ordinary()
     {
         using var controller = new Controller();
@@ -422,7 +451,10 @@ public sealed class ControllerDashboardTests
             fixture.Dispose();
         }
 
-        // Every thread is idle when started or resumed; each accepted turn reports idle and completes at once.
+        /// <summary>Later native turns stay active instead of completing.</summary>
+        public void HoldTurns() => File.WriteAllText(native + ".hold", "");
+
+        // Every thread is idle when started or resumed; each accepted turn reports idle and completes at once, unless held.
         const string Native = """
             #!/usr/bin/python3
             import json,os,sys
@@ -437,6 +469,7 @@ public sealed class ControllerDashboardTests
              if method=='turn/start':
               turns+=1;thread=request['params']['threadId'];turn={'id':'native-turn-%d'%turns,'status':'inProgress','items':[]}
               send({'id':request['id'],'result':{'turn':turn}})
+              if os.path.exists(NATIVE_LOG+'.hold'):send({'method':'thread/status/changed','params':{'threadId':thread,'status':{'type':'active','activeFlags':[]}}});continue
               send({'method':'thread/status/changed','params':{'threadId':thread,'status':idle}})
               send({'method':'turn/completed','params':{'threadId':thread,'turn':dict(turn,status='completed')}})
               continue

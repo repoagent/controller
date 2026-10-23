@@ -117,7 +117,8 @@ sealed class ControllerDashboard : IAsyncDisposable
         });
         var work = snapshot["work"] ?? new JsonObject();
         text.AppendLine($"- **Sessions:** {Count(work["sessions"])} stored; {(work["running"] is null ? "running turns are not tracked in this mode" : Count(work["running"]) + " running")}; " +
-            $"{Count(work["pending"])} awaiting native acknowledgement; {Count(work["waiting"])} inputs waiting{(work["admissionBlocked"] is null ? "" : "; new turns are held for a checkout refresh")}");
+            $"{Count(work["pending"])} awaiting native acknowledgement; {Count(work["waiting"])} inputs waiting" +
+            (work["admissionBlocked"] is JsonValue blocked && blocked.TryGetValue<bool>(out var held) && held ? "; new turns are held for a checkout refresh" : ""));
         var activity = snapshot["latestActivity"];
         text.AppendLine("- **Latest activity:** " + (activity is null ? "none recorded" :
             $"{(activity.Text("kind") == "session-created" ? "session started for" : "input delivered from")} {Link(activity.Text("url"))} at {Time(activity.Text("at"))}"));
@@ -126,8 +127,13 @@ sealed class ControllerDashboard : IAsyncDisposable
         var busy = (snapshot["sessions"] as JsonArray ?? []).OfType<JsonObject>()
             .Where(session => session.Text("state") is "pending" or "running" || Count(session["waiting"]) != 0).ToArray();
         foreach (var session in busy.Take(MaximumSessions))
-            text.AppendLine($"- {Link(session.Text("discussion"))}: {(session.Text("state") == "pending" ? "awaiting native acknowledgement" : session.Text("state"))}" +
-                (Count(session["waiting"]) == 0 ? "" : $", {Count(session["waiting"])} inputs waiting"));
+            text.AppendLine($"- {Link(session.Text("discussion"))}: " + session.Text("state") switch
+            {
+                "pending" => "awaiting native acknowledgement",
+                "running" => "running a turn",
+                "accepted" => "earlier input accepted; turns are not tracked in this mode",
+                var state => state
+            } + (Count(session["waiting"]) == 0 ? "" : $"; {Count(session["waiting"])} inputs waiting for the session to become idle"));
         if (busy.Length > MaximumSessions) text.AppendLine($"- and {busy.Length - MaximumSessions} more");
         if (busy.Length == 0) text.AppendLine("None.");
         text.AppendLine();
