@@ -90,7 +90,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
             ["installationId"] = grant.InstallationId, ["repositoryId"] = Id(grant.RepositoryId), ["repository"] = grant.Repository,
             ["permissions"] = Permissions(grant.Profile), ["token"] = token.Token, ["expiresAt"] = token.ExpiresAt
         };
-        if (grant.Approval.IsClone)
+        if (grant.Approval.NamesProfile)
         {
             response["profile"] = grant.Profile;
             response["policyVersion"] = grant.Approval.Policy;

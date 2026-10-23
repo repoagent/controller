@@ -131,7 +131,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
                 ["installationId"] = Number(s.Pending, "InstallationId"), ["repositoryId"] = Id(s.RepositoryId),
                 ["repository"] = Text(s.Pending, "Repository"), ["permissions"] = Permissions(Text(s.Pending, "Profile"))
             };
-            if (s.Approval.IsClone)
+            if (s.Approval.NamesProfile)
             {
                 envelopeFields["profile"] = Text(s.Pending, "Profile");
                 envelopeFields["policyVersion"] = s.Approval.Policy;
