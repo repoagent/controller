@@ -29,6 +29,12 @@ from test_managed_git import CONTROLLER, ROOT, GitProvider
 FIXTURE_MODEL = 'model = "gpt-6.1-sol"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Credential-free local fixture"\nbase_url = "https://broker.fixture/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n'
 
 
+def native_event(line):
+    """Fields of the controller's redacted native-event log line; the raw native message is never logged."""
+    return re.search(r' native-event method=(?P<method>\S*) thread=(?P<thread>\S*) turn=(?P<turn>\S*) status=(?P<status>\S*)'
+                     r' will-retry=(?P<willRetry>\S*) error=(?P<error>.*)$', line.rstrip('\n')).groupdict()
+
+
 @unittest.skipIf(os.name == 'nt', 'Managed checkout uses the Linux shipping tools')
 class CheckoutRefreshTests(unittest.TestCase):
     @classmethod
@@ -650,13 +656,13 @@ class CheckoutRefreshTests(unittest.TestCase):
             with self.controller(f):
                 f.provider.discussions = [self.discussion(1)]
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_FIRST'
-                first = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                first = native_event(f.wait('native-event'))
                 self.assertEqual(first['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(first), flush=True)
                 self.settled(f)
-                self.assertEqual(first['params']['turn']['status'], 'completed')
+                self.assertEqual(first['status'], 'completed')
                 self.assertEqual(len(f.provider.model_requests), 1)
                 session = json.loads(f.state.read_text())['discussions']['D1']['sessionId']
-                self.assertEqual(first['params']['threadId'], session)
+                self.assertEqual(first['thread'], session)
                 rollout, = home.rglob('rollout-*.jsonl')
                 prefix = rollout.read_bytes()
                 self.assertIn(b'NATIVE_USER_FIRST', prefix)
@@ -675,11 +681,11 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertIn('NATIVE_DESCRIPTION_B', listed)
                 self.assertNotIn('NATIVE_DESCRIPTION_A', listed)
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_SECOND'
-                second = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                second = native_event(f.wait('native-event'))
                 self.assertEqual(second['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(second), flush=True)
                 self.settled(f)
-                self.assertEqual(second['params']['turn']['status'], 'completed')
-                self.assertEqual(second['params']['threadId'], session)
+                self.assertEqual(second['status'], 'completed')
+                self.assertEqual(second['thread'], session)
                 self.assertEqual(json.loads(f.state.read_text())['discussions']['D1']['sessionId'], session)
                 self.assertEqual(len(f.provider.model_requests), 2)
                 request_b = json.dumps(f.provider.model_requests[1]['body'])
@@ -706,8 +712,8 @@ class CheckoutRefreshTests(unittest.TestCase):
             config = f.directory / 'home/config.toml'
             config.write_text(config.read_text() + FIXTURE_MODEL)
             def completed():
-                event = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
-                self.assertEqual((event['method'], event['params']['turn']['status']), ('turn/completed', 'completed'), event)
+                event = native_event(f.wait('native-event'))
+                self.assertEqual((event['method'], event['status']), ('turn/completed', 'completed'), event)
             with self.controller(f):
                 f.provider.discussions = [self.discussion(1)]
                 completed()
