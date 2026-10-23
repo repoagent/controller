@@ -78,6 +78,21 @@ public sealed partial class IssuanceStore
         await CommitAsync(grant, [Update(attempt), Update(verifier)], ct);
     }
 
+    public async Task<TableEntity> FenceUnpublishedRuntimeAsync(GrantSnapshot original, TableEntity attempt, CancellationToken ct)
+    {
+        var grant = await SnapshotAsync(original.Partition, original.DeviceId, ct);
+        var current = await RequiredAttemptAsync(grant, Text(attempt, "OperationId"), ct);
+        PayloadClock.RequireAttempt(current);
+        BindAttempt(grant, current, "runtime");
+        if (current.GetString("Generation") != attempt.GetString("Generation")
+            || Text(current, "State") is not ("known" or "sending") || current.ContainsKey("ReleasedAt"))
+            throw new IssuanceDenied();
+        // A conditional touch fences an in-flight release before provider DELETE. If release
+        // already committed, never revoke the token another authenticated request may reuse.
+        await CommitAsync(grant, [Update(current)], ct);
+        return await RequiredAttemptAsync(grant, Text(current, "OperationId"), ct);
+    }
+
     private void RequirePublishedRuntime(GrantSnapshot grant, TableEntity attempt)
     {
         grant.RequireActive(clock.GetUtcNow());

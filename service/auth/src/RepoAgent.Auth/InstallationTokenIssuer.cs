@@ -56,8 +56,8 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
         }
         catch (Exception ex) when (Expected(ex))
         {
-            // A lost release response is deliberately treated as uncertain: revoke when possible,
-            // retaining either the committed release or send/known record if reconciliation fails.
+            // A lost release response is uncertain. Fence an unpublished runtime before revocation;
+            // an already committed release can be shared and must remain valid.
             if (!released && known is not null && grant is not null && runtime is not null)
                 await RevokeKnownAsync(grant, runtime, known.Token);
             return new(ex is IssuanceDenied denial ? denial.Status : 503);
@@ -135,6 +135,8 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
         using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(6));
         try
         {
+            if (Text(attempt, "Purpose") == "runtime")
+                attempt = await store.FenceUnpublishedRuntimeAsync(grant, attempt, completion.Token);
             await github.RevokeAsync(token, completion.Token);
             await store.MarkRevokedAsync(grant, attempt, completion.Token);
         }

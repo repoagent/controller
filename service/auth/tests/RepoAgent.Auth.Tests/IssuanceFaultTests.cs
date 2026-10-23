@@ -196,7 +196,7 @@ public sealed class IssuanceFaultTests
     [InlineData(3, false, "reserved")]
     [InlineData(3, true, "sending")]
     [InlineData(4, false, "settled")]
-    [InlineData(4, true, "known")]
+    [InlineData(4, true, "settled")]
     [InlineData(5, false, "settled")]
     [InlineData(5, true, "released")]
     public async Task Lost_Table_transport_never_refunds_reservations_or_replays_an_attempt(int stage, bool afterCommit, string? expectedState)
@@ -233,7 +233,7 @@ public sealed class IssuanceFaultTests
         Assert.Equal(slots, (await GlobalQuota(f)).GetInt64("Slots"));
         Assert.Equal(slots, (await GlobalRows(f)).Count(e => e.RowKey.StartsWith("slot:", StringComparison.Ordinal)));
         Assert.Equal(stage >= 4 ? 3 : 2, f.GitHub.Mints);
-        Assert.Equal(stage >= 4 ? 1 : 0, f.GitHub.Revokes);
+        Assert.Equal(stage >= 4 && !(stage == 5 && afterCommit) ? 1 : 0, f.GitHub.Revokes);
         var activity = (await f.DeviceAsync()).GetDateTimeOffset("LastActivityAt");
         Assert.Equal(stage == 5 && afterCommit ? f.Clock.GetUtcNow() : f.Clock.GetUtcNow().AddMinutes(-1), activity);
 

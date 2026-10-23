@@ -67,6 +67,44 @@ public sealed class PublishedRuntimeLeaseTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Lost_original_release_response_cannot_revoke_a_published_or_concurrently_reused_lease(bool concurrentReuse)
+    {
+        await using var f = await IssuanceFixture.CreateAsync();
+        var batches = 0;
+        var lostRelease = false;
+        IssuanceResult? competing = null;
+        var transport = new ObservedTransport { After = async message =>
+        {
+            // The first verifier uses four batches; runtime release is the ninth batch.
+            if (!ObservedTransport.IsBatch(message) || ++batches != 9) return;
+            lostRelease = true;
+            if (concurrentReuse)
+            {
+                f.Clock.Advance(TimeSpan.FromMinutes(1));
+                competing = await f.IssueAsync(TestContext.Current.CancellationToken);
+            }
+            throw new HttpRequestException("Lost original release response");
+        }};
+        var lost = await f.IssueAsync(TestContext.Current.CancellationToken, transport);
+        Assert.Equal(503, lost.Status);
+        Assert.True(lostRelease);
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var recovered = await f.IssueAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(200, recovered.Status);
+        if (concurrentReuse)
+        {
+            Assert.Equal(200, competing!.Status);
+            Assert.Equal(JsonSerializer.SerializeToElement(competing.Body).GetProperty("token").GetString(),
+                JsonSerializer.SerializeToElement(recovered.Body).GetProperty("token").GetString());
+        }
+        Assert.Equal(0, f.GitHub.Revokes);
+        Assert.Equal(2, f.GitHub.Mints);
+        Assert.Equal("released", Assert.Single(await f.AttemptsAsync(), a => a.GetString("Purpose") == "runtime").GetString("State"));
+    }
+
+    [Theory]
     [InlineData(2)]
     [InlineData(3)]
     public async Task Lost_reuse_commit_response_preserves_the_published_lease_for_a_fresh_request(int stage)
