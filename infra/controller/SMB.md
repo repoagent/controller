@@ -7,26 +7,56 @@ The SMB share, dedicated work queue, environment storage definition and queue-sc
 custom VNet/NSG, separately billed managed network group, NFS, registry, vault,
 user-assigned identity, Log Analytics workspace or compatibility Job in this
 candidate. Setup defaults to the immutable public selection in `image.json`.
-This SMB profile currently accepts setup-only deployment.
+Setup is the default; first activation uses the conversation persistence profile below.
 
 Real Azure setup checks passed on 2026-10-22: the three-resource profile reached
 zero replicas, woke through HTTP and an invisible queue message, held the replica
 while that message existed, and returned to zero after its exact deletion. The
 system identity exercised the queue successfully.
 
-**Active controller use is blocked.** Native Codex SQLite initialization fails on
-the actual SMB mount with `SQLITE_BUSY`. The documented `CODEX_SQLITE_HOME`
-override permits startup on ephemeral local storage, but a fresh SQLite directory
-loses native thread metadata when resuming the retained SMB rollout. It is not a
-durable-state workaround. Do not use the first-activation steps below on this
-profile until [#37](https://github.com/repoagent/controller/issues/37) establishes
-a compatible persistence design. Setup health and working queue scaling do not
-establish that result.
+Direct native SQLite initialization on the SMB mount failed with `SQLITE_BUSY`.
+The app therefore sets `CODEX_SQLITE_HOME=/tmp/repoagent-codex-sqlite`, keeping the
+existing private native home and conversation rollouts on SMB. The documented
+separate location supports native SQLite locking on the container filesystem.
+Native SQLite metadata remains per replica; it is not wholly reconstructible.
 
 The exact working local Docker controller must keep running. Original NFS data
 and the Azure-owned account cache remain preserved; this candidate does not
 remove their existing bill. Setup deployment does not enroll a device or start
 broker, GitHub or native work.
+
+## Conversation persistence boundary
+
+The current [controller](../../src/RepoAgentController/Codex.cs) retains a native
+thread ID for each Discussion and uses `thread/resume` at its canonical checkout.
+It does not call native thread-name, metadata or goal APIs. The pinned native
+version in `image/default.json` passed an actual Azure conversation check: a
+completed turn remembered a generated value, the app reached zero, and a new
+replica with an empty SQLite directory resumed the same thread and recalled that
+value in a second completed turn. No tool or file lookup supplied the answer.
+The rollout remained0600. [Observed result](https://github.com/repoagent/controller/issues/37#issuecomment-6353961822),
+[OpenAI state locations](https://learn.chatgpt.com/docs/config-file/environment-variables),
+[native thread protocol](https://learn.chatgpt.com/docs/app-server).
+
+Account/configuration, controller checkpoints, checkout and conversation rollouts
+remain on the existing SMB views. SQLite stays in private local storage with the
+entry point's restrictive umask. The app tag `nativePersistence=conversation-rollouts`
+identifies this policy during inspection and lifecycle preflight. A `sqlite_home` setting in native configuration
+takes precedence over the environment variable; retain the generated native
+configuration without such an override for this profile.
+
+Native display names were lost with empty SQLite. SQLite-backed pin/Git metadata
+and broader native UI/plugin/goal persistence are outside this profile's verified
+boundary. Use NFS or another persistent POSIX host when those features require
+retention. Do not infer that all native state can be rebuilt from rollouts.
+Keep the native version pinned and repeat the real conversation/restart check
+when changing it.
+
+Full shipped-controller signed delivery, native restart/history, active-turn
+survival and positive ownership handover remain acceptance gates under #37/#38.
+These component checks leave the existing local controller running. Complete
+the supported ownership handover as part of the selected full deployment;
+source merge does not deploy this profile.
 
 ## Compile and inspect
 
@@ -181,9 +211,8 @@ replica counts; compiled JSON and declared minimums are not acceptance evidence.
 The operator applying this Bicep must be able to assign the narrowly scoped role;
 the auth service's separate Contributor-only OIDC identity is not used or changed.
 
-The following activation design remains unavailable on the current SMB profile;
-`activate` is restricted to `false` until native persistence passes #37. For a
-future compatible profile, select a published immutable `controllerImage` containing
+For the first selected activation/acceptance run, select a published immutable
+`controllerImage` containing
 issues #147/#151/#153/#155. Positively settle the old controller's authority through
 the supported host/broker lifecycle before enrolling a fresh cloud device. Persist
 the private enrollment file before ACK. Preserve or explicitly sign into the cloud

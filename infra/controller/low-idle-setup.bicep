@@ -8,8 +8,7 @@ param location string = 'swedencentral'
 @description('Zero by default. Select one temporarily for interactive setup or an explicit storage check.')
 @allowed([0, 1])
 param setupMinReplicas int = 0
-@description('Setup only: real SMB native SQLite persistence failed. Activation remains blocked under issue #37.')
-@allowed([false])
+@description('First activation of the conversation profile only, after native acceptance and supported old-owner settlement.')
 param activate bool = false
 @secure()
 param enrollment string = ''
