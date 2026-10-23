@@ -92,6 +92,8 @@ sealed class Codex : IAsyncDisposable
 
     public SessionStatus Status(string id) { lock (statusLock) return Current(id); }
     public bool Loaded(string id) { lock (statusLock) return resumed.Contains(id); }
+    /// <summary>Sessions running a native turn in this process; idle, unloaded and failed sessions are not counted.</summary>
+    public int ActiveTurns { get { lock (statusLock) return statuses.Keys.Union(turns.Keys).Count(id => Current(id) == SessionStatus.Active); } }
 
     public async Task Reload(CancellationToken ct)
     {

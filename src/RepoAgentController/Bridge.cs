@@ -6,10 +6,13 @@ namespace RepoAgentController;
 /// Observes Discussions into an ordered per-Discussion waiting queue in the state store, then dispatches the next
 /// size-bounded batch only to a natively idle session. EYES follow native acceptance of the batch carrying the source.
 /// </summary>
-sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll, CheckoutRefresh? refresh = null)
+sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll, RepositorySettings settings,
+    CheckoutRefresh? refresh = null)
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
+    /// <summary>Native turns that may run at once across Discussions while REPOAGENT_MAX_ACTIVE_SESSIONS has no effective value.</summary>
+    const int DefaultActiveSessions = 4;
     readonly HashSet<string> blockedLogged = [];
     // Serializes observation and idle dispatch over the shared state store.
     readonly SemaphoreSlim gate = new(1, 1), wake = new(0, 1);
@@ -17,6 +20,10 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
 
     /// <summary>True while any observed Discussion input waits in the controller for idle dispatch.</summary>
     public bool HasWaitingInput => inputWaiting;
+
+    // Read at each admission decision, so a refreshed repository value applies to the next dispatch.
+    int ActiveSessionLimit => settings["REPOAGENT_MAX_ACTIVE_SESSIONS"].Value is { } value
+        ? int.Parse(value, System.Globalization.CultureInfo.InvariantCulture) : DefaultActiveSessions;
 
     public async Task<bool> Poll(CancellationToken ct)
     {
@@ -125,7 +132,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 else if (!JsonNode.DeepEquals(previous, current)) { record["sources"] = current; store.Save(); }
                 if (record["waiting"] is not JsonObject waiting) continue;
                 if (!await Dispatch(record, ct) && changes.Count != 0)
-                    Log.Write("input-waiting", $"{discussion.Text("url")} session={record.Text("sessionId")} status={(record.Text("sessionId") is { Length: > 0 } session ? codex.Status(session).ToString() : "none")} waiting={waiting["inputs"]!.AsArray().Count} sources={string.Join(',', receipts.Distinct())}");
+                    Log.Write("input-waiting", $"{discussion.Text("url")} session={record.Text("sessionId")} status={(record.Text("sessionId") is { Length: > 0 } session ? codex.Status(session).ToString() : "none")} waiting={waiting["inputs"]!.AsArray().Count} sources={string.Join(',', receipts.Distinct())} active={codex.ActiveTurns} limit={ActiveSessionLimit}");
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
@@ -136,12 +143,13 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         return succeeded;
     }
 
-    /// <summary>Wakes on native session status changes and dispatches waiting input, oldest first, until stopped.</summary>
+    /// <summary>Wakes on native session status and repository setting changes and dispatches waiting input, oldest first, until stopped.</summary>
     /// <remarks>An in-flight dispatch finishes on <paramref name="ct"/>; <paramref name="stop"/> only ends waiting.</remarks>
     public async Task DispatchWhenIdle(CancellationToken stop, CancellationToken ct)
     {
         void Wake() { if (wake.CurrentCount == 0) try { wake.Release(); } catch (SemaphoreFullException) { } }
         codex.StatusChanged += Wake;
+        settings.Changed += Wake; // A raised active-session limit admits waiting input without another native event.
         try
         {
             while (true)
@@ -164,7 +172,11 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
-        finally { codex.StatusChanged -= Wake; }
+        finally
+        {
+            codex.StatusChanged -= Wake;
+            settings.Changed -= Wake;
+        }
     }
 
     // Caller holds the gate. Observed changes wait durably, in order, with their receipt source; the checkpoint advances.
@@ -199,6 +211,8 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var create = session.Length == 0;
         // An active, failed or unrecognized loaded session keeps its input here without taking global admission.
         if (!create && codex.Loaded(session) && codex.Status(session) != Codex.SessionStatus.Idle) return false;
+        // Global capacity counts running native turns only; stored idle sessions take no slot.
+        if (codex.ActiveTurns >= ActiveSessionLimit) return false;
         var inputs = waiting["inputs"]!.AsArray();
         var bootstrap = waiting["context"] is not null;
         var envelope = new JsonObject
@@ -210,7 +224,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var count = Batch(envelope, inputs, record);
         envelope["changes"] = new JsonArray(inputs.Take(count).Select(input => input!["change"]!.Copy()).ToArray());
         var receipts = inputs.Take(count).Select(input => input!["receipt"]!).DistinctBy(receipt => receipt.Text("id")).ToArray();
-        // Global admission: checkout refresh exclusion today; capacity limits can further hold dispatch here.
+        // Global admission: checkout refresh exclusion; the active-session limit was checked above.
         using var admission = refresh is null ? null : await refresh.Admit(ct);
         // A durable stop marker prevents automatic retry after a lost native acknowledgement.
         var pending = new JsonObject { ["operation"] = create ? "create-and-send" : "send", ["since"] = DateTimeOffset.UtcNow.ToString("O"), ["sourceIds"] = new JsonArray(receipts.Select(receipt => (JsonNode?)JsonValue.Create(receipt.Text("id"))).ToArray()), ["inputs"] = count };

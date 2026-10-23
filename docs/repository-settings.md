@@ -8,7 +8,7 @@ The catalogue's `reserved` list names `REPOAGENT_` variables that other features
 
 | Name | Value | Status |
 | --- | --- | --- |
-| `REPOAGENT_MAX_ACTIVE_SESSIONS` | Integer from 1 to 64 | The controller validates and reports it. A separate slice adds active-session admission and its default. |
+| `REPOAGENT_MAX_ACTIVE_SESSIONS` | Integer from 1 to 64 | The most native Discussion turns running at once. Default `4`. See [Active-session limit](#active-session-limit). |
 
 ## Inspect or change settings
 
@@ -39,6 +39,16 @@ repository-setting name=REPOAGENT_MAX_ACTIVE_SESSIONS state=absent
 ```
 
 `value` is the effective value. HTTP 404 confirms absence, and then no repository value applies, so the consuming feature uses its documented default. An invalid value or a failed read keeps the last effective value, and is never reported as absence. A failed read does not stop the controller; the next refresh retries it. Invalid raw values are not echoed.
+
+## Active-session limit
+
+`REPOAGENT_MAX_ACTIVE_SESSIONS` bounds how many native Discussion turns one controller runs at the same time. A Discussion holds a slot from native acceptance of its turn until the native reports that turn completed or failed; a native `active` status report also holds one. Stored sessions that are idle, not loaded or failed hold no slot, however many there are.
+
+At the limit, newly observed input waits in the controller, as it does for a busy session. It shows as `waiting` in `status`, gets no EYES, and the observation logs `input-waiting ... active=N limit=M`. When a turn finishes, waiting Discussions are dispatched again.
+
+- **Default.** `4` applies whenever no repository value is effective: the variable is absent, the controller runs without `--repository-settings` (including every broker enrollment today), or the read failed before any value was known.
+- **Refresh.** A change applies within one settings refresh, at most one minute. Raising the limit dispatches waiting input right after that refresh. Lowering it never stops or steers a running turn; new turns wait until running turns fall below the new limit. An invalid value or a failed read keeps the last effective limit.
+- **Order.** There is no fairness guarantee. When a slot frees, the controller tries the oldest waiting input first, but an observation that finds a free slot can dispatch its own Discussion first. Each Discussion still runs at most one turn at a time.
 
 ## Adding a setting
 

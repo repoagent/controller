@@ -21,3 +21,6 @@ A principal GitHub permits to manage the selected repository-held approval. This
 
 **Repository setting**:
 A nonsecret controller setting held in a direct repository Actions variable named `REPOAGENT_*`. Host GitHub authority writes it; the controller's runtime credential may only read it. Absence, an invalid value and a failed read are distinct states.
+
+**Active-session limit**:
+The most native Discussion turns one controller runs at the same time, set by the `REPOAGENT_MAX_ACTIVE_SESSIONS` repository setting. Only running turns count; idle stored sessions do not. Input beyond the limit waits in the controller.
