@@ -920,6 +920,8 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual(second['thread'], session)
                 self.assertEqual(json.loads(f.state.read_text())['discussions']['D1']['sessionId'], session)
                 self.assertEqual(len(f.provider.model_requests), 2)
+                # Each turn states the reasoning its checkout's project configuration selects at that turn.
+                self.assertEqual([request['body']['reasoning']['effort'] for request in f.provider.model_requests], ['low', 'high'])
                 request_b = json.dumps(f.provider.model_requests[1]['body'])
                 for text in ('NATIVE_USER_FIRST', 'Harmless fixture assistant 1.', 'NATIVE_USER_SECOND', 'NATIVE_AGENTS_B', 'NATIVE_SKILL_BODY_B'):
                     self.assertIn(text, request_b)

@@ -222,7 +222,6 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var create = session.Length == 0;
         // An active, failed or unrecognized loaded session keeps its input here without taking global admission.
         if (!create && codex.Loaded(session) && codex.Status(session) != Codex.SessionStatus.Idle) return false;
-        if (await Select(record, ct) is not { } selection) return false;
         var inputs = waiting["inputs"]!.AsArray();
         var bootstrap = waiting["context"] is not null;
         var envelope = new JsonObject
@@ -236,6 +235,12 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var receipts = inputs.Take(count).Select(input => input!["receipt"]!).DistinctBy(receipt => receipt.Text("id")).ToArray();
         // Global admission: checkout refresh exclusion today; capacity limits can further hold dispatch here.
         using var admission = refresh is null ? null : await refresh.Admit(ct);
+        // Selected after admission applied any due checkout refresh, so the refreshed project configuration counts.
+        // Its native queries are read-only, so a failure or unusable selection releases the admission.
+        ModelChoice? selection;
+        try { selection = await Select(record, ct); }
+        catch { admission?.Abandon(); throw; }
+        if (selection is null) { admission?.Abandon(); return false; }
         // A durable stop marker prevents automatic retry after a lost native acknowledgement.
         var pending = new JsonObject { ["operation"] = create ? "create-and-send" : "send", ["since"] = DateTimeOffset.UtcNow.ToString("O"), ["sourceIds"] = new JsonArray(receipts.Select(receipt => (JsonNode?)JsonValue.Create(receipt.Text("id"))).ToArray()), ["inputs"] = count };
         if (create)
