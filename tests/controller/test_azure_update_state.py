@@ -162,5 +162,70 @@ class LifecycleCommandTests(unittest.TestCase):
             self.assertNotIn('PRIVATE_DIAGNOSTIC', failure.stdout + failure.stderr)
 
 
+@unittest.skipUnless(shutil.which('pwsh'), 'PowerShell 7 revision template')
+class RevisionTemplateTests(unittest.TestCase):
+    def run_profile(self, body):
+        module = ROOT / 'scripts/azure/controller-profile.psm1'
+        command = ("$ErrorActionPreference='Stop'; Import-Module '" + str(module).replace("'", "''") +
+                   "' -Force -DisableNameChecking; " + body)
+        return subprocess.run(['pwsh', '-NoLogo', '-NoProfile', '-Command', command],
+                              capture_output=True, text=True, timeout=15)
+
+    def test_revision_projection_preserves_retained_scaling_and_does_not_reorder_payload(self):
+        result = self.run_profile("""
+$t=@{revisionSuffix='old';containers=@(@{name='controller';image='old';resources=@{cpu=0.5}});
+ initContainers=@(@{name='private-layout';resources=@{cpu=0.5}});
+ scale=@{minReplicas=0;maxReplicas=1;pollingInterval=15;cooldownPeriod=60;
+ rules=@(@{name='controller-http';http=@{metadata=@{concurrentRequests='1'}}},
+         @{name='controller-work';custom=@{type='azure-queue';identity='system';metadata=@{queueName='controller-work'}}})}}
+$r=$t|ConvertTo-Json -Depth 30|ConvertFrom-Json -AsHashtable
+$r.scale.pollingInterval=$null;$r.scale.cooldownPeriod=$null
+$r.scale.rules=@($r.scale.rules[1],$r.scale.rules[0])
+$a=Get-ComparableControllerTemplate $t $t
+$b=Get-ComparableControllerTemplate $r $t
+$p=New-ControllerImagePatch $t 'new' 'next' 'swedencentral'
+@{payload=$p;retained=$t;expected=$a;projected=$b}|ConvertTo-Json -Depth 30 -Compress
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data['expected'], data['projected'])
+        payload = data['payload']
+        expected = data['retained']
+        expected['containers'][0]['image'] = 'new'
+        expected['revisionSuffix'] = 'next'
+        self.assertEqual(payload, {'location': 'swedencentral', 'properties': {'template': expected}})
+        self.assertEqual(expected['scale']['pollingInterval'], 15)
+        self.assertEqual(expected['scale']['cooldownPeriod'], 60)
+        self.assertEqual([r['name'] for r in expected['scale']['rules']], ['controller-http', 'controller-work'])
+
+    def test_explicit_scaling_and_other_template_drift_are_not_normalized_away(self):
+        result = self.run_profile("""
+$t=@{containers=@(@{name='controller';image='old';resources=@{cpu=0.5}});
+ initContainers=@(@{name='private-layout';resources=@{cpu=0.5}});
+ scale=@{pollingInterval=15;cooldownPeriod=60;rules=@(@{name='work';custom=@{type='azure-queue'}})}}
+$expected=Get-ComparableControllerTemplate $t $t
+$cases=@()
+foreach($field in @('pollingInterval','cooldownPeriod')) {
+ $r=$t|ConvertTo-Json -Depth 30|ConvertFrom-Json -AsHashtable;$r.scale[$field]=300
+ $cases+=,(Get-ComparableControllerTemplate $r $t)
+}
+$r=$t|ConvertTo-Json -Depth 30|ConvertFrom-Json -AsHashtable;$r.scale.rules[0].custom.type='other'
+$cases+=,(Get-ComparableControllerTemplate $r $t)
+@{expected=$expected;cases=$cases}|ConvertTo-Json -Depth 30 -Compress
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        for case in data['cases']:
+            self.assertNotEqual(case, data['expected'])
+
+    def test_retained_template_requires_exact_latest_and_ready_source(self):
+        body = "$a=@{properties=@{latestRevisionName='controller--old';latestReadyRevisionName='controller--old'}}; "
+        self.assertEqual(self.run_profile(body + "Assert-ControllerTemplateAnchor $a 'controller--old'").returncode, 0)
+        for field in ('latestRevisionName', 'latestReadyRevisionName'):
+            rejected = self.run_profile(body + "$a.properties." + field + "='controller--foreign'; "
+                                       "Assert-ControllerTemplateAnchor $a 'controller--old'")
+            self.assertNotEqual(rejected.returncode, 0)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -58,24 +58,7 @@ function Convert-Canonical($Value) {
     return $Value
 }
 function Get-TemplateHash($Template) {
-    if (@($Template.containers).Count -ne 1 -or $Template.containers[0].name -cne 'controller' -or
-            @($Template.initContainers).Count -ne 1 -or $Template.initContainers[0].name -cne 'private-layout') {
-        throw 'Revision does not have the retained controller and initializer.'
-    }
-    $snapshot = $Template | ConvertTo-Json -Depth 50 -Compress | ConvertFrom-Json -AsHashtable
-    $snapshot.Remove('revisionSuffix')
-    $snapshot.containers[0].Remove('image')
-    # Revision GET omits these documented defaults which app GET expands.
-    if ($null -eq $snapshot.scale.pollingInterval) { $snapshot.scale.pollingInterval = 30 }
-    if ($null -eq $snapshot.scale.cooldownPeriod) { $snapshot.scale.cooldownPeriod = 300 }
-    $cpu = $snapshot.containers[0].resources.cpu
-    $defaultStorage = if ($cpu -le 0.25) { '1Gi' } elseif ($cpu -le 0.5) { '2Gi' } elseif ($cpu -le 1) { '4Gi' } else { '8Gi' }
-    foreach ($container in @($snapshot.containers) + @($snapshot.initContainers)) {
-        if ($null -eq $container.resources.ephemeralStorage) {
-            if ($container.resources.cpu -ne $cpu) { throw 'Unreported storage allocation cannot be compared for different initializer resources.' }
-            $container.resources.ephemeralStorage = $defaultStorage
-        }
-    }
+    $snapshot = Get-ComparableControllerTemplate $Template $retainedTemplate
     return Get-ValueHash ((Convert-Canonical $snapshot) | ConvertTo-Json -Depth 50 -Compress)
 }
 function Read-RecordedRevision([string]$Name, [string]$ExpectedImage) {
@@ -243,7 +226,8 @@ try {
     if ($Action -eq 'Rollback' -and -not $journal) { throw 'Rollback requires the retained private update journal.' }
     $app = Read-App
     $hash = Get-ConfigurationHash $app
-    $templateHash = Get-TemplateHash $app.properties.template
+    $retainedTemplate = $app.properties.template
+    $templateHash = Get-TemplateHash $retainedTemplate
     if ($journal -and $journal.configurationSha256 -cne $hash) { throw 'Selected app configuration differs from its retained journal.' }
     $revisions = Read-Revisions
     $active = @($revisions | Where-Object { $_.properties.active })
@@ -260,6 +244,7 @@ try {
         if ($Action -eq 'Update') {
             if ($active.Count -ne 1) { throw 'Update requires exactly one active previous revision.' }
             $previous = $active[0]
+            if (-not $journal) { Assert-ControllerTemplateAnchor $app $previous.name }
             $previousImage = $previous.properties.template.containers[0].image
             $previous = Read-RecordedRevision $previous.name $previousImage
             if (-not $previous.properties.active -or $previous.properties.provisioningState -cne 'Provisioned' -or
@@ -292,8 +277,10 @@ try {
             Confirm-Stopped
             $null = Set-AzureUpdatePhase $context launching
             Write-Host 'Old replicas are gone; creating the selected replacement revision.'
-            $null = Invoke-Azure @('containerapp','revision','copy','--name',$AppName,'--resource-group',$ResourceGroup,
-                '--from-revision',$previous.name,'--container-name','controller','--image',$Image,'--revision-suffix',$suffix) 180
+            $payloadPath = Join-Path $dockerConfig 'replacement.json'
+            Write-PrivateJson $payloadPath (New-ControllerImagePatch $retainedTemplate $Image $suffix $app.location)
+            $null = Invoke-Azure @('rest','--method','PATCH','--url',"$resourceUrl`?api-version=2026-07-01",
+                '--body',("@" + $payloadPath)) 180
             Wait-Ready $journal.candidateRevision $Image $hash
             $null = Set-AzureUpdatePhase $context ready
             Confirm-Stopped @($journal.candidateRevision)

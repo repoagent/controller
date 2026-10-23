@@ -77,4 +77,48 @@ function Get-NativeEnrollmentFingerprint([object[]]$Declared, [object[]]$Secrets
     return Get-ValueHash $Secrets[0].value
 }
 
-Export-ModuleMember -Function Assert-ControllerStorageProfile, Get-NativeEnrollmentFingerprint
+function Assert-ControllerTemplateAnchor($App, [string]$Revision) {
+    if ($App.properties.latestRevisionName -cne $Revision -or $App.properties.latestReadyRevisionName -cne $Revision) {
+        throw 'The initial retained template is not anchored to the sole active ready revision.'
+    }
+}
+
+function Get-ComparableControllerTemplate($Template, $RetainedTemplate) {
+    if (@($Template.containers).Count -ne 1 -or $Template.containers[0].name -cne 'controller' -or
+            @($Template.initContainers).Count -ne 1 -or $Template.initContainers[0].name -cne 'private-layout') {
+        throw 'Revision does not have the retained controller and initializer.'
+    }
+    $snapshot = $Template | ConvertTo-Json -Depth 50 -Compress | ConvertFrom-Json -AsHashtable
+    $snapshot.Remove('revisionSuffix')
+    $snapshot.containers[0].Remove('image')
+    # Revision GET can omit explicit scaling values; only its anchored retained
+    # app template may supply them. Explicit revision values are never replaced.
+    foreach ($field in @('pollingInterval','cooldownPeriod')) {
+        $expected = $RetainedTemplate.scale[$field]
+        if ($expected -isnot [int] -and $expected -isnot [long]) { throw 'Retained scaling interval is absent or invalid.' }
+        if ($null -eq $snapshot.scale[$field]) { $snapshot.scale[$field] = $expected }
+    }
+    $rules = @($snapshot.scale.rules)
+    $names = @($rules | ForEach-Object { $_.name })
+    if (@($names | Where-Object { $_ -isnot [string] -or -not $_ }).Count -or
+            @($names | Sort-Object -CaseSensitive -Unique).Count -ne $rules.Count) { throw 'Scale rule names must be unique.' }
+    $snapshot.scale.rules = @($rules | Sort-Object -Property name -CaseSensitive)
+    $cpu = $snapshot.containers[0].resources.cpu
+    $defaultStorage = if ($cpu -le 0.25) { '1Gi' } elseif ($cpu -le 0.5) { '2Gi' } elseif ($cpu -le 1) { '4Gi' } else { '8Gi' }
+    foreach ($container in @($snapshot.containers) + @($snapshot.initContainers)) {
+        if ($null -eq $container.resources.ephemeralStorage) {
+            if ($container.resources.cpu -ne $cpu) { throw 'Unreported storage allocation cannot be compared for different initializer resources.' }
+            $container.resources.ephemeralStorage = $defaultStorage
+        }
+    }
+    return $snapshot
+}
+
+function New-ControllerImagePatch($Template, [string]$Image, [string]$Suffix, [string]$Location) {
+    $copy = $Template | ConvertTo-Json -Depth 50 -Compress | ConvertFrom-Json -AsHashtable
+    $copy.containers[0].image = $Image
+    $copy.revisionSuffix = $Suffix
+    return @{ location=$Location; properties=@{template=$copy} }
+}
+
+Export-ModuleMember -Function Assert-ControllerStorageProfile, Get-NativeEnrollmentFingerprint, Assert-ControllerTemplateAnchor, Get-ComparableControllerTemplate, New-ControllerImagePatch
