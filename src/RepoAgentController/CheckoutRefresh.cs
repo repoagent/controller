@@ -145,6 +145,12 @@ sealed class CheckoutRefresh : IAsyncDisposable
             }
             Log.Write("refresh-pending", error.Message);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Shutdown before applying leaves the checkout unchanged and the generation requested for the next lifetime.
+            lock (journalLock) if (journal["applying"] is not null) { blocked = true; try { Fault("Refresh interrupted while applying"); } catch { } }
+            throw;
+        }
         catch (Exception error)
         {
             lock (journalLock) { blocked = true; try { Fault(error.Message); } catch { } }
