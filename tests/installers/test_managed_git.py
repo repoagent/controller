@@ -425,8 +425,8 @@ class GitProvider:
         self.requests = []
         self.responses, self.model_requests, self.denied = responses, [], []
         self.model_request_limit = 2
-        # Discussion comment/reply nodes keyed by parent node ID, and EYES subjects in mutation order.
-        self.comments, self.reactions = {}, []
+        # Discussion comment/reply nodes keyed by parent node ID, label names keyed by Discussion ID, and EYES subjects in mutation order.
+        self.comments, self.labels, self.reactions = {}, {}, []
         # Model request number -> threading.Event released by the test before that response streams.
         self.response_holds = {}
         self.cert = directory / 'cert.pem'
@@ -576,8 +576,9 @@ class GitProvider:
                     if 'discussions(' in query:
                         return self.reply({'data': {'repository': {'discussions': {'nodes': getattr(provider, 'discussions', []), 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'node(id:' in query:
-                        field = 'comments' if 'comments(' in query else 'replies' if 'replies(' in query else 'reactions'
-                        nodes = [] if field == 'reactions' else provider.comments.get(variables.get('id'), [])
+                        field = 'comments' if 'comments(' in query else 'replies' if 'replies(' in query else 'labels' if 'labels(' in query else 'reactions'
+                        nodes = [] if field == 'reactions' else [dict(name=name) for name in provider.labels.get(variables.get('id'), [])] \
+                            if field == 'labels' else provider.comments.get(variables.get('id'), [])
                         return self.reply({'data': {'node': {field: {'nodes': nodes, 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'user(login:' in query:
                         return self.reply({'data': {'user': {'login': 'repoagent'}}})

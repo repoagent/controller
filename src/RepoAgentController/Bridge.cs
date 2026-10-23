@@ -6,11 +6,14 @@ namespace RepoAgentController;
 /// Observes Discussions into an ordered per-Discussion waiting queue in the state store, then dispatches the next
 /// size-bounded batch only to a natively idle session. EYES follow native acceptance of the batch carrying the source.
 /// </summary>
-sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll, CheckoutRefresh? refresh = null)
+sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll, CheckoutRefresh? refresh = null,
+    RepositorySettings? settings = null)
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
     readonly HashSet<string> blockedLogged = [];
+    // Model label and selection problems by kind and Discussion URL, each reported once until it changes or clears.
+    readonly Dictionary<(string Kind, string Url), string> reported = [];
     // Serializes observation and idle dispatch over the shared state store.
     readonly SemaphoreSlim gate = new(1, 1), wake = new(0, 1);
     volatile bool inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
@@ -79,6 +82,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                     store.Discussions[id] = record;
                     Log.Write("discovered", discussion.Text("url"));
                 }
+                await ObserveLabels(record, id, ct);
                 var previous = record["sources"]!.AsObject();
                 var current = new JsonObject();
                 var changes = new JsonArray();
@@ -167,6 +171,24 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         finally { codex.StatusChanged -= Wake; }
     }
 
+    // Caller holds the gate. Model labels are configuration, not input: a change is kept for the next turn and queues nothing.
+    async Task ObserveLabels(JsonObject record, string id, CancellationToken ct)
+    {
+        string[] labels;
+        try { labels = (await github.Labels(id, ct)).Where(ModelSelection.IsLabel).Order(StringComparer.Ordinal).ToArray(); }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            // Conversation continues on the last observed labels; the failure stays visible in logs and status.
+            Report("label-read-error", record.Text("url"), error.Message + "; the last observed model labels still apply");
+            return;
+        }
+        Report("label-read-error", record.Text("url"), null);
+        var observed = labels.Length == 0 ? null : new JsonArray(labels.Select(label => (JsonNode?)JsonValue.Create(label)).ToArray());
+        if (JsonNode.DeepEquals(record["labels"], observed)) return;
+        if (observed is null) record.Remove("labels"); else record["labels"] = observed;
+        store.Save();
+    }
+
     // Caller holds the gate. Observed changes wait durably, in order, with their receipt source; the checkpoint advances.
     void Queue(JsonObject record, JsonNode discussion, List<JsonNode> sources, JsonArray changes, List<string> receipts, bool bootstrap, JsonObject current)
     {
@@ -199,6 +221,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var create = session.Length == 0;
         // An active, failed or unrecognized loaded session keeps its input here without taking global admission.
         if (!create && codex.Loaded(session) && codex.Status(session) != Codex.SessionStatus.Idle) return false;
+        if (await Select(record, ct) is not { } selection) return false;
         var inputs = waiting["inputs"]!.AsArray();
         var bootstrap = waiting["context"] is not null;
         var envelope = new JsonObject
@@ -236,7 +259,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
             return false;
         }
         if (!create) { record["pending"] = pending; store.Save(); }
-        await codex.Accept(session, envelope, ct, admission);
+        await codex.Accept(session, envelope, selection, ct, admission);
         for (var index = 0; index < count; index++) inputs.RemoveAt(0);
         waiting.Remove("context");
         if (inputs.Count == 0) record.Remove("waiting");
@@ -247,6 +270,37 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count}");
         foreach (var source in receipts) outbox.Receipt(source);
         return true;
+    }
+
+    // Caller holds the gate. The validated selection for the Discussion's next turn, or null after reporting why its input waits.
+    async Task<ModelChoice?> Select(JsonObject record, CancellationToken ct)
+    {
+        var labels = record["labels"]?.AsArray().Select(label => label!.GetValue<string>()).ToArray() ?? [];
+        var (nativeModel, nativeReasoning) = await codex.ConfiguredModel(ct);
+        var catalogue = await codex.Models(ct);
+        try
+        {
+            var selection = ModelSelection.Resolve(labels, settings?["REPOAGENT_MODEL"].Value, settings?["REPOAGENT_REASONING"].Value,
+                nativeModel, nativeReasoning, catalogue);
+            Report("selection-error", record.Text("url"), null);
+            return selection;
+        }
+        catch (ModelSelectionException error)
+        {
+            // Never substituted: the input waits until the labels, settings or account offer a usable selection.
+            Report("selection-error", record.Text("url"), error.Message);
+            return null;
+        }
+    }
+
+    void Report(string kind, string url, string? problem)
+    {
+        if (problem is null) reported.Remove((kind, url));
+        else if (reported.GetValueOrDefault((kind, url)) != problem)
+        {
+            reported[(kind, url)] = problem;
+            Log.Write(kind, $"{url}: {problem}");
+        }
     }
 
     // Leading inputs whose changes fit one envelope; at least one, so an oversized change is sent alone, never dropped.

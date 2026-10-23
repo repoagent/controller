@@ -194,7 +194,33 @@ sealed class Codex : IAsyncDisposable
         return status;
     }
 
-    public async Task Accept(string id, JsonNode envelope, CancellationToken ct, CheckoutRefresh.Admission? admission = null)
+    /// <summary>The models this Codex account offers for selection (model/list without hidden models).</summary>
+    public async Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct)
+    {
+        var models = new List<NativeModel>();
+        string? cursor = null;
+        do
+        {
+            var page = await Request("model/list", Json.Object(("cursor", cursor), ("includeHidden", false)), ct);
+            if (page["data"] is not JsonArray data) throw new IOException("Native model/list returned no model catalogue");
+            foreach (var item in data)
+                models.Add(new(item!.Text("model"), item["isDefault"]?.GetValue<bool>() ?? false, item.Text("defaultReasoningEffort"),
+                    item["supportedReasoningEfforts"]?.AsArray().Select(effort => effort!.Text("reasoningEffort")).ToArray() ?? []));
+            cursor = page["nextCursor"] is JsonValue next && next.TryGetValue<string>(out var text) ? text : null;
+        } while (cursor is not null);
+        return models;
+    }
+
+    /// <summary>The model and reasoning effort native configuration sets for this workspace; null where unset.</summary>
+    public async Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct)
+    {
+        var configuration = (await Request("config/read", Json.Object(("cwd", workspace)), ct))["config"] as JsonObject
+            ?? throw new IOException("Native config/read returned no configuration");
+        static string? Optional(JsonNode? value) => value is JsonValue text && text.TryGetValue<string>(out var name) ? name : null;
+        return (Optional(configuration["model"]), Optional(configuration["model_reasoning_effort"]));
+    }
+
+    public async Task Accept(string id, JsonNode envelope, ModelChoice selection, CancellationToken ct, CheckoutRefresh.Admission? admission = null)
     {
         bool orient;
         lock (statusLock)
@@ -209,7 +235,9 @@ sealed class Codex : IAsyncDisposable
             Json.Object(("type", "text"), ("text", "$github-discussion\n" + envelope.ToJsonString()), ("text_elements", new JsonArray())),
             PackagedSkill("github-discussion"));
         if (orient) input.Add(PackagedSkill("repoagent-orientation"));
-        var response = await Request("turn/start", Json.Object(("threadId", id), ("input", input)), ct);
+        // Native keeps a turn's model and effort for later turns, so every turn states its selection.
+        var response = await Request("turn/start", Json.Object(("threadId", id), ("input", input),
+            ("model", selection.Model), ("effort", selection.Effort)), ct);
         if (response["turn"]?["id"] is null) throw new IOException("Native turn/start returned no accepted turn ID");
         lock (statusLock)
         {
@@ -220,7 +248,7 @@ sealed class Codex : IAsyncDisposable
                 turns[id] = turn;
         }
         admission?.Accepted(id, response["turn"]!.Text("id"));
-        Log.Write("native-accepted", $"session={id} turn={response["turn"]!.Text("id")}");
+        Log.Write("native-accepted", $"session={id} model={selection.Model} effort={selection.Effort} selection={selection.Source} turn={response["turn"]!.Text("id")}");
     }
 
     Task<JsonNode> Request(string method, JsonNode parameters, CancellationToken ct) => transport.Request(method, parameters, ct);

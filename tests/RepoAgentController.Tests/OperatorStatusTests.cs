@@ -226,7 +226,7 @@ public sealed class OperatorStatusTests
           error={'code':-32000,'message':'turn rejected while holding '+token}
           print(json.dumps(dict(id=request['id'],error=error)),flush=True)
           continue
-         result={'codexHome':os.getcwd()} if method=='initialize' else {'thread':dict(id='native-T1',status=dict(type='idle'))}
+         result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'thread':dict(id='native-T1',status=dict(type='idle'))}
          print(json.dumps({'id':request['id'],'result':result}),flush=True)
         """;
 
@@ -269,7 +269,7 @@ public sealed class OperatorStatusTests
         discussion={'id':'D1','number':1,'url':'https://github.com/owner/repository/discussions/1','body':'@test-app[bot] work','bodyHTML':'work','title':'fixture','author':{'__typename':'User','login':'participant'},'reactionGroups':[]}
         if 'query { viewer' in q:data={'viewer':{'login':'test-app[bot]'}}
         elif 'discussions(' in q:data={'repository':{'discussions':dict(page,nodes=[discussion])}}
-        else:data={'node':{'comments' if 'comments(' in q else 'reactions':page}}
+        else:data={'node':{'comments' if 'comments(' in q else 'labels' if 'labels(' in q else 'reactions':page}}
         print(json.dumps({'data':data}))
         """;
 }

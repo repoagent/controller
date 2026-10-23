@@ -21,3 +21,6 @@ A principal GitHub permits to manage the selected repository-held approval. This
 
 **Repository setting**:
 A nonsecret controller setting held in a direct repository Actions variable named `REPOAGENT_*`. Host GitHub authority writes it; the controller's runtime credential may only read it. Absence, an invalid value and a failed read are distinct states.
+
+**Model label**:
+A Discussion label `repoagent:<model>:<reasoning>` that selects the Codex model and reasoning effort for that Discussion's next turn, overriding the repository defaults. It is configuration, not input: changing it never starts or steers a turn.

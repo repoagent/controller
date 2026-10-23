@@ -182,7 +182,7 @@ public sealed class ManagedCheckoutTests
              if os.environ.get('CHECKOUT_DISCUSSION'):
               page={'nodes':[],'pageInfo':{'hasNextPage':False,'endCursor':None}}
               if 'discussions(' in q:data={'repository':{'discussions':dict(page,nodes=[json.load(open(os.environ['CHECKOUT_DISCUSSION']))])}}
-              elif 'node(id:' in q:data={'node':{'comments' if 'comments(' in q else 'reactions':page}}
+              elif 'node(id:' in q:data={'node':{'comments' if 'comments(' in q else 'labels' if 'labels(' in q else 'reactions':page}}
              print(json.dumps({'data':data}))
             elif a[:2]==['api','repos/owner/repository']:
              print(open(os.environ['CHECKOUT_METADATA']).read())
