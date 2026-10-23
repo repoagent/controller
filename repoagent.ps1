@@ -291,6 +291,8 @@ Usage: .\repoagent.ps1 COMMAND [arguments]
 Configure uses --repository and --app-id with either --key-path or
 --broker-url HTTPS_ORIGIN --enrollment-file PRIVATE_FILE. Broker configure imports the file.
 Use --mention-user= to disable the optional mention account.
+Direct-App configure accepts --repository-settings to read REPOAGENT_ repository variables
+(App installation needs Variables: read). Change them with .\install.ps1 -Action Settings.
 Set $env:REPOAGENT_INSTANCE to select the same instance used during installation.
 Use .\install.ps1 -? for guided installation options.
 '@

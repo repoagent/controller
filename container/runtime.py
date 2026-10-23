@@ -51,6 +51,8 @@ def bridge_args(config, *, check_auth=False):
         args += ['--private-key', '/run/secrets/github-app.pem']
     if config.get('clone', False):
         args += ['--clone']
+    if config.get('repositorySettings', False):
+        args += ['--repository-settings']
     if config.get('installationId'):
         args += ['--installation-id', str(config['installationId'])]
     if config.get('repositoryId') is not None:
@@ -126,6 +128,9 @@ def configure(args):
         url = urllib.parse.urlsplit(args.public_url)
         if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment:
             raise ValueError('Fixed URL needs a public HTTPS origin without credentials, path, query or fragment.')
+    repository_settings = getattr(args, 'repository_settings', False)
+    if repository_settings and broker:
+        raise ValueError('Repository settings need a Variables: read runtime grant; broker enrollment profiles do not include it.')
     clone = getattr(args, 'clone', False)
     if config and bool(config.get('clone', False)) != clone:
         raise ValueError('Changing clone authority requires a fresh instance and enrollment.')
@@ -149,6 +154,11 @@ def configure(args):
         if config.get('azureWorkQueue') is not None and config['azureWorkQueue'] != queue:
             raise ValueError('Changing work queue requires a fresh instance after queued work is settled.')
         config['azureWorkQueue'] = queue
+    # Only direct-App configurations carry this key; broker binding checks keep their exact field set.
+    if repository_settings:
+        config['repositorySettings'] = True
+    else:
+        config.pop('repositorySettings', None)
     config.update(clone=clone, repository=args.repository, appId=args.app_id, keyPath=args.key_path,
                   brokerUrl=broker_url,
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
@@ -278,6 +288,7 @@ def main():
     configure_parser.add_argument('--broker-url')
     configure_parser.add_argument('--enrollment-file')
     configure_parser.add_argument('--clone', action='store_true')
+    configure_parser.add_argument('--repository-settings', action='store_true')
     configure_parser.add_argument('--installation-id', type=int)
     configure_parser.add_argument('--repository-id', type=int)
     configure_parser.add_argument('--mention-user', default='repoagent')

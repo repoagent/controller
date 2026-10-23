@@ -141,6 +141,7 @@ Usage: ./repoagent COMMAND
   setup                           Guided App configuration and Codex browser sign-in
   configure --repository OWNER/REPO --app-id ID --key-path /absolute/key.pem
             [--installation-id ID] [--mention-user LOGIN] [--model MODEL] [--tool-updates latest|pinned]
+            [--repository-settings]   Read REPOAGENT_ repository variables (App needs Variables: read)
             [--mode polling|fixed-url|quick-tunnel] [--public-url https://HOST] [--listen-port 8080] [--reconcile-interval 300]
   login                           Container-owned Codex device sign-in (reuses valid login)
   import-codex-auth /path/auth.json Explicitly copy an existing Codex auth cache

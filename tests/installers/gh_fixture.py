@@ -31,6 +31,21 @@ if 'HOST_ENROLLMENT_GH_MODEL' in os.environ:
     status, value = 500, {}
     if endpoint == 'repos/example/project' and method == 'GET':
         status, value = 200, {'id': 123, 'full_name': 'example/project'}
+    elif endpoint.startswith('repos/example/project/actions/variables'):
+        # Direct repository Actions variables (repository settings); names are case-insensitive.
+        variables = model.setdefault('actions_variables', {})
+        name = endpoint.rsplit('/', 1)[1].upper() if endpoint.count('/') == 5 else (body or {}).get('name', '').upper()
+        if method == 'GET':
+            status = model.get('actions_status', {}).get(name, 200 if name in variables else 404)
+            value = {'name': name, 'value': variables[name]} if status == 200 else {'message': 'Fixture'}
+        else:
+            status = model.get('actions_write_status', {'POST': 201, 'PATCH': 204, 'DELETE': 204}[method])
+            if status < 400:
+                if method == 'DELETE':
+                    variables.pop(name, None)
+                else:
+                    variables[name] = body['value']
+                model_path.write_text(json.dumps(model), encoding='utf-8')
     elif endpoint.startswith('repos/example/project/agents/variables?') and method == 'GET':
         entries = [{'name': name, 'value': value} for name, value in model['variables'].items()]
         status = model.get('listing_status', 200)
