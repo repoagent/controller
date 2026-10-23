@@ -336,11 +336,9 @@ public sealed class DiscussionJourney
         {
             if (IsEvent(line, "native-accepted")) accepted.Add(line[(line.LastIndexOf("turn=", StringComparison.Ordinal) + 5)..].Trim());
             if (!IsEvent(line, "native-event")) continue;
-            var start = line.IndexOf('{');
-            if (start < 0) continue;
-            var message = JsonNode.Parse(line[start..])!;
-            if (message["method"]?.ToString() == "turn/completed" && message["params"]?["turn"]?["id"] is { } id)
-                completed.Add(id.ToString());
+            // The controller logs only redacted fields of native events, never the raw message.
+            var completion = Regex.Match(line, @" native-event method=turn/completed thread=\S* turn=(\S+) ");
+            if (completion.Success) completed.Add(completion.Groups[1].Value);
         }
         return accepted.IsSubsetOf(completed);
     }

@@ -25,6 +25,15 @@ import unittest
 
 from test_managed_git import CONTROLLER, ROOT, GitProvider
 
+# Real native model turns against GitProvider's credential-free local Responses endpoint.
+FIXTURE_MODEL = 'model = "gpt-6.1-sol"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Credential-free local fixture"\nbase_url = "https://broker.fixture/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n'
+
+
+def native_event(line):
+    """Fields of the controller's redacted native-event log line; the raw native message is never logged."""
+    return re.search(r' native-event method=(?P<method>\S*) thread=(?P<thread>\S*) turn=(?P<turn>\S*) status=(?P<status>\S*)'
+                     r' will-retry=(?P<willRetry>\S*) error=(?P<error>.*)$', line.rstrip('\n')).groupdict()
+
 
 @unittest.skipIf(os.name == 'nt', 'Managed checkout uses the Linux shipping tools')
 class CheckoutRefreshTests(unittest.TestCase):
@@ -389,10 +398,6 @@ class CheckoutRefreshTests(unittest.TestCase):
         text = request['params']['input'][0]['text']
         self.assertTrue(text.startswith('$github-discussion\n'), text[:80])
         return json.loads(text.split('\n', 1)[1])
-
-    def native_event(self, line):
-        # Lifecycle identity fields only: method=... thread=... turn=... status=...
-        return dict(re.findall(r'([\w-]+)=(\S*)', line.split(' native-event ', 1)[1]))
 
     def subjects(self, envelope):
         return [(change['subject']['id'], change['subject']['author']['login'], change['subject']['body']) for change in envelope['changes']]
@@ -776,7 +781,7 @@ class CheckoutRefreshTests(unittest.TestCase):
         with self.fixture(responses=True) as f:
             home, seed = f.directory / 'home', f.directory / 'seed'
             config = home / 'config.toml'
-            config.write_text(config.read_text() + 'model = "gpt-6.1-sol"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Credential-free local fixture"\nbase_url = "https://broker.fixture/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n')
+            config.write_text(config.read_text() + FIXTURE_MODEL)
             skill = seed / '.agents/skills/repo-refresh'
             skill.mkdir(parents=True); (seed / '.codex').mkdir()
             def context(version, effort):
@@ -787,7 +792,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             with self.controller(f):
                 f.provider.discussions = [self.discussion(1)]
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_FIRST'
-                first = self.native_event(f.wait('native-event'))
+                first = native_event(f.wait('native-event'))
                 self.assertEqual(first['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(first), flush=True)
                 self.settled(f)
                 self.assertEqual(first['status'], 'completed')
@@ -812,7 +817,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertIn('NATIVE_DESCRIPTION_B', listed)
                 self.assertNotIn('NATIVE_DESCRIPTION_A', listed)
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_SECOND'
-                second = self.native_event(f.wait('native-event'))
+                second = native_event(f.wait('native-event'))
                 self.assertEqual(second['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(second), flush=True)
                 self.settled(f)
                 self.assertEqual(second['status'], 'completed')
@@ -839,7 +844,7 @@ class CheckoutRefreshTests(unittest.TestCase):
     def test_pinned_native_active_turn_holds_input_until_its_idle_report(self):
         with self.fixture(responses=True) as f:
             config = f.directory / 'home/config.toml'
-            config.write_text(config.read_text() + 'model = "gpt-6.1-sol"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Credential-free local fixture"\nbase_url = "https://broker.fixture/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n')
+            config.write_text(config.read_text() + FIXTURE_MODEL)
             hold = threading.Event(); f.provider.response_holds[1] = hold
             try:
                 with self.controller(f):
@@ -857,9 +862,9 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.assertTrue(any('input-waiting' in line and 'sources=C1' in line for line in f.lines))
                     self.assertFalse(any('session-status session=' + session + ' status=Idle' in line for line in f.lines))
                     hold.set()
-                    first = self.native_event(f.wait('native-event'))
+                    first = native_event(f.wait('native-event'))
                     f.wait('session-status session=' + session + ' status=Active')  # Native report for the dispatched turn.
-                    second = self.native_event(f.wait('native-event'))
+                    second = native_event(f.wait('native-event'))
                     f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-1')
             finally: hold.set()
             for completed in (first, second):
@@ -872,6 +877,44 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertEqual(f.provider.reactions, ['D1', 'C1'])
             print('NATIVE_IDLE_DISPATCH session=' + session + ' turns=' + first['turn'] + ',' + second['turn']
                   + ' statuses=' + json.dumps([line.split(' ', 2)[2].strip() for line in f.lines if 'session-status' in line]), flush=True)
+
+    def test_genuine_sessions_discover_packaged_skills_and_receive_orientation_when_started_or_resumed(self):
+        packaged = Path(self.controller_command[-1]).parent  # The controller's own installed skill directories.
+        with self.fixture(responses=True) as f:
+            f.provider.model_request_limit = 3
+            config = f.directory / 'home/config.toml'
+            config.write_text(config.read_text() + FIXTURE_MODEL)
+            def completed():
+                event = native_event(f.wait('native-event'))
+                self.assertEqual((event['method'], event['status']), ('turn/completed', 'completed'), event)
+            with self.controller(f):
+                f.provider.discussions = [self.discussion(1)]
+                completed()
+                f.provider.discussions[0]['body'] += ' same-process continuation'
+                completed()
+            with self.controller(f):
+                f.provider.discussions[0]['body'] += ' after restart'
+                completed()
+        self.assertEqual(len(f.provider.model_requests), 3, f.provider.denied)
+        def texts(request):
+            return [part['text'] for item in request['body']['input'] for part in item.get('content') or [] if 'text' in part]
+        def supplied(request):
+            # Native wraps each supplied SKILL.md exactly as read; history repeats earlier turns' blocks.
+            blocks = [re.fullmatch(r'<skill>\n<name>(.+)</name>\n<path>(.+)</path>\n(.*)\n</skill>', text, re.DOTALL) for text in texts(request)]
+            blocks = [block for block in blocks if block]
+            for name, path, content in (block.groups() for block in blocks):
+                if name in ('github-discussion', 'repoagent-orientation'):
+                    self.assertEqual(Path(path), packaged / name / 'SKILL.md')
+                    self.assertEqual(content, (ROOT / '.agents/skills' / name / 'SKILL.md').read_text())
+            return [block[1] for block in blocks]
+        started, continued, resumed = map(supplied, f.provider.model_requests)
+        self.assertEqual((started.count('repoagent-orientation'), continued.count('repoagent-orientation'), resumed.count('repoagent-orientation')), (1, 1, 2))
+        self.assertEqual((started.count('github-discussion'), continued.count('github-discussion'), resumed.count('github-discussion')), (1, 2, 3))
+        catalog = '\n'.join(text for text in texts(f.provider.model_requests[0]) if '### Available skills' in text)
+        for name in ('github-discussion', 'repoagent-orientation'):
+            self.assertRegex(catalog, r'(?m)^- ' + name + ': ')
+        self.assertTrue(any('$repoagent-orientation' in text and '$github-discussion' in text for text in texts(f.provider.model_requests[0])))
+        print('ORIENTATION_INTEGRATION ' + json.dumps(dict(packaged=str(packaged), started=started, continued=continued, resumed=resumed)), flush=True)
 
     def test_signed_push_is_durable_idle_safe_and_scoped_to_managed_clone(self):
         for clone in (True, False):
