@@ -208,7 +208,7 @@ sealed class Codex : IAsyncDisposable
         var input = new JsonArray(
             Json.Object(("type", "text"), ("text", "$github-discussion\n" + envelope.ToJsonString()), ("text_elements", new JsonArray())),
             PackagedSkill("github-discussion"));
-        if (orient) input.Add(PackagedSkill("repoagent-orientation"));
+        if (orient) input.Add((JsonNode)PackagedSkill("repoagent-orientation"));
         var response = await Request("turn/start", Json.Object(("threadId", id), ("input", input)), ct);
         if (response["turn"]?["id"] is null) throw new IOException("Native turn/start returned no accepted turn ID");
         lock (statusLock)
