@@ -6,7 +6,7 @@ namespace RepoAgentController;
 /// Observes Discussions into an ordered per-Discussion waiting queue in the state store, then dispatches the next
 /// size-bounded batch only to a natively idle session. EYES follow native acceptance of the batch carrying the source.
 /// </summary>
-sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> enroll, CheckoutRefresh? refresh = null)
+sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll, CheckoutRefresh? refresh = null)
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
@@ -124,9 +124,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
                 // Quietly remember agent output so later human reactions can be compared.
                 else if (!JsonNode.DeepEquals(previous, current)) { record["sources"] = current; store.Save(); }
                 if (record["waiting"] is not JsonObject waiting) continue;
-                var (dispatched, delivered) = await Dispatch(record, ct);
-                succeeded &= delivered;
-                if (!dispatched && changes.Count != 0)
+                if (!await Dispatch(record, ct) && changes.Count != 0)
                     Log.Write("input-waiting", $"{discussion.Text("url")} session={record.Text("sessionId")} status={(record.Text("sessionId") is { Length: > 0 } session ? codex.Status(session).ToString() : "none")} waiting={waiting["inputs"]!.AsArray().Count} sources={string.Join(',', receipts.Distinct())}");
             }
             catch (Exception error) when (error is not OperationCanceledException)
@@ -193,14 +191,14 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
         inputWaiting = true;
     }
 
-    // Caller holds the gate. Returns whether a batch was accepted; receipt failures clear Delivered.
-    async Task<(bool Dispatched, bool Delivered)> Dispatch(JsonObject record, CancellationToken ct)
+    // Caller holds the gate. Returns whether a batch was accepted; its EYES receipts are then retained in the outbox.
+    async Task<bool> Dispatch(JsonObject record, CancellationToken ct)
     {
         var waiting = record["waiting"]!.AsObject();
         var session = record.Text("sessionId");
         var create = session.Length == 0;
         // An active, failed or unrecognized loaded session keeps its input here without taking global admission.
-        if (!create && codex.Loaded(session) && codex.Status(session) != Codex.SessionStatus.Idle) return (false, true);
+        if (!create && codex.Loaded(session) && codex.Status(session) != Codex.SessionStatus.Idle) return false;
         var inputs = waiting["inputs"]!.AsArray();
         var bootstrap = waiting["context"] is not null;
         var envelope = new JsonObject
@@ -235,7 +233,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
             // Unknown, unloaded, failed or active native status is never assumed idle.
             if (record.Remove("pending")) store.Save();
             admission?.Abandon();
-            return (false, true);
+            return false;
         }
         if (!create) { record["pending"] = pending; store.Save(); }
         await codex.Accept(session, envelope, ct, admission);
@@ -247,13 +245,8 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, HashSet<int> e
         inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
         admission?.Confirm();
         Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count}");
-        var delivered = true;
-        foreach (var source in receipts)
-        {
-            try { await github.Receipt(source, ct); }
-            catch (Exception error) when (error is not OperationCanceledException) { delivered = false; Log.Write("receipt-error", $"{source.Text("url")}: {error.Message}; accepted input will not be replayed"); }
-        }
-        return (true, delivered);
+        foreach (var source in receipts) outbox.Receipt(source);
+        return true;
     }
 
     // Leading inputs whose changes fit one envelope; at least one, so an oversized change is sent alone, never dropped.

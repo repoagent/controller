@@ -12,7 +12,7 @@ sealed class ControllerStatus : IDisposable
 {
     const int MaximumFailures = 20, MaximumMessage = 2000;
     // Events that report failed or blocked work. New failure events become visible by adding their kind here.
-    static readonly HashSet<string> FailureKinds = ["fatal", "poll-error", "observation-error", "dispatch-error", "manual-recovery", "receipt-error",
+    static readonly HashSet<string> FailureKinds = ["fatal", "poll-error", "observation-error", "dispatch-error", "manual-recovery", "receipt-error", "outbox-error",
         "app-refresh-error", "native-request-blocked", "refresh-blocked", "durable-work-lost", "webhook-error", "webhook-disable-error"];
     static readonly HashSet<string> ActivityKinds = ["session-created", "forwarded"];
     // Terminal-readable output; status is never embedded in HTML.

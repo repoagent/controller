@@ -472,6 +472,12 @@ class CheckoutRefreshTests(unittest.TestCase):
     def subjects(self, envelope):
         return [(change['subject']['id'], change['subject']['author']['login'], change['subject']['body']) for change in envelope['changes']]
 
+    def eyes(self, f, expected, timeout=20):
+        # The outbox adds EYES in the background after acceptance, in queue order.
+        deadline = time.monotonic() + timeout
+        while f.provider.reactions != expected and time.monotonic() < deadline: time.sleep(0.05)
+        self.assertEqual(f.provider.reactions, expected)
+
     def test_input_during_an_active_turn_waits_for_idle_before_dispatch_and_eyes(self):
         with self.fixture(protocol=True) as f, self.controller(f):
             f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
@@ -479,7 +485,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
             request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
             f.wait('poll-completed success=True')
-            self.assertEqual(f.provider.reactions, ['D1'])
+            self.eyes(f, ['D1'])
             # T1 remains active: the native has reported no idle transition.
             f.provider.comments = {'D1': [self.comment(1, 'alice', 'first while active'), self.comment(2, 'bob', 'second while active')]}
             for _ in range(2):  # Two complete observations, not elapsed time, establish that the input waits.
@@ -511,7 +517,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.assertIsNotNone(line, 'Input reached a session whose native status is systemError')
                     self.assertIn('status=SystemError', line)
                     self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Input reached a failed session')
-                    self.assertEqual(f.provider.reactions, ['D1'])
+                    self.eyes(f, ['D1'])
                 saved = json.loads(f.state.read_text())['discussions']['D1']
                 self.assertNotIn('pending', saved)
                 self.assertEqual([item['change']['subject']['id'] for item in saved['waiting']['inputs']], ['C1', 'C2'])
@@ -937,7 +943,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                     f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
                     f.wait('native-accepted')
                     f.wait('poll-completed success=True')
-                    self.assertEqual(f.provider.reactions, ['D1'])
+                    self.eyes(f, ['D1'])
                     session = json.loads(f.state.read_text())['discussions']['D1']['sessionId']
                     # The first model response is held, so the real native turn stays active.
                     f.provider.comments = {'D1': [self.comment(1, 'alice', 'NATIVE_WAITING_INPUT')]}
@@ -951,7 +957,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                     first = native_event(f.wait('native-event'))
                     f.wait('session-status session=' + session + ' status=Active')  # Native report for the dispatched turn.
                     second = native_event(f.wait('native-event'))
-                    f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-1')
+                    self.eyes(f, ['D1', 'C1'])
             finally: hold.set()
             for completed in (first, second):
                 self.assertEqual((completed['method'], completed['thread'], completed['status']),
