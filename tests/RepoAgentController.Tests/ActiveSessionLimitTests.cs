@@ -291,6 +291,7 @@ public sealed class ActiveSessionLimitTests
             elif 'comments(' in query:reply({'data':{'node':{'comments':page([message(c) for c in world['comments'].get(variables['id'],[])])}}})
             elif 'replies(' in query:reply({'data':{'node':{'replies':page([])}}})
             elif 'reactions(' in query:reply({'data':{'node':{'reactions':page([])}}})
+            elif 'labels(' in query:reply({'data':{'node':{'labels':page([])}}})
             sys.stderr.write('Unexpected GitHub request\n');sys.exit(2)
             """;
 
@@ -381,6 +382,9 @@ public sealed class ActiveSessionLimitTests
                             "thread/start" => new JsonObject { ["thread"] = new JsonObject { ["id"] = "S" + ++threads, ["status"] = new JsonObject { ["type"] = "idle" } } },
                             "thread/resume" => new JsonObject { ["thread"] = new JsonObject { ["id"] = parameters!["threadId"]!.DeepClone(), ["status"] = new JsonObject { ["type"] = "idle" } } },
                             "turn/start" => new JsonObject { ["turn"] = new JsonObject { ["id"] = "T" + (accepted.Count + 1), ["status"] = "inProgress" } },
+                            // One selectable model with native defaults, as the pinned bundled catalogue reports it.
+                            "model/list" => new JsonObject { ["data"] = new JsonArray(new JsonObject { ["model"] = "gpt-6.1-sol", ["isDefault"] = true, ["defaultReasoningEffort"] = "low", ["supportedReasoningEfforts"] = new JsonArray(new JsonObject { ["reasoningEffort"] = "low" }) }) },
+                            "config/read" => new JsonObject { ["config"] = new JsonObject() },
                             _ => new JsonObject()
                         };
                         Send(new JsonObject { ["id"] = id.DeepClone(), ["result"] = result });

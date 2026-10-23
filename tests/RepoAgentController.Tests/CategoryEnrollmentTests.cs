@@ -297,6 +297,8 @@ public sealed class CategoryEnrollmentTests
              elif method=='thread/start':result={'thread':{'id':'thread-'+uuid.uuid4().hex,'status':{'type':'idle'}}}
              elif method=='thread/resume':result={'thread':{'id':params['threadId'],'status':{'type':'idle'}}}
              elif method=='turn/start':result={'turn':{'id':'turn-'+uuid.uuid4().hex,'status':'completed'}}
+             elif method=='model/list':result={'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]}
+             elif method=='config/read':result={'config':{}}
              else:result={}
              print(json.dumps({'id':request['id'],'result':result}),flush=True)
             """;
@@ -337,6 +339,7 @@ public sealed class CategoryEnrollmentTests
              if 'comments(' in query:reply({'data':{'node':{'comments':page([message(c) for c in world['comments'].get(variables['id'],[])])}}})
              if 'replies(' in query:reply({'data':{'node':{'replies':page([])}}})
              if 'reactions(' in query:reply({'data':{'node':{'reactions':page([])}}})
+             if 'labels(' in query:reply({'data':{'node':{'labels':page([])}}})
              if 'reactionGroups' in query and 'node(' in query:reply({'data':{'node':{'reactionGroups':groups(variables['id'])}}})
              raise RuntimeError('Unexpected GitHub request: '+query)
             """;
