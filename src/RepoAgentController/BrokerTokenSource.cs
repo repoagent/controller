@@ -128,6 +128,8 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
             foreach (var field in new[] { "appSlug", "repository" })
                 if (!string.Equals(Text(result, field), Text(approved, field), StringComparison.OrdinalIgnoreCase))
                     throw Invalid("lease App/repository differs from enrollment");
+            if (clone && Text(result, "policyVersion") != Text(approved, "policyVersion"))
+                throw Invalid("lease approval policy differs from enrollment");
             var token = Text(result, "token");
             var expiryText = Text(result, "expiresAt");
             if (token.Length == 0 || token.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)) ||
@@ -147,7 +149,8 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         var parts = Text(value, "repository").Split('/');
         if (parts.Length != 2 || !parts.All(Name)) throw Invalid("invalid repository name");
         if (clone && (Text(value, "profile") != (repositoryWebhooks ? "webhook-clone" : "polling-clone") ||
-            Text(value, "policyVersion") != "repository-agent-clone-approval-v2")) throw Invalid("clone policy differs");
+            Text(value, "policyVersion") is not ("repository-actions-clone-approval-v3" or "repository-agent-clone-approval-v2")))
+            throw Invalid("clone policy differs");
         var permissions = value.GetProperty("permissions");
         var required = new List<string> { "discussions" };
         if (repositoryWebhooks) required.Add("repository_hooks");

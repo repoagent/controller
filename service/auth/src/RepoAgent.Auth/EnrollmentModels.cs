@@ -31,7 +31,10 @@ public sealed record AgentEnrollmentRequest(string IdempotencyId, long Repositor
     }
     private static bool Segment(string s) => s.Length is > 0 and <= 100 && s is not ("." or "..")
         && s.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
-    public string Digest() => Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new { domain = "repository-agent-variable/setup-v2", request = this })));
+    public string Digest() => Digest("repository-agent-variable/setup-v2");
+    // Setup v3 shares this body grammar; domain separation keeps one idempotency ID from
+    // replaying a request across approval locations.
+    internal string Digest(string domain) => Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new { domain, request = this })));
 }
 
 internal sealed record EnrollmentInput(string IdempotencyId, long RepositoryId, string Repository, string? Environment,
@@ -43,11 +46,13 @@ internal sealed record EnrollmentInput(string IdempotencyId, long RepositoryId, 
         return new(request.IdempotencyId, request.RepositoryId, request.Repository, request.Environment,
             request.Variable, request.Profile, request.Digest(), ApprovalContract.Legacy);
     }
-    public static EnrollmentInput From(AgentEnrollmentRequest request)
+    public static EnrollmentInput From(AgentEnrollmentRequest request, int setupVersion = 2)
     {
         request.Validate();
+        var approval = ApprovalContract.ForSetup(setupVersion, request.Profile);
+        var digest = approval.IsActions ? request.Digest("repository-actions-variable/setup-v3") : request.Digest();
         return new(request.IdempotencyId, request.RepositoryId, request.Repository, null,
-            request.Variable, request.Profile, request.Digest(), request.Profile.EndsWith("-clone", StringComparison.Ordinal) ? ApprovalContract.AgentClone : ApprovalContract.Agent);
+            request.Variable, request.Profile, digest, approval);
     }
 }
 

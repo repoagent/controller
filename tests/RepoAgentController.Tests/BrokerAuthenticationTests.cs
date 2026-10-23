@@ -413,6 +413,23 @@ public sealed class BrokerAuthenticationTests
     }
 
     [Theory]
+    [InlineData("repository-agent-clone-approval-v2")]
+    [InlineData("repository-actions-clone-approval-v3")]
+    public async Task Clone_lease_must_preserve_the_enrolled_approval_policy(string policy)
+    {
+        using var fixture = new Fixture(clone: true, clonePolicy: policy);
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        await credentials.GetToken(TestContext.Current.CancellationToken);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        fixture.Transport.Defect = "other-clone-policy";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
+        Assert.False(File.Exists(fixture.TokenFile));
+        Assert.Equal(3, fixture.Transport.Requests.Count);
+    }
+
+    [Theory]
     [InlineData("profile")]
     [InlineData("policyVersion")]
     [InlineData("protocolVersion")]
@@ -441,7 +458,7 @@ public sealed class BrokerAuthenticationTests
         readonly bool clone;
         readonly string wrapper;
 
-        public Fixture(bool webhooks = false, bool clone = false)
+        public Fixture(bool webhooks = false, bool clone = false, string clonePolicy = "repository-agent-clone-approval-v2")
         {
             this.webhooks = webhooks;
             this.clone = clone;
@@ -454,7 +471,7 @@ public sealed class BrokerAuthenticationTests
             {
                 Enrollment["protocolVersion"] = 2;
                 Enrollment["profile"] = webhooks ? "webhook-clone" : "polling-clone";
-                Enrollment["policyVersion"] = "repository-agent-clone-approval-v2";
+                Enrollment["policyVersion"] = clonePolicy;
                 Enrollment["permissions"]!["contents"] = "read";
             }
             SaveEnrollment();
@@ -543,6 +560,10 @@ public sealed class BrokerAuthenticationTests
                 case "protocolVersion": result[Defect] = enrollment["protocolVersion"]!.GetValue<int>() == 1 ? 2 : 1; break;
                 case "profile": result[Defect] = "webhook-clone"; break;
                 case "policyVersion": result[Defect] = "repository-agent-approval-v2"; break;
+                case "other-clone-policy":
+                    result["policyVersion"] = result["policyVersion"]!.GetValue<string>() == "repository-agent-clone-approval-v2"
+                        ? "repository-actions-clone-approval-v3" : "repository-agent-clone-approval-v2";
+                    break;
                 case "appSlug": result[Defect] = "other-app"; break;
                 case "repository": result[Defect] = "owner/other"; break;
                 case "permissions": result["permissions"]!["contents"] = "write"; break;
