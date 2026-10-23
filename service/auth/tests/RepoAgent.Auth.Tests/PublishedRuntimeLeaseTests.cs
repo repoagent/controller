@@ -29,6 +29,48 @@ public sealed class PublishedRuntimeLeaseTests
         Assert.Equal(3, (await f.GateAsync()).GetInt64("OutstandingTokenCount"));
     }
 
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(2, false)]
+    [InlineData(2, true)]
+    public async Task Definite_admission_conflicts_retry_with_fixed_clocks_and_no_duplicate_charge(int stage, bool exhaust)
+    {
+        await using var f = await IssuanceFixture.CreateAsync();
+        Assert.Equal(200, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
+        var reserved = DateTimeOffset.FromUnixTimeSeconds(f.Clock.GetUtcNow().ToUnixTimeSeconds() / 60 * 60 + 90);
+        f.Clock.Advance(reserved - f.Clock.GetUtcNow());
+        var batches = 0;
+        var conflicts = 0;
+        var transport = new ObservedTransport { Before = async message =>
+        {
+            if (!ObservedTransport.IsBatch(message) || ++batches < stage || (!exhaust && conflicts > 0)) return;
+            var row = stage == 1
+                ? (await f.Storage.Table.GetEntityAsync<TableEntity>("global:issuance-v1", "quota", cancellationToken: TestContext.Current.CancellationToken)).Value
+                : await f.GateAsync();
+            row["ConcurrentObservation"] = ++conflicts;
+            await f.Storage.Table.UpdateEntityAsync(row, row.ETag, TableUpdateMode.Replace, TestContext.Current.CancellationToken);
+            f.Clock.Advance(TimeSpan.FromSeconds(2));
+        }};
+        var result = await f.IssueAsync(TestContext.Current.CancellationToken, transport);
+        Assert.Equal(exhaust ? 503 : 200, result.Status);
+        Assert.Equal(exhaust ? 4 : 1, conflicts);
+        Assert.Equal(2, f.GitHub.Mints);
+        Assert.Equal(exhaust ? 8 : 16, f.GitHub.Reads);
+        Assert.Equal(3, (await f.GateAsync()).GetInt64("OutstandingTokenCount"));
+        var quota = (await f.Storage.Table.GetEntityAsync<TableEntity>("global:issuance-v1", "quota", cancellationToken: TestContext.Current.CancellationToken)).Value;
+        Assert.Equal(1, quota.GetInt64("Admissions"));
+        Assert.Equal(1, quota.GetInt64("Signs"));
+        Assert.Equal(0, quota.GetInt64("Mints"));
+        Assert.Equal(3, quota.GetInt64("Slots"));
+        if (!exhaust)
+        {
+            var device = await f.DeviceAsync();
+            Assert.Equal(reserved, device.GetDateTimeOffset("RuntimeObservationReservedAt"));
+            Assert.Equal(reserved.AddSeconds(-60), device.GetDateTimeOffset("RuntimeObservationJwtIssuedAt"));
+            Assert.Equal(reserved.AddSeconds(120), device.GetDateTimeOffset("RuntimeObservationJwtExpiresAt"));
+        }
+    }
+
     [Fact]
     public async Task Changed_approval_closes_the_grant_instead_of_republishing_an_old_lease()
     {

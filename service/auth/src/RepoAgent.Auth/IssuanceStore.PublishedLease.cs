@@ -31,25 +31,56 @@ public sealed partial class IssuanceStore
         GrantSnapshot grant, TableEntity attempt, IssuanceWork work)
     {
         RequirePublishedRuntime(grant, attempt);
-        work.EvaluateAdmission();
         var ct = work.Cancellation;
         var now = clock.GetUtcNow();
         var observation = Guid.NewGuid().ToString("N");
-        await retained.RequireIssuanceAsync(Text(attempt, "OperationId"), Text(attempt, "Generation"),
-            grant.RepositoryId, grant.DeviceId, "runtime", grant.Epoch, Number(attempt, "GlobalSlot"), ct);
-        var global = (await retained.SchemaAsync(ct)).Issuance;
-        Charge(global, now, 8, limits.GlobalAdmissions, limits.GlobalReads, limits.GlobalSigns, limits.GlobalMints, mint: false);
-        await BrokerTable.SubmitAsync(table, [Update(global)], ct);
-        var quota = await ReadAsync(grant.Partition, "quota", ct);
-        var freshQuota = quota is null;
-        quota ??= NewQuota(grant.Partition);
-        Charge(quota, now, 8, limits.RepositoryAdmissions, limits.RepositoryReads, limits.RepositorySigns, limits.RepositoryMints, mint: false);
-        // Overwrite bounded observation metadata, never the original capability clocks.
-        grant.Device["RuntimeObservation"] = observation;
-        grant.Device["RuntimeObservationReservedAt"] = now;
-        grant.Device["RuntimeObservationJwtIssuedAt"] = now.AddSeconds(-60);
-        grant.Device["RuntimeObservationJwtExpiresAt"] = now.AddSeconds(120);
-        await CommitAsync(grant, [new(freshQuota ? TableTransactionActionType.Add : TableTransactionActionType.UpdateReplace, quota, quota.ETag), Update(attempt)], ct);
+        var binding = grant.Marker;
+        var secretHash = Text(grant.Device, "SecretHash");
+        var expires = Date(grant.Device, "ExpiresAt");
+        var verifier = grant.Gate.GetString("VerifierAttempt");
+        var operation = Text(attempt, "OperationId");
+        var generation = Text(attempt, "Generation");
+        var leaseExpiry = Date(attempt, "ExpiresAt");
+        var globalCharged = false;
+        var retry = false;
+        while (true)
+        {
+            work.EvaluateAdmission();
+            if (retry)
+            {
+                grant = await SnapshotAsync(grant.Partition, grant.DeviceId, ct);
+                if (grant.Marker != binding || Text(grant.Device, "SecretHash") != secretHash
+                    || Date(grant.Device, "ExpiresAt") != expires || grant.Gate.GetString("VerifierAttempt") != verifier)
+                    throw new IssuanceDenied();
+                attempt = await RequiredAttemptAsync(grant, operation, ct);
+                if (Text(attempt, "Generation") != generation || Date(attempt, "ExpiresAt") != leaseExpiry) throw new IssuanceDenied();
+            }
+            RequirePublishedRuntime(grant, attempt);
+            await retained.RequireIssuanceAsync(operation, generation, grant.RepositoryId, grant.DeviceId,
+                "runtime", grant.Epoch, Number(attempt, "GlobalSlot"), ct);
+            try
+            {
+                if (!globalCharged)
+                {
+                    var global = (await retained.SchemaAsync(ct)).Issuance;
+                    Charge(global, now, 8, limits.GlobalAdmissions, limits.GlobalReads, limits.GlobalSigns, limits.GlobalMints, mint: false);
+                    await BrokerTable.SubmitAsync(table, [Update(global)], ct);
+                    globalCharged = true;
+                }
+                var quota = await ReadAsync(grant.Partition, "quota", ct);
+                var freshQuota = quota is null;
+                quota ??= NewQuota(grant.Partition);
+                Charge(quota, now, 8, limits.RepositoryAdmissions, limits.RepositoryReads, limits.RepositorySigns, limits.RepositoryMints, mint: false);
+                // Overwrite bounded observation metadata, never the original capability clocks.
+                grant.Device["RuntimeObservation"] = observation;
+                grant.Device["RuntimeObservationReservedAt"] = now;
+                grant.Device["RuntimeObservationJwtIssuedAt"] = now.AddSeconds(-60);
+                grant.Device["RuntimeObservationJwtExpiresAt"] = now.AddSeconds(120);
+                await CommitAsync(grant, [new(freshQuota ? TableTransactionActionType.Add : TableTransactionActionType.UpdateReplace, quota, quota.ETag), Update(attempt)], ct);
+                break;
+            }
+            catch (TableTransactionFailedException ex) when (ex.Status is 409 or 412) { retry = true; }
+        }
         grant = await SnapshotAsync(grant.Partition, grant.DeviceId, ct);
         if (Text(grant.Device, "RuntimeObservation") != observation) throw new IssuanceDenied();
         attempt = await RequiredAttemptAsync(grant, Text(attempt, "OperationId"), ct);

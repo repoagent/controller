@@ -155,11 +155,13 @@ public sealed class IssuanceFaultTests
     }
 
     [Theory]
-    [InlineData("revoked")]
-    [InlineData("secret")]
-    public async Task Changed_authority_during_admission_retry_cannot_inherit_the_original_authentication(string changed)
+    [InlineData("revoked", false)]
+    [InlineData("secret", false)]
+    [InlineData("revoked", true)]
+    [InlineData("secret", true)]
+    public async Task Changed_authority_during_admission_retry_cannot_inherit_the_original_authentication(string changed, bool reuse)
     {
-        await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(6));
+        await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(reuse ? 60 : 6));
         Assert.Equal(200, (await f.IssueAsync(Token)).Status);
         var lastActivity = (await f.DeviceAsync()).GetDateTimeOffset("LastActivityAt");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
@@ -184,7 +186,7 @@ public sealed class IssuanceFaultTests
         Assert.Equal(2, f.GitHub.Mints);
         Assert.Equal(2, f.Signing.Calls);
         Assert.Equal(2, (await f.AttemptsAsync()).Count);
-        Assert.Equal(4, (await GlobalQuota(f)).GetInt64("Slots"));
+        Assert.Equal(reuse ? 3 : 4, (await GlobalQuota(f)).GetInt64("Slots"));
         Assert.Equal(lastActivity, (await f.DeviceAsync()).GetDateTimeOffset("LastActivityAt"));
     }
 
