@@ -17,7 +17,7 @@ Webhook mode additionally requires owner-approved **Webhooks: read and write** a
 
 ## Broker credentials (consumer integration)
 
-**Broker consumption is implemented; enrollment and the hosted broker are pending.** An operator with a trusted provider and a protected [v1 enrollment file](broker-protocol.md) can start the Linux/macOS controller without an App PEM:
+Obtain a private enrollment through the [host enrollment client](host-enrollment.md), using the broker operator's canonical HTTPS origin. The deployed maintainer broker is described in [Azure operations](azure-auth-deployment.md). The protected [v1 enrollment file](broker-protocol.md) lets the Linux/macOS controller authenticate without an App PEM; full hosted controller handover and lifecycle acceptance remain separate gates.
 
 ```sh
 RepoAgentController --repo OWNER/REPO --app-id NUMERIC_APP_ID \
@@ -31,6 +31,51 @@ Windows hosts use the Linux container through Docker Desktop; native Windows bro
 Polling enrollment permits only Discussions write, with optional implicit metadata read. Webhook enrollment additionally requires repository hooks write; select it with `--webhook-url`. Every initial and renewed lease is validated against enrollment before cache publication. The real GitHub viewer must match the enrolled App bot before startup completes. Failed authentication or renewal removes local launch credentials; another process failing to acquire the state lock leaves the active owner's cache intact. Both credential sources share the same cache, refresh scheduler and native wrapper.
 
 These checks trust the enrolled broker's claims. They do not prove the token's actual GitHub repository scope, implement enrollment approval, or fence tokens already copied into a child. Hosted broker acceptance, administrator approval and outstanding-token fencing remain separate release gates.
+
+### Run or debug the authentication check on Linux / WSL
+
+The C# controller can consume an existing enrollment directly on Linux/WSL,
+without starting a container. Use the SDK selected by `global.json` and put
+`gh` on `PATH`. The standalone `scripts/enroll-controller.ps1` client obtains
+enrollment without a container runtime; the guided Docker installer is a
+separate entry point. Keep the enrollment outside the repository workspace in
+owned private storage, with directory mode0700 and file mode0600.
+
+For a `polling-clone` enrollment, substitute its exact repository, App,
+installation, repository ID and trusted broker origin:
+
+```sh
+enrollment="$HOME/.repoagent/instances/YOUR_INSTANCE/enrollment.json"
+check_state="$HOME/.repoagent/native-auth-check"
+install -d -m 700 "$check_state"
+
+dotnet run --project src/RepoAgentController -- \
+  --repo OWNER/REPO --app-id APP_ID \
+  --broker-url https://credentials.example.org \
+  --enrollment-file "$enrollment" \
+  --installation-id INSTALLATION_ID --repository-id REPOSITORY_ID --clone \
+  --state "$check_state/state.json" --check-auth
+```
+
+Use the same arguments in a C# debugger. For a non-clone polling or webhook
+enrollment, omit `--clone` and `--repository-id`. For either webhook profile,
+also pass `--webhook-url` with the controller's public HTTPS origin. Match the
+saved profile and immutable binding.
+The state path above isolates this check from the running controller's files.
+
+This path requests a bounded broker lease and verifies the real GitHub App
+viewer, then exits before checkout, Codex launch or webhook registration. It
+needs no Codex sign-in and leaves no refresh daemon. Its private credential
+cache remains sensitive until expiry/revocation; the lease still participates
+in normal broker settlement. Native full conversations need the usual Codex
+setup and a single active controller. Stop the existing runtime through its
+supported lifecycle before starting another conversation runtime; keep its
+enrollment, checkpoint and native history intact.
+
+On2026-10-23, this Debug path authenticated StoryBeam/StoryBeam through the
+deployed broker and confirmed `repo-agent-connector[bot]` while the existing
+Docker controller stayed running. This proves native broker consumption,
+not full native conversation or hosted Azure controller acceptance.
 
 ## App ownership
 
