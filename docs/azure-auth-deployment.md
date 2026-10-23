@@ -74,9 +74,15 @@ Use the IDs and resource-group name in the tables above. Updating a repository v
 
 ## Repository approval boundary
 
-[ADR 0006](adr/0006-use-repository-agent-variables-for-approval.md) selects direct repository Agent variables for controller approval. [Provider #68](https://github.com/repoagent/controller/issues/68) owns the implemented [v2 setup/marker source contract](../service/auth/README.md#repository-agent-variable-enrollment-v2), with frozen v1 controller files/runtime and separate legacy Environment bindings. Guided installation and host integration remain [#53](https://github.com/repoagent/controller/issues/53) work; Azure, live App-installation and native Windows acceptance remain release gates. The new flow requires no GitHub Environment creation, name, numeric identity or deployment settings. Azure Container Apps environments remain a separate infrastructure concept. Actions repository variables in the configuration table above are also separate from repository Agent variables.
+[ADR 0007](adr/0007-use-repository-actions-variables-for-approval.md) selects direct repository Actions variables in the controlled repository for controller approval. It supersedes the Agent-variable location of [ADR 0006](adr/0006-use-repository-agent-variables-for-approval.md). [#184](https://github.com/repoagent/controller/issues/184) implements the [v3 setup/marker source contract](../service/auth/README.md#repository-actions-variable-enrollment-v3). Existing [v2 Agent-variable](../service/auth/README.md#repository-agent-variable-enrollment-v2) and legacy Environment bindings keep their kinds, and controller files and runtime routes are unchanged. Azure, live App-installation and native Windows acceptance remain release gates. The flow requires no GitHub Environment creation, name, numeric identity or deployment settings. Azure Container Apps environments remain a separate infrastructure concept. The deployment variables in the configuration table above are Actions variables of this repository. They are unrelated to a controlled repository's approval variable (default `REPOAGENT_APPROVAL`), and deployment tooling must never write that name.
 
-The host needs GitHub-authorized Agent-variable write access; only the broker's internal verifier receives Agent variables read, subject to live installation-scope proof. Runtime controller profiles stay frozen without approval-variable access. No deployment resources, workflow, OIDC trust or live variable is changed by this decision; hosted acceptance remains required. See [the approval contract](auth-repository-approval.md).
+The host needs GitHub-authorized write access to the selected Actions variable. Only the broker's internal verifier receives `actions_variables: read`, subject to live installation-scope proof, and runtime controller profiles never get approval-variable access. Operator actions before the installer default reaches operators:
+
+1. Add Repository permission **Variables: Read** to the shared App, and have each installation accept it.
+2. Deploy a broker build that serves the `/v3` setup routes. An older broker answers `/v3` with 404, and installers then fail before writing any approval.
+3. Keep `-ApprovalLocation AgentVariable` available as the explicit rollback.
+
+This change modifies no deployment resources, workflow, OIDC trust or live variable; hosted acceptance remains required. See [the approval contract](auth-repository-approval.md).
 
 ## First activation through existing OIDC
 

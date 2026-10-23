@@ -7,10 +7,10 @@ These product decisions were approved by the maintainer on 2026-10-20 for [plan 
 Enrollment is a repository-held grant under the [UI-free approval contract](auth-repository-approval.md). Before issuing or renewing a controller token, require all of the following:
 
 - The device is active, acknowledged, unexpired and not revoked.
-- The exact enrollment-specific approval remains present in the selected direct repository Agent variable, independently verified by the broker under a reviewed bounded-freshness policy.
+- The exact enrollment-specific approval remains present in the selected direct repository Actions variable (or, for an existing legacy grant, the Agent variable it was enrolled with), independently verified by the broker under a reviewed bounded-freshness policy.
 - The enrolled GitHub host, App, installation, immutable repository and server-defined permission profile remain valid and agree with actual GitHub grants.
 
-The installer uses the operator's host GitHub authority to create or safely reuse a user-named repository Agent variable. Host credentials stay on that host; the broker has no human login or admin UI. A particular person's departure, administrator-role loss or OAuth-consent withdrawal alone does not revoke repository-held approval. Controller tokens receive no approval-variable read or write access. See [the superseding decision](adr/0006-use-repository-agent-variables-for-approval.md).
+The installer uses the operator's host GitHub authority to create or safely reuse a user-named repository Actions variable. Host credentials stay on that host; the broker has no human login or admin UI. A particular person's departure, administrator-role loss or OAuth-consent withdrawal alone does not revoke repository-held approval. Controller tokens receive no approval-variable read or write access. See [the superseding decision](adr/0007-use-repository-actions-variables-for-approval.md), which replaced the [Agent-variable location](adr/0006-use-repository-agent-variables-for-approval.md).
 
 App uninstall and explicit enrollment revocation prevent future issuance. Confirmed missing or changed approval permanently closes the observed grant; restoring an old marker cannot reopen it. Failed GitHub reads deny issuance without inventing evidence of deletion. Fresh enrollment requires a new controller identity and approval challenge. The planned PowerShell installer provides `revoke` without requiring the lost device secret and `uninstall` with persistent data and shared settings preserved by default. The standalone [host revocation tool](repository-approval.md) implements legacy Environment inspection/deletion; the v2 provider enrollment contract is implemented under #68, while guided installation, Agent-variable host commands and uninstall remain #53 work with live and native Windows acceptance. None of these decisions claims instantaneous observation or revocation of an already-issued GitHub token: retain outstanding-token accounting and safe ownership-transfer requirements.
 
@@ -24,7 +24,7 @@ Report GitHub removal acknowledgment, durable broker closure and outstanding-tok
 
 ## Finite verification and service cost
 
-Preapproval verification is a separate internal capability: exact-repository `agent_variables:read` (plus implicit metadata), with actual installation scope still requiring live proof, never returned to a controller. Runtime tokens exclude those grants. Verification before activation or after closure must not depend on permission to issue runtime tokens.
+Preapproval verification is a separate internal capability: exact-repository `actions_variables:read` (`agent_variables:read` for legacy v2 grants), plus implicit metadata, with actual installation scope still requiring live proof, never returned to a controller. Runtime tokens exclude those grants. Verification before activation or after closure must not depend on permission to issue runtime tokens.
 
 Anonymous start/poll requests must not mint a token on every poll. Reuse an appropriately scoped verifier token within its lifetime, while re-reading approval for each authorization operation; do not reuse a positive approval decision across operations. Reserve durable mint attempts before outbound calls, account for known and unknown outcomes, and do not automatically retry an ambiguous mint POST.
 

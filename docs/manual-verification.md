@@ -11,7 +11,7 @@ Build/run inside a Linux container, inspect `--help`, and start the long-running
 | Reply in two threads of one Discussion | Both source/reply URLs and same session ID; replies target their own thread roots |
 | Edit a message; add and remove a reaction | Source URL, attributed deltas and agent responses when useful, no replay of the reaction subject as a request |
 | React/reply to agent-authored content | Human activity reaches the same native session |
-| Send while the native agent is working | Native acceptance of the new input while the first turn is active, subsequent response reflects it |
+| Send while the native agent is working | `input-waiting` and no EYES for the new input while the first turn is active; after that turn's idle report, `native-accepted` for a new turn, then `receipt`; subsequent response reflects it |
 | Exercise an installed skill | Requested skill and visible result in GitHub |
 | Source-specific EYES | Discussion body, comment and reply each get the agent's EYES on the actual source, including reaction subjects |
 | Existing EYES reuse | Edit an acknowledged source; `receipt-reused`; no duplicate work from the receipt itself |
@@ -22,4 +22,4 @@ Build/run inside a Linux container, inspect `--help`, and start the long-running
 
 For every failure record whether GitHub observation, native acceptance, checkpoint persistence, receipt, or agent publication failed. Avoid declaring full acceptance from a build or transport-only probe. Input acceptance and successful GitHub publication are separate observations.
 
-Protocol reference: [Codex app-server](https://learn.chatgpt.com/docs/app-server). The native `turn/start` protocol accepts input on an active turn; history, execution and compaction remain owned by Codex. GitHub [Discussion mutations](https://docs.github.com/en/graphql/reference/mutations#adddiscussioncomment) do not promise idempotent publication through `clientMutationId`.
+Protocol reference: [Codex app-server](https://learn.chatgpt.com/docs/app-server). The native `turn/start` protocol adds input to an active turn, so the bridge sends a batch only after `thread/status/changed` reports the session idle; history, execution and compaction remain owned by Codex. GitHub [Discussion mutations](https://docs.github.com/en/graphql/reference/mutations#adddiscussioncomment) do not promise idempotent publication through `clientMutationId`.

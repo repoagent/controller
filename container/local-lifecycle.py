@@ -87,7 +87,9 @@ def marker(value):
     for name, pattern in patterns.items():
         if not isinstance(binding[name], str) or not re.fullmatch(pattern, binding[name]):
             raise ValueError('Invalid binding')
-    if binding['approvalKind'] == 'repository-agent-variable':
+    # Actions variables (setup v3) and legacy Agent variables (setup v2) are distinct
+    # direct repository locations without Environment identity.
+    if binding['approvalKind'] in ('repository-actions-variable', 'repository-agent-variable'):
         if binding['githubEnvironment'] is not None or binding['environmentId'] is not None:
             raise ValueError('Unexpected legacy binding')
     elif (binding['approvalKind'] != 'environment-variable'
@@ -147,7 +149,9 @@ def verify_binding(expected, config=None):
                 permissions['metadata'] = 'read'
         if credential['permissions'] != permissions:
             raise ValueError('Enrollment permissions differ')
-        if credential['protocolVersion'] == 2 and credential['policyVersion'] != 'repository-agent-clone-approval-v2':
+        clone_policy = {'repository-actions-variable': 'repository-actions-clone-approval-v3',
+                        'repository-agent-variable': 'repository-agent-clone-approval-v2'}.get(binding['approvalKind'])
+        if credential['protocolVersion'] == 2 and credential['policyVersion'] != clone_policy:
             raise ValueError('Enrollment policy differs')
         for key in ('repository', 'repositoryId', 'deviceId', 'appId', 'installationId', 'brokerOrigin'):
             if credential[key] != binding[key]:

@@ -13,6 +13,7 @@
     <PackageReference Include="Azure.Core" Version="1.63.0" />
     <PackageReference Include="Azure.Storage.Queues" Version="12.28.1" />
     <Content Include="../../.agents/skills/github-discussion/SKILL.md" Link="github-discussion/SKILL.md" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="repository-settings.json" LogicalName="repository-settings.json" />
     <Content Include="../../.agents/skills/repoagent-orientation/SKILL.md" Link="repoagent-orientation/SKILL.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

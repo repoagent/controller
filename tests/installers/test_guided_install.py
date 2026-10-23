@@ -49,7 +49,7 @@ class GuidedInstallTests(unittest.TestCase):
         host.HostEnrollmentTests.setUpClass.__func__(cls)
 
     def setUp(self, profile='polling'):
-        self.journey = host.EnrollmentJourney(self, variable='APPROVED_CONTROLLER', profile=profile)
+        self.journey = host.EnrollmentJourney(self, variable='REPOAGENT_APPROVAL', profile=profile)
         self.directory = self.journey.directory
         if os.name == 'nt':
             # #73's checked reader also validates all native ancestors. Shared
@@ -140,11 +140,11 @@ class GuidedInstallTests(unittest.TestCase):
                 receipt, approval = self.journey.read('enrollment.json'), self.journey.read('approval.json')
                 self.assertEqual(receipt['protocolVersion'], 2)
                 self.assertEqual(receipt['profile'], profile)
-                self.assertEqual(receipt['policyVersion'], 'repository-agent-clone-approval-v2')
+                self.assertEqual(receipt['policyVersion'], 'repository-actions-clone-approval-v3')
                 self.assertEqual(receipt['permissions']['contents'], 'read')
                 self.assertEqual(receipt['permissions']['discussions'], 'write')
                 self.assertEqual(receipt['permissions'].get('repository_hooks'), None if mode == 'polling' else 'write')
-                self.assertEqual(approval['setupVersion'], 2)
+                self.assertEqual(approval['setupVersion'], 3)
                 data = (self.journey.state / 'enrollment.json').read_bytes()
                 self.assertEqual(state['imports'], [{'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}])
                 self.assertTrue(any('--clone' in event and 'configure' in event for event in state['events']))
@@ -161,7 +161,7 @@ class GuidedInstallTests(unittest.TestCase):
                 self.assertTrue(state['settings']['clone'])
                 self.assertEqual(self.journey.read('enrollment.json'), receipt)
                 self.assertEqual(self.journey.read('approval.json'), approval)
-                self.assertEqual(sum(event['path'] == '/v2/enrollments' for event in self.journey.events), 1)
+                self.assertEqual(sum(event['path'] == self.journey.start_path for event in self.journey.events), 1)
                 self.assertEqual(sum('POST' in event['argv'] for event in self.journey.github()), 1)
 
     def test_saved_ordinary_v1_enrollment_cannot_upgrade_by_clone_flag(self):
@@ -277,7 +277,7 @@ class GuidedInstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         credential, approval = self.journey.read('enrollment.json'), self.journey.read('approval.json')
         binding = {key: credential[key] for key in ('repository', 'repositoryId', 'deviceId', 'appId', 'installationId', 'brokerOrigin')}
-        binding.update(profile='polling', approvalKind='repository-agent-variable', approvalVariable='APPROVED_CONTROLLER',
+        binding.update(profile='polling', approvalKind='repository-actions-variable', approvalVariable='REPOAGENT_APPROVAL',
                        expectedValueSha256=approval['expectedValueSha256'], githubEnvironment=None, environmentId=None)
         launch = dict(binding=binding, settings=state['settings'])
         record = dict(schemaVersion=1, instance='guided-red', volumes={part: 'repoagent-guided-red-' + part for part in runtime.STORAGE},
@@ -314,7 +314,7 @@ class GuidedInstallTests(unittest.TestCase):
         self.assertEqual(self.journey.read('enrollment.json'), enrollment)
         self.assertEqual(self.journey.read('approval.json'), approval)
         self.assertEqual(self.journey.read('launch.json')['runtimeImageId'], IMAGE)
-        self.assertEqual(sum(event['path'] == '/v2/enrollments' for event in self.journey.events), 1)
+        self.assertEqual(sum(event['path'] == self.journey.start_path for event in self.journey.events), 1)
         self.assertEqual(sum('POST' in event['argv'] for event in self.journey.github()), 1)
 
     def test_check_failure_keeps_working_credentials_and_saved_resume_does_not_replace_them(self):
@@ -337,7 +337,7 @@ class GuidedInstallTests(unittest.TestCase):
         self.assertEqual(state['containers']['repoagent-guided-red']['Image'], IMAGE)
         self.assertEqual(self.journey.read('enrollment.json'), enrollment)
         self.assertEqual(self.journey.read('approval.json'), approval)
-        self.assertEqual(sum(event['path'] == '/v2/enrollments' for event in self.journey.events), 1)
+        self.assertEqual(sum(event['path'] == self.journey.start_path for event in self.journey.events), 1)
         self.assertEqual(sum('POST' in event['argv'] for event in self.journey.github()), 1)
 
 
@@ -482,7 +482,7 @@ class GuidedInstallTests(unittest.TestCase):
         self.assertEqual(self.journey.read('enrollment.json'), enrollment)
         self.assertEqual(self.journey.read('approval.json'), approval)
         self.assertEqual(self.journey.read('launch.json')['runtimeImageId'], IMAGE)
-        self.assertEqual(sum(event['path'] == '/v2/enrollments' for event in self.journey.events), 1)
+        self.assertEqual(sum(event['path'] == self.journey.start_path for event in self.journey.events), 1)
         self.assertEqual(sum('POST' in event['argv'] for event in self.journey.github()), 1)
 
     def test_failed_enrollment_import_resumes_same_identity(self):

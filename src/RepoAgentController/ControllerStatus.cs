@@ -12,7 +12,7 @@ sealed class ControllerStatus : IDisposable
 {
     const int MaximumFailures = 20, MaximumMessage = 2000;
     // Events that report failed or blocked work. New failure events become visible by adding their kind here.
-    static readonly HashSet<string> FailureKinds = ["fatal", "poll-error", "observation-error", "manual-recovery", "receipt-error", "outbox-error",
+    static readonly HashSet<string> FailureKinds = ["fatal", "poll-error", "observation-error", "dispatch-error", "manual-recovery", "receipt-error", "outbox-error",
         "app-refresh-error", "native-request-blocked", "refresh-blocked", "durable-work-lost", "webhook-error", "webhook-disable-error",
         "codex-auth-failed", "codex-auth-invalid", "codex-auth-error"];
     static readonly HashSet<string> ActivityKinds = ["session-created", "forwarded"];
@@ -102,7 +102,7 @@ sealed class ControllerStatus : IDisposable
         var journal = ReadObject(statePath + ".refresh.json");
         var active = journal?["active"] as JsonObject;
         var sessions = new JsonArray();
-        int pending = 0, running = 0, started = 0;
+        int pending = 0, running = 0, started = 0, waiting = 0;
         foreach (var (_, value) in state?["discussions"] as JsonObject ?? new JsonObject())
         {
             if (value is not JsonObject discussion) continue;
@@ -115,6 +115,8 @@ sealed class ControllerStatus : IDisposable
             else if (turn) running++;
             var item = Json.Object(("discussion", discussion.Text("url")), ("session", session.Length == 0 ? null : session), ("state", activity));
             if (marker is not null) { item["since"] = marker["since"]?.Copy(); item["operation"] = marker["operation"]?.Copy(); }
+            // Observed input held in the controller until its session is idle.
+            if (discussion["waiting"]?["inputs"] is JsonArray inputs && inputs.Count != 0) { item["waiting"] = inputs.Count; waiting += inputs.Count; }
             sessions.Add((JsonNode)item);
         }
         return new JsonObject
@@ -126,7 +128,7 @@ sealed class ControllerStatus : IDisposable
             ["controller"] = recorded?["controller"]?.Copy() ?? Json.Object(("state", "unknown")),
             ["authentication"] = recorded?["authentication"]?.Copy() ?? Json.Object(("state", "unknown")),
             ["codexAuthentication"] = recorded?["codexAuthentication"]?.Copy() ?? Json.Object(("state", "unknown")),
-            ["work"] = Json.Object(("sessions", started), ("pending", pending), ("running", journal is null ? null : running),
+            ["work"] = Json.Object(("sessions", started), ("pending", pending), ("waiting", waiting), ("running", journal is null ? null : running),
                 ("admissionBlocked", journal?["blocked"]?.Copy())),
             ["sessions"] = sessions,
             ["failures"] = recorded?["failures"]?.Copy() ?? new JsonArray(),
