@@ -263,6 +263,25 @@ class ContainerConfigurationTests(unittest.TestCase):
                 with self.subTest(category=invalid), self.assertRaisesRegex(ValueError, 'Dashboard category'):
                     runtime.configure(args)
 
+    def test_dashboard_release_check_receives_the_image_inventory_and_the_startup_tool_choice(self):
+        runtime = load_runtime()
+        inventory = '/opt/repoagent/image-inventory.json'
+        self.assertIn(f'COPY image-inventory.json {inventory}\n', (ROOT / 'container/Containerfile').read_text())
+        config = {'repository': 'example/project', 'appId': '123456', 'dashboardCategory': 'Controller status'}
+        for choice, startup in (('pinned', False), ('latest', True)):
+            with self.subTest(tool_updates=choice):
+                bridge = runtime.bridge_args(dict(config, toolUpdates=choice))
+                self.assertIn('--image-inventory', bridge)
+                self.assertEqual(bridge[bridge.index('--image-inventory') + 1], inventory)
+                self.assertEqual('--startup-tool-updates' in bridge, startup)
+                # Authentication checks publish no dashboard, so they compare no releases.
+                check = runtime.bridge_args(dict(config, toolUpdates=choice), check_auth=True)
+                self.assertNotIn('--image-inventory', check)
+                self.assertNotIn('--startup-tool-updates', check)
+        without = runtime.bridge_args({'repository': 'example/project', 'appId': '123456', 'toolUpdates': 'latest'})
+        self.assertNotIn('--image-inventory', without)
+        self.assertNotIn('--startup-tool-updates', without)
+
     def test_repository_settings_are_an_explicit_direct_App_runtime_choice(self):
         runtime = load_runtime()
         with tempfile.TemporaryDirectory() as directory:
