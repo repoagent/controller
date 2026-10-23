@@ -20,13 +20,13 @@ public sealed class GitHubAppCredentials : IDisposable
     internal long? RepositoryId => source.RepositoryId;
 
     public GitHubAppCredentials(HttpClient http, string appId, string privateKeyPath, string repository,
-        string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false)
+        string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false, bool repositorySettings = false)
     {
         this.clock = clock ?? TimeProvider.System;
         SecureDirectory(credentialDirectory);
         TokenFile = Path.Combine(credentialDirectory, "installation-token.json");
         Invalidate();
-        source = new DirectAppTokenSource(http, appId, privateKeyPath, repository, this.clock, repositoryWebhooks, clone);
+        source = new DirectAppTokenSource(http, appId, privateKeyPath, repository, this.clock, repositoryWebhooks, clone, repositorySettings);
     }
 
     GitHubAppCredentials(IInstallationTokenSource source, string credentialDirectory, TimeProvider clock)

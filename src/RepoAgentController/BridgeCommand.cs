@@ -32,7 +32,8 @@ public static class BridgeCommand
         var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (native work may still be running)" };
         var clone = new Option<bool>("--clone") { Description = "Use explicitly approved clone-capable credentials" };
         var checkAuth = new Option<bool>("--check-auth") { Description = "Verify App installation identity and prepare authenticated gh, then exit without starting Codex" };
-        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, azureWorkQueue, disableWebhook, once, checkAuth, clone };
+        var repositorySettings = new Option<bool>("--repository-settings") { Description = "Read REPOAGENT_ repository Actions variables with an explicit Variables: read runtime permission" };
+        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, azureWorkQueue, disableWebhook, once, checkAuth, clone, repositorySettings };
         var tokenFile = new Option<FileInfo>("--token-file") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
@@ -76,6 +77,8 @@ public static class BridgeCommand
                     queue = workQueue ?? validated;
                 }
                 else if (workQueue is not null) throw new ArgumentException("An injected work queue requires --azure-work-queue");
+                if (result.GetValue(repositorySettings) && result.GetValue(brokerUrl) is not null)
+                    throw new ArgumentException("--repository-settings needs an explicit Variables: read runtime grant; broker enrollment profiles do not include it and are not widened");
                 var cwd = result.GetValue(workspace)!.FullName;
                 if (!Directory.Exists(cwd)) throw new ArgumentException("--workspace must exist");
                 var numbers = (result.GetValue(enroll) ?? []).Select(url =>
@@ -105,7 +108,8 @@ public static class BridgeCommand
                     using var ownedHttp = transport is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(60) } : null;
                     var http = transport ?? ownedHttp!;
                     using var credentials = broker is null
-                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone))
+                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone),
+                            repositorySettings: result.GetValue(repositorySettings))
                         : GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, clock, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone), expectedRepositoryId: result.GetValue(repositoryId), expectedInstallationId: result.GetValue(installationId));
                     await using var durable = queue is null ? null : new DurableWebhookWork(queue, repo, result.GetValue(repositoryId)!.Value,
                         result.GetValue(appId)!, result.GetValue(installationId)!.Value, BrokerTokenSource.ParseOrigin(broker!));
@@ -122,10 +126,13 @@ public static class BridgeCommand
                         return await DiscussionWebhooks.DeactivateSaved(github, statePath) ? 0 : 1;
                     if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentials.TokenFile);
                     var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentials.TokenFile);
+                    var settings = new RepositorySettings(result.GetValue(repositorySettings) ? github : null, clock ?? TimeProvider.System);
+                    await settings.Refresh(startToken);
                     if (result.GetValue(checkAuth)) return 0;
                     using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(startToken, credentials.BrokerCredentialLost);
                     var runtimeToken = refreshCancellation.Token;
                     var refresh = credentials.RefreshUntilCancelled(runtimeToken);
+                    var settingsRefresh = settings.RefreshUntilCancelled(runtimeToken);
                     try
                     {
                         using var checkout = result.GetValue(clone)
@@ -163,6 +170,7 @@ public static class BridgeCommand
                     finally
                     {
                         await refreshCancellation.CancelAsync();
+                        await settingsRefresh;
                         await refresh;
                     }
                 }

@@ -16,6 +16,8 @@ src/RepoAgentController/ManagedCheckout.cs
 src/RepoAgentController/CheckoutRefresh.cs
 src/RepoAgentController/MentionUser.cs
 src/RepoAgentController/Program.cs
+src/RepoAgentController/RepositorySettings.cs
+src/RepoAgentController/repository-settings.json
 src/RepoAgentController/RepoAgentController.csproj
 src/RepoAgentController/StateStore.cs
 tests/NativeSmoke/NativeSmoke.csproj
