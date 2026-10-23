@@ -378,7 +378,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         try { store.Save(); }
         finally
         {
-            Log.Write("delivery-retry", $"{record.Text("url")} session={(record.Text("sessionId") is { Length: > 0 } session ? session : "none")} attempt={attempts} redelivery={(offered ? "true" : "false")} inputs={count} sources={string.Join(',', inputs.Take(count).Select(input => input!["receipt"]!.Text("id")).Distinct())} retry-at={after:O}: {reason}");
+            Log.Write("delivery-retry", $"{record.Text("url")} session={(record.Text("sessionId") is { Length: > 0 } session ? session : "none")} attempt={attempts} redelivery={(offered ? "true" : "false")} inputs={count} sources={string.Join(',', inputs.Take(count).Select(input => input!["receipt"]).OfType<JsonNode>().Select(receipt => receipt.Text("id")).Distinct())} retry-at={after:O}: {reason}");
         }
     }
 

@@ -163,7 +163,7 @@ public sealed class GitHubOutboxTests
     {
         readonly BrokerAuthenticationTests.Fixture fixture = new();
         readonly string? path = Environment.GetEnvironmentVariable("PATH");
-        readonly string world, requests, native;
+        readonly string world, requests, native, nativeReject;
         public FakeTimeProvider Clock => fixture.Clock;
 
         public Controller()
@@ -171,11 +171,12 @@ public sealed class GitHubOutboxTests
             world = Path.Combine(fixture.Directory, "github-world.json");
             requests = Path.Combine(fixture.Directory, "github-requests.jsonl");
             native = Path.Combine(fixture.Directory, "native-requests.jsonl");
+            nativeReject = Path.Combine(fixture.Directory, "native-reject");
             var gh = (path ?? "").Split(Path.PathSeparator).Select(directory => Path.Combine(directory, "gh")).FirstOrDefault(File.Exists)
                 ?? throw new InvalidOperationException("The installed gh is required: its --include output is the adapter compatibility boundary");
             var tools = Path.Combine(fixture.Directory, "native-tools");
             Directory.CreateDirectory(tools);
-            WriteExecutable(Path.Combine(tools, "codex"), Native.Replace("NATIVE_LOG", Quote(native)));
+            WriteExecutable(Path.Combine(tools, "codex"), Native.Replace("NATIVE_LOG", Quote(native)).Replace("NATIVE_REJECT", Quote(nativeReject)));
             WriteExecutable(fixture.Gh, GitHub.Replace("WORLD", Quote(world)).Replace("REQUESTS", Quote(requests)).Replace("REAL_GH", Quote(gh)));
             File.WriteAllText(world, new JsonObject
             {
@@ -236,6 +237,9 @@ public sealed class GitHubOutboxTests
                 ["createdAt"] = "2026-10-23T12:00:00Z"
             });
         });
+
+        /// <summary>The native peer answers the next <paramref name="count"/> turn/start requests with a JSON-RPC error.</summary>
+        public void RejectTurns(int count) => File.WriteAllText(nativeReject, count.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
         /// <summary>Marks a comment as the Discussion's answer, or clears the answer.</summary>
         public void Answer(string? comment) => Update(state =>
@@ -307,6 +311,10 @@ public sealed class GitHubOutboxTests
              with open(NATIVE_LOG,'a') as log:log.write(line)
              if 'id' not in request:continue
              method=request['method']
+             rejects=int(open(NATIVE_REJECT).read()) if method=='turn/start' and os.path.exists(NATIVE_REJECT) else 0
+             if rejects:
+              open(NATIVE_REJECT,'w').write(str(rejects-1))
+              print(json.dumps({'id':request['id'],'error':{'code':-32000,'message':'turn rejected'}}),flush=True);continue
              result={'codexHome':os.getcwd()} if method=='initialize' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1','status':{'type':'idle'}}}
              print(json.dumps({'id':request['id'],'result':result}),flush=True)
             """;

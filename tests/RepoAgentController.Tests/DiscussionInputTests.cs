@@ -148,6 +148,46 @@ public sealed class DiscussionInputTests
     }
 
     [Fact]
+    public async Task Rejected_batch_with_a_deletion_is_redelivered_in_the_compact_shape_with_the_deletion_intact()
+    {
+        using var controller = new GitHubOutboxTests.Controller();
+        controller.Comment("C1", "Which release should we test first?", author: "alice");
+        controller.Comment("R1", "Release 2.4, please.", author: "bob", replyTo: "C1");
+        Assert.Equal(0, await controller.RunOnce());
+
+        controller.Delete("R1");
+        controller.Comment("C2", "Also check the installer.", author: "dave");
+        controller.RejectTurns(1);
+        var (exit, log) = await controller.RunOnceLogged();
+        Assert.True(exit == 0, log); // A failed delivery waits for its retry; the observation itself succeeded.
+        Assert.Contains(log.Split('\n'), line => line.Contains(" delivery-retry ") && line.Contains("redelivery=true") && line.Contains("sources=C2 "));
+        Assert.Equal(0, controller.Writes("C2")); // No EYES before a delivery of it is acknowledged.
+
+        controller.Clock.Advance(TimeSpan.FromMinutes(1)); // Past the first backoff.
+        Assert.Equal(0, await controller.RunOnce());
+
+        var inputs = controller.Inputs;
+        Assert.Equal(3, inputs.Count);
+        Assert.Equal(inputs[1], inputs[2].Replace(",\"redelivery\":true", "")); // The same compact input, marked once.
+        Assert.DoesNotContain(DiscussionBody, inputs[2]);
+        Assert.DoesNotContain("Release 2.4, please.", inputs[2]);
+        var envelope = JsonNode.Parse(inputs[2])!;
+        Assert.Equal(("continue", true), (envelope["_bridge"]!["mode"]!.GetValue<string>(), envelope["_bridge"]!["redelivery"]!.GetValue<bool>()));
+        Assert.Equal(["id", "number", "url"], envelope["discussion"]!.AsObject().Select(property => property.Key));
+        Assert.Equal(
+        [
+            ("comment.created", "C2", "dave", null, "C2"),
+            ("comment.deleted", "R1", "bob", "C1", "C1")
+        ], envelope["changes"]!.AsArray().Select(change => (
+            change!["kind"]!.GetValue<string>(), change["subject"]!["id"]!.GetValue<string>(), change["subject"]!["author"]!["login"]!.GetValue<string>(),
+            change["subject"]!["replyTo"]?["id"]?.GetValue<string>(), change["replyTarget"]!["replyToId"]?.GetValue<string>())));
+        Assert.Equal(1, controller.Writes("C2"));
+
+        Assert.Equal(0, await controller.RunOnce());
+        Assert.Equal(3, controller.Turns); // Delivered once acknowledged; nothing is sent again.
+    }
+
+    [Fact]
     public async Task Failed_later_page_preserves_the_checkpoint_and_infers_no_deletion_until_a_complete_read_confirms_it()
     {
         using var controller = new GitHubOutboxTests.Controller();
