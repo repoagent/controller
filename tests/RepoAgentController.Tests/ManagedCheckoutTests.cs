@@ -58,7 +58,7 @@ public sealed class ManagedCheckoutTests
     [InlineData("index-symlink")]
     [InlineData("linked-git")]
     [InlineData("unsafe-config")]
-    public async Task Checkout_restart_preserves_local_state_and_blocks_unsafe_reuse(string scenario)
+    public async Task Checkout_restart_accepts_owned_local_state_and_blocks_unsafe_reuse(string scenario)
         => await Exercise(true, false, scenario);
 
     [Fact]
@@ -406,13 +406,17 @@ public sealed class ManagedCheckoutTests
                     break;
             }
             var snapshot = Snapshot(workspace);
-            var restartAllowed = scenario is "reuse" or "ignored" or "owner-executable-metadata";
+            // Local work inside the owned checkout is the idle refresh's to replace, never a reason to refuse restart.
+            // This fixture has no authoritative origin lookup, so the refresh stays pending and nothing is replaced.
+            var localState = scenario is "dirty" or "staged" or "untracked" or "branch" or "commit" or
+                "assume-unchanged" or "skip-worktree" or "operation/MERGE_HEAD";
+            var restartAllowed = localState || scenario is "reuse" or "ignored" or "owner-executable-metadata";
             Assert.Equal(restartAllowed ? 0 : 1, await Start());
             Assert.Equal(snapshot.ToArray(), Snapshot(workspace).ToArray());
             Assert.Equal(clones, File.ReadAllText(cloneLog));
             if (restartAllowed)
             {
-                Assert.Equal(commit, await Git("-C", expected, "rev-parse", "HEAD"));
+                if (!localState) Assert.Equal(commit, await Git("-C", expected, "rev-parse", "HEAD"));
                 Assert.All(File.ReadAllLines(capture), line => Assert.Equal(expected, JsonNode.Parse(line)!["cwd"]!.GetValue<string>()));
             }
             else Assert.False(File.Exists(capture));

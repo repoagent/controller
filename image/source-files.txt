@@ -1,5 +1,6 @@
 global.json
 .agents/skills/github-discussion/SKILL.md
+.agents/skills/repoagent-orientation/SKILL.md
 src/RepoAgentController/AppGitCredential.cs
 src/RepoAgentController/AppGitHubCommand.cs
 src/RepoAgentController/Bridge.cs
@@ -15,9 +16,11 @@ src/RepoAgentController/GitHubAppCredentials.cs
 src/RepoAgentController/ManagedCheckout.cs
 src/RepoAgentController/CheckoutRefresh.cs
 src/RepoAgentController/CredentialHandoff.cs
+src/RepoAgentController/ControllerStatus.cs
 src/RepoAgentController/MentionUser.cs
 src/RepoAgentController/Program.cs
 src/RepoAgentController/RepoAgentController.csproj
+src/RepoAgentController/RetainedLog.cs
 src/RepoAgentController/StateStore.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs

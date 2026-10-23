@@ -134,7 +134,7 @@ Only that selected file is mounted during the import, copied with owner-only per
 
 ## Skills
 
-The required `github-discussion` response skill is built alongside the bridge and injected through the native skill protocol. Optional skills are configured independently:
+Two required skills are built alongside the bridge: `github-discussion` (how to answer each input) and `repoagent-orientation` (participants, compact and redelivered inputs, reply routing, App identity, and the read-only mainline checkout with separate worktrees for other revisions or edits). The controller registers their directory with native skill discovery. Every turn receives `github-discussion`. The first turn after a session starts or resumes in a native process also receives `repoagent-orientation`. Optional skills are configured independently:
 
 ```json
 [
@@ -153,7 +153,7 @@ The required `github-discussion` response skill is built alongside the bridge an
 ./repoagent start
 ```
 
-Use an immutable full commit SHA. Setup parses the skill's YAML frontmatter, validates its name and description, reports repository/revision/path, and installs into the native user skill location. Missing sources, invalid paths, duplicate/reserved names and invalid skill metadata fail before replacing the current selection. Installing an empty array explicitly clears optional skills. The response skill remains required.
+Use an immutable full commit SHA. Setup parses the skill's YAML frontmatter, validates its name and description, reports repository/revision/path, and installs into the native user skill location. Missing sources, invalid paths, duplicate/reserved names and invalid skill metadata fail before replacing the current selection. Installing an empty array explicitly clears optional skills. The required skills stay installed.
 
 For a private source, set `"private": true` and explicitly supply a token file:
 

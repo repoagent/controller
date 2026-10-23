@@ -77,14 +77,14 @@ def assert_trusted_project(test, observation, root):
 
 
 class CheckoutShippingInputs(unittest.TestCase):
-    def test_default_image_contains_all_evaluated_controller_compile_inputs(self):
-        result = subprocess.run(['dotnet', 'msbuild', str(ROOT / 'src/RepoAgentController'), '-getItem:Compile'],
+    def test_default_image_contains_all_evaluated_controller_compile_and_packaged_inputs(self):
+        result = subprocess.run(['dotnet', 'msbuild', str(ROOT / 'src/RepoAgentController'), '-getItem:Compile,Content'],
                                 text=True, capture_output=True, check=True, timeout=60)
-        items = json.loads(result.stdout)['Items']['Compile']
-        expected = {str(Path(item['FullPath']).relative_to(ROOT)) for item in items}
+        items = json.loads(result.stdout)['Items']
+        expected = {str(Path(item['FullPath']).relative_to(ROOT)) for item in items['Compile'] + items['Content']}
         inventory = {line.strip() for line in (ROOT / 'image/source-files.txt').read_text().splitlines()
                      if line.strip() and not line.startswith('#')}
-        self.assertFalse(expected - inventory, 'Shipping context omits compile inputs: ' + repr(sorted(expected - inventory)))
+        self.assertFalse(expected - inventory, 'Shipping context omits controller inputs: ' + repr(sorted(expected - inventory)))
 
     def test_actual_default_composed_context_builds_without_injected_sources(self):
         with tempfile.TemporaryDirectory(prefix='checkout shipping ') as directory:
