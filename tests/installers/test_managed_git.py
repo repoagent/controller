@@ -563,6 +563,11 @@ class GitProvider:
                         observer = getattr(provider, 'ref_observer', None)
                         if observer: observer(sha)
                         return self.reply(dict(ref='refs/heads/main', object=dict(type='commit', sha=sha)))
+                    # A test may answer GraphQL requests itself first; None falls through to the defaults below.
+                    answer = getattr(provider, 'graphql', None)
+                    answer = answer(json.loads(body)) if answer and self.command == 'POST' and self.path == '/graphql' and body else None
+                    if answer is not None:
+                        return self.reply(answer)
                     if self.command != 'POST' or self.path != '/graphql' or not body:
                         print('GIT_PROVIDER_DENIED ' + json.dumps({'method': self.command, 'path': self.path}), flush=True)
                         return self.reply({}, 403)

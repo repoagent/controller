@@ -196,6 +196,56 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return node is null ? throw new GitHubWriteException(GitHubFailure.Permanent, "receipt subject no longer exists") : HasViewerReceipt(node);
     }
 
+    /// <summary>Hidden in the rendered dashboard body; with App authorship it identifies the controller-owned dashboard.</summary>
+    public const string DashboardMarker = "<!-- repoagent:controller-dashboard -->";
+
+    /// <summary>The controller's own status Discussion: authored by this App and marked. Participants cannot author as the App.</summary>
+    public bool IsDashboard(JsonNode discussion) =>
+        IsAgentActor(discussion["author"]) && discussion.Text("body").Contains(DashboardMarker, StringComparison.Ordinal);
+
+    /// <summary>Resolves the repository and named Discussion category that hold the dashboard.</summary>
+    public async Task<(string Repository, string Category)> DashboardCategory(string name, CancellationToken ct)
+    {
+        var parts = Repository.Split('/');
+        var repository = (await Send("query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { id discussionCategories(first:100) { nodes { id name } } } }",
+            Json.Object(("owner", parts[0]), ("name", parts[1])), ct))["repository"] ?? throw new GitHubWriteException(GitHubFailure.Permanent, "repository not found");
+        var category = repository["discussionCategories"]?["nodes"]?.AsArray().FirstOrDefault(node => string.Equals(node!.Text("name"), name, StringComparison.OrdinalIgnoreCase))
+            ?? throw new GitHubWriteException(GitHubFailure.Permanent, $"dashboard Discussion category '{name}' does not exist");
+        return (repository.Text("id"), category.Text("id"));
+    }
+
+    /// <summary>Finds the oldest owned dashboard in the category, which also settles an uncertain earlier creation.</summary>
+    public async Task<(string Id, string Url)?> FindDashboard(string category, CancellationToken ct)
+    {
+        var parts = Repository.Split('/');
+        string? cursor = null;
+        do
+        {
+            var connection = (await Send("query($owner:String!,$name:String!,$category:ID!,$cursor:String) { repository(owner:$owner,name:$name) { discussions(first:50,after:$cursor,categoryId:$category,orderBy:{field:CREATED_AT,direction:ASC}) { nodes { id url body author { __typename login } } " + PageInfo + " } } }",
+                Json.Object(("owner", parts[0]), ("name", parts[1]), ("category", category), ("cursor", cursor)), ct))["repository"]?["discussions"]
+                ?? throw new GitHubWriteException(GitHubFailure.Permanent, "repository Discussions are not readable");
+            if (connection["nodes"]!.AsArray().FirstOrDefault(node => IsDashboard(node!)) is { } owned) return (owned.Text("id"), owned.Text("url"));
+            cursor = Next(connection);
+        } while (cursor is not null);
+        return null;
+    }
+
+    public async Task<(string Id, string Url)> CreateDashboard((string Repository, string Category) target, string title, string body, CancellationToken ct)
+    {
+        var created = (await Send("mutation($repository:ID!,$category:ID!,$title:String!,$body:String!) { createDiscussion(input:{repositoryId:$repository,categoryId:$category,title:$title,body:$body}) { discussion { id url } } }",
+            Json.Object(("repository", target.Repository), ("category", target.Category), ("title", title), ("body", body)), ct))["createDiscussion"]?["discussion"]
+            ?? throw new GitHubWriteException(GitHubFailure.Transient, "dashboard creation returned no Discussion", uncertain: true);
+        return (created.Text("id"), created.Text("url"));
+    }
+
+    public async Task UpdateDashboard(string id, string title, string body, CancellationToken ct)
+    {
+        // Replacing the whole title and body is idempotent, so an uncertain earlier update needs no reconciliation.
+        if ((await Send("mutation($id:ID!,$title:String!,$body:String!) { updateDiscussion(input:{discussionId:$id,title:$title,body:$body}) { discussion { id } } }",
+            Json.Object(("id", id), ("title", title), ("body", body)), ct))["updateDiscussion"]?["discussion"] is null)
+            throw new GitHubWriteException(GitHubFailure.Transient, "dashboard update returned no Discussion", uncertain: true);
+    }
+
     // Controller-owned requests: classify by HTTP status, rate-limit headers and GraphQL error type.
     async Task<JsonNode> Send(string query, JsonObject variables, CancellationToken ct)
     {

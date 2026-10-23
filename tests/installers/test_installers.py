@@ -236,6 +236,33 @@ class ContainerConfigurationTests(unittest.TestCase):
                 runtime.configure(args)
             self.assertEqual(runtime.CONFIG.read_bytes(), saved)
 
+    def test_dashboard_category_is_an_optional_retained_controller_choice(self):
+        runtime = load_runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.CONFIG = Path(directory) / 'config/settings.json'
+            runtime.CODEX = Path(directory) / 'codex'
+            args = argparse.Namespace(repository='example/project', app_id='123456', key_path='/private/key.pem',
+                installation_id=None, mention_user='', model='test-model', web_search='live', tool_updates='latest',
+                mode='polling', public_url='', listen_port=8080, reconcile_interval=300)
+            runtime.configure(args)
+            self.assertNotIn('--dashboard-category', runtime.bridge_args(json.loads(runtime.CONFIG.read_text())))
+            args.dashboard_category = 'Controller status'
+            runtime.configure(args)
+            bridge = runtime.bridge_args(json.loads(runtime.CONFIG.read_text()))
+            self.assertEqual(bridge[bridge.index('--dashboard-category') + 1], 'Controller status')
+            # Reconfiguring without the option keeps the dashboard; an empty value turns it off.
+            del args.dashboard_category
+            runtime.configure(args)
+            self.assertIn('--dashboard-category', runtime.bridge_args(json.loads(runtime.CONFIG.read_text())))
+            args.dashboard_category = ''
+            runtime.configure(args)
+            # Removal leaves no key behind, so other configurations keep their exact field set.
+            self.assertNotIn('dashboardCategory', json.loads(runtime.CONFIG.read_text()))
+            for invalid in ('   ', 'x' * 101, 'line\nbreak'):
+                args.dashboard_category = invalid
+                with self.subTest(category=invalid), self.assertRaisesRegex(ValueError, 'Dashboard category'):
+                    runtime.configure(args)
+
     def test_repository_settings_are_an_explicit_direct_App_runtime_choice(self):
         runtime = load_runtime()
         with tempfile.TemporaryDirectory() as directory:

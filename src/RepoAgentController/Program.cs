@@ -17,9 +17,16 @@ namespace RepoAgentController
         // Scoped to one controller lifetime's async flow, so concurrent in-process lifetimes stay separate.
         static readonly AsyncLocal<Action<LogEntry>?> observer = new();
         public static void Protect(string secret) => secrets.TryAdd(secret, 0);
-        public static void Write(string kind, string message)
+        /// <summary>Removes every known secret, as every log entry does.</summary>
+        public static string Redact(string message)
         {
             foreach (var secret in secrets.Keys) message = message.Replace(secret, "<redacted>", StringComparison.Ordinal);
+            return message;
+        }
+
+        public static void Write(string kind, string message)
+        {
+            message = Redact(message);
             var entry = new LogEntry(DateTimeOffset.UtcNow, kind, message);
             Console.WriteLine(entry.Line);
             observer.Value?.Invoke(entry);

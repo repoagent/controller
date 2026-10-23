@@ -67,6 +67,8 @@ def bridge_args(config, *, check_auth=False):
             args += ['--webhook-url', config['publicUrl']]
     if config.get('azureWorkQueue') and not check_auth:
         args += ['--azure-work-queue', config['azureWorkQueue']]
+    if config.get('dashboardCategory') and not check_auth:
+        args += ['--dashboard-category', config['dashboardCategory']]
     for url in config.get('enroll', []):
         args += ['--enroll', url]
     return args
@@ -155,6 +157,15 @@ def configure(args):
         if config.get('azureWorkQueue') is not None and config['azureWorkQueue'] != queue:
             raise ValueError('Changing work queue requires a fresh instance after queued work is settled.')
         config['azureWorkQueue'] = queue
+    dashboard = getattr(args, 'dashboard_category', None)
+    if dashboard is not None:
+        if dashboard and (not dashboard.strip() or len(dashboard) > 100 or any(not c.isprintable() for c in dashboard)):
+            raise ValueError('Dashboard category must be an existing Discussion category name of at most 100 printable characters.')
+        # Only a configured dashboard carries this key, so other configurations keep their exact field set.
+        if dashboard:
+            config['dashboardCategory'] = dashboard
+        else:
+            config.pop('dashboardCategory', None)
     # Only direct-App configurations carry this key; broker binding checks keep their exact field set.
     if repository_settings:
         config['repositorySettings'] = True
@@ -301,6 +312,7 @@ def main():
     configure_parser.add_argument('--listen-port', type=int, default=8080)
     configure_parser.add_argument('--reconcile-interval', type=int, default=300)
     configure_parser.add_argument('--azure-work-queue')
+    configure_parser.add_argument('--dashboard-category')
     get = sub.add_parser('get'); get.add_argument('key')
     login = sub.add_parser('login')
     login.add_argument('--non-interactive', action='store_true')

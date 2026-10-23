@@ -147,6 +147,7 @@ Usage: ./repoagent COMMAND
             [--installation-id ID] [--mention-user LOGIN] [--model MODEL] [--tool-updates latest|pinned]
             [--repository-settings]   Read REPOAGENT_ repository variables (App needs Variables: read)
             [--mode polling|fixed-url|quick-tunnel] [--public-url https://HOST] [--listen-port 8080] [--reconcile-interval 300]
+            [--dashboard-category "EXISTING CATEGORY"]  (empty value removes the status dashboard)
   login                           Container-owned Codex device sign-in (reuses valid login)
   import-codex-auth /path/auth.json Explicitly copy an existing Codex auth cache
   skills install /path/skills.json [/path/private-source-token]

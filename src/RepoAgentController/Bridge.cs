@@ -59,6 +59,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         foreach (var discussion in discussions)
         {
             ct.ThrowIfCancellationRequested();
+            if (github.IsDashboard(discussion)) continue; // Operational status, never agent input, however enrolled.
             var id = discussion.Text("id");
             var record = store.Discussions[id]?.AsObject();
             if (record?["pending"] is not null)
@@ -244,7 +245,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         store.Save();
         inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
         admission?.Confirm();
-        Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count}");
+        Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count} latest={envelope["changes"]!.AsArray()[^1]!["subject"]!.Text("url")}");
         foreach (var source in receipts) outbox.Receipt(source);
         return true;
     }
