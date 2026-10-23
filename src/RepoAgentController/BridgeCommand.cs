@@ -34,7 +34,8 @@ public static class BridgeCommand
         var checkAuth = new Option<bool>("--check-auth") { Description = "Verify App installation identity and prepare authenticated gh, then exit without starting Codex" };
         var logFileBytes = new Option<long>("--log-file-bytes") { DefaultValueFactory = _ => RetainedLog.DefaultFileBytes, Description = $"Maximum bytes per retained log file beside --state ({RetainedLog.MinimumFileBytes}..{RetainedLog.MaximumFileBytes}); retained logs never exceed --log-files × this size" };
         var logFiles = new Option<int>("--log-files") { DefaultValueFactory = _ => RetainedLog.DefaultFiles, Description = $"Retained log files, including the active file (1..{RetainedLog.MaximumFiles}); the oldest file is deleted on rotation" };
-        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, azureWorkQueue, disableWebhook, once, checkAuth, clone, logFileBytes, logFiles };
+        var dashboardCategory = new Option<string?>("--dashboard-category") { Description = "Existing Discussion category for the controller-owned status dashboard; omit to publish no dashboard" };
+        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, azureWorkQueue, disableWebhook, once, checkAuth, clone, logFileBytes, logFiles, dashboardCategory };
         var tokenFile = new Option<FileInfo>("--token-file") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
@@ -145,6 +146,10 @@ public static class BridgeCommand
                     if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentials.TokenFile);
                     var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentials.TokenFile);
                     if (result.GetValue(checkAuth)) return 0;
+                    await using var outbox = new GitHubOutbox(statePath + ".outbox", github, clock ?? TimeProvider.System);
+                    // Disposed before the outbox: a stop this lifetime handles is published, then delivery drains within a bound.
+                    await using var dashboard = result.GetValue(dashboardCategory) is { } category
+                        ? new ControllerDashboard(category, status, outbox, clock ?? TimeProvider.System) : null;
                     using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(startToken, credentials.BrokerCredentialLost);
                     var runtimeToken = refreshCancellation.Token;
                     var refresh = credentials.RefreshUntilCancelled(runtimeToken);
@@ -163,8 +168,8 @@ public static class BridgeCommand
                         await codex.Initialize(runtimeToken);
                         if (reconciliation is not null) await reconciliation.Start(codex,
                             durable is null ? TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)) : Timeout.InfiniteTimeSpan, runtimeToken);
-                        await using var outbox = new GitHubOutbox(statePath + ".outbox", github, clock ?? TimeProvider.System);
                         var bridge = new Bridge(github, codex, store, outbox, numbers, reconciliation);
+                        dashboard?.Start(runtimeToken);
                         if (!result.GetValue(once)) outbox.Start(runtimeToken);
                         if (publicUrl is not null)
                         {
@@ -183,6 +188,11 @@ public static class BridgeCommand
                             await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), clock ?? TimeProvider.System, runtimeToken);
                         } while (!runtimeToken.IsCancellationRequested);
                         return 0;
+                    }
+                    catch (Exception error) when (dashboard is not null && !cancellationToken.IsCancellationRequested)
+                    {
+                        dashboard.Failed(error.Message);
+                        throw;
                     }
                     finally
                     {
