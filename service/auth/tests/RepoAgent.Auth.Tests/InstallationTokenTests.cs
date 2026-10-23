@@ -49,9 +49,9 @@ public sealed class InstallationTokenTests
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         Assert.Equal(200, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         Assert.Equal(1, f.GitHub.VerifierMints);
-        Assert.Equal(3, f.GitHub.Mints);
+        Assert.Equal(2, f.GitHub.Mints);
         Assert.Equal(16, f.GitHub.Reads);
-        Assert.Equal(3, (await f.AttemptsAsync()).Count);
+        Assert.Equal(2, (await f.AttemptsAsync()).Count);
     }
 
     [Theory]

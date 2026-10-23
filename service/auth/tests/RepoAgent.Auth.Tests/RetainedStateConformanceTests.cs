@@ -34,6 +34,7 @@ public sealed class RetainedStateConformanceTests
     {
         await using var f = await EnrollmentFixture.CreateAsync(settings: new() { ["Broker:RetainedIssuanceLimit"] = "2" });
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
+        f.GitHub.RuntimeLifetime = TimeSpan.FromMinutes(6);
         using var start = await f.Send("/v2/enrollments", Request());
         Assert.Equal(HttpStatusCode.OK, start.StatusCode);
         var pending = await start.Content.ReadFromJsonAsync<JsonElement>(Token);

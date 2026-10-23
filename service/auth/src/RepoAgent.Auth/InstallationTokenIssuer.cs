@@ -29,6 +29,8 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
                 verifier = await AcquireVerifierAsync(grant, work);
                 grant = await store.SnapshotAsync(grant.Partition, grant.DeviceId, work.Cancellation);
             }
+            if (await store.PublishedRuntimeAsync(grant, work.Cancellation) is { } published)
+                return await ReuseAsync(grant, published, work, caller);
             (grant, runtime) = await store.ReserveAsync(grant, "runtime", work);
             verifier = await store.VerifierAsync(grant, work.Cancellation) ?? throw new IssuanceDenied();
             var verifierToken = store.Recover(grant, verifier);
@@ -50,27 +52,50 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
             work.Fresh(release);
             await store.ReleaseAsync(grant, runtime, verifier, work.Cancellation);
             released = true;
-            var response = new Dictionary<string, object>
-            {
-                ["protocolVersion"] = grant.Approval.RuntimeVersion, ["appId"] = AppId, ["appSlug"] = AppSlug,
-                ["installationId"] = grant.InstallationId, ["repositoryId"] = Id(grant.RepositoryId), ["repository"] = grant.Repository,
-                ["permissions"] = Permissions(grant.Profile), ["token"] = known.Token, ["expiresAt"] = known.ExpiresAt
-            };
-            if (grant.Approval == ApprovalContract.AgentClone)
-            {
-                response["profile"] = grant.Profile;
-                response["policyVersion"] = grant.Approval.Policy;
-            }
-            return new(200, response);
+            return Response(grant, known);
         }
         catch (Exception ex) when (Expected(ex))
         {
-            // A lost release response is deliberately treated as uncertain: revoke when possible,
-            // retaining either the committed release or send/known record if reconciliation fails.
+            // A lost release response is uncertain. Fence an unpublished runtime before revocation;
+            // an already committed release can be shared and must remain valid.
             if (!released && known is not null && grant is not null && runtime is not null)
                 await RevokeKnownAsync(grant, runtime, known.Token);
             return new(ex is IssuanceDenied denial ? denial.Status : 503);
         }
+    }
+
+    private async Task<IssuanceResult> ReuseAsync(GrantSnapshot grant, TableEntity attempt, IssuanceWork work, CancellationToken caller)
+    {
+        var reservation = await store.ReservePublishedObservationAsync(grant, attempt, work);
+        grant = reservation.Grant;
+        attempt = reservation.Attempt;
+        var verifier = await store.VerifierAsync(grant, work.Cancellation) ?? throw new IssuanceDenied();
+        var token = store.Recover(grant, attempt);
+        var jwt = await signer.SignAsync(reservation.Jwt, work.Cancellation);
+        var verifierToken = store.Recover(grant, verifier);
+        var admission = await ObserveAsync(grant, jwt, verifierToken, work);
+        var release = await ObserveAsync(grant, jwt, verifierToken, work);
+        work.Fresh(admission);
+        work.Fresh(release);
+        caller.ThrowIfCancellationRequested();
+        await store.RepublishAsync(grant, attempt, verifier, reservation.Jwt.RowKey, work.Cancellation);
+        return Response(grant, new(token, Date(attempt, "ExpiresAt"), true));
+    }
+
+    private static IssuanceResult Response(GrantSnapshot grant, IssuedToken token)
+    {
+        var response = new Dictionary<string, object>
+        {
+            ["protocolVersion"] = grant.Approval.RuntimeVersion, ["appId"] = AppId, ["appSlug"] = AppSlug,
+            ["installationId"] = grant.InstallationId, ["repositoryId"] = Id(grant.RepositoryId), ["repository"] = grant.Repository,
+            ["permissions"] = Permissions(grant.Profile), ["token"] = token.Token, ["expiresAt"] = token.ExpiresAt
+        };
+        if (grant.Approval == ApprovalContract.AgentClone)
+        {
+            response["profile"] = grant.Profile;
+            response["policyVersion"] = grant.Approval.Policy;
+        }
+        return new(200, response);
     }
 
     public async Task<TableEntity> AcquireVerifierAsync(GrantSnapshot grant, IssuanceWork work)
@@ -110,6 +135,8 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
         using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(6));
         try
         {
+            if (Text(attempt, "Purpose") == "runtime")
+                attempt = await store.FenceUnpublishedRuntimeAsync(grant, attempt, completion.Token);
             await github.RevokeAsync(token, completion.Token);
             await store.MarkRevokedAsync(grant, attempt, completion.Token);
         }
