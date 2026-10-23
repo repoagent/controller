@@ -190,7 +190,7 @@ Polling mode publishes no ports. Explicit [fixed-URL webhook mode](webhooks.md) 
 ./repoagent state
 ```
 
-`./repoagent status` (or `.\repoagent.ps1 status`) shows identity, lifetime, authentication health, sessions, pending/running work and recent failures as JSON while the agent runs or after it stops. `./repoagent logs --retained` prints the retained logs from the state volume, which survive container replacement unlike `docker logs`. Retention defaults to five 1 MiB files; see [status and retained logs](../README.md#status-and-retained-logs) for fields, bounds and exclusions.
+`./repoagent status` (or `.\repoagent.ps1 status`) shows identity, lifetime, authentication health, sessions, pending/retrying/running work and recent failures as JSON while the agent runs or after it stops. `./repoagent logs --retained` prints the retained logs from the state volume, which survive container replacement unlike `docker logs`. Retention defaults to five 1 MiB files; see [status and retained logs](../README.md#status-and-retained-logs) for fields, bounds and exclusions.
 
 Keep one running bridge per repository/App; separate instances do not make concurrent processing of the same conversations safe. Back up the state and native history before any manual recovery described in the [README](../README.md#checkpoints-and-manual-recovery).
 

@@ -133,10 +133,10 @@ public sealed class DiscussionJourney
             // The operator path stops the bridge, backs up state and substitutes an invalid native ID.
             await Control("invalidate-session", a["id"]!.ToString());
             var rejected = await Comment(a, "Rejected-input fixture: reply only if this input is accepted. Marker REJECTED_" + run);
-            await Until(async () => HasRecoveryForSource(await Logs(), a["url"]!.ToString(), rejected["id"]!.ToString()), "native rejection recorded for this source and the deliberately invalid session");
+            await Until(async () => HasRetryForSource(await Logs(), a["url"]!.ToString(), rejected["id"]!.ToString()), "native rejection retried for this source and the deliberately invalid session");
             Assert.Equal(0, Eyes(await Source(rejected["id"]!.ToString())));
             var rejectedCount = Forwarded(await Logs());
-            await StableAcrossPolls(log => Forwarded(log) == rejectedCount, "rejected input remains stopped without replay", requireSuccessfulPolls: false);
+            await StableAcrossPolls(log => Forwarded(log) == rejectedCount, "rejected input keeps retrying without acceptance", requireSuccessfulPolls: false);
             Assert.Equal(0, CountAcceptedSources(await Logs(), rejected["id"]!.ToString()));
             Assert.Equal(0, Eyes(await Source(rejected["id"]!.ToString())));
             await Control("restore-session", a["id"]!.ToString());
@@ -283,39 +283,27 @@ public sealed class DiscussionJourney
         return session!;
     }
     [Fact]
-    public void Recovery_evidence_matches_the_source_in_a_multiline_pending_record()
+    public void Retry_evidence_matches_the_source_and_the_invalid_session()
     {
         const string log = """
-            2026-10-20T00:26:25.2314303+00:00 manual-recovery https://github.com/egil/repoagent/discussions/23 session=invalid-native-session pending={
-              "operation": "send",
-              "since": "2026-10-20T00:25:38.3014183+00:00",
-              "sourceIds": [
-                "DC_kwDOVQFj7c4BIsCK"
-              ]
+            2026-10-20T00:26:25.2314303+00:00 delivery-retry https://github.com/egil/repoagent/discussions/23 session=invalid-native-session attempt=1 redelivery=false inputs=2 sources=DC_kwDOVQFj7c4BIsCJ,DC_kwDOVQFj7c4BIsCK retry-at=2026-10-20T00:26:30.2314303+00:00: Native request failed: {
+              "code": -32600,
+              "message": "thread not found"
             }
-            2026-10-20T00:26:50.0000000+00:00 poll-completed success=False elapsed-ms=25000
+            2026-10-20T00:26:50.0000000+00:00 poll-completed success=True elapsed-ms=25000
             """;
         const string url = "https://github.com/egil/repoagent/discussions/23";
-        Assert.True(HasRecoveryForSource(log, url, "DC_kwDOVQFj7c4BIsCK"));
-        Assert.False(HasRecoveryForSource(log, url, "different-source"));
-        Assert.False(HasRecoveryForSource(log.Replace(" manual-recovery ", " observation-error quoted: manual-recovery "), url, "DC_kwDOVQFj7c4BIsCK"));
-        Assert.False(HasRecoveryForSource(log, url + "0", "DC_kwDOVQFj7c4BIsCK"));
-        Assert.False(HasRecoveryForSource(log[..log.IndexOf("sourceIds", StringComparison.Ordinal)], url, "DC_kwDOVQFj7c4BIsCK"));
+        Assert.True(HasRetryForSource(log, url, "DC_kwDOVQFj7c4BIsCK"));
+        Assert.True(HasRetryForSource(log, url, "DC_kwDOVQFj7c4BIsCJ"));
+        Assert.False(HasRetryForSource(log, url, "DC_kwDOVQFj7c4BIsC"));
+        Assert.False(HasRetryForSource(log.Replace(" delivery-retry ", " observation-error quoted: delivery-retry "), url, "DC_kwDOVQFj7c4BIsCK"));
+        Assert.False(HasRetryForSource(log, url + "0", "DC_kwDOVQFj7c4BIsCK"));
+        Assert.False(HasRetryForSource(log.Replace("session=invalid-native-session", "session=other"), url, "DC_kwDOVQFj7c4BIsCK"));
     }
 
-    static bool HasRecoveryForSource(string log, string url, string sourceId)
-    {
-        var events = Regex.Matches(log, @"^\S+ manual-recovery " + Regex.Escape(url) + " session=invalid-native-session pending=", RegexOptions.Multiline);
-        if (events.Count == 0) return false;
-        var entry = events[^1];
-        var reader = new Utf8JsonReader(Encoding.UTF8.GetBytes(log[(entry.Index + entry.Length)..]));
-        try
-        {
-            var pending = JsonNode.Parse(ref reader);
-            return pending?["sourceIds"] is JsonArray sources && sources.Any(source => source?.ToString() == sourceId);
-        }
-        catch (JsonException) { return false; } // A capture can end before a multiline event is complete.
-    }
+    static bool HasRetryForSource(string log, string url, string sourceId) => log.Split('\n').Any(line =>
+        IsEvent(line, "delivery-retry") && line.Contains(" delivery-retry " + url + " session=invalid-native-session ", StringComparison.Ordinal) &&
+        Regex.Match(line, @" sources=(\S*) ") is { Success: true } sources && sources.Groups[1].Value.Split(',').Contains(sourceId));
 
     static bool IsEvent(string line, string kind)
     {

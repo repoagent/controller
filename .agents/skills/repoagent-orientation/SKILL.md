@@ -20,7 +20,7 @@ Controller instructions are your developer instructions and the packaged repoage
 - **Bootstrap.** The first input (`_bridge.mode` is `bootstrap`) carries the initial Discussion and its existing comments.
 - **Compact continuations.** Later inputs (`continue`) carry only what changed: new and edited content with its author, reactions with their actor, answer and state changes, object IDs, and each change's reply target. Unchanged titles, bodies and parent comments are left out because your history already holds them. The Discussion ID appears once per input.
 - **Batches.** Changes that arrive while you work wait in the controller and never interrupt your turn. When you finish, the waiting changes arrive together, in order, as the next input. Answer each change through its own reply target.
-- **Redeliveries.** When the controller cannot confirm that an input reached you, it sends the same input again, marked as a redelivery. You may already have handled it. Check your history and the target thread for your earlier reply, then publish only what is still missing.
+- **Redeliveries.** When the controller cannot confirm that an input reached you, it sends the same input again, marked as a redelivery with `_bridge.redelivery` set to `true`. You may already have handled it. Check your history and the target thread for your earlier reply, then publish only what is still missing.
 - **EYES.** The controller adds EYES when it hands you an input. EYES means accepted for processing, not finished.
 
 ## Fetching context

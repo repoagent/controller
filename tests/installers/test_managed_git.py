@@ -507,6 +507,8 @@ class GitProvider:
                     query = json.loads(body).get('query', '')
                     variables = json.loads(body).get('variables') or {}
                     if 'addReaction(' in query:
+                        if getattr(provider, 'reaction_status', None):  # GitHub refuses the receipt; nothing is added.
+                            return self.reply({'message': 'Resource not accessible by integration'}, provider.reaction_status)
                         provider.reactions.append(variables['id'])
                         return self.reply({'data': {'addReaction': {'reaction': {'id': 'EYES-' + str(len(provider.reactions))}}}})
                     if 'discussion(number:' in query:
@@ -581,9 +583,9 @@ class GitProvider:
         if getattr(self, 'webhooks', False):
             enrollment['permissions']['repository_hooks'] = 'write'
             enrollment['profile'] = 'webhook-clone'
-            if not self.clone:
-                enrollment.update(protocolVersion=1); enrollment['permissions'].pop('contents')
-                enrollment.pop('profile'); enrollment.pop('policyVersion')
+        if not getattr(self, 'clone', True):
+            enrollment.update(protocolVersion=1); enrollment['permissions'].pop('contents')
+            enrollment.pop('profile'); enrollment.pop('policyVersion')
         return enrollment
 
     def lease(self):

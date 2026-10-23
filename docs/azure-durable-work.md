@@ -59,7 +59,7 @@ require manual recovery and retain their work.
 
 Lease loss, failed observation, unknown native activity and failed checkpoint
 or queue completion stop the runtime while retaining recovery evidence.
-Uncertain native work is not automatically replayed. Backlog or manual
+Within a running lifetime, failed or unacknowledged native input is retried and redelivered with a marker; native work left uncertain when a runtime stops is not automatically replayed. Backlog or manual
 recovery can therefore keep compute active; that condition is not idle.
 
 ## Scaling and stopping
