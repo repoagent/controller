@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -340,6 +341,41 @@ class ContainerConfigurationTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'reserved skill name: ' + name):
                         runtime.install_skills(selection)
                     self.assertEqual([path.name for path in runtime.SKILLS.iterdir()], ['selected-earlier'])
+
+    def test_supplied_codex_credentials_reach_the_controller_and_are_replaceable_while_it_runs(self):
+        runtime = load_runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            runtime.CONFIG = directory / 'config/settings.json'
+            runtime.CODEX_SUPPLY = directory / 'credentials/codex-supply/auth.json'
+            runtime.save(dict(repository='owner/repository', appId='1', brokerUrl='https://broker.example',
+                              clone=False, toolUpdates='pinned', mode='polling'))
+            source = directory / 'operator auth.json'
+
+            def start():
+                with patch.object(sys, 'argv', ['runtime.py', 'start']), \
+                     patch.object(runtime.subprocess, 'run') as tools, patch.object(runtime.os, 'execv') as controller:
+                    runtime.main()
+                return tools.call_args_list, controller.call_args.args[1]
+
+            tools, arguments = start()
+            self.assertIn(call(['codex', 'login', 'status'], check=True), tools)
+            self.assertNotIn('--codex-auth', arguments)
+            for canary in ('sk-canary-first', 'sk-canary-replacement'):
+                source.write_text(json.dumps({'OPENAI_API_KEY': canary}))
+                # Runs beside the agent on the shared credentials volume, so the same path is replaced in place.
+                runtime.supply_codex_auth(source)
+                self.assertIn(canary, runtime.CODEX_SUPPLY.read_text())
+                self.assertEqual(stat.S_IMODE(runtime.CODEX_SUPPLY.stat().st_mode), 0o600)
+                self.assertEqual([path.name for path in runtime.CODEX_SUPPLY.parent.iterdir()], ['auth.json'])
+            tools, arguments = start()
+            # The controller validates and installs the supply itself; the native home may not hold it yet.
+            self.assertNotIn(call(['codex', 'login', 'status'], check=True), tools)
+            self.assertEqual(arguments[arguments.index('--codex-auth') + 1], str(runtime.CODEX_SUPPLY))
+            source.write_text('not json')
+            with self.assertRaises(ValueError):
+                runtime.supply_codex_auth(source)
+            self.assertIn('sk-canary-replacement', runtime.CODEX_SUPPLY.read_text())
 
     def test_unattended_runtime_login_never_starts_device_auth(self):
         runtime = load_runtime()

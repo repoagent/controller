@@ -132,6 +132,19 @@ Device authentication requires enabling device-code login in ChatGPT security or
 
 Only that selected file is mounted during the import, copied with owner-only permissions, and unmounted afterward. Normal runtime mounts neither host home nor host credential directories. Rerunning `login` reuses a valid container sign-in. Setup errors stop visibly; they never select a human GitHub identity for the agent.
 
+### Replace Codex credentials without restarting the container
+
+`import-codex-auth` requires a stopped agent. To supply or replace Codex account credentials while the agent runs, stage them on the instance's credentials volume with the runtime's `supply-codex-auth` command. Only the selected file is mounted:
+
+```sh
+docker run --rm \
+  --mount type=volume,src=repoagent-default-credentials,dst=/data/credentials \
+  --mount type=bind,src=/absolute/path/to/auth.json,dst=/run/secrets/codex-auth.json,readonly \
+  repoagent:local supply-codex-auth
+```
+
+The command atomically replaces `/data/credentials/codex-supply/auth.json` (owner-only). Once that file exists, `start` and `check` pass it to the controller as `--codex-auth` instead of checking the container sign-in. A running agent applies a replacement within about five seconds when no Codex turn is running: it restarts only its owned Codex app-server, and each Discussion's session resumes its native history on the next input. The pinned Codex cannot reload a replaced `auth.json` in a running app-server, so that owned restart is required. Rejected credentials appear as `codexAuthentication.state` `failed` in `status`, and new input waits until replacement credentials are applied. See [supplied Codex credentials](../README.md#supplied-codex-credentials).
+
 ## Skills
 
 Two required skills are built alongside the bridge: `github-discussion` (how to answer each input) and `repoagent-orientation` (participants, compact and redelivered inputs, reply routing, App identity, and the read-only mainline checkout with separate worktrees for other revisions or edits). The controller registers their directory with native skill discovery. Every turn receives `github-discussion`. The first turn after a session starts or resumes in a native process also receives `repoagent-orientation`. Optional skills are configured independently:
