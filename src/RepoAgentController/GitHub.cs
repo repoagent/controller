@@ -55,6 +55,27 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return sha;
     }
 
+    internal sealed class StatusException(int status) : IOException($"GitHub returned HTTP {status}")
+    {
+        public int Status { get; } = status;
+    }
+
+    /// <summary>Reads one direct repository Actions variable; null only when GitHub reports it absent (HTTP 404).</summary>
+    public async Task<string?> Variable(string name, CancellationToken ct)
+    {
+        var text = await Api("GET", $"repos/{Repository}/actions/variables/{Uri.EscapeDataString(name)}", null, ct, include: true);
+        var head = Regex.Match(text, @"\AHTTP/[0-9.]+ (?<status>[0-9]{3})[^\r\n]*\r?\n(?:[^\r\n]+\r?\n)*\r?\n");
+        if (!head.Success) throw new IOException("Incomplete GitHub variable response");
+        var status = int.Parse(head.Groups["status"].Value, System.Globalization.CultureInfo.InvariantCulture);
+        if (status == 404) return null;
+        if (status != 200) throw new StatusException(status);
+        var variable = JsonNode.Parse(text[head.Length..]);
+        if (!string.Equals(variable?.Text("name"), name, StringComparison.OrdinalIgnoreCase) ||
+            variable?["value"] is not JsonValue value || value.GetValueKind() != System.Text.Json.JsonValueKind.String)
+            throw new IOException("Malformed GitHub variable response");
+        return value.GetValue<string>();
+    }
+
     async Task<string> Api(string method, string resource, JsonNode? input, CancellationToken ct, bool include = false)
     {
         var credential = await credentials.GetCredential(ct);

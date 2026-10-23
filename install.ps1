@@ -15,10 +15,12 @@ Existing own-App options remain available with -Authentication OwnApp.
 .\install.ps1 -Repository owner/repo -BrokerOrigin https://broker.example -Instance demo -NonInteractive -Apply
 .EXAMPLE
 .\install.ps1 -Authentication OwnApp -Repository owner/repo -AppId 123 -KeyPath C:\keys\app.pem -Apply
+.EXAMPLE
+.\install.ps1 -Action Settings -Repository owner/repo -Setting REPOAGENT_MAX_ACTIVE_SESSIONS=4 -Apply
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Install', 'Enroll', 'Revoke', 'Uninstall', 'Update')][string]$Action = 'Install',
+    [ValidateSet('Install', 'Enroll', 'Revoke', 'Uninstall', 'Update', 'Settings')][string]$Action = 'Install',
     [ValidateSet('Broker', 'OwnApp')][string]$Authentication,
     [string]$BrokerOrigin,
     [string]$StateDirectory,
@@ -56,6 +58,8 @@ param(
     [switch]$DeviceLogin,
     [switch]$SkipBuild,
     [switch]$NoStart,
+    [string[]]$Setting = @(),
+    [string[]]$ClearSetting = @(),
     [switch]$NonInteractive
 )
 
@@ -69,6 +73,13 @@ if ($Action -eq 'Update') {
     exit 0
 }
 if ($Image -or $Rollback) { throw 'Image and Rollback require Action Update.' }
+if ($Action -eq 'Settings') {
+    # Post-installation repository configuration through host gh; no instance, Docker or enrollment state is used.
+    & "$PSScriptRoot/scripts/repository-settings.ps1" -Repository $Repository -Setting $Setting -ClearSetting $ClearSetting `
+        -Apply:$Apply -NonInteractive:$NonInteractive
+    exit $LASTEXITCODE
+}
+if ($Setting.Count -or $ClearSetting.Count) { throw 'Setting and ClearSetting require Action Settings.' }
 if ($Action -in @('Install','Enroll')) {
     $selectedState = if ($StateDirectory) { $StateDirectory } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) ".repoagent/instances/$Instance" }
     if (Test-Path -LiteralPath (Join-Path $selectedState 'lifecycle.json')) { throw 'Selected instance is disabled or has unresolved lifecycle intent; use inspection or Uninstall retry.' }
@@ -213,7 +224,7 @@ try {
     $InstallationId = Setting InstallationId
     $MentionUser = Setting MentionUser
     $Model = Setting Model 'gpt-6.1-sol'
-    $ToolUpdates = Setting ToolUpdates 'latest'
+    $ToolUpdates = Setting ToolUpdates 'pinned'
     $WebSearch = Setting WebSearch 'live'
     $PublicUrl = Setting PublicUrl
     $ListenPort = Setting ListenPort '8080'
