@@ -19,6 +19,9 @@ import yaml
 
 CONFIG = Path('/data/config/settings.json')
 CODEX = Path('/data/credentials/codex')
+# Operator-supplied Codex account credentials. The controller installs them into CODEX and applies a
+# replacement made while it runs by restarting only its owned Codex app-server at idle.
+CODEX_SUPPLY = Path('/data/credentials/codex-supply/auth.json')
 SKILLS = Path('/data/config/skills')
 REQUIRED_SKILLS = ('github-discussion', 'repoagent-orientation')  # Packaged beside the controller.
 STATE = '/data/state/bridge.json'
@@ -28,7 +31,8 @@ CONTROLLER = ['/opt/repoagent/controller/RepoAgentController']
 ENROLLMENT_VARIABLE = 'REPOAGENT_ENROLLMENT'
 # Nonsecret configuration supplied with it, one REPOAGENT_<OPTION> per configure option.
 EXTERNAL_OPTIONS = ('repository', 'app-id', 'broker-url', 'clone', 'installation-id', 'repository-id', 'mention-user',
-                    'model', 'web-search', 'tool-updates', 'mode', 'public-url', 'listen-port', 'reconcile-interval')
+                    'model', 'web-search', 'tool-updates', 'mode', 'public-url', 'listen-port', 'reconcile-interval',
+                    'dashboard-category')
 
 
 def external_name(option):
@@ -63,6 +67,8 @@ def bridge_args(config, *, check_auth=False, injected=False):
         args += ['--private-key', '/run/secrets/github-app.pem']
     if config.get('clone', False):
         args += ['--clone']
+    if config.get('repositorySettings', False):
+        args += ['--repository-settings']
     if config.get('installationId'):
         args += ['--installation-id', str(config['installationId'])]
     if config.get('repositoryId') is not None:
@@ -76,14 +82,37 @@ def bridge_args(config, *, check_auth=False, injected=False):
             args += ['--webhook-url', config['publicUrl']]
     if config.get('azureWorkQueue') and not check_auth:
         args += ['--azure-work-queue', config['azureWorkQueue']]
+    if config.get('dashboardCategory') and not check_auth:
+        args += ['--dashboard-category', config['dashboardCategory']]
     for url in config.get('enroll', []):
         args += ['--enroll', url]
+    if CODEX_SUPPLY.is_file():
+        args += ['--codex-auth', str(CODEX_SUPPLY)]
     return args
+
+
+def supply_codex_auth(source):
+    # Shares the credentials volume with a running agent: replace atomically so it never reads a partial file.
+    content = Path(source).read_bytes()
+    if not isinstance(json.loads(content), dict):
+        raise ValueError('Codex credentials must be an auth.json object.')
+    directory = CODEX_SUPPLY.parent
+    if directory.is_symlink():
+        raise ValueError('Codex credential supply cannot traverse links.')
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(dir=directory, prefix='.auth-')  # Created 0600.
+    try:
+        with os.fdopen(descriptor, 'wb') as file:
+            file.write(content)
+        os.replace(temporary, CODEX_SUPPLY)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def select_tools(config):
     paths = [p for p in os.environ['PATH'].split(os.pathsep) if p != '/data/tools/bin']
-    if config.get('toolUpdates', 'latest') == 'latest':
+    if config.get('toolUpdates') == 'latest':
         paths.insert(0, '/data/tools/bin')
     os.environ['PATH'] = os.pathsep.join(paths)
 
@@ -138,6 +167,9 @@ def configure(args, *, persist=True):
         url = urllib.parse.urlsplit(args.public_url)
         if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment:
             raise ValueError('Fixed URL needs a public HTTPS origin without credentials, path, query or fragment.')
+    repository_settings = getattr(args, 'repository_settings', False)
+    if repository_settings and broker:
+        raise ValueError('Repository settings need a Variables: read runtime grant; broker enrollment profiles do not include it.')
     clone = getattr(args, 'clone', False)
     if config and bool(config.get('clone', False)) != clone:
         raise ValueError('Changing clone authority requires a fresh instance and enrollment.')
@@ -161,6 +193,20 @@ def configure(args, *, persist=True):
         if config.get('azureWorkQueue') is not None and config['azureWorkQueue'] != queue:
             raise ValueError('Changing work queue requires a fresh instance after queued work is settled.')
         config['azureWorkQueue'] = queue
+    dashboard = getattr(args, 'dashboard_category', None)
+    if dashboard is not None:
+        if dashboard and (not dashboard.strip() or len(dashboard) > 100 or any(not c.isprintable() for c in dashboard)):
+            raise ValueError('Dashboard category must be an existing Discussion category name of at most 100 printable characters.')
+        # Only a configured dashboard carries this key, so other configurations keep their exact field set.
+        if dashboard:
+            config['dashboardCategory'] = dashboard
+        else:
+            config.pop('dashboardCategory', None)
+    # Only direct-App configurations carry this key; broker binding checks keep their exact field set.
+    if repository_settings:
+        config['repositorySettings'] = True
+    else:
+        config.pop('repositorySettings', None)
     config.update(clone=clone, repository=args.repository, appId=args.app_id, keyPath=args.key_path,
                   brokerUrl=broker_url,
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
@@ -318,17 +364,19 @@ def configure_arguments(configure_parser):
     configure_parser.add_argument('--broker-url')
     configure_parser.add_argument('--enrollment-file')
     configure_parser.add_argument('--clone', action='store_true')
+    configure_parser.add_argument('--repository-settings', action='store_true')
     configure_parser.add_argument('--installation-id', type=int)
     configure_parser.add_argument('--repository-id', type=int)
     configure_parser.add_argument('--mention-user', default='repoagent')
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
     configure_parser.add_argument('--web-search', choices=['live', 'cached', 'disabled'], default='live')
-    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='latest')
+    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='pinned')
     configure_parser.add_argument('--mode', choices=['polling', 'fixed-url', 'quick-tunnel'], default='polling')
     configure_parser.add_argument('--public-url', default='')
     configure_parser.add_argument('--listen-port', type=int, default=8080)
     configure_parser.add_argument('--reconcile-interval', type=int, default=300)
     configure_parser.add_argument('--azure-work-queue')
+    configure_parser.add_argument('--dashboard-category')
     return configure_parser
 
 
@@ -342,7 +390,7 @@ def main():
     get = sub.add_parser('get'); get.add_argument('key')
     login = sub.add_parser('login')
     login.add_argument('--non-interactive', action='store_true')
-    for name in ['import-enrollment', 'versions', 'check', 'start', 'participant-login', 'participant-identity', 'state', 'skills', 'status', 'logs']:
+    for name in ['import-enrollment', 'versions', 'check', 'start', 'participant-login', 'participant-identity', 'state', 'skills', 'status', 'logs', 'supply-codex-auth']:
         sub.add_parser(name)
     skills = sub.add_parser('install-skills'); skills.add_argument('selection'); skills.add_argument('--token-file')
     enroll = sub.add_parser('enroll'); enroll.add_argument('urls', nargs='+')
@@ -358,6 +406,7 @@ def main():
         for name in ['gh', 'codex', 'rg', 'cloudflared']:
             if shutil.which(name): run([name, '--version'])
     elif args.command == 'install-skills': install_skills(args.selection, args.token_file)
+    elif args.command == 'supply-codex-auth': supply_codex_auth('/run/secrets/codex-auth.json')
     elif args.command == 'skills': print((CONFIG.parent / 'skills.json').read_text() if (CONFIG.parent / 'skills.json').exists() else '[]')
     elif args.command == 'login':
         if subprocess.run(['codex', 'login', 'status']).returncode:
@@ -387,9 +436,10 @@ def main():
         external = injected is not None
         # Only the controller receives the injected credential; it removes it before starting children.
         controller = os.environ | ({ENROLLMENT_VARIABLE: injected} if external else {})
-        if args.command == 'start' and config.get('toolUpdates', 'latest') == 'latest':
+        if args.command == 'start' and config.get('toolUpdates') == 'latest':
             update_tools.update()
-        run(['codex', 'login', 'status'])
+        if not CODEX_SUPPLY.is_file():  # Otherwise the controller validates and installs the supply before native use.
+            run(['codex', 'login', 'status'])
         if args.command == 'check':
             # Check the webhook grant without creating a tunnel or registering a hook.
             endpoint = ['--webhook-url', 'https://quick-tunnel.invalid'] if config.get('mode') == 'quick-tunnel' else []

@@ -41,14 +41,20 @@ if 'HOST_ENROLLMENT_GH_MODEL' in os.environ:
         status = model.get('listing_status', 200)
         value = model.get('listing', {'total_count': len(entries), 'variables': entries})
     elif location and endpoint == location and method == 'POST':
-        store[body['name']] = body['value']
-        model_path.write_text(json.dumps(model), encoding='utf-8')
         status = model.get('write_status', 201)
+        if not 400 <= status < 500:  # A rejection is never applied; a 5xx write may have been.
+            store[body['name']] = body['value']
+            model_path.write_text(json.dumps(model), encoding='utf-8')
     elif location and endpoint.startswith(location + '/'):
         name = endpoint.rsplit('/', 1)[1]
         if method == 'GET':
-            status = 200 if name in store else 404
-            value = {'name': name, 'value': store.get(name, '')}
+            status = model.get('read_status', {}).get(name, 200 if name in store else 404)
+            value = {'name': name, 'value': store.get(name, '')} if status == 200 else {'message': 'Fixture'}
+        elif method == 'PATCH':
+            status = model.get('write_status', 204)
+            if not 400 <= status < 500:
+                store[name] = body['value']
+                model_path.write_text(json.dumps(model), encoding='utf-8')
         elif method == 'DELETE':
             store.pop(name, None)
             model_path.write_text(json.dumps(model), encoding='utf-8')

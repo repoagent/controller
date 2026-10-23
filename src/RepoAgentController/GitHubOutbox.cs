@@ -5,8 +5,8 @@ using System.Text.Json.Nodes;
 namespace RepoAgentController;
 
 /// <summary>
-/// Durably retains controller-owned GitHub operations, beginning with EYES receipts, until each succeeds or fails
-/// permanently. Delivery is independent of native input acceptance: nothing here resends agent input, and
+/// Durably retains controller-owned GitHub operations, EYES receipts and dashboard updates, until each succeeds or
+/// fails permanently. Delivery is independent of native input acceptance: nothing here resends agent input, and
 /// agent-authored replies stay on the agent's direct gh.
 /// </summary>
 sealed class GitHubOutbox : IAsyncDisposable
@@ -21,6 +21,10 @@ sealed class GitHubOutbox : IAsyncDisposable
     readonly CancellationTokenSource stop = new();
     TaskCompletionSource wake = new(TaskCreationOptions.RunContinuationsAsynchronously);
     Task running = Task.CompletedTask;
+    // The owned dashboard found or created during this lifetime; only the delivering attempt touches these.
+    (string Id, string Url)? dashboard;
+    string? dashboardCategory;
+    bool dashboardRejected;
 
     public GitHubOutbox(string path, GitHub github, TimeProvider clock)
     {
@@ -40,7 +44,7 @@ sealed class GitHubOutbox : IAsyncDisposable
             _ = Time(state["pausedUntil"]);
             foreach (var operation in Operations.Select(item => item!.AsObject()))
                 _ = (operation.Text("key")[0], operation.Text("kind"), operation.Text("subjectId"), operation.Text("url"),
-                    operation["attempts"]!.GetValue<int>(), operation["uncertain"]!.GetValue<bool>(), Time(operation["dueAt"]));
+                    operation.Text("category"), operation.Text("title"), operation.Text("body"), operation["attempts"]!.GetValue<int>(), operation["uncertain"]!.GetValue<bool>(), Time(operation["dueAt"]));
         }
         catch (Exception error) { throw new InvalidOperationException("GitHub outbox contains an unreadable operation; preserve it for manual inspection", error); }
     }
@@ -58,6 +62,19 @@ sealed class GitHubOutbox : IAsyncDisposable
         Enqueue(new JsonObject
         {
             ["key"] = "receipt:" + source.Text("id"), ["kind"] = "receipt", ["subjectId"] = source.Text("id"), ["url"] = source.Text("url")
+        });
+    }
+
+    /// <summary>
+    /// Retains the dashboard's complete title and body. A newer publication supersedes a pending one, so after an outage
+    /// only the latest status and heartbeat are written. After a permanent failure this lifetime publishes no more.
+    /// </summary>
+    public void Dashboard(string category, string title, string body)
+    {
+        lock (sync) if (dashboardRejected) return;
+        Enqueue(new JsonObject
+        {
+            ["key"] = "dashboard", ["kind"] = "dashboard", ["subjectId"] = "", ["url"] = "", ["category"] = category, ["title"] = title, ["body"] = body
         });
     }
 
@@ -89,6 +106,14 @@ sealed class GitHubOutbox : IAsyncDisposable
     {
         var delivered = await Deliver(ct);
         lock (sync) return delivered && Operations.Count == 0;
+    }
+
+    /// <summary>Stops background delivery, then attempts each due operation once more within <paramref name="ct"/>.</summary>
+    public async Task<bool> Finish(CancellationToken ct)
+    {
+        await stop.CancelAsync();
+        await running;
+        return await Flush(ct);
     }
 
     async Task Run(CancellationTokenSource lifetime)
@@ -143,14 +168,17 @@ sealed class GitHubOutbox : IAsyncDisposable
         string key, kind, subject, url;
         bool uncertain;
         int attempt;
+        JsonObject request;
         lock (sync)
         {
             (key, kind, subject, url) = (operation.Text("key"), operation.Text("kind"), operation.Text("subjectId"), operation.Text("url"));
             uncertain = operation["uncertain"]!.GetValue<bool>();
             attempt = operation["attempts"]!.GetValue<int>() + 1;
+            request = operation.DeepClone().AsObject();
         }
-        bool reconciled;
-        try { reconciled = await Execute(kind, subject, uncertain, ct); }
+        if (kind == "dashboard") url = dashboard?.Url ?? $"dashboard category '{request.Text("category")}'";
+        (string Kind, string Url)? outcome;
+        try { outcome = await Execute(request, attempt, uncertain, ct); }
         catch (OperationCanceledException)
         {
             // An interrupted request may have reached GitHub: reconcile it before writing again.
@@ -164,15 +192,20 @@ sealed class GitHubOutbox : IAsyncDisposable
         catch (Exception error)
         {
             var failure = error as GitHubWriteException ?? new GitHubWriteException(GitHubFailure.Transient, error.Message, uncertain: true);
-            var context = $"{url} subject={subject} attempt={attempt} {failure.Kind}: {failure.Message}";
+            var context = $"{url}{(subject.Length == 0 ? "" : " subject=" + subject)} attempt={attempt} {failure.Kind}: {failure.Message}";
             if (failure.Kind == GitHubFailure.Permanent)
             {
                 lock (sync)
                 {
                     if (Find(key) == operation) Operations.Remove(operation);
+                    // Configuration or permission must change first; republishing every heartbeat would never succeed.
+                    if (kind == "dashboard" && Find(key) is { } superseding) Operations.Remove(superseding);
+                    dashboardRejected |= kind == "dashboard";
                     Save();
                 }
-                Log.Write(kind + "-error", context + "; permanent failure removed from retry; accepted input is not replayed");
+                Log.Write(kind + "-error", context + (kind == "dashboard"
+                    ? "; permanent failure removed from retry; dashboard updates stop until the controller restarts"
+                    : "; permanent failure removed from retry; accepted input is not replayed"));
                 return false;
             }
             var now = clock.GetUtcNow();
@@ -204,22 +237,36 @@ sealed class GitHubOutbox : IAsyncDisposable
             if (Find(key) == operation) Operations.Remove(operation);
             Save();
         }
-        Log.Write(reconciled ? kind + "-reconciled" : kind, url);
+        if (outcome is { } logged) Log.Write(logged.Kind, logged.Url);
         return true;
     }
 
-    // Each kind owns how an uncertain earlier attempt is reconciled before it writes again.
-    async Task<bool> Execute(string kind, string subject, bool uncertain, CancellationToken ct)
+    // Each kind owns how an uncertain earlier attempt is reconciled before it writes again. Returns what to log, if anything.
+    async Task<(string Kind, string Url)?> Execute(JsonObject operation, int attempt, bool uncertain, CancellationToken ct)
     {
-        switch (kind)
+        switch (operation.Text("kind"))
         {
             case "receipt":
                 // A lost response is resolved by reading the App's actual reaction, not by request identifiers.
-                if (uncertain && await github.HasReceipt(subject, ct)) return true;
-                await github.AddReceipt(subject, ct);
-                return false;
+                if (uncertain && await github.HasReceipt(operation.Text("subjectId"), ct)) return ("receipt-reconciled", operation.Text("url"));
+                await github.AddReceipt(operation.Text("subjectId"), ct);
+                return ("receipt", operation.Text("url"));
+            case "dashboard":
+                var (category, title, body) = (operation.Text("category"), operation.Text("title"), operation.Text("body"));
+                if (dashboard is { } known && dashboardCategory == category)
+                {
+                    await github.UpdateDashboard(known.Id, title, body, ct);
+                    return attempt > 1 ? ("dashboard", known.Url) : null; // Routine heartbeats are not logged; a recovery is.
+                }
+                var target = await github.DashboardCategory(category, ct);
+                // Finding first also settles an uncertain earlier creation, so a lost response never adds a second dashboard.
+                var found = await github.FindDashboard(target.Category, ct);
+                if (found is { } existing) await github.UpdateDashboard(existing.Id, title, body, ct);
+                var owned = found ?? await github.CreateDashboard(target, title, body, ct);
+                (dashboard, dashboardCategory) = (owned, category);
+                return (found is null ? "dashboard-created" : "dashboard", owned.Url);
             default:
-                throw new GitHubWriteException(GitHubFailure.Permanent, $"unsupported outbox operation kind '{kind}'");
+                throw new GitHubWriteException(GitHubFailure.Permanent, $"unsupported outbox operation kind '{operation.Text("kind")}'");
         }
     }
 

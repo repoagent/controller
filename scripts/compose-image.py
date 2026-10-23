@@ -14,7 +14,8 @@ import sys
 SDK = 'mcr.microsoft.com/dotnet/sdk@sha256:bfabf51e74c5a7cf2fc4eac852145db86f4867d475257d809518d6a2b0fe71e1'
 RUNTIME = 'mcr.microsoft.com/dotnet/runtime-deps@sha256:f41a8006ae1231098108901b6faa4db8e4a31fe83f77523170b8793f3170c089'
 SNAPSHOT = '20261020T000000Z'
-# Exact reviewed artifacts. New versions require a reviewed catalog update.
+# Exact artifacts. New versions require a reviewed catalog update or a verified tool refresh
+# (scripts/delivery/tool-refresh.py rewrites these lines; keep their one-line layout).
 ARTIFACTS = {
     'codex': ('0.163.0', 'https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-x86_64-unknown-linux-musl.tar.gz', 'beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4'),
     'codex-code-mode-host': ('0.163.0', 'https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz', '314263128ba6592e7e807c265deeaf928a692b72dcbfeb5e0b20c9423b703529'),

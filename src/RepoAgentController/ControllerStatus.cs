@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace RepoAgentController;
 
@@ -13,14 +14,20 @@ sealed class ControllerStatus : IDisposable
     const int MaximumFailures = 20, MaximumMessage = 2000;
     // Events that report failed or blocked work. New failure events become visible by adding their kind here.
     static readonly HashSet<string> FailureKinds = ["fatal", "poll-error", "observation-error", "dispatch-error", "manual-recovery", "receipt-error", "outbox-error",
-        "app-refresh-error", "native-request-blocked", "refresh-blocked", "durable-work-lost", "webhook-error", "webhook-disable-error"];
+        "app-refresh-error", "native-request-blocked", "refresh-blocked", "durable-work-lost", "webhook-error", "webhook-disable-error", "dashboard-error",
+        "codex-auth-failed", "codex-auth-invalid", "codex-auth-error"];
     static readonly HashSet<string> ActivityKinds = ["session-created", "forwarded"];
+    // Events after which the state file holds different work, such as input now waiting for its session.
+    static readonly HashSet<string> WorkKinds = ["input-waiting"];
     // Terminal-readable output; status is never embedded in HTML.
     static readonly JsonSerializerOptions Indented = new() { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     readonly string statePath;
     readonly Lock gate = new();
     readonly JsonObject runtime;
     bool closed;
+
+    /// <summary>Raised after recorded runtime status or composed work changes. Handlers run on the logging thread and must not log.</summary>
+    public event Action? Changed;
 
     public static string PathFor(string statePath) => statePath + ".status.json";
 
@@ -34,6 +41,8 @@ sealed class ControllerStatus : IDisposable
             ["version"] = 1, ["repository"] = repository,
             ["controller"] = Json.Object(("state", "starting"), ("mode", mode), ("startedAt", now), ("updatedAt", now)),
             ["authentication"] = Json.Object(("state", "unknown")),
+            // Agent account credentials, separate from the GitHub App: supplied, healthy (a turn completed) or failed.
+            ["codexAuthentication"] = Json.Object(("state", "unknown")),
             // Earlier failures stay visible after a restart; their timestamps place them before startedAt.
             ["failures"] = previous?["failures"] is JsonArray failures ? failures.Copy() : new JsonArray(),
             ["latestActivity"] = previous?["latestActivity"]?.Copy()
@@ -50,13 +59,16 @@ sealed class ControllerStatus : IDisposable
             var item = Json.Object(("at", at), ("kind", entry.Kind),
                 ("message", entry.Message.Length <= MaximumMessage ? entry.Message : entry.Message[..MaximumMessage] + " <truncated>"));
             var controller = runtime["controller"]!;
-            var changed = true;
+            bool changed = true, notifyOnly = false;
             switch (entry.Kind)
             {
                 case "ready": controller["state"] = "running"; break;
                 case "fatal": controller["state"] = "failed"; break;
                 case "app-token-refreshed": runtime["authentication"] = Json.Object(("state", "healthy"), ("updatedAt", at)); break;
                 case "app-refresh-error": runtime["authentication"] = Json.Object(("state", "failed"), ("updatedAt", at), ("error", item["message"]!.Copy())); break;
+                case "codex-auth-supplied" or "codex-auth-applied": runtime["codexAuthentication"] = Json.Object(("state", "supplied"), ("updatedAt", at)); break;
+                case "codex-auth-verified": runtime["codexAuthentication"] = Json.Object(("state", "healthy"), ("updatedAt", at)); break;
+                case "codex-auth-failed": runtime["codexAuthentication"] = Json.Object(("state", "failed"), ("updatedAt", at), ("error", item["message"]!.Copy())); break;
                 default: changed = false; break;
             }
             if (FailureKinds.Contains(entry.Kind))
@@ -65,11 +77,27 @@ sealed class ControllerStatus : IDisposable
                 failures.Add((JsonNode)item);
                 while (failures.Count > MaximumFailures) failures.RemoveAt(0);
             }
-            else if (ActivityKinds.Contains(entry.Kind)) runtime["latestActivity"] = item;
-            else if (!changed) return;
-            controller["updatedAt"] = at;
-            Save();
+            else if (ActivityKinds.Contains(entry.Kind))
+            {
+                // The latest processed message, else its Discussion: the activity message's leading GitHub URL.
+                var link = Regex.Match(entry.Message, @"(?:^|\s)latest=(https://github\.com/\S+)") is { Success: true } latest ? latest.Groups[1].Value
+                    : Regex.Match(entry.Message, @"^https://github\.com/\S+") is { Success: true } leading ? leading.Value : null;
+                if (link is not null) item["url"] = link;
+                runtime["latestActivity"] = item;
+            }
+            else if (!changed)
+            {
+                // Work is composed from the state file, so a work event records nothing here; consumers still refresh.
+                if (!WorkKinds.Contains(entry.Kind)) return;
+                notifyOnly = true;
+            }
+            if (!notifyOnly)
+            {
+                controller["updatedAt"] = at;
+                Save();
+            }
         }
+        Changed?.Invoke();
     }
 
     /// <summary>A detached snapshot for in-process consumers such as status publication.</summary>
@@ -121,6 +149,7 @@ sealed class ControllerStatus : IDisposable
             ["actor"] = state?["agentLogin"]?.Copy(),
             ["controller"] = recorded?["controller"]?.Copy() ?? Json.Object(("state", "unknown")),
             ["authentication"] = recorded?["authentication"]?.Copy() ?? Json.Object(("state", "unknown")),
+            ["codexAuthentication"] = recorded?["codexAuthentication"]?.Copy() ?? Json.Object(("state", "unknown")),
             ["work"] = Json.Object(("sessions", started), ("pending", pending), ("waiting", waiting), ("running", journal is null ? null : running),
                 ("admissionBlocked", journal?["blocked"]?.Copy())),
             ["sessions"] = sessions,

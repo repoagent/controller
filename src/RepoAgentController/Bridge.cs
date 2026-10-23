@@ -10,7 +10,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
-    readonly HashSet<string> blockedLogged = [];
+    readonly HashSet<string> blockedLogged = [], held = [];
     // Serializes observation and idle dispatch over the shared state store.
     readonly SemaphoreSlim gate = new(1, 1), wake = new(0, 1);
     volatile bool inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
@@ -59,6 +59,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         foreach (var discussion in discussions)
         {
             ct.ThrowIfCancellationRequested();
+            if (github.IsDashboard(discussion)) continue; // Operational status, never agent input, however enrolled.
             var id = discussion.Text("id");
             var record = store.Discussions[id]?.AsObject();
             if (record?["pending"] is not null)
@@ -136,6 +137,14 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         return succeeded;
     }
 
+    /// <summary>Runs <paramref name="action"/> while no observation or dispatch runs, so it never interleaves with native admission.</summary>
+    public async Task<T> ExcludingDispatch<T>(Func<Task<T>> action, CancellationToken ct)
+    {
+        await gate.WaitAsync(ct);
+        try { return await action(); }
+        finally { gate.Release(); }
+    }
+
     /// <summary>Wakes on native session status changes and dispatches waiting input, oldest first, until stopped.</summary>
     /// <remarks>An in-flight dispatch finishes on <paramref name="ct"/>; <paramref name="stop"/> only ends waiting.</remarks>
     public async Task DispatchWhenIdle(CancellationToken stop, CancellationToken ct)
@@ -197,6 +206,13 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var waiting = record["waiting"]!.AsObject();
         var session = record.Text("sessionId");
         var create = session.Length == 0;
+        if (codex.AuthenticationFailure is not null)
+        {
+            // A turn would fail after its EYES receipt; queued input waits for replacement credentials.
+            if (held.Add(record.Text("url"))) Log.Write("input-held", $"{record.Text("url")} waiting={waiting["inputs"]!.AsArray().Count}: Codex account credentials were rejected; input waits for replacement credentials");
+            return false;
+        }
+        held.Clear();
         // An active, failed or unrecognized loaded session keeps its input here without taking global admission.
         if (!create && codex.Loaded(session) && codex.Status(session) != Codex.SessionStatus.Idle) return false;
         var inputs = waiting["inputs"]!.AsArray();
@@ -244,7 +260,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         store.Save();
         inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
         admission?.Confirm();
-        Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count}");
+        Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count} latest={envelope["changes"]!.AsArray()[^1]!["subject"]!.Text("url")}");
         foreach (var source in receipts) outbox.Receipt(source);
         return true;
     }
