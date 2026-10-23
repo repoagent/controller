@@ -208,6 +208,28 @@ public sealed class ControllerDashboardTests
     }
 
     [Fact]
+    public async Task Rejected_Codex_account_credentials_are_shown_on_the_dashboard_under_the_attention_title()
+    {
+        using var controller = new Controller();
+        controller.RejectAccount();
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = controller.Run(shutdown.Token, "--dashboard-category", Category);
+        try
+        {
+            // The bootstrap turn fails at the model provider; GitHub App authentication is unaffected and stays healthy.
+            var attention = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("**Codex authentication:** failed") ? dashboard : null);
+            Assert.Equal("Attention: RepoAgent controller authentication failed", attention.Title);
+            Assert.Contains("**Authentication:** healthy", attention.Body);
+            Assert.Matches(@"\*\*Codex authentication:\*\* failed at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ: `[^`\n]*401 Unauthorized[^`\n]*`", attention.Body);
+            Assert.Matches(@"`codex-auth-failed`: `[^`\n]*401 Unauthorized", attention.Body);
+            Assert.Equal(1, controller.Turns);
+            controller.AssertNoSecrets();
+        }
+        finally { await shutdown.CancelAsync(); }
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Missing_dashboard_category_is_reported_once_instead_of_retried_every_heartbeat()
     {
         using var controller = new Controller();
@@ -466,7 +488,11 @@ public sealed class ControllerDashboardTests
         /// <summary>Later native turns stay active instead of completing.</summary>
         public void HoldTurns() => File.WriteAllText(native + ".hold", "");
 
-        // Every thread is idle when started or resumed; each accepted turn reports idle and completes at once, unless held.
+        /// <summary>Later native turns fail as the pinned native reports a model provider's rejection of the Codex account.</summary>
+        public void RejectAccount() => File.WriteAllText(native + ".unauthorized", "");
+
+        // Every thread is idle when started or resumed; each accepted turn reports idle and completes at once, unless held
+        // or failed by a rejected account.
         const string Native = """
             #!/usr/bin/python3
             import json,os,sys
@@ -483,7 +509,9 @@ public sealed class ControllerDashboardTests
               send({'id':request['id'],'result':{'turn':turn}})
               if os.path.exists(NATIVE_LOG+'.hold'):send({'method':'thread/status/changed','params':{'threadId':thread,'status':{'type':'active','activeFlags':[]}}});continue
               send({'method':'thread/status/changed','params':{'threadId':thread,'status':idle}})
-              send({'method':'turn/completed','params':{'threadId':thread,'turn':dict(turn,status='completed')}})
+              rejected={'message':'unexpected status 401 Unauthorized','codexErrorInfo':'unauthorized'}
+              done=dict(turn,status='failed',error=rejected) if os.path.exists(NATIVE_LOG+'.unauthorized') else dict(turn,status='completed')
+              send({'method':'turn/completed','params':{'threadId':thread,'turn':done}})
               continue
              if method=='thread/start':threads+=1
              thread=request.get('params',{}).get('threadId') or 'native-T%d'%threads
