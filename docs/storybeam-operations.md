@@ -1,7 +1,7 @@
 # Operate the StoryBeam controller
 
 StoryBeam/StoryBeam uses the lean Azure controller in Sweden Central. Post a
-Discussion comment mentioning `@repo-agent-connector`; the controller wakes and
+Discussion comment mentioning `@repo-agent-connector[bot]`; the controller wakes and
 replies as the App bot, retaining one native conversation per Discussion.
 An idle cold start can exceed GitHub's delivery timeout. Startup reconciliation
 recovers activity still present in GitHub; a webhook timeout alone does not mean
