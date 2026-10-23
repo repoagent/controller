@@ -101,14 +101,18 @@ public sealed class DiscussionJourney
 
                 var hold = await Comment(a, $"Use $acceptance-marker's marker.py with arguments {run} --hold. It creates a ready file and waits up to 300 seconds for the test runner's release file. Run it now and publish its result once after release. If the skill is unavailable, report SKILL_UNAVAILABLE.");
                 await Until(() => Task.FromResult(File.Exists("/workspace/hold-ready-" + run)), "native skill action is active");
-                var during = await Comment(a, "While the previous tool is waiting, accept this additional input. After release reply once with ACTIVE_SECOND_" + run);
-                await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted during native work");
+                var during = await Comment(a, "This additional input arrives while the previous tool is waiting. When you receive it, reply once with ACTIVE_SECOND_" + run);
+                await Until(async () => Waiting(await Logs(), during["id"]!.ToString()), "second input waits during native work");
+                Assert.Equal(0, CountAcceptedSources(await Logs(), during["id"]!.ToString()));
+                Assert.Equal(0, Eyes(await Source(during["id"]!.ToString())));
                 var activeGate = JsonNode.Parse(await File.ReadAllTextAsync("/workspace/hold-ready-" + run))!;
-                Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "native skill gate remains active after the additional input was accepted");
+                Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "native skill gate remains active while the additional input waits");
                 Assert.False(File.Exists("/workspace/hold-release-" + run));
                 File.WriteAllText("/workspace/hold-release-" + run, "release");
-                await Reply(a, "ACTIVE_SECOND_" + run, during["id"]!.ToString());
+                await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted after native idle");
+                await Receipt(during["id"]!.ToString());
                 await Reply(a, expected, hold["id"]!.ToString());
+                await Reply(a, "ACTIVE_SECOND_" + run, during["id"]!.ToString());
                 Pass("C07", new { activeSource = hold["url"]!.ToString(), additionalSource = during["url"]!.ToString() });
 
                 await Until(async () => NativeTurnsFinished(await Logs()), "native turns completed before quiet observation");
@@ -320,6 +324,7 @@ public sealed class DiscussionJourney
     }
     static int CountAcceptedSources(string log, string id) => log.Split('\n').Count(x => IsEvent(x, "forwarded") && x.Contains(id));
     static int Forwarded(string log) => log.Split('\n').Count(x => IsEvent(x, "forwarded"));
+    static bool Waiting(string log, string id) => log.Split('\n').Any(x => IsEvent(x, "input-waiting") && x.Contains(id));
     static bool NativeTurnsFinished(string log)
     {
         var lines = log.Split('\n');

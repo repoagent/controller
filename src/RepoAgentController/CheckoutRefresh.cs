@@ -145,6 +145,12 @@ sealed class CheckoutRefresh : IAsyncDisposable
             }
             Log.Write("refresh-pending", error.Message);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Shutdown before applying leaves the checkout unchanged and the generation requested for the next lifetime.
+            lock (journalLock) if (journal["applying"] is not null) { blocked = true; try { Fault("Refresh interrupted while applying"); } catch { } }
+            throw;
+        }
         catch (Exception error)
         {
             lock (journalLock) { blocked = true; try { Fault(error.Message); } catch { } }
@@ -170,7 +176,7 @@ sealed class CheckoutRefresh : IAsyncDisposable
         catch { exclusion.Release(); throw; }
     }
 
-    public async Task<bool> CommitAtIdle(Func<CancellationToken, Task> commit, CancellationToken ct)
+    public async Task<bool> CommitAtIdle(Func<CancellationToken, Task> commit, CancellationToken ct, Func<bool>? deferred = null)
     {
         await exclusion.WaitAsync(ct);
         try
@@ -179,7 +185,7 @@ sealed class CheckoutRefresh : IAsyncDisposable
             lock (journalLock)
             {
                 CheckAdmission();
-                if (Busy || Generation("requested") != Generation("completed")) return false;
+                if (Busy || Generation("requested") != Generation("completed") || deferred?.Invoke() == true) return false;
             }
             await commit(ct);
             lock (journalLock) { CheckAdmission(); if (Busy) throw new IOException("Native activity changed during idle commit"); }
@@ -212,6 +218,17 @@ sealed class CheckoutRefresh : IAsyncDisposable
                 owner.Track(key, seen.Done, seen.Sequence);
                 record["turn"] = turn; owner.Save();
             }
+        }
+        /// <summary>Releases an admission that loaded or created a session but sent it no input.</summary>
+        public void Abandon()
+        {
+            lock (owner.journalLock)
+            {
+                owner.CheckAdmission();
+                if (record.Text("turn").Length != 0) throw new IOException("Accepted native admission cannot be abandoned");
+                owner.active.Remove(id); owner.Save(); confirmed = true;
+            }
+            owner.Signal();
         }
         public void Confirm()
         {

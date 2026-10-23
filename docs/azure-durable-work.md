@@ -45,7 +45,9 @@ The receiver holds at most 32 leases, renews their 90-second visibility every
 while an earlier native turn runs. Native acknowledgment does not complete
 work. The existing checkout admission/turn journal coordinates the idle
 boundary; only known completed work with saved checkpoints and completed
-refresh can be acknowledged. The acknowledgment batch is frozen before checking
+refresh can be acknowledged. Discussion input still waiting in the controller
+for an idle session also retains every observed item until it is dispatched.
+The acknowledgment batch is frozen before checking
 idle, so a push observed during that check retains its own queue item. A failed
 or cancelled enqueue also stops the runtime because the service may already
 have committed the hint. Duplicate hints reread observed state rather
