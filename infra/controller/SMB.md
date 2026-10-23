@@ -20,7 +20,9 @@ existing private native home and conversation rollouts on SMB. The documented
 separate location supports native SQLite locking on the container filesystem.
 Native SQLite metadata remains per replica; it is not wholly reconstructible.
 
-The exact working local Docker controller must keep running. Original NFS data
+For a new setup candidate, keep the working local controller running until the
+supported owner handover. For the selected deployed app, use the
+[StoryBeam operations guide](../../docs/storybeam-operations.md). Original NFS data
 and the Azure-owned account cache remain preserved; this candidate does not
 remove their existing bill. Setup deployment does not enroll a device or start
 broker, GitHub or native work.

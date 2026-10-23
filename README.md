@@ -9,6 +9,7 @@ RepoAgent connects GitHub conversations to native coding-agent sessions. Its CLI
 - [Flows, payloads and session instructions](https://github.com/repoagent/controller/issues/2#issuecomment-6276915447).
 - [Maintainer authentication-service deployment](docs/azure-auth-deployment.md): Bicep/OIDC setup and continuous deployment of the broker API and cleanup service from `main`.
 - [Azure controller setup](infra/controller/README.md): public GHCR image, private persistent storage and a dedicated controller resource group, without ACR; includes cloud sign-in and the first-activation handover procedure.
+- [Operate StoryBeam](docs/storybeam-operations.md): the selected lean app, private update/recovery directory, idle scaling and retained data.
 
 The PoC uses one native Codex session per Discussion, a small JSON mapping/checkpoint, GraphQL observation, an ordinary skill plus `gh` for replies, and timestamped stdout logging. After the native harness accepts input, the bridge adds 👀 to the forwarded source Discussion, comment or reply.
 
