@@ -32,6 +32,11 @@ function Assert-ControllerStorageProfile($Tags, $Template, [object[]]$Secrets) {
     $expectedCommand = if ($active) { 'activate' } else { 'serve' }
     if ($Template.initContainers[0].args[1] -cne $expectedInitializer -or
             $Template.containers[0].args[1] -cne $expectedCommand) { throw 'Controller setup/activation selection differs.' }
+    $privateMount = @($mounts | Where-Object { $_.mountPath -ceq '/data' })[0]
+    $initializerMounts = @($Template.initContainers[0].volumeMounts)
+    if ($initializerMounts.Count -ne 1 -or $initializerMounts[0].mountPath -cne '/mnt/controller' -or
+            $initializerMounts[0].subPath -or $initializerMounts[0].volumeName -cne $privateMount.volumeName -or
+            @($Template.volumes).Count -ne (2 + [int]$active)) { throw 'Initializer must retain the same private SMB share root.' }
     $views = @{
         '/data' = @('runtime/data','0600')
         '/workspace' = @('runtime/workspace','0700')

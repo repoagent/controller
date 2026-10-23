@@ -20,7 +20,7 @@ $mounts=@(foreach($path in $paths) {
 })
 $template=@{
     containers=@(@{env=@(@{name='CODEX_SQLITE_HOME';value='/tmp/repoagent-codex-sqlite'});args=@('code','serve');volumeMounts=$mounts})
-    initContainers=@(@{args=@('code','initialize')})
+    initContainers=@(@{args=@('code','initialize');volumeMounts=@(@{mountPath='/mnt/controller';volumeName='private'})})
     volumes=@(@{name='private';storageType='AzureFile';storageName='controller-state';mountOptions=$private},
               @{name='executable';storageType='AzureFile';storageName='controller-state';mountOptions=$private.Replace('file_mode=0600','file_mode=0700')})
 }
@@ -65,6 +65,17 @@ $declared=@(@{name='controller-enrollment'})
             with self.subTest(change=change):
                 result = self.invoke(active + change + 'Assert-ControllerStorageProfile $tags $template $declared')
                 self.assertNotEqual(result.returncode, 0)
+
+    def test_initializer_uses_the_same_private_share_root(self):
+        for change in (
+            "$template.volumes+=@{name='foreign';storageType='AzureFile';storageName='other';mountOptions=$private}; $template.initContainers[0].volumeMounts[0].volumeName='foreign';",
+            "$template.initContainers[0].volumeMounts[0].volumeName='executable';",
+            "$template.initContainers[0].volumeMounts[0].mountPath='/other';",
+            "$template.initContainers[0].volumeMounts[0].subPath='other';",
+        ):
+            with self.subTest(change=change):
+                result = self.invoke(change + 'Assert-ControllerStorageProfile $tags $template @()')
+                self.assertNotEqual(result.returncode, 0, 'Initializer can target another persistent root')
 
     def test_legacy_nfs_still_requires_versioned_managed_identity_secret_references(self):
         fixture = r'''
