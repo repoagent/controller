@@ -130,10 +130,10 @@ New-Item -ItemType Directory -Force "$HOME/.repoagent/azure" | Out-Null
 $selection = @{
     SubscriptionId = '46f7e5d6-05f3-435b-8089-6c63a203dbfa'
     ResourceGroup = 'rg-storybeam-repoagent-controller'
-    AppName = 'storybeam-repoagent-controller'
+    AppName = 'storybeam-lean-controller'
     Repository = 'StoryBeam/StoryBeam'
     RepositoryId = 1069791767
-    StateDirectory = "$HOME/.repoagent/azure/storybeam-controller"
+    StateDirectory = "$HOME/.repoagent/instances/storybeam-azure-lean-1/azure-update"
 }
 ./scripts/update-azure-controller.ps1 @selection                    # preview
 ./scripts/update-azure-controller.ps1 @selection -Apply             # use image.json
