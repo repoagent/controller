@@ -34,11 +34,12 @@ repoagent-controller-1.2.3-linux-amd64.tar.gz.sha256
   repoagent-controller-1.2.3-linux-amd64/
     RepoAgentController
     github-discussion/SKILL.md
+    repoagent-orientation/SKILL.md
     VERSION                  # version, full source commit, runtime
-    SHA256SUMS               # executable, skill and VERSION
+    SHA256SUMS               # executable, skills and VERSION
 ```
 
-Verify the archive checksum before extraction, then run `sha256sum -c SHA256SUMS` inside it. Keep the skill beside the executable. Local builds record HEAD and can include edits; release only from the workflow's clean tagged source. This archive interface supports later image composition without developer credentials.
+Verify the archive checksum before extraction, then run `sha256sum -c SHA256SUMS` inside it. Keep the skills beside the executable; the controller registers that directory for native skill discovery. Local builds record HEAD and can include edits; release only from the workflow's clean tagged source. This archive interface supports later image composition without developer credentials.
 
 ## Public controller container image
 

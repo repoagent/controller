@@ -1,5 +1,6 @@
 global.json
 .agents/skills/github-discussion/SKILL.md
+.agents/skills/repoagent-orientation/SKILL.md
 src/RepoAgentController/AppGitCredential.cs
 src/RepoAgentController/AppGitHubCommand.cs
 src/RepoAgentController/Bridge.cs

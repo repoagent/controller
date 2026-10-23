@@ -362,6 +362,7 @@ class GitProvider:
         self.lease_status = 200
         self.requests = []
         self.responses, self.model_requests, self.denied = responses, [], []
+        self.model_request_limit = 2
         self.cert = directory / 'cert.pem'
         self.key = directory / 'key.pem'
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
@@ -461,7 +462,7 @@ class GitProvider:
                 host = self.headers.get('Host', '')
                 provider.requests.append((self.command, host, self.path))
                 if provider.responses and host == 'broker.fixture' and self.path.startswith('/v1/'):
-                    if self.command != 'POST' or self.path != '/v1/responses' or self.headers.get('Content-Encoding', 'identity') != 'identity' or self.headers.get('Authorization') or len(provider.model_requests) >= 2:
+                    if self.command != 'POST' or self.path != '/v1/responses' or self.headers.get('Content-Encoding', 'identity') != 'identity' or self.headers.get('Authorization') or len(provider.model_requests) >= provider.model_request_limit:
                         provider.denied.append((self.command, host, self.path)); return self.reply({}, 403)
                     provider.model_requests.append(dict(headers=dict(self.headers), body=json.loads(body)))
                     print('RESPONSES_REQUEST ' + json.dumps(provider.model_requests[-1]), flush=True)
