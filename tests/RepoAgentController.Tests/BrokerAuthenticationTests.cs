@@ -43,6 +43,55 @@ public sealed class BrokerAuthenticationTests
     }
 
     [Fact]
+    public async Task Startup_takes_enrollment_from_a_named_environment_variable_that_children_never_inherit()
+    {
+        using var fixture = new Fixture(clone: true);
+        var variable = "REPOAGENT_TEST_ENROLLMENT_" + Guid.NewGuid().ToString("N");
+        var childEnvironment = Path.Combine(fixture.Directory, "gh-environment");
+        File.WriteAllText(fixture.Gh, $"#!/bin/sh\nenv >> '{childEnvironment}'\nif [ \"$1\" = api ]; then cat >/dev/null; printf '%s' '{{\"data\":{{\"viewer\":{{\"login\":\"test-app[bot]\"}}}}}}'; fi\n");
+        File.Delete(fixture.EnrollmentFile); // No file copy exists anywhere.
+        Environment.SetEnvironmentVariable(variable, fixture.Enrollment.ToJsonString());
+        try
+        {
+            Assert.Equal(0, await fixture.Start("--enrollment-environment", variable));
+            Assert.Single(fixture.Transport.Requests); // The transport accepts only the enrolled device secret.
+            Assert.Null(Environment.GetEnvironmentVariable(variable));
+            var inherited = File.ReadAllText(childEnvironment);
+            Assert.Contains("GH_TOKEN=opaque-token-1", inherited);
+            Assert.DoesNotContain(variable, inherited);
+            Assert.DoesNotContain(fixture.Enrollment["deviceSecret"]!.GetValue<string>(), inherited);
+            Assert.DoesNotContain(fixture.Enrollment["deviceSecret"]!.GetValue<string>(), string.Concat(
+                System.IO.Directory.EnumerateFiles(fixture.Directory, "*", SearchOption.AllDirectories).Select(File.ReadAllText)));
+        }
+        finally { Environment.SetEnvironmentVariable(variable, null); }
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("empty")]
+    [InlineData("mismatched")]
+    [InlineData("with-file")]
+    public async Task Missing_or_mismatched_environment_enrollment_denies_startup_before_broker_contact(string fault)
+    {
+        using var fixture = new Fixture(clone: true);
+        var variable = "REPOAGENT_TEST_ENROLLMENT_" + Guid.NewGuid().ToString("N");
+        if (fault == "mismatched") fixture.Enrollment["repository"] = "owner/other";
+        Environment.SetEnvironmentVariable(variable, fault switch { "missing" => null, "empty" => "", _ => fixture.Enrollment.ToJsonString() });
+        try { Assert.Equal(1, await fixture.Start("--enrollment-environment", variable, keepFile: fault == "with-file")); }
+        finally { Environment.SetEnvironmentVariable(variable, null); }
+        Assert.Empty(fixture.Transport.Requests);
+        // Documented retained logs beside --state carry the operator diagnostic.
+        var retained = string.Concat(System.IO.Directory.EnumerateFiles(fixture.State + ".logs").Select(File.ReadAllText));
+        Assert.DoesNotContain(fixture.Enrollment["deviceSecret"]!.GetValue<string>(), retained);
+        Assert.Contains(fault switch
+        {
+            "mismatched" => "CLI App/repository differs from enrollment",
+            "with-file" => "exactly one of --enrollment-file or --enrollment-environment",
+            _ => $"enrollment environment variable {variable} is missing or empty",
+        }, retained);
+    }
+
+    [Fact]
     public async Task Broker_CLI_rejects_an_insecure_origin_without_requiring_a_PEM()
     {
         using var fixture = new Fixture();
@@ -514,9 +563,10 @@ public sealed class BrokerAuthenticationTests
 
         public GitHubAppCredentials Credentials() => GitHubAppCredentials.FromBroker(http, "https://credentials.example.org/", EnrollmentFile, "123", "OWNER/Repository", CredentialDirectory, Clock, webhooks, clone);
 
-        public Task<int> Start(string? option = null, string? value = null)
+        public Task<int> Start(string? option = null, string? value = null, bool keepFile = false)
         {
             var args = new List<string> { "--repo", "owner/repository", "--app-id", "123", "--state", State, "--broker-url", "https://credentials.example.org", "--enrollment-file", EnrollmentFile, "--check-auth" };
+            if (option == "--enrollment-environment" && !keepFile) args.RemoveRange(args.IndexOf("--enrollment-file"), 2);
             if (clone) args.Add("--clone");
             if (webhooks) args.AddRange(["--webhook-url", "https://controller.example.org"]);
             if (option is not null)

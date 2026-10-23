@@ -13,8 +13,11 @@ def log(event, message):
     print(datetime.datetime.now(datetime.timezone.utc).isoformat() + ' ' + event + ' ' + message, flush=True)
 
 
-def run(bridge, port):
-    """Discover a connected tunnel, then launch the existing receiver with its origin."""
+def run(bridge, port, environment=None):
+    """Discover a connected tunnel, then launch the existing receiver with its origin.
+
+    Only the receiver gets ``environment``; the tunnel inherits the ordinary process environment.
+    """
     stopping = threading.Event()
     previous = {}
     processes = []
@@ -79,7 +82,7 @@ def run(bridge, port):
         if stopping.is_set():
             return 0
         log('tunnel-connected', 'mode=quick-tunnel public-url=' + origin)
-        agent = subprocess.Popen(bridge + ['--webhook-url', origin], start_new_session=True)
+        agent = subprocess.Popen(bridge + ['--webhook-url', origin], start_new_session=True, env=environment)
         processes.append(agent)
         while not stopping.wait(0.2):
             if tunnel.poll() is not None:
