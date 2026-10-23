@@ -91,7 +91,7 @@ sealed class GitHubOutbox : IAsyncDisposable
             operation["attempts"] ??= 0;
             operation["dueAt"] ??= clock.GetUtcNow().ToString("O");
             operation["uncertain"] ??= false;
-            if (existing is null) Operations.Add(operation);
+            if (existing is null) Operations.Add((JsonNode)operation);
             else Operations[Operations.IndexOf(existing)] = operation;
             Save();
             wake.TrySetResult();

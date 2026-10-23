@@ -159,11 +159,11 @@ public sealed class GitHubOutboxTests
     };
 
     /// <summary>Runs the real controller entrypoint against controlled GitHub and native peers across restarts.</summary>
-    sealed class Controller : IDisposable
+    internal sealed class Controller : IDisposable
     {
         readonly BrokerAuthenticationTests.Fixture fixture = new();
         readonly string? path = Environment.GetEnvironmentVariable("PATH");
-        readonly string world, requests, native;
+        readonly string world, requests, native, nativeReject;
         public FakeTimeProvider Clock => fixture.Clock;
 
         public Controller()
@@ -171,11 +171,12 @@ public sealed class GitHubOutboxTests
             world = Path.Combine(fixture.Directory, "github-world.json");
             requests = Path.Combine(fixture.Directory, "github-requests.jsonl");
             native = Path.Combine(fixture.Directory, "native-requests.jsonl");
+            nativeReject = Path.Combine(fixture.Directory, "native-reject");
             var gh = (path ?? "").Split(Path.PathSeparator).Select(directory => Path.Combine(directory, "gh")).FirstOrDefault(File.Exists)
                 ?? throw new InvalidOperationException("The installed gh is required: its --include output is the adapter compatibility boundary");
             var tools = Path.Combine(fixture.Directory, "native-tools");
             Directory.CreateDirectory(tools);
-            WriteExecutable(Path.Combine(tools, "codex"), Native.Replace("NATIVE_LOG", Quote(native)));
+            WriteExecutable(Path.Combine(tools, "codex"), Native.Replace("NATIVE_LOG", Quote(native)).Replace("NATIVE_REJECT", Quote(nativeReject)));
             WriteExecutable(fixture.Gh, GitHub.Replace("WORLD", Quote(world)).Replace("REQUESTS", Quote(requests)).Replace("REAL_GH", Quote(gh)));
             File.WriteAllText(world, new JsonObject
             {
@@ -186,7 +187,7 @@ public sealed class GitHubOutboxTests
                     ["answer"] = null, ["category"] = new JsonObject { ["id"] = "DIC1", ["name"] = "General" },
                     ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" }
                 },
-                ["comments"] = new JsonArray(), ["eyes"] = new JsonArray(), ["responses"] = new JsonArray()
+                ["comments"] = new JsonArray(), ["reactions"] = new JsonObject(), ["eyes"] = new JsonArray(), ["responses"] = new JsonArray()
             }.ToJsonString());
             Environment.SetEnvironmentVariable("PATH", tools + Path.PathSeparator + path);
         }
@@ -196,17 +197,53 @@ public sealed class GitHubOutboxTests
             foreach (var response in responses) state["responses"]!.AsArray().Add(response);
         });
 
-        /// <summary>Adds or edits a participant's top-level comment.</summary>
-        public void Comment(string id, string body) => Update(state =>
+        /// <summary>Adds or edits a participant's top-level comment, or a reply in the thread of <paramref name="replyTo"/>.</summary>
+        public void Comment(string id, string body, string author = "participant", string? replyTo = null) => Update(state =>
         {
             var comments = state["comments"]!.AsArray();
             if (comments.FirstOrDefault(c => c!["id"]!.GetValue<string>() == id) is { } existing) existing["body"] = body;
             else comments.Add(new JsonObject
             {
                 ["id"] = id, ["url"] = "https://github.com/owner/repository/discussions/1#discussioncomment-" + id, ["body"] = body,
-                ["bodyHTML"] = "<p>" + body + "</p>", ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" }, ["replyTo"] = null
+                ["bodyHTML"] = "<p>" + body + "</p>", ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = author },
+                ["replyTo"] = replyTo is null ? null : new JsonObject { ["id"] = replyTo }
             });
         });
+
+        /// <summary>Serves every GitHub read connection in pages of <paramref name="size"/>; with <paramref name="failLaterPages"/>,
+        /// each request for a page after the first fails as gh does on an HTTP 502.</summary>
+        public void Paginate(int size, bool failLaterPages = false) => Update(state =>
+        {
+            state["pageSize"] = size;
+            state["failLaterPages"] = failLaterPages;
+        });
+
+        /// <summary>Deletes a comment or reply, with its reactions, from what GitHub returns.</summary>
+        public void Delete(string id) => Update(state =>
+        {
+            var comments = state["comments"]!.AsArray();
+            comments.Remove(comments.Single(c => c!["id"]!.GetValue<string>() == id));
+            state["reactions"]!.AsObject().Remove(id);
+        });
+
+        /// <summary>Adds a participant's reaction to the Discussion or a comment.</summary>
+        public void React(string subject, string id, string content, string actor) => Update(state =>
+        {
+            var reactions = state["reactions"]!.AsObject();
+            if (reactions[subject] is null) reactions[subject] = new JsonArray();
+            reactions[subject]!.AsArray().Add(new JsonObject
+            {
+                ["id"] = id, ["content"] = content, ["user"] = new JsonObject { ["__typename"] = "User", ["login"] = actor },
+                ["createdAt"] = "2026-10-23T12:00:00Z"
+            });
+        });
+
+        /// <summary>The native peer answers the next <paramref name="count"/> turn/start requests with a JSON-RPC error.</summary>
+        public void RejectTurns(int count) => File.WriteAllText(nativeReject, count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+        /// <summary>Marks a comment as the Discussion's answer, or clears the answer.</summary>
+        public void Answer(string? comment) => Update(state =>
+            state["discussion"]!["answer"] = comment is null ? null : new JsonObject { ["id"] = comment });
 
         void Update(Action<JsonObject> change)
         {
@@ -237,6 +274,15 @@ public sealed class GitHubOutboxTests
         ];
 
         public int Turns => Lines(native).Count(line => line["method"]?.GetValue<string>() == "turn/start");
+
+        /// <summary>The bridge envelope text of each native turn/start, exactly as the native process received it.</summary>
+        public IReadOnlyList<string> Inputs => Lines(native).Where(line => line["method"]?.GetValue<string>() == "turn/start")
+            .Select(line => line["params"]!["input"]![0]!["text"]!.GetValue<string>())
+            .Select(text => text.StartsWith(Skill, StringComparison.Ordinal) ? text[Skill.Length..] : throw new InvalidOperationException("Unexpected native input: " + text))
+            .ToArray();
+
+        const string Skill = "$github-discussion\n";
+
         public int Writes(string subject) => Lines(requests).Count(line => line["kind"]!.GetValue<string>() == "addReaction" && line["subject"]?.GetValue<string>() == subject);
         public bool HasEyes(string subject) => JsonNode.Parse(File.ReadAllText(world))!["eyes"]!.AsArray().Any(id => id!.GetValue<string>() == subject);
 
@@ -265,7 +311,11 @@ public sealed class GitHubOutboxTests
              with open(NATIVE_LOG,'a') as log:log.write(line)
              if 'id' not in request:continue
              method=request['method']
-             result={'codexHome':os.getcwd()} if method=='initialize' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1','status':{'type':'idle'}}}
+             rejects=int(open(NATIVE_REJECT).read()) if method=='turn/start' and os.path.exists(NATIVE_REJECT) else 0
+             if rejects:
+              open(NATIVE_REJECT,'w').write(str(rejects-1))
+              print(json.dumps({'id':request['id'],'error':{'code':-32000,'message':'turn rejected'}}),flush=True);continue
+             result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1','status':{'type':'idle'}}}
              print(json.dumps({'id':request['id'],'result':result}),flush=True)
             """;
 
@@ -277,11 +327,15 @@ public sealed class GitHubOutboxTests
             args=sys.argv[1:]
             request=json.loads(sys.stdin.read()) if '--input' in args else {}
             query=request.get('query','');variables=request.get('variables') or {}
-            page=lambda nodes:{'nodes':nodes,'pageInfo':{'hasNextPage':False,'endCursor':None}}
             relay=None;kind='read';data=None
             with open(WORLD,'r+') as handle:
              fcntl.flock(handle,fcntl.LOCK_EX)
              world=json.load(handle)
+             size=world.get('pageSize') or 0;cursor=variables.get('cursor')
+             if cursor and world.get('failLaterPages'):sys.stderr.write('gh: HTTP 502: Bad Gateway (https://api.github.com/graphql)\n');sys.exit(1)
+             def page(nodes):
+              end=int(cursor or 0)+size if size else len(nodes)
+              return {'nodes':nodes[int(cursor or 0):end],'pageInfo':{'hasNextPage':end<len(nodes),'endCursor':str(end) if end<len(nodes) else None}}
              groups=lambda id:[{'content':'EYES','viewerHasReacted':id in world['eyes']}]
              message=lambda item:dict(item,reactionGroups=groups(item['id']))
              if 'addReaction' in query:
@@ -292,7 +346,8 @@ public sealed class GitHubOutboxTests
              elif 'discussions(' in query:data={'repository':{'discussions':page([message(world['discussion'])])}}
              elif 'comments(' in query:data={'node':{'comments':page([message(c) for c in world['comments'] if c.get('replyTo') is None])}}
              elif 'replies(' in query:data={'node':{'replies':page([message(c) for c in world['comments'] if (c.get('replyTo') or {}).get('id')==variables['id']])}}
-             elif 'reactions(' in query:data={'node':{'reactions':page([])}}
+             elif 'reactions(' in query:data={'node':{'reactions':page(world['reactions'].get(variables['id'],[]))}}
+             elif 'labels(' in query:data={'node':{'labels':page([])}}
              elif 'reactionGroups' in query and 'node(' in query:
               kind='reconcile';subject=variables['id']
               relay=world['responses'].pop(0) if world['responses'] else {'status':200,'body':json.dumps({'data':{'node':{'reactionGroups':groups(subject)}}})}

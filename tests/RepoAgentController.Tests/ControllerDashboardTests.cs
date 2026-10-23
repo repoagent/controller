@@ -208,6 +208,28 @@ public sealed class ControllerDashboardTests
     }
 
     [Fact]
+    public async Task Rejected_Codex_account_credentials_are_shown_on_the_dashboard_under_the_attention_title()
+    {
+        using var controller = new Controller();
+        controller.RejectAccount();
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = controller.Run(shutdown.Token, "--dashboard-category", Category);
+        try
+        {
+            // The bootstrap turn fails at the model provider; GitHub App authentication is unaffected and stays healthy.
+            var attention = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("**Codex authentication:** failed") ? dashboard : null);
+            Assert.Equal("Attention: RepoAgent controller authentication failed", attention.Title);
+            Assert.Contains("**Authentication:** healthy", attention.Body);
+            Assert.Matches(@"\*\*Codex authentication:\*\* failed at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ: `[^`\n]*401 Unauthorized[^`\n]*`", attention.Body);
+            Assert.Matches(@"`codex-auth-failed`: `[^`\n]*401 Unauthorized", attention.Body);
+            Assert.Equal(1, controller.Turns);
+            controller.AssertNoSecrets();
+        }
+        finally { await shutdown.CancelAsync(); }
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Missing_dashboard_category_is_reported_once_instead_of_retried_every_heartbeat()
     {
         using var controller = new Controller();
@@ -233,6 +255,120 @@ public sealed class ControllerDashboardTests
         Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
         Assert.Equal(1, controller.Writes("categories"));
     }
+
+    [Fact]
+    public async Task Newer_baseline_release_is_offered_once_with_its_links_while_the_running_release_claims_no_update()
+    {
+        using var controller = new Controller();
+        var running = controller.Inventory("running", gh: "2.102.0", codex: "0.163.0");
+        var current = controller.Publish(101, running);
+        // Neither an unpublished draft nor a baseline tag without valid release metadata is offered.
+        controller.Publish(105, controller.Inventory("draft"), draft: true);
+        controller.Release("baseline-106.1", "Hand-written notes.\n\n<!-- repoagent.baseline-release/v1 -->\n```json\n{\"schema\":\"repoagent.baseline-release/v1\"}\n```\n");
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = controller.Run(shutdown.Token, "--dashboard-category", Category, "--image-inventory", running);
+        try
+        {
+            var upToDate = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains(ReleaseUrl(current)) ? dashboard : null);
+            TestContext.Current.TestOutputHelper?.WriteLine(upToDate.Body);
+            Assert.Matches(@"### Updates\n[^\n]*\[" + Regex.Escape(current) + @"\]\(" + Regex.Escape(ReleaseUrl(current)) + @"\)[^\n]*newest", upToDate.Body);
+            Assert.DoesNotContain("Update available", upToDate.Body);
+
+            // Two releases are published before the next check; only the newest is offered, as one notice.
+            controller.Publish(102, controller.Inventory("skipped", gh: "2.103.0", codex: "0.163.0"));
+            var newest = controller.Publish(103, controller.Inventory("newest", gh: "2.103.1", codex: "0.164.0"), out var image);
+            var offered = await Until(() =>
+            {
+                controller.Clock.Advance(TimeSpan.FromMinutes(5));
+                return controller.Dashboard() is { } dashboard && dashboard.Body.Contains(ReleaseUrl(newest)) ? dashboard : null;
+            });
+            TestContext.Current.TestOutputHelper?.WriteLine(offered.Body);
+            Assert.Single(Regex.Matches(offered.Body, "Update available"));
+            Assert.Matches(@"Update available[^\n]*\[" + Regex.Escape(newest) + @"\]\(" + Regex.Escape(ReleaseUrl(newest)) + @"\)[^\n]*\[" + Regex.Escape(current) + @"\]", offered.Body);
+            Assert.DoesNotContain("baseline-102.1", offered.Body);
+            Assert.Contains("2 newer", offered.Body);
+            Assert.Contains("`" + image + "`", offered.Body);
+            Assert.Contains("(https://github.com/repoagent/controller/pkgs/container/controller)", offered.Body);
+            Assert.Matches(@"gh `2\.103\.1`[^\n]*Codex `0\.164\.0`", offered.Body);
+            // Publication is not deployment: the operator recreates the controller and keeps its external data.
+            Assert.Contains("never replaces itself", offered.Body);
+            Assert.Matches(@"recreates the controller[^\n]*configuration, credentials and session", offered.Body);
+            Assert.All(controller.Requests("releases"), read => Assert.True(read["include"]!.GetValue<bool>()));
+            Assert.Equal(1, controller.Writes("createDiscussion"));
+            Assert.Equal(1, controller.Turns);
+        }
+        finally { await shutdown.CancelAsync(); }
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Failed_release_lookup_claims_no_update_until_a_later_check_succeeds()
+    {
+        using var controller = new Controller();
+        var running = controller.Inventory("running");
+        var newer = controller.Publish(102, controller.Inventory("newer", gh: "2.103.1"));
+        // Created last (its release job was re-run), so GitHub lists it first; publication order still makes 102 newer.
+        var current = controller.Publish(101, running);
+        controller.Respond(Response("releases", 503, """{"message":"Service Unavailable"}"""));
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = controller.Run(shutdown.Token, "--dashboard-category", Category, "--image-inventory", running);
+        try
+        {
+            var failed = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("HTTP 503") ? dashboard : null);
+            TestContext.Current.TestOutputHelper?.WriteLine(failed.Body);
+            Assert.Matches(@"### Updates\n[^\n]*failed at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ[^\n]*HTTP 503", failed.Body);
+            Assert.DoesNotContain("Update available", failed.Body);
+            Assert.DoesNotContain(current, failed.Body); // Neither the running nor a newer release is claimed.
+            Assert.DoesNotContain(newer, failed.Body);
+
+            var recovered = await Until(() =>
+            {
+                controller.Clock.Advance(TimeSpan.FromMinutes(5));
+                return controller.Dashboard() is { } dashboard && dashboard.Body.Contains(ReleaseUrl(newer)) ? dashboard : null;
+            });
+            Assert.Matches(@"Update available[^\n]*\[" + Regex.Escape(newer) + @"\][^\n]*\[" + Regex.Escape(current) + @"\]", recovered.Body);
+            Assert.DoesNotContain("HTTP 503", recovered.Body);
+        }
+        finally { await shutdown.CancelAsync(); }
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [InlineData("derived image", "matches none of the newest published baseline releases")]
+    [InlineData("native run", "not started with a baseline image inventory")]
+    [InlineData("startup tool updates", "startup tool updates replace the image's gh and Codex")]
+    public async Task Uncertain_image_identity_is_reported_instead_of_a_replacement(string image, string reason)
+    {
+        using var controller = new Controller();
+        var baseline = controller.Inventory("baseline");
+        var current = controller.Publish(101, baseline);
+        var newer = controller.Publish(102, controller.Inventory("newer", gh: "2.103.1"));
+        string[] options = image switch
+        {
+            // Composed with a derived Dockerfile, for example: its inventory differs from every published one.
+            "derived image" => ["--image-inventory", controller.Inventory("derived")],
+            // The image is baseline-101.1, but the runtime replaced its gh and Codex with versions no release records.
+            "startup tool updates" => ["--image-inventory", baseline, "--startup-tool-updates"],
+            _ => []
+        };
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = controller.Run(shutdown.Token, ["--dashboard-category", Category, .. options]);
+        try
+        {
+            var uncertain = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains(ReleaseUrl(newer)) ? dashboard : null);
+            TestContext.Current.TestOutputHelper?.WriteLine(uncertain.Body);
+            Assert.Matches(@"### Updates\n\*\*Release identity uncertain\*\*[^\n]*" + Regex.Escape(reason), uncertain.Body);
+            Assert.DoesNotContain("Update available", uncertain.Body);
+            Assert.DoesNotContain("recreates the controller", uncertain.Body);
+            Assert.Matches(@"Newest published baseline release: \[" + Regex.Escape(newer) + @"\]", uncertain.Body);
+            if (image == "startup tool updates") Assert.Contains($"inventory matches [{current}]({ReleaseUrl(current)})", uncertain.Body);
+            else Assert.DoesNotContain(current, uncertain.Body);
+        }
+        finally { await shutdown.CancelAsync(); }
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    static string ReleaseUrl(string tag) => "https://github.com/repoagent/controller/releases/tag/" + tag;
 
     sealed class CapturedConsole : IDisposable
     {
@@ -335,7 +471,14 @@ public sealed class ControllerDashboardTests
                     ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" }
                 }),
                 ["categories"] = new JsonArray(new JsonObject { ["id"] = "DIC1", ["name"] = "General" }, new JsonObject { ["id"] = "DIC2", ["name"] = Category }),
-                ["comments"] = new JsonArray(), ["eyes"] = new JsonArray(), ["responses"] = new JsonArray()
+                ["comments"] = new JsonArray(), ["eyes"] = new JsonArray(), ["responses"] = new JsonArray(),
+                // repoagent/controller's releases, newest first. Its existing manual release is not a baseline release.
+                ["releases"] = new JsonArray(new JsonObject
+                {
+                    ["tag_name"] = "v0.1.0", ["name"] = "v0.1.0", ["draft"] = false, ["prerelease"] = false,
+                    ["html_url"] = "https://github.com/repoagent/controller/releases/tag/v0.1.0", ["published_at"] = "2026-10-21T10:04:00Z",
+                    ["body"] = "Linux amd64 controller. Source: 88c23241b45c22b265ef1f854e49a7c0c5e16d9f. See docs/ci-cd.md for runtime requirements."
+                })
             }.ToJsonString());
             Environment.SetEnvironmentVariable("PATH", tools + Path.PathSeparator + path);
         }
@@ -368,6 +511,75 @@ public sealed class ControllerDashboardTests
             });
             return url;
         }
+
+        /// <summary>Writes an image inventory, as image composition embeds it, with these bundled tool versions.</summary>
+        public string Inventory(string name, string gh = "2.102.0", string codex = "0.163.0")
+        {
+            var file = Path.Combine(fixture.Directory, "images", name, "image-inventory.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            File.WriteAllText(file, new JsonObject
+            {
+                ["agent"] = new JsonObject { ["profile"] = "codex", ["version"] = codex },
+                ["controller"] = new JsonObject { ["sha256"] = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(name))), ["source"] = "checkout" },
+                ["githubCli"] = new JsonObject { ["version"] = gh }
+            }.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n");
+            return file;
+        }
+
+        public string Publish(long run, string inventory, bool draft = false) => Publish(run, inventory, out _, draft);
+
+        /// <summary>
+        /// Publishes the baseline release that the real release publisher (scripts/delivery/image-release.py) renders for an
+        /// image with this inventory, so the controller reads the actual release metadata contract. Returns its tag.
+        /// </summary>
+        public string Publish(long run, string inventory, out string image, bool draft = false)
+        {
+            var artifact = Path.Combine(fixture.Directory, "artifacts", run.ToString(CultureInfo.InvariantCulture));
+            Directory.CreateDirectory(artifact);
+            File.Copy(inventory, Path.Combine(artifact, "image-inventory.json"));
+            var tools = JsonNode.Parse(File.ReadAllText(inventory))!;
+            File.WriteAllText(Path.Combine(artifact, "versions.txt"),
+                $"gh version {tools["githubCli"]!["version"]} (2026-10-01)\nhttps://github.com/cli/cli/releases/latest\ncodex-cli {tools["agent"]!["version"]}\n");
+            string Digest(string seed) => Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(seed + run)));
+            File.WriteAllText(Path.Combine(artifact, "build.json"), new JsonObject { ["containerimage.config.digest"] = "sha256:" + Digest("config") }.ToJsonString());
+            var commit = Digest("commit")[..40];
+            image = "ghcr.io/repoagent/controller@sha256:" + Digest("manifest");
+            var start = new System.Diagnostics.ProcessStartInfo("python3") { RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var argument in new[] { "-I", "-c", RenderRelease, Path.Combine(RepositoryRoot, "scripts/delivery/image-release.py"), artifact }) start.ArgumentList.Add(argument);
+            start.Environment["GITHUB_SHA"] = commit;
+            start.Environment["IMAGE"] = image;
+            start.Environment["REFERENCE"] = $"ghcr.io/repoagent/controller:sha-{commit}-{run}-1";
+            start.Environment["GITHUB_SERVER_URL"] = "https://github.com";
+            start.Environment["GITHUB_REPOSITORY"] = "repoagent/controller";
+            start.Environment["GITHUB_RUN_ID"] = run.ToString(CultureInfo.InvariantCulture);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            Assert.True(process.ExitCode == 0, "The release publisher refused the fixture: " + error);
+            var rendered = JsonNode.Parse(output)!;
+            return Release(rendered["tag"]!.GetValue<string>(), rendered["body"]!.GetValue<string>(), draft);
+        }
+
+        /// <summary>Adds a release to repoagent/controller as GitHub lists it, newest first.</summary>
+        public string Release(string tag, string body, bool draft = false)
+        {
+            Update(state => state["releases"]!.AsArray().Insert(0, new JsonObject
+            {
+                ["tag_name"] = tag, ["name"] = tag, ["draft"] = draft, ["prerelease"] = false,
+                ["html_url"] = "https://github.com/repoagent/controller/releases/tag/" + tag, ["published_at"] = Clock.GetUtcNow().ToString("O"), ["body"] = body
+            }));
+            return tag;
+        }
+
+        static readonly string RepositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
+
+        const string RenderRelease = """
+            import importlib.util,json,pathlib,sys
+            spec=importlib.util.spec_from_file_location('image_release',sys.argv[1]);publisher=importlib.util.module_from_spec(spec);spec.loader.exec_module(publisher)
+            value=publisher.describe(pathlib.Path(sys.argv[2]))
+            print(json.dumps({'tag':value['release'],'body':publisher.notes(value)}))
+            """;
 
         public Task<int> RunOnce(params string[] extra) =>
             BridgeCommand.Run([.. Arguments, "--once", .. extra], appHttp ?? fixture.Http, fixture.Gh, fixture.Clock, TestContext.Current.CancellationToken);
@@ -466,7 +678,11 @@ public sealed class ControllerDashboardTests
         /// <summary>Later native turns stay active instead of completing.</summary>
         public void HoldTurns() => File.WriteAllText(native + ".hold", "");
 
-        // Every thread is idle when started or resumed; each accepted turn reports idle and completes at once, unless held.
+        /// <summary>Later native turns fail as the pinned native reports a model provider's rejection of the Codex account.</summary>
+        public void RejectAccount() => File.WriteAllText(native + ".unauthorized", "");
+
+        // Every thread is idle when started or resumed; each accepted turn reports idle and completes at once, unless held
+        // or failed by a rejected account.
         const string Native = """
             #!/usr/bin/python3
             import json,os,sys
@@ -478,19 +694,24 @@ public sealed class ControllerDashboardTests
              if 'id' not in request:continue
              method=request['method'];idle={'type':'idle'}
              if method=='initialize':send({'id':request['id'],'result':{'codexHome':os.getcwd()}});continue
+             if method=='model/list':send({'id':request['id'],'result':{'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]}});continue
+             if method=='config/read':send({'id':request['id'],'result':{'config':{}}});continue
              if method=='turn/start':
               turns+=1;thread=request['params']['threadId'];turn={'id':'native-turn-%d'%turns,'status':'inProgress','items':[]}
               send({'id':request['id'],'result':{'turn':turn}})
               if os.path.exists(NATIVE_LOG+'.hold'):send({'method':'thread/status/changed','params':{'threadId':thread,'status':{'type':'active','activeFlags':[]}}});continue
               send({'method':'thread/status/changed','params':{'threadId':thread,'status':idle}})
-              send({'method':'turn/completed','params':{'threadId':thread,'turn':dict(turn,status='completed')}})
+              rejected={'message':'unexpected status 401 Unauthorized','codexErrorInfo':'unauthorized'}
+              done=dict(turn,status='failed',error=rejected) if os.path.exists(NATIVE_LOG+'.unauthorized') else dict(turn,status='completed')
+              send({'method':'turn/completed','params':{'threadId':thread,'turn':done}})
               continue
              if method=='thread/start':threads+=1
              thread=request.get('params',{}).get('threadId') or 'native-T%d'%threads
              send({'id':request['id'],'result':{'thread':{'id':thread,'status':idle}}})
             """;
 
-        // Reads answer from the controlled world. Controller-owned requests (--include) are relayed through the installed gh
+        // Reads answer from the controlled world, including repoagent/controller's releases (REST, the rest GraphQL).
+        // Controller-owned requests and release reads (--include) are relayed through the installed gh
         // to a one-shot local HTTP peer, so the controller consumes gh's actual status/header output. A queued fault response
         // replaces the next relayed request of its kind; it changes the world only when marked "apply".
         const string GitHub = """
@@ -509,7 +730,10 @@ public sealed class ControllerDashboardTests
              groups=lambda id:[{'content':'EYES','viewerHasReacted':id in world['eyes']}]
              message=lambda item:dict(item,reactionGroups=groups(item['id']))
              entry={'include':include}
-             if 'addReaction' in query:
+             rest=args[1].startswith('repos/')
+             if rest and args[1].split('?')[0]=='repos/repoagent/controller/releases':entry['kind']='releases';data=world['releases']
+             elif rest:raise RuntimeError('Unexpected GitHub request: '+args[1])
+             elif 'addReaction' in query:
               entry.update(kind='addReaction',subject=variables['id'])
               data={'addReaction':{'reaction':{'id':'R-'+variables['id']}}}
               change=lambda:world['eyes'].append(variables['id']) if variables['id'] not in world['eyes'] else None
@@ -538,20 +762,21 @@ public sealed class ControllerDashboardTests
              elif 'comments(' in query:entry['kind']='comments';data={'node':{'comments':page([message(c) for c in world['comments'] if c['discussion']==variables['id'] and c.get('replyTo') is None])}}
              elif 'replies(' in query:entry['kind']='replies';data={'node':{'replies':page([message(c) for c in world['comments'] if (c.get('replyTo') or {}).get('id')==variables['id']])}}
              elif 'reactions(' in query:entry['kind']='reactions';data={'node':{'reactions':page([])}}
+             elif 'labels(' in query:entry['kind']='labels';data={'node':{'labels':page([])}}
              elif 'reactionGroups' in query and 'node(' in query:
               entry.update(kind='reconcile',subject=variables['id']);data={'node':{'reactionGroups':groups(variables['id'])}}
              else:raise RuntimeError('Unexpected GitHub request: '+query)
              if include:
               relay=next((r for r in world['responses'] if r.get('kind',entry['kind'])==entry['kind']),None)
               if relay is not None:world['responses'].remove(relay)
-              else:relay={'status':200,'body':json.dumps({'data':data}),'apply':True}
+              else:relay={'status':200,'body':json.dumps(data if rest else {'data':data}),'apply':True}
               entry['status']=relay['status']
               if relay.get('apply') and change:change()
              elif change:change()
              with open(REQUESTS,'a') as log:log.write(json.dumps(entry)+'\n')
              handle.seek(0);handle.truncate();json.dump(world,handle)
             if relay is None:
-             print(json.dumps({'data':data}));sys.exit(0)
+             print(json.dumps(data if rest else {'data':data}));sys.exit(0)
             class Peer(http.server.BaseHTTPRequestHandler):
              def do_POST(self):
               self.rfile.read(int(self.headers.get('Content-Length','0')))
@@ -559,6 +784,7 @@ public sealed class ControllerDashboardTests
               for name,value in relay.get('headers',{}).items():self.send_header(name,value)
               self.send_header('Content-Type','application/json; charset=utf-8');self.end_headers()
               self.wfile.write(relay['body'].encode())
+             do_GET=do_POST
              def log_message(self,*_):pass
             server=http.server.HTTPServer(('127.0.0.1',0),Peer)
             threading.Thread(target=server.handle_request,daemon=True).start()

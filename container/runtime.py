@@ -26,6 +26,7 @@ SKILLS = Path('/data/config/skills')
 REQUIRED_SKILLS = ('github-discussion', 'repoagent-orientation')  # Packaged beside the controller.
 STATE = '/data/state/bridge.json'
 CONTROLLER = ['/opt/repoagent/controller/RepoAgentController']
+INVENTORY = '/opt/repoagent/image-inventory.json'
 # Externally injected controller credential: the unchanged enrollment document. Only the
 # controller process receives it; it is never written, logged or passed as an argument.
 ENROLLMENT_VARIABLE = 'REPOAGENT_ENROLLMENT'
@@ -84,7 +85,10 @@ def bridge_args(config, *, check_auth=False, injected=False):
     if config.get('azureWorkQueue') and not check_auth:
         args += ['--azure-work-queue', config['azureWorkQueue']]
     if config.get('dashboardCategory') and not check_auth:
-        args += ['--dashboard-category', config['dashboardCategory']]
+        # The dashboard compares this image with published baseline releases; startup tool updates make that uncertain.
+        args += ['--dashboard-category', config['dashboardCategory'], '--image-inventory', INVENTORY]
+        if config.get('toolUpdates') == 'latest':
+            args += ['--startup-tool-updates']
     for url in config.get('enroll', []):
         args += ['--enroll', url]
     if CODEX_SUPPLY.is_file():

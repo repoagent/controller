@@ -425,8 +425,8 @@ class GitProvider:
         self.requests = []
         self.responses, self.model_requests, self.denied = responses, [], []
         self.model_request_limit = 2
-        # Discussion comment/reply nodes keyed by parent node ID, and EYES subjects in mutation order.
-        self.comments, self.reactions = {}, []
+        # Discussion comment/reply nodes keyed by parent node ID, label names keyed by Discussion ID, and EYES subjects in mutation order.
+        self.comments, self.labels, self.reactions = {}, {}, []
         # Model request number -> threading.Event released by the test before that response streams.
         self.response_holds = {}
         self.cert = directory / 'cert.pem'
@@ -580,6 +580,8 @@ class GitProvider:
                     query = json.loads(body).get('query', '')
                     variables = json.loads(body).get('variables') or {}
                     if 'addReaction(' in query:
+                        if getattr(provider, 'reaction_status', None):  # GitHub refuses the receipt; nothing is added.
+                            return self.reply({'message': 'Resource not accessible by integration'}, provider.reaction_status)
                         provider.reactions.append(variables['id'])
                         return self.reply({'data': {'addReaction': {'reaction': {'id': 'EYES-' + str(len(provider.reactions))}}}})
                     if 'discussion(number:' in query:
@@ -587,8 +589,9 @@ class GitProvider:
                     if 'discussions(' in query:
                         return self.reply({'data': {'repository': {'discussions': {'nodes': getattr(provider, 'discussions', []), 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'node(id:' in query:
-                        field = 'comments' if 'comments(' in query else 'replies' if 'replies(' in query else 'reactions'
-                        nodes = [] if field == 'reactions' else provider.comments.get(variables.get('id'), [])
+                        field = 'comments' if 'comments(' in query else 'replies' if 'replies(' in query else 'labels' if 'labels(' in query else 'reactions'
+                        nodes = [] if field == 'reactions' else [dict(name=name) for name in provider.labels.get(variables.get('id'), [])] \
+                            if field == 'labels' else provider.comments.get(variables.get('id'), [])
                         return self.reply({'data': {'node': {field: {'nodes': nodes, 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'user(login:' in query:
                         return self.reply({'data': {'user': {'login': 'repoagent'}}})
@@ -654,9 +657,9 @@ class GitProvider:
         if getattr(self, 'webhooks', False):
             enrollment['permissions']['repository_hooks'] = 'write'
             enrollment['profile'] = 'webhook-clone'
-            if not self.clone:
-                enrollment.update(protocolVersion=1); enrollment['permissions'].pop('contents')
-                enrollment.pop('profile'); enrollment.pop('policyVersion')
+        if not getattr(self, 'clone', True):
+            enrollment.update(protocolVersion=1); enrollment['permissions'].pop('contents')
+            enrollment.pop('profile'); enrollment.pop('policyVersion')
         return enrollment
 
     def lease(self):

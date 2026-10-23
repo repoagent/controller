@@ -36,21 +36,40 @@ function Read-Catalogue {
     foreach ($name in $catalogue.reserved) { Assert-Text $name '\AREPOAGENT_[A-Z0-9_]{1,90}\z' }
     $script:Reserved = $catalogue.reserved
     foreach ($entry in $catalogue.settings) {
-        Assert-Fields $entry @('name', 'description', 'type', 'minimum', 'maximum')
+        if ($entry.type -ceq 'token') { Assert-Fields $entry @('name', 'description', 'type') }
+        else { Assert-Fields $entry @('name', 'description', 'type', 'minimum', 'maximum') }
         Assert-Text $entry.name '\AREPOAGENT_[A-Z0-9_]{1,90}\z'
-        if ($entry.name -in $script:Reserved -or $entry.type -cne 'integer' -or $entry.minimum -isnot [long] -or $entry.maximum -isnot [long] -or $entry.minimum -lt 0 -or $entry.maximum -lt $entry.minimum) { throw 'Invalid repository settings catalogue entry.' }
+        if ($entry.name -in $script:Reserved) { throw 'Invalid repository settings catalogue entry.' }
+        if ($entry.type -cne 'token' -and ($entry.type -cnotin @('integer', 'category-names') -or $entry.minimum -isnot [long] -or $entry.maximum -isnot [long] -or $entry.minimum -lt 0 -or $entry.maximum -lt $entry.minimum)) { throw 'Invalid repository settings catalogue entry.' }
     }
     return $catalogue.settings
 }
+$script:MaximumCategoryName = 100 # RepositorySetting.MaximumCategoryName
 # Mirrors RepositorySetting.Normalize in the controller: the written value is what the controller consumes.
 function Get-Normalized($Entry, [string]$Value) {
+    if ($Entry.type -ceq 'category-names') {
+        # A category-names entry bounds its name count; names are unique ignoring case.
+        $names = @($Value.Split(',') | ForEach-Object { $_.Trim() })
+        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($name in $names) {
+            if ($name.Length -lt 1 -or $name.Length -gt $script:MaximumCategoryName -or @($name.ToCharArray() | Where-Object { [char]::IsControl($_) }).Count -or -not $seen.Add($name)) { return $null }
+        }
+        if ($names.Count -lt $Entry.minimum -or $names.Count -gt $Entry.maximum) { return $null }
+        return $names -join ', '
+    }
     $text = $Value.Trim()
+    # A model or reasoning name; whether the Codex account offers it is checked when a turn uses it.
+    if ($Entry.type -ceq 'token') { $text = $text.ToLowerInvariant(); if ($text -cmatch '\A[a-z0-9][a-z0-9._-]{0,63}\z') { return $text } else { return $null } }
     if ($text -cnotmatch '\A[0-9]{1,18}\z') { return $null }
     $number = [long]::Parse($text, [Globalization.CultureInfo]::InvariantCulture)
     if ($number -lt $Entry.minimum -or $number -gt $Entry.maximum) { return $null }
     return $number.ToString([Globalization.CultureInfo]::InvariantCulture)
 }
-function Get-Reason($Entry) { return "must be an integer from $($Entry.minimum) to $($Entry.maximum)" }
+function Get-Reason($Entry) {
+    if ($Entry.type -ceq 'category-names') { return "must list $($Entry.minimum) to $($Entry.maximum) distinct Discussion category names separated by commas, each at most $($script:MaximumCategoryName) characters" }
+    if ($Entry.type -ceq 'token') { return "must be a name of at most 64 letters, digits, '.', '_' or '-'" }
+    return "must be an integer from $($Entry.minimum) to $($Entry.maximum)"
+}
 function Find-Entry([string]$Name) {
     $reserved = $script:Reserved | Where-Object { $_ -ieq $Name } | Select-Object -First 1
     if ($reserved) { Stop-Settings "$reserved is reserved for the controller approval marker; enrollment and revocation manage it. Nothing was written." }

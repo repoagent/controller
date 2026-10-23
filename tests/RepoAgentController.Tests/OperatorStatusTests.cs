@@ -26,7 +26,7 @@ public sealed class OperatorStatusTests
         var run = BridgeCommand.Run(ControllerArguments(fixture, "--interval", "3600"), fixture.Http, fixture.Gh, fixture.Clock, shutdown.Token);
         try
         {
-            // The native peer rejects the first delivery; the controller keeps running afterwards.
+            // The native peer rejects the first delivery; the controller keeps running and schedules its redelivery.
             var running = await Eventually(fixture.State, status =>
                 status["failures"]?.AsArray().Count > 0 && status["controller"]?["state"]?.GetValue<string>() == "running");
             Assert.False(run.IsCompleted);
@@ -36,8 +36,10 @@ public sealed class OperatorStatusTests
             var session = Assert.Single(running["sessions"]!.AsArray())!;
             Assert.Equal(Discussion, session["discussion"]!.GetValue<string>());
             Assert.Equal("native-T1", session["session"]!.GetValue<string>());
-            Assert.Equal("pending", session["state"]!.GetValue<string>());
-            Assert.Equal(1, running["work"]!["pending"]!.GetValue<int>());
+            Assert.Equal("retrying", session["state"]!.GetValue<string>());
+            Assert.Equal(1, session["attempts"]!.GetValue<int>());
+            Assert.NotNull(session["retryAt"]);
+            Assert.Equal(1, running["work"]!["retrying"]!.GetValue<int>());
             var failure = Assert.Single(running["failures"]!.AsArray(), item => item!["message"]!.GetValue<string>().Contains(Discussion))!;
 
             // The same failure and its session are correlated in the retained log by nonsecret identifiers.
@@ -55,7 +57,7 @@ public sealed class OperatorStatusTests
         // A stopped controller still explains the unresolved delivery without its checkpoint files.
         var stopped = await Status(fixture.State);
         Assert.Equal("stopped", stopped["controller"]!["state"]!.GetValue<string>());
-        Assert.Equal("pending", Assert.Single(stopped["sessions"]!.AsArray())!["state"]!.GetValue<string>());
+        Assert.Equal("retrying", Assert.Single(stopped["sessions"]!.AsArray())!["state"]!.GetValue<string>());
         Assert.Contains(stopped["failures"]!.AsArray(), item => item!["message"]!.GetValue<string>().Contains(Discussion));
         AssertNoSecrets(stopped.ToJsonString(), await RetainedLogs(fixture.State));
         Assert.Contains(Discussion, stdout.Text); // Retention adds to stdout; it does not replace it.
@@ -226,7 +228,7 @@ public sealed class OperatorStatusTests
           error={'code':-32000,'message':'turn rejected while holding '+token}
           print(json.dumps(dict(id=request['id'],error=error)),flush=True)
           continue
-         result={'codexHome':os.getcwd()} if method=='initialize' else {'thread':dict(id='native-T1',status=dict(type='idle'))}
+         result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'thread':dict(id='native-T1',status=dict(type='idle'))}
          print(json.dumps({'id':request['id'],'result':result}),flush=True)
         """;
 
@@ -269,7 +271,7 @@ public sealed class OperatorStatusTests
         discussion={'id':'D1','number':1,'url':'https://github.com/owner/repository/discussions/1','body':'@test-app[bot] work','bodyHTML':'work','title':'fixture','author':{'__typename':'User','login':'participant'},'reactionGroups':[]}
         if 'query { viewer' in q:data={'viewer':{'login':'test-app[bot]'}}
         elif 'discussions(' in q:data={'repository':{'discussions':dict(page,nodes=[discussion])}}
-        else:data={'node':{'comments' if 'comments(' in q else 'reactions':page}}
+        else:data={'node':{'comments' if 'comments(' in q else 'labels' if 'labels(' in q else 'reactions':page}}
         print(json.dumps({'data':data}))
         """;
 }

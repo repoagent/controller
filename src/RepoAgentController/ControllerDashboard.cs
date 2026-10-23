@@ -20,6 +20,7 @@ sealed class ControllerDashboard : IAsyncDisposable
     readonly string category;
     readonly ControllerStatus status;
     readonly GitHubOutbox outbox;
+    readonly BaselineReleases releases;
     readonly TimeProvider clock;
     readonly Lock sync = new();
     readonly CancellationTokenSource stop = new();
@@ -28,22 +29,25 @@ sealed class ControllerDashboard : IAsyncDisposable
     bool started;
     string? failure;
 
-    public ControllerDashboard(string category, ControllerStatus status, GitHubOutbox outbox, TimeProvider clock)
+    public ControllerDashboard(string category, ControllerStatus status, GitHubOutbox outbox, BaselineReleases releases, TimeProvider clock)
     {
         this.category = category;
         this.status = status;
         this.outbox = outbox;
+        this.releases = releases;
         this.clock = clock;
         status.Changed += Wake;
+        releases.Changed += Wake;
     }
 
     void Wake() { lock (sync) wake.TrySetResult(); }
 
-    /// <summary>Publishes the current status now, then on every change and heartbeat until disposal.</summary>
+    /// <summary>Publishes the current status now, then on every change, release check and heartbeat until disposal.</summary>
     public void Start(CancellationToken ct)
     {
         started = true;
         running = Run(CancellationTokenSource.CreateLinkedTokenSource(ct, stop.Token));
+        releases.Start(ct);
     }
 
     /// <summary>Records that this lifetime is ending on an error rather than an operator stop.</summary>
@@ -80,8 +84,9 @@ sealed class ControllerDashboard : IAsyncDisposable
         try
         {
             var snapshot = status.Snapshot();
-            var attention = snapshot["authentication"]?.Text("state") == "failed";
-            outbox.Dashboard(category, attention ? AttentionTitle : Title, Render(snapshot, clock.GetUtcNow(), stopped));
+            // Either credential failing needs the operator: the App's stops GitHub work, the Codex account's holds every turn.
+            var attention = snapshot["authentication"]?.Text("state") == "failed" || snapshot["codexAuthentication"]?.Text("state") == "failed";
+            outbox.Dashboard(category, attention ? AttentionTitle : Title, Render(snapshot, clock.GetUtcNow(), stopped, releases.Current));
             return true;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -91,7 +96,7 @@ sealed class ControllerDashboard : IAsyncDisposable
         }
     }
 
-    static string Render(JsonObject snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped)
+    static string Render(JsonObject snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, ReleaseNotice? release)
     {
         var text = new StringBuilder();
         text.AppendLine(GitHub.DashboardMarker);
@@ -115,6 +120,14 @@ sealed class ControllerDashboard : IAsyncDisposable
             "" => "unknown",
             var state => state
         });
+        var codexAuthentication = snapshot["codexAuthentication"] ?? new JsonObject();
+        text.AppendLine("- **Codex authentication:** " + codexAuthentication.Text("state") switch
+        {
+            "failed" => $"failed at {Time(codexAuthentication.Text("updatedAt"))}: {Code(codexAuthentication.Text("error"))}. New Discussion input is held until the Codex account credentials are replaced.",
+            "supplied" => "supplied credentials installed; not yet verified by a completed turn",
+            "" => "unknown",
+            var state => state
+        });
         var work = snapshot["work"] ?? new JsonObject();
         text.AppendLine($"- **Sessions:** {Count(work["sessions"])} stored; {(work["running"] is null ? "running turns are not tracked in this mode" : Count(work["running"]) + " running")}; " +
             $"{Count(work["pending"])} awaiting native acknowledgement; {Count(work["waiting"])} inputs waiting" +
@@ -123,6 +136,8 @@ sealed class ControllerDashboard : IAsyncDisposable
         text.AppendLine("- **Latest activity:** " + (activity is null ? "none recorded" :
             $"{(activity.Text("kind") == "session-created" ? "session started for" : "input delivered from")} {Link(activity.Text("url"))} at {Time(activity.Text("at"))}"));
         text.AppendLine();
+        Updates(text, release);
+        text.AppendLine();
         text.AppendLine("### Active and queued sessions");
         var busy = (snapshot["sessions"] as JsonArray ?? []).OfType<JsonObject>()
             .Where(session => session.Text("state") is "pending" or "running" || Count(session["waiting"]) != 0).ToArray();
@@ -130,6 +145,7 @@ sealed class ControllerDashboard : IAsyncDisposable
             text.AppendLine($"- {Link(session.Text("discussion"))}: " + session.Text("state") switch
             {
                 "pending" => "awaiting native acknowledgement",
+                "retrying" => $"delivery failed or was unacknowledged; attempt {Count(session["attempts"]) + 1} at {Time(session.Text("retryAt"))}",
                 "running" => "running a turn",
                 "accepted" => "earlier input accepted; turns are not tracked in this mode",
                 var state => state
@@ -143,6 +159,39 @@ sealed class ControllerDashboard : IAsyncDisposable
         if (failures.Length == 0) text.AppendLine("None recorded.");
         return text.ToString();
     }
+
+    // Only a published release that this controller's image identifies, and that a newer release supersedes, is offered.
+    static void Updates(StringBuilder text, ReleaseNotice? notice)
+    {
+        text.AppendLine("### Updates");
+        if (notice is null) { text.AppendLine("The baseline release check has not completed yet."); return; }
+        var at = Time(notice.CheckedAt);
+        if (notice.Failure is { } failure)
+        {
+            text.AppendLine($"The baseline release check failed at {at}: {Code(failure)}. No update is claimed; the next check is in about an hour.");
+            return;
+        }
+        if (notice.Newest is not { } newest) { text.AppendLine($"No published baseline release was found at {at}."); return; }
+        if (notice.Uncertainty is not null || notice.Running is not { } running)
+        {
+            text.AppendLine($"**Release identity uncertain** (checked at {at}): {notice.Uncertainty}" +
+                (notice.Running is { } matched ? $"; its image inventory matches {Release(matched)}" : "") + ". No replacement is suggested.");
+            text.AppendLine($"- Newest published baseline release: {Release(newest)}, image {Image(newest)} with gh {Code(newest.Gh)} and Codex {Code(newest.Codex)}. " +
+                "Compare it with this controller's image before deciding whether to rebuild or recreate it.");
+            return;
+        }
+        if (notice.Newer == 0) { text.AppendLine($"This controller's image matches {Release(running)}, the newest published baseline release at {at}."); return; }
+        text.AppendLine($"**Update available:** baseline release {Release(newest)} is newer than this controller's {Release(running)} ({notice.Newer} newer {(notice.Newer == 1 ? "release" : "releases")}; checked at {at}).");
+        text.AppendLine($"- Image {Image(newest)} with gh {Code(newest.Gh)} and Codex {Code(newest.Codex)}.");
+        text.AppendLine("- Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.");
+        text.AppendLine("- To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see " +
+            $"[baseline releases](https://github.com/{BaselineReleases.Repository}/blob/{newest.Commit}/docs/ci-cd.md#baseline-releases).");
+    }
+
+    // Release fields are validated before use, so these links only reach repoagent/controller's release and package pages.
+    static string Release(BaselineRelease release) => $"[{release.Tag}]({release.Url})";
+
+    static string Image(BaselineRelease release) => $"`{release.Image}` ([package](https://github.com/{BaselineReleases.Repository}/pkgs/container/controller))";
 
     static int Count(JsonNode? value) => value is JsonValue number && number.TryGetValue<int>(out var count) ? count : 0;
 
@@ -166,8 +215,10 @@ sealed class ControllerDashboard : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         status.Changed -= Wake;
+        releases.Changed -= Wake;
         await stop.CancelAsync();
         await running;
+        await releases.DisposeAsync();
         if (started)
         {
             // Reached only when this lifetime ends under control; a killed controller leaves its last heartbeat to go stale.

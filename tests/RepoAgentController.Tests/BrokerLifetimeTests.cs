@@ -203,7 +203,7 @@ public sealed class BrokerLifetimeTests
           start_child()
           if s['stage']!='teardown':continue
          if 'id' not in request:continue
-         result={'codexHome':os.getcwd()} if method=='initialize' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1','status':{'type':'idle'}}}
+         result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1','status':{'type':'idle'}}}
          print(json.dumps({'id':request['id'],'result':result}),flush=True)
         with open(s['eof'],'w') as marker:marker.write('EOF')
         if child and s['graceful']:child.terminate();child.wait()
@@ -218,7 +218,7 @@ public sealed class BrokerLifetimeTests
          discussion={'id':'D1','number':1,'url':'https://github.com/owner/repository/discussions/1','body':'@test-app[bot] work','bodyHTML':'work','title':'fixture','author':{'__typename':'User','login':'participant'},'reactionGroups':[{'content':'EYES','viewerHasReacted':True}]}
          if 'query { viewer' in q:data={'viewer':{'login':'test-app[bot]'}}
          elif 'discussions(' in q:data={'repository':{'discussions':dict(page,nodes=[discussion])}}
-         else:data={'node':{'comments' if 'comments(' in q else 'reactions':page}}
+         else:data={'node':{'comments' if 'comments(' in q else 'labels' if 'labels(' in q else 'reactions':page}}
          print(json.dumps({'data':data}))
         elif len(a)>1 and a[1].startswith('repos/owner/repository/hooks'):
          body=json.load(sys.stdin);print(json.dumps({'id':1,'active':body.get('active',True)}))

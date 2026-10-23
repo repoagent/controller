@@ -1,6 +1,6 @@
 # Verification, controller releases and auth-service delivery
 
-`Verify controller` runs on pull requests and pushes to `main`, with read-only permissions and no persisted checkout credentials. It uses the root `global.json` (.NET 11 RC), executes the actual xUnit runner, checks nonzero discovery, runs installer and delivery process tests, then builds Native AOT and executes native help plus NativeSmoke. The auth service independently pins .NET 10 LTS.
+`Verify controller` runs on pull requests and pushes to `main`, with read-only permissions and no persisted checkout credentials. It uses the root `global.json` (.NET 11 RC), executes the actual xUnit runner, checks nonzero discovery, runs installer and delivery process tests, then builds Native AOT and executes native help plus NativeSmoke. The controller project runs the trim and AOT analyzers on every build and treats all warnings as errors, and the Native AOT packaging uses the same warning policy as the image build, so code that would fail image publication (for example IL2026/IL3050) fails this gate first. The auth service independently pins .NET 10 LTS.
 
 ```sh
 bash scripts/delivery/verify.sh /tmp/controller-verification
@@ -76,7 +76,7 @@ Each successful publication creates one GitHub Release for the anonymously verif
 | `inventorySha256` | SHA-256 of the image's `/opt/repoagent/image-inventory.json` bytes; a running container can recompute it to find its own release. No match means a derived, local or otherwise unreleased image |
 | `run` | The verification and publication workflow run |
 
-Consumers should select releases by the `baseline-` tag prefix and this marker rather than GitHub's **Latest** badge, which manual `v*` controller releases can also hold. An existing release with the same tag is never replaced. Baseline tags are not covered by the `v*` tag ruleset; add `refs/tags/baseline-*` to the tag ruleset to block their update or deletion.
+The controller's [Discussion dashboard](../README.md#discussion-status-dashboard) is one such consumer: it reports a newer release as an operator update notice and never deploys it. Consumers should select releases by the `baseline-` tag prefix and this marker rather than GitHub's **Latest** badge, which manual `v*` controller releases can also hold. An existing release with the same tag is never replaced. Baseline tags are not covered by the `v*` tag ruleset; add `refs/tags/baseline-*` to the tag ruleset to block their update or deletion.
 
 ### Tool refresh
 

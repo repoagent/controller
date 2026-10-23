@@ -156,7 +156,9 @@ class CloneAssembledTests(unittest.TestCase):
             consumed = [json.loads(line) for line in log.read_text().splitlines()]
             self.assertTrue(all(entry['runtimeCredentialObserved'] for entry in consumed))
             reads = [entry['argv'][1] for entry in consumed if entry['argv'][1].startswith('repos/example/project/actions/variables/')]
-            self.assertEqual(reads, ['repos/example/project/actions/variables/REPOAGENT_MAX_ACTIVE_SESSIONS'] if settings else [])
+            # One read per catalogue entry, all with the brokered runtime credential.
+            catalogue = json.loads((ROOT / 'src/RepoAgentController/repository-settings.json').read_text())['settings']
+            self.assertEqual(reads, ['repos/example/project/actions/variables/' + entry['name'] for entry in catalogue] if settings else [])
             if settings:
                 self.assertIn('name=REPOAGENT_MAX_ACTIVE_SESSIONS state=configured value=3', result.stdout + result.stderr)
             for secret in (receipt['deviceSecret'], 'assembled-runtime-token', journey.environment['GH_TOKEN']):

@@ -9,6 +9,9 @@ sealed class Codex : IAsyncDisposable
     /// <summary>Native-reported runtime status of a session in this app-server process. Only Idle admits input.</summary>
     public enum SessionStatus { Unknown, NotLoaded, Idle, Active, SystemError }
 
+    /// <summary>The native answered a request with an error, so it did not perform it. Timeouts and transport loss are not rejections.</summary>
+    public sealed class RequestRejected(string message) : IOException(message);
+
     Transport transport;
     readonly string githubCommand, configurationDirectory;
     readonly CheckoutRefresh? refresh;
@@ -95,8 +98,13 @@ sealed class Codex : IAsyncDisposable
     // An accepted turn holds its session until that turn's completion, whatever status the native reports meanwhile.
     SessionStatus Current(string id) => turns.ContainsKey(id) ? SessionStatus.Active : Native(id);
 
+    /// <summary>Broker credential loss has begun terminating the native process; this controller lifetime is ending.</summary>
+    public bool CredentialLost => credentialLost.IsCancellationRequested;
+
     public SessionStatus Status(string id) { lock (statusLock) return Current(id); }
     public bool Loaded(string id) { lock (statusLock) return resumed.Contains(id); }
+    /// <summary>Sessions running a native turn in this process; idle, unloaded and failed sessions are not counted.</summary>
+    public int ActiveTurns { get { lock (statusLock) return statuses.Keys.Union(turns.Keys).Count(id => Current(id) == SessionStatus.Active); } }
 
     /// <summary>
     /// Restarts the owned app-server when it runs no accepted turn and reports no active session, calling
@@ -260,7 +268,33 @@ sealed class Codex : IAsyncDisposable
         return status;
     }
 
-    public async Task Accept(string id, JsonNode envelope, CancellationToken ct, CheckoutRefresh.Admission? admission = null)
+    /// <summary>The models this Codex account offers for selection (model/list without hidden models).</summary>
+    public async Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct)
+    {
+        var models = new List<NativeModel>();
+        string? cursor = null;
+        do
+        {
+            var page = await Request("model/list", Json.Object(("cursor", cursor), ("includeHidden", false)), ct);
+            if (page["data"] is not JsonArray data) throw new IOException("Native model/list returned no model catalogue");
+            foreach (var item in data.Select(entry => entry!))
+                models.Add(new(item.Text("model"), item["isDefault"]?.GetValue<bool>() ?? false, item.Text("defaultReasoningEffort"),
+                    item["supportedReasoningEfforts"]?.AsArray().Select(effort => effort!.Text("reasoningEffort")).ToArray() ?? []));
+            cursor = page["nextCursor"] is JsonValue next && next.TryGetValue<string>(out var text) ? text : null;
+        } while (cursor is not null);
+        return models;
+    }
+
+    /// <summary>The model and reasoning effort native configuration sets for this workspace; null where unset.</summary>
+    public async Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct)
+    {
+        var configuration = (await Request("config/read", Json.Object(("cwd", workspace)), ct))["config"] as JsonObject
+            ?? throw new IOException("Native config/read returned no configuration");
+        static string? Optional(JsonNode? value) => value is JsonValue text && text.TryGetValue<string>(out var name) ? name : null;
+        return (Optional(configuration["model"]), Optional(configuration["model_reasoning_effort"]));
+    }
+
+    public async Task Accept(string id, JsonNode envelope, ModelChoice selection, CancellationToken ct, CheckoutRefresh.Admission? admission = null)
     {
         bool orient;
         lock (statusLock)
@@ -274,8 +308,10 @@ sealed class Codex : IAsyncDisposable
         var input = new JsonArray(
             Json.Object(("type", "text"), ("text", "$github-discussion\n" + envelope.ToJsonString()), ("text_elements", new JsonArray())),
             PackagedSkill("github-discussion"));
-        if (orient) input.Add(PackagedSkill("repoagent-orientation"));
-        var response = await Request("turn/start", Json.Object(("threadId", id), ("input", input)), ct);
+        if (orient) input.Add((JsonNode)PackagedSkill("repoagent-orientation"));
+        // Native keeps a turn's model and effort for later turns, so every turn states its selection.
+        var response = await Request("turn/start", Json.Object(("threadId", id), ("input", input),
+            ("model", selection.Model), ("effort", selection.Effort)), ct);
         if (response["turn"]?["id"] is null) throw new IOException("Native turn/start returned no accepted turn ID");
         lock (statusLock)
         {
@@ -286,7 +322,7 @@ sealed class Codex : IAsyncDisposable
                 turns[id] = turn;
         }
         admission?.Accepted(id, response["turn"]!.Text("id"));
-        Log.Write("native-accepted", $"session={id} turn={response["turn"]!.Text("id")}");
+        Log.Write("native-accepted", $"session={id} model={selection.Model} effort={selection.Effort} selection={selection.Source} turn={response["turn"]!.Text("id")}");
     }
 
     Task<JsonNode> Request(string method, JsonNode parameters, CancellationToken ct) => transport.Request(method, parameters, ct);
@@ -372,7 +408,7 @@ sealed class Codex : IAsyncDisposable
                     }
                     if (message["id"] is JsonValue idValue && idValue.TryGetValue<int>(out var id) && pending.TryRemove(id, out var completion))
                     {
-                        if (message["error"] is { } error) completion.TrySetException(new IOException($"Native request failed: {error}"));
+                        if (message["error"] is { } error) completion.TrySetException(new RequestRejected($"Native request failed: {error}"));
                         else completion.TrySetResult(message["result"] ?? throw new IOException("Native response has no result"));
                     }
                 }

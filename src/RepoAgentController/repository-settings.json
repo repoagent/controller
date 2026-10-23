@@ -8,6 +8,23 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 64
+    },
+    {
+      "name": "REPOAGENT_ENROLLMENT_CATEGORIES",
+      "description": "Discussion categories whose new Discussions enroll without a mention; minimum and maximum bound the name count.",
+      "type": "category-names",
+      "minimum": 1,
+      "maximum": 25
+    },
+    {
+      "name": "REPOAGENT_MODEL",
+      "description": "Default Codex model, as an alias such as sol6.1 or a model ID, for Discussion turns without a repoagent:<model>:<reasoning> label.",
+      "type": "token"
+    },
+    {
+      "name": "REPOAGENT_REASONING",
+      "description": "Default reasoning effort, such as xhigh, for Discussion turns without a repoagent:<model>:<reasoning> label.",
+      "type": "token"
     }
   ]
 }
