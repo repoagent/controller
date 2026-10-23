@@ -159,7 +159,7 @@ public sealed class GitHubOutboxTests
     };
 
     /// <summary>Runs the real controller entrypoint against controlled GitHub and native peers across restarts.</summary>
-    sealed class Controller : IDisposable
+    internal sealed class Controller : IDisposable
     {
         readonly BrokerAuthenticationTests.Fixture fixture = new();
         readonly string? path = Environment.GetEnvironmentVariable("PATH");
@@ -186,7 +186,7 @@ public sealed class GitHubOutboxTests
                     ["answer"] = null, ["category"] = new JsonObject { ["id"] = "DIC1", ["name"] = "General" },
                     ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" }
                 },
-                ["comments"] = new JsonArray(), ["eyes"] = new JsonArray(), ["responses"] = new JsonArray()
+                ["comments"] = new JsonArray(), ["reactions"] = new JsonObject(), ["eyes"] = new JsonArray(), ["responses"] = new JsonArray()
             }.ToJsonString());
             Environment.SetEnvironmentVariable("PATH", tools + Path.PathSeparator + path);
         }
@@ -196,17 +196,34 @@ public sealed class GitHubOutboxTests
             foreach (var response in responses) state["responses"]!.AsArray().Add(response);
         });
 
-        /// <summary>Adds or edits a participant's top-level comment.</summary>
-        public void Comment(string id, string body) => Update(state =>
+        /// <summary>Adds or edits a participant's top-level comment, or a reply in the thread of <paramref name="replyTo"/>.</summary>
+        public void Comment(string id, string body, string author = "participant", string? replyTo = null) => Update(state =>
         {
             var comments = state["comments"]!.AsArray();
             if (comments.FirstOrDefault(c => c!["id"]!.GetValue<string>() == id) is { } existing) existing["body"] = body;
             else comments.Add(new JsonObject
             {
                 ["id"] = id, ["url"] = "https://github.com/owner/repository/discussions/1#discussioncomment-" + id, ["body"] = body,
-                ["bodyHTML"] = "<p>" + body + "</p>", ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" }, ["replyTo"] = null
+                ["bodyHTML"] = "<p>" + body + "</p>", ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = author },
+                ["replyTo"] = replyTo is null ? null : new JsonObject { ["id"] = replyTo }
             });
         });
+
+        /// <summary>Adds a participant's reaction to the Discussion or a comment.</summary>
+        public void React(string subject, string id, string content, string actor) => Update(state =>
+        {
+            var reactions = state["reactions"]!.AsObject();
+            if (reactions[subject] is null) reactions[subject] = new JsonArray();
+            reactions[subject]!.AsArray().Add(new JsonObject
+            {
+                ["id"] = id, ["content"] = content, ["user"] = new JsonObject { ["__typename"] = "User", ["login"] = actor },
+                ["createdAt"] = "2026-10-23T12:00:00Z"
+            });
+        });
+
+        /// <summary>Marks a comment as the Discussion's answer, or clears the answer.</summary>
+        public void Answer(string? comment) => Update(state =>
+            state["discussion"]!["answer"] = comment is null ? null : new JsonObject { ["id"] = comment });
 
         void Update(Action<JsonObject> change)
         {
@@ -237,6 +254,15 @@ public sealed class GitHubOutboxTests
         ];
 
         public int Turns => Lines(native).Count(line => line["method"]?.GetValue<string>() == "turn/start");
+
+        /// <summary>The bridge envelope text of each native turn/start, exactly as the native process received it.</summary>
+        public IReadOnlyList<string> Inputs => Lines(native).Where(line => line["method"]?.GetValue<string>() == "turn/start")
+            .Select(line => line["params"]!["input"]![0]!["text"]!.GetValue<string>())
+            .Select(text => text.StartsWith(Skill, StringComparison.Ordinal) ? text[Skill.Length..] : throw new InvalidOperationException("Unexpected native input: " + text))
+            .ToArray();
+
+        const string Skill = "$github-discussion\n";
+
         public int Writes(string subject) => Lines(requests).Count(line => line["kind"]!.GetValue<string>() == "addReaction" && line["subject"]?.GetValue<string>() == subject);
         public bool HasEyes(string subject) => JsonNode.Parse(File.ReadAllText(world))!["eyes"]!.AsArray().Any(id => id!.GetValue<string>() == subject);
 
@@ -292,7 +318,7 @@ public sealed class GitHubOutboxTests
              elif 'discussions(' in query:data={'repository':{'discussions':page([message(world['discussion'])])}}
              elif 'comments(' in query:data={'node':{'comments':page([message(c) for c in world['comments'] if c.get('replyTo') is None])}}
              elif 'replies(' in query:data={'node':{'replies':page([message(c) for c in world['comments'] if (c.get('replyTo') or {}).get('id')==variables['id']])}}
-             elif 'reactions(' in query:data={'node':{'reactions':page([])}}
+             elif 'reactions(' in query:data={'node':{'reactions':page(world['reactions'].get(variables['id'],[]))}}
              elif 'reactionGroups' in query and 'node(' in query:
               kind='reconcile';subject=variables['id']
               relay=world['responses'].pop(0) if world['responses'] else {'status':200,'body':json.dumps({'data':{'node':{'reactionGroups':groups(subject)}}})}
