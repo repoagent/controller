@@ -292,7 +292,7 @@ def main():
     get = sub.add_parser('get'); get.add_argument('key')
     login = sub.add_parser('login')
     login.add_argument('--non-interactive', action='store_true')
-    for name in ['import-enrollment', 'versions', 'check', 'start', 'participant-login', 'participant-identity', 'state', 'skills']:
+    for name in ['import-enrollment', 'versions', 'check', 'start', 'participant-login', 'participant-identity', 'state', 'skills', 'status', 'logs']:
         sub.add_parser(name)
     skills = sub.add_parser('install-skills'); skills.add_argument('selection'); skills.add_argument('--token-file')
     enroll = sub.add_parser('enroll'); enroll.add_argument('urls', nargs='+')
@@ -328,6 +328,9 @@ def main():
                 raise ValueError('Enrollment URL must belong to the configured repository.')
         config['enroll'] = list(dict.fromkeys(config.get('enroll', []) + args.urls)); save(config)
     elif args.command == 'state': print(Path(STATE).read_text())
+    elif args.command in ('status', 'logs'):
+        # Operator status and retained logs come from the controller; neither takes its lease.
+        os.execv(CONTROLLER[0], CONTROLLER + [args.command, '--state', STATE])
     elif args.command in ('check', 'start'):
         config = settings()
         if args.command == 'start' and config.get('toolUpdates', 'latest') == 'latest':
