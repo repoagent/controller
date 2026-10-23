@@ -39,7 +39,7 @@ without starting a container. Use the SDK selected by `global.json` and put
 `gh` on `PATH`. The standalone `scripts/enroll-controller.ps1` client obtains
 enrollment without a container runtime; the guided Docker installer is a
 separate entry point. Keep the enrollment outside the repository workspace in
-owned private storage, with directory mode0700 and file mode0600.
+owned private storage, with directory mode 0700 and file mode 0600.
 
 For a `polling-clone` enrollment, substitute its exact repository, App,
 installation, repository ID and trusted broker origin:
@@ -72,7 +72,7 @@ setup and a single active controller. Stop the existing runtime through its
 supported lifecycle before starting another conversation runtime; keep its
 enrollment, checkpoint and native history intact.
 
-On2026-10-23, this Debug path authenticated StoryBeam/StoryBeam through the
+On 2026-10-23, this Debug path authenticated StoryBeam/StoryBeam through the
 deployed broker and confirmed `repo-agent-connector[bot]` while the existing
 Docker controller stayed running. This proves native broker consumption,
 not full native conversation or hosted Azure controller acceptance.
