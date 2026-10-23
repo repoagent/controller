@@ -203,8 +203,8 @@ sealed class Codex : IAsyncDisposable
         {
             var page = await Request("model/list", Json.Object(("cursor", cursor), ("includeHidden", false)), ct);
             if (page["data"] is not JsonArray data) throw new IOException("Native model/list returned no model catalogue");
-            foreach (var item in data)
-                models.Add(new(item!.Text("model"), item["isDefault"]?.GetValue<bool>() ?? false, item.Text("defaultReasoningEffort"),
+            foreach (var item in data.Select(entry => entry!))
+                models.Add(new(item.Text("model"), item["isDefault"]?.GetValue<bool>() ?? false, item.Text("defaultReasoningEffort"),
                     item["supportedReasoningEfforts"]?.AsArray().Select(effort => effort!.Text("reasoningEffort")).ToArray() ?? []));
             cursor = page["nextCursor"] is JsonValue next && next.TryGetValue<string>(out var text) ? text : null;
         } while (cursor is not null);
