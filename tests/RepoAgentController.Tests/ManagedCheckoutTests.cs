@@ -203,19 +203,22 @@ public sealed class ManagedCheckoutTests
             foreach (var pair in environment) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
             if (clone && !checkAuth)
             {
-                // Obtain the real lease and installed helpers through the no-native public entry.
+                // Install the real helpers through the no-native public entry; a live lifetime then holds the lease.
                 Assert.Equal(0, await fixture.Start());
                 Assert.False(File.Exists(capture));
-                // Exercise actual PrepareClone isolation, including its HTTPS-only parent policy.
+                // Exercise actual PrepareClone isolation through the agent's wrapper; the gh peer asserts the HTTPS-only parent policy.
                 var hostileGit = Path.Combine(bin, "git");
                 File.WriteAllText(hostileGit, "#!/bin/sh\nexit 97\n");
                 Executable(hostileGit);
                 var adapterRoot = Path.Combine(fixture.Directory, "adapter-control");
-                var isolatedClone = AppGitHubCommand.Create(fixture.Gh, fixture.TokenFile,
-                    ["repo", "clone", "https://github.com/owner/repository.git", adapterRoot]);
-                Assert.Equal("https", isolatedClone.Environment["GIT_ALLOW_PROTOCOL"]);
-                try { await Run(isolatedClone); }
-                finally { File.Delete(hostileGit); }
+                var isolatedClone = new ProcessStartInfo(Path.Combine(fixture.CredentialDirectory, "bin", "gh"))
+                    { ArgumentList = { "repo", "clone", "https://github.com/owner/repository.git", adapterRoot } };
+                using (var live = fixture.Credentials())
+                {
+                    await live.Initialize(null, TestContext.Current.CancellationToken);
+                    try { await Run(isolatedClone); }
+                    finally { File.Delete(hostileGit); }
+                }
                 Assert.Equal("approved repository\n", File.ReadAllText(Path.Combine(adapterRoot, "tracked-sentinel")));
                 Assert.Equal("https://github.com/owner/repository.git", await Git("-C", adapterRoot, "remote", "get-url", "origin"));
                 Assert.Equal(commit, await Git("-C", adapterRoot, "rev-parse", "HEAD"));
