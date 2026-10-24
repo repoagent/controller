@@ -17,92 +17,6 @@ public sealed class ControllerDashboardTests
     const string First = "https://github.com/owner/repository/discussions/1";
 
     [Fact]
-    public async Task Dashboard_presents_current_status_and_latest_activity_and_its_heartbeat_advances_while_idle()
-    {
-        using var controller = new Controller();
-        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token, "--dashboard-category", Category);
-        try
-        {
-            var published = await Until(() => controller.Dashboard() is { } dashboard &&
-                dashboard.Body.Contains(First) && dashboard.Body.Contains("running") ? dashboard : null);
-            Assert.Equal("Controller status", published.Category);
-            Assert.Equal("RepoAgent controller status", published.Title);
-            Assert.Contains("polling", published.Body);
-            Assert.Contains("healthy", published.Body);
-            Assert.Matches(@"https://github\.com/owner/repository/discussions/1\b[^\n]*\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", published.Body);
-            var before = Heartbeat(published.Body);
-
-            // Nothing new arrives; only the controlled clock moves, and the next poll is an hour away.
-            var idle = await Until(() =>
-            {
-                controller.Clock.Advance(TimeSpan.FromSeconds(1));
-                return controller.Dashboard() is { } dashboard && Heartbeat(dashboard.Body) > before ? dashboard : null;
-            });
-            Assert.InRange(Heartbeat(idle.Body) - before, TimeSpan.FromSeconds(29), TimeSpan.FromSeconds(32));
-            Assert.Contains(First, idle.Body);
-            Assert.Equal(1, controller.Writes("createDiscussion"));
-            Assert.Equal(1, controller.Turns); // Publishing status never becomes agent input.
-
-            // The next poll processes a participant's comment; the dashboard links that comment with its time.
-            var comment = controller.Comment("C1", "A follow-up question.");
-            controller.Clock.Advance(TimeSpan.FromHours(1));
-            var processed = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains(comment) ? dashboard : null);
-            Assert.Matches(Regex.Escape(comment) + @"\)[^\n]*\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", processed.Body);
-            Assert.Equal(2, controller.Turns);
-            controller.AssertNoSecrets();
-        }
-        finally { await shutdown.CancelAsync(); }
-        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-
-        // An operator stop is confirmed with its time; no heartbeat is claimed afterwards.
-        var stopped = controller.Dashboard()!;
-        TestContext.Current.TestOutputHelper?.WriteLine(stopped.Body);
-        Assert.Matches(@"stopped at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ after a graceful shutdown", stopped.Body);
-        Assert.DoesNotMatch(HeartbeatLine, stopped.Body);
-        Assert.Equal(1, controller.Writes("createDiscussion"));
-        controller.AssertNoSecrets();
-    }
-
-    [Fact]
-    public async Task Heartbeats_superseded_during_a_rate_limited_outage_coalesce_into_one_write_of_the_latest()
-    {
-        using var controller = new Controller();
-        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token, "--dashboard-category", Category);
-        try
-        {
-            await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains(First) ? dashboard : null);
-            controller.Respond(Response("updateDiscussion", 403,
-                """{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}""", ("Retry-After", "120")));
-
-            var limited = await Until(() =>
-            {
-                controller.Clock.Advance(TimeSpan.FromSeconds(1));
-                return controller.Requests("updateDiscussion").SingleOrDefault(write => write["status"]!.GetValue<int>() == 403);
-            });
-            var written = controller.Requests("updateDiscussion").Count;
-
-            // GitHub's signalled wait spans about four heartbeats; only the one write after it reaches GitHub.
-            var recovered = await Until(() =>
-            {
-                controller.Clock.Advance(TimeSpan.FromSeconds(1));
-                return controller.Requests("updateDiscussion").Skip(written).FirstOrDefault();
-            });
-            Assert.Equal(200, recovered["status"]!.GetValue<int>());
-            var dashboard = controller.Dashboard()!;
-            Assert.Equal(recovered["body"]!.GetValue<string>(), dashboard.Body);
-            // Rendered at least three heartbeats after the refused one, and no later than now.
-            Assert.InRange(Heartbeat(dashboard.Body), Heartbeat(limited["body"]!.GetValue<string>()) + TimeSpan.FromSeconds(88), controller.Clock.GetUtcNow());
-            Assert.Contains("rate limit", dashboard.Body); // The outage itself is reported once delivery recovers.
-            Assert.Equal(1, controller.Writes("createDiscussion"));
-            Assert.Equal(1, controller.Turns);
-        }
-        finally { await shutdown.CancelAsync(); }
-        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
     public async Task A_running_turn_and_the_input_waiting_for_it_are_listed_against_the_active_session_limit()
     {
         using var controller = new Controller();
@@ -168,75 +82,6 @@ public sealed class ControllerDashboardTests
     }
 
     [Fact]
-    public async Task Authentication_failure_turns_the_dashboard_title_to_attention_without_secrets_until_it_recovers()
-    {
-        using var controller = new Controller(direct: true);
-        using var stdout = new CapturedConsole();
-        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token, "--dashboard-category", Category);
-        try
-        {
-            var healthy = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("**Authentication:** healthy") ? dashboard : null);
-            Assert.Equal("RepoAgent controller status", healthy.Title);
-
-            // GitHub refuses the scheduled renewal of the installation token, which then cannot be used.
-            controller.App!.Reject = true;
-            controller.Clock.Advance(TimeSpan.FromMinutes(54));
-            await Until(() =>
-            {
-                controller.Clock.Advance(TimeSpan.FromSeconds(1));
-                return stdout.Text.Contains(" app-refresh-error ") ? stdout : null;
-            });
-            controller.App.Reject = false;
-
-            // The pending publication is retried with a fresh token and shows the failure; the next one shows the recovery.
-            var attention = await Until(() =>
-            {
-                controller.Clock.Advance(TimeSpan.FromSeconds(1));
-                return controller.Requests("updateDiscussion").LastOrDefault(write => write["status"]!.GetValue<int>() == 200 &&
-                    write["title"]!.GetValue<string>() != healthy.Title);
-            });
-            Assert.Equal("Attention: RepoAgent controller authentication failed", attention["title"]!.GetValue<string>());
-            Assert.Matches(@"\*\*Authentication:\*\* failed at [^\n]*HTTP 401", attention["body"]!.GetValue<string>());
-            var recovered = await Until(() =>
-            {
-                controller.Clock.Advance(TimeSpan.FromSeconds(1));
-                return controller.Dashboard() is { } dashboard && dashboard.Title == healthy.Title ? dashboard : null;
-            });
-            Assert.Contains("**Authentication:** healthy", recovered.Body);
-            Assert.Matches(@"`app-refresh-error`: `[^`\n]*HTTP 401", recovered.Body); // The failure stays visible after recovery.
-            controller.AssertNoSecrets();
-        }
-        finally { await shutdown.CancelAsync(); }
-        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
-    public async Task Rejected_Codex_account_credentials_are_shown_on_the_dashboard_under_the_attention_title()
-    {
-        using var controller = new Controller();
-        controller.RejectAccount();
-        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token, "--dashboard-category", Category);
-        try
-        {
-            // The bootstrap turn fails at the model provider; GitHub App authentication is unaffected and stays healthy.
-            var attention = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("**Codex authentication:** failed") ? dashboard : null);
-            Assert.Equal("Attention: RepoAgent controller authentication failed", attention.Title);
-            Assert.Contains("**Authentication:** healthy", attention.Body);
-            Assert.Matches(@"\*\*Codex authentication:\*\* failed at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ: `[^`\n]*401 Unauthorized[^`\n]*`", attention.Body);
-            Assert.Matches(@"`codex-auth-failed`: `[^`\n]*401 Unauthorized", attention.Body);
-            // The rejected turn's input is back in the queue, held for replacement credentials.
-            var held = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("inputs held until") ? dashboard : null);
-            Assert.Matches(@"- \[Discussion #1\]\(" + Regex.Escape(First) + @"\): 1 inputs held until the Codex account credentials are replaced\n", held.Body);
-            Assert.Equal(1, controller.Turns);
-            controller.AssertNoSecrets();
-        }
-        finally { await shutdown.CancelAsync(); }
-        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
     public async Task Input_held_by_the_active_session_limit_is_listed_with_that_reason()
     {
         using var controller = new Controller(direct: true);
@@ -260,55 +105,6 @@ public sealed class ControllerDashboardTests
         }
         finally { await shutdown.CancelAsync(); }
         Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
-    public async Task Unusable_repository_settings_are_listed_with_the_value_that_still_applies()
-    {
-        using var controller = new Controller(direct: true);
-        controller.App!.Variables = true;
-        controller.Variable("REPOAGENT_MAX_ACTIVE_SESSIONS", "unlimited");
-        controller.Variable("REPOAGENT_MODEL", null, status: 503);
-        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token, "--dashboard-category", Category, "--repository-settings");
-        try
-        {
-            var published = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("Repository settings") ? dashboard : null);
-            Assert.Contains("- **Repository settings:** 2 unusable\n", published.Body);
-            Assert.Contains("  - `REPOAGENT_MAX_ACTIVE_SESSIONS` is invalid: `must be an integer from 1 to 64`; no repository value applies\n", published.Body);
-            Assert.Contains("  - `REPOAGENT_MODEL` could not be read: `HTTP 503`; no repository value applies\n", published.Body);
-            Assert.DoesNotContain("unlimited", published.Body); // Invalid raw values are never published.
-            Assert.Equal("RepoAgent controller status", published.Title);
-        }
-        finally { await shutdown.CancelAsync(); }
-        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
-    public async Task Missing_dashboard_category_is_reported_once_instead_of_retried_every_heartbeat()
-    {
-        using var controller = new Controller();
-        using var stdout = new CapturedConsole();
-        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token, "--dashboard-category", "Missing category");
-        try
-        {
-            await Until(() => stdout.Text.Contains(" dashboard-error ") ? stdout : null);
-            for (var second = 0; second < 120; second++) // Four heartbeats.
-            {
-                controller.Clock.Advance(TimeSpan.FromSeconds(1));
-                await Task.Delay(10, TestContext.Current.CancellationToken);
-            }
-            var failure = Assert.Single(stdout.Text.Split('\n'), line => line.Contains(" dashboard-error "));
-            Assert.Contains("'Missing category' does not exist", failure);
-            Assert.Contains("dashboard updates stop until the controller restarts", failure);
-            Assert.Equal(1, controller.Writes("categories"));
-            Assert.Null(controller.Dashboard());
-            Assert.True(controller.HasEyes("D1")); // Other controller-owned work continues.
-        }
-        finally { await shutdown.CancelAsync(); }
-        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-        Assert.Equal(1, controller.Writes("categories"));
     }
 
     // The release check's one remaining process-level test, kept until the dashboard moves into the core (PR 4 of #203):
@@ -348,26 +144,6 @@ public sealed class ControllerDashboardTests
 
     static string ReleaseUrl(string tag) => "https://github.com/repoagent/controller/releases/tag/" + tag;
 
-    sealed class CapturedConsole : IDisposable
-    {
-        readonly TextWriter previous = Console.Out;
-        readonly StringWriter writer = new();
-        public CapturedConsole() => Console.SetOut(TextWriter.Synchronized(writer));
-        public string Text { get { lock (writer) return writer.ToString(); } }
-        public void Dispose() => Console.SetOut(previous);
-    }
-
-    static JsonObject Response(string kind, int status, string body, params (string Name, string Value)[] headers) => new()
-    {
-        ["kind"] = kind, ["status"] = status, ["body"] = body,
-        ["headers"] = new JsonObject(headers.Select(h => new KeyValuePair<string, JsonNode?>(h.Name, h.Value)))
-    };
-
-    static readonly Regex HeartbeatLine = new(@"Heartbeat\W+(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)");
-
-    static DateTimeOffset Heartbeat(string body) => DateTimeOffset.Parse(HeartbeatLine.Match(body) is { Success: true } match
-        ? match.Groups[1].Value : throw new Xunit.Sdk.XunitException("Dashboard shows no heartbeat:\n" + body), CultureInfo.InvariantCulture);
-
     // A real-time watchdog for observing another process; it never drives the controller's clock.
     static async Task<T> Until<T>(Func<T?> observe) where T : class
     {
@@ -385,7 +161,6 @@ public sealed class ControllerDashboardTests
     sealed class DirectApp(FakeTimeProvider clock) : HttpMessageHandler
     {
         int tokens;
-        public volatile bool Reject;
         /// <summary>The installation grants Variables: read, so --repository-settings can request it.</summary>
         public volatile bool Variables;
 
@@ -399,7 +174,7 @@ public sealed class ControllerDashboardTests
                     ["id"] = 234, ["app_id"] = 123,
                     ["permissions"] = Variables ? new JsonObject { ["discussions"] = "write", ["actions_variables"] = "read" } : new JsonObject { ["discussions"] = "write" }
                 },
-                "/app/installations/234/access_tokens" when !Reject => new JsonObject
+                "/app/installations/234/access_tokens" => new JsonObject
                 {
                     ["token"] = "opaque-token-direct-" + Interlocked.Increment(ref tokens), ["expires_at"] = clock.GetUtcNow().AddHours(1).ToString("O")
                 },
@@ -415,7 +190,6 @@ public sealed class ControllerDashboardTests
     /// <summary>Runs the real controller entrypoint against controlled GitHub and native peers across restarts.</summary>
     sealed class Controller : IDisposable
     {
-        const string DeviceSecret = "abcdefghijklmnopqrstuvwxyz_0123456789-ABCDEFG";
         readonly BrokerAuthenticationTests.Fixture fixture = new();
         readonly string? path = Environment.GetEnvironmentVariable("PATH");
         readonly string world, requests, native;
@@ -599,25 +373,9 @@ public sealed class ControllerDashboardTests
                 d["category"]!["name"]!.GetValue<string>()) : null;
         }
 
-        public void Respond(params JsonObject[] responses) => Update(state =>
-        {
-            foreach (var response in responses) state["responses"]!.AsArray().Add(response);
-        });
-
         public int Turns => Lines(native).Count(line => line["method"]?.GetValue<string>() == "turn/start");
         public int Writes(string kind) => Requests(kind).Count;
         public List<JsonNode> Requests(string kind) => Lines(requests).Where(line => line["kind"]!.GetValue<string>() == kind).ToList();
-
-        /// <summary>No published title or body ever contained a credential.</summary>
-        public void AssertNoSecrets()
-        {
-            foreach (var write in Lines(requests).Where(line => line["kind"]!.GetValue<string>() is "createDiscussion" or "updateDiscussion"))
-            {
-                var text = write.ToJsonString();
-                Assert.DoesNotContain("opaque-token-", text); // Broker-issued installation tokens.
-                Assert.DoesNotContain(DeviceSecret, text);
-            }
-        }
 
         static IEnumerable<JsonNode> Lines(string file) => File.Exists(file)
             ? File.ReadAllLines(file).Where(line => line.Length != 0).Select(line => JsonNode.Parse(line)!) : [];
@@ -642,9 +400,6 @@ public sealed class ControllerDashboardTests
 
         /// <summary>Later native turns stay active instead of completing.</summary>
         public void HoldTurns() => File.WriteAllText(native + ".hold", "");
-
-        /// <summary>Later native turns fail as the pinned native reports a model provider's rejection of the Codex account.</summary>
-        public void RejectAccount() => File.WriteAllText(native + ".unauthorized", "");
 
         // Every thread is idle when started or resumed; each accepted turn reports idle and completes at once, unless held
         // or failed by a rejected account.

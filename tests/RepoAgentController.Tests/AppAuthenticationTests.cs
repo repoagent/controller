@@ -128,6 +128,8 @@ public sealed class AppAuthenticationTests
         using var credentials = fixture.Credentials();
         await credentials.Initialize(null, TestContext.Current.CancellationToken);
         var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, credentials.CredentialDirectory);
+        var logged = new System.Collections.Concurrent.ConcurrentQueue<LogEntry>();
+        using var observing = Log.Observe(logged.Enqueue);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var refresh = credentials.RefreshUntilCancelled(lifetime.Token);
         try
@@ -136,6 +138,10 @@ public sealed class AppAuthenticationTests
             fixture.Provider.RejectRefresh = true;
             fixture.Clock.Advance(TimeSpan.FromMinutes(56));
             await fixture.Clock.WaitForDelay();
+            // Status reports the App's authentication as failed from this event, and the dashboard asks for attention.
+            var failure = Assert.Single(logged, entry => entry.Kind == "app-refresh-error");
+            Assert.Contains("HTTP 401", failure.Message);
+            Assert.DoesNotContain("DO-NOT-LOG", failure.Message);
 
             var blocked = await Run(wrapper, ["api", "user"], "ambient-human-token");
             Assert.NotEqual(0, blocked.Exit);
