@@ -44,6 +44,7 @@ public sealed class InMemoryBrokerStateTests
 
         await Assert.ThrowsAsync<StateConflict>(() => state.CommitAsync(transaction, Token));
 
+        Assert.Equal(1, state.Conflicts);
         Assert.Null(state.Row(Receipt("new")));
         Assert.Equal(current, state.Version(Gate));
         Assert.Equal(2L, state.Get(Gate)!.Sequence);

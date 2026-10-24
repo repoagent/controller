@@ -54,6 +54,9 @@ public sealed class ActionsVariableEnrollmentTests
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var runtime = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
+        // The route answers the issuer's exact v1 body and never lets a GitHub token be cached.
+        Assert.True(runtime.Headers.CacheControl!.NoStore);
+        Assert.Equal(9, (await Json(runtime)).EnumerateObject().Count());
         Assert.Contains("read variable actions owner/project REPOAGENT_APPROVAL", f.GitHub.Requests);
         Assert.DoesNotContain(f.GitHub.Requests, r => r.Contains(" agents ", StringComparison.Ordinal));
         Assert.Equal(1, github.VerifierMints);
