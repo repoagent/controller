@@ -145,5 +145,5 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
     private static bool Expected(Exception ex) => ex is IssuanceDenied or RequestFailedException or AuthenticationFailedException
         or HttpRequestException or IOException or InvalidDataException or InvalidCastException or FormatException or JsonException
         or OverflowException or OperationCanceledException or CryptographicException or KeyNotFoundException or InvalidOperationException or ArgumentException
-        or SecretUnreadable or SecretProtectionUnavailable;
+        or SecretProtectionFailed;
 }

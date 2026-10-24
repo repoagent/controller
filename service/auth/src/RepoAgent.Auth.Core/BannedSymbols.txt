@@ -1,4 +1,8 @@
 N:System.Net.Http;The broker core does no network I/O; call a port
+N:System.Net.Sockets;The broker core does no network I/O; call a port
+T:System.Net.WebClient;The broker core does no network I/O; call a port
+T:System.Net.WebRequest;The broker core does no network I/O; call a port
+T:System.Net.HttpWebRequest;The broker core does no network I/O; call a port
 T:System.IO.File;The broker core does no file I/O; call a port
 T:System.IO.FileInfo;The broker core does no file I/O; call a port
 T:System.IO.FileStream;The broker core does no file I/O; call a port
@@ -6,10 +10,12 @@ T:System.IO.FileSystemInfo;The broker core does no file I/O; call a port
 T:System.IO.Directory;The broker core does no file I/O; call a port
 T:System.IO.DirectoryInfo;The broker core does no file I/O; call a port
 T:System.IO.RandomAccess;The broker core does no file I/O; call a port
-M:System.IO.StreamReader.#ctor(System.String);The broker core does no file I/O; call a port
-M:System.IO.StreamWriter.#ctor(System.String);The broker core does no file I/O; call a port
+T:System.IO.StreamReader;The broker core does no file I/O; call a port
+T:System.IO.StreamWriter;The broker core does no file I/O; call a port
 T:System.Diagnostics.Process;The broker core starts no processes
 T:System.Console;The broker core does no console I/O
+T:System.Environment;The broker core reads no environment, clock ticks or process state; take them as inputs
+P:System.TimeProvider.System;The broker core takes its TimeProvider as a dependency
 P:System.DateTimeOffset.UtcNow;Use TimeProvider.GetUtcNow()
 P:System.DateTimeOffset.Now;Use TimeProvider.GetUtcNow()
 P:System.DateTime.UtcNow;Use TimeProvider.GetUtcNow()

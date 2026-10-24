@@ -53,7 +53,7 @@ public sealed class SecretProtectionTests
         Assert.Equal<string>(expected, [chain.Root, .. chain.Chain]);
     }
 
-    // The one golden test of this persisted format. The key and ciphertext were recorded at afcf329, before
+    // The one golden test of this persisted format. The key and ciphertext were recorded at 32d6f73, before
     // the port existed, through IssuanceServices.Add and ApprovalContract.Actions.TokenProtector. Only key
     // storage differs from production: the recorded key replaces the Blob key ring and its Key Vault wrapping.
     [Fact]
@@ -85,7 +85,7 @@ public sealed class SecretProtectionTests
         var rewritten = secrets.Protect(purpose, RecordedToken);
         Assert.Equal(RecordedToken, secrets.Unprotect(purpose, rewritten));
         Assert.Equal(KeyHeader(RecordedCiphertext), KeyHeader(rewritten));
-        Assert.Throws<SecretUnreadable>(() => secrets.Unprotect(
+        Assert.Throws<SecretProtectionFailed>(() => secrets.Unprotect(
             ApprovalContract.ActionsClone.TokenPurpose("123456", "golden-epoch", Operation, "runtime"), RecordedCiphertext));
     }
 

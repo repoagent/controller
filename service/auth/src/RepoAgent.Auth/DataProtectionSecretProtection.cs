@@ -12,13 +12,13 @@ internal sealed class DataProtectionSecretProtection(IDataProtectionProvider key
     {
         // Data Protection reports every failure, including an unavailable key ring, as CryptographicException.
         try { return Protector(purpose).Protect(secret); }
-        catch (CryptographicException ex) { throw new SecretProtectionUnavailable(ex); }
+        catch (CryptographicException ex) { throw new SecretProtectionFailed("The secret cannot be protected.", ex); }
     }
 
     public string Unprotect(SecretPurpose purpose, string protectedSecret)
     {
         try { return Protector(purpose).Unprotect(protectedSecret); }
-        catch (CryptographicException ex) { throw new SecretUnreadable(ex); }
+        catch (CryptographicException ex) { throw new SecretProtectionFailed("The protected secret cannot be read.", ex); }
     }
 
     private IDataProtector Protector(SecretPurpose purpose) => keyRing.CreateProtector(purpose.Root, [.. purpose.Chain]);

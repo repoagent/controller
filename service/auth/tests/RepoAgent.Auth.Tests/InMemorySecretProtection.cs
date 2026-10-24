@@ -3,7 +3,7 @@ using System.Collections.Concurrent;
 namespace RepoAgent.Auth.Tests;
 
 // Keeps the key ring guarantees the stores rely on: a protected value never contains its secret, and it
-// reads back only under the exact purpose chain that protected it, otherwise SecretUnreadable.
+// reads back only under the exact purpose chain that protected it, otherwise SecretProtectionFailed.
 internal sealed class InMemorySecretProtection : ISecretProtection
 {
     private readonly ConcurrentDictionary<string, (string[] Purpose, string Secret)> protectedSecrets = new();
@@ -17,7 +17,7 @@ internal sealed class InMemorySecretProtection : ISecretProtection
 
     public string Unprotect(SecretPurpose purpose, string protectedSecret) =>
         protectedSecrets.TryGetValue(protectedSecret, out var value) && value.Purpose.SequenceEqual(Chain(purpose))
-            ? value.Secret : throw new SecretUnreadable();
+            ? value.Secret : throw new SecretProtectionFailed("The protected secret cannot be read.");
 
     private static string[] Chain(SecretPurpose purpose) => [purpose.Root, .. purpose.Chain];
 }

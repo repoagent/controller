@@ -4,10 +4,10 @@ namespace RepoAgent.Auth;
 // the broker's key ring reads them back, and only under the purpose that protected them.
 public interface ISecretProtection
 {
-    // Throws SecretProtectionUnavailable when the key ring cannot protect the secret.
+    // Throws SecretProtectionFailed when the key ring cannot protect the secret.
     string Protect(SecretPurpose purpose, string secret);
 
-    // Throws SecretUnreadable unless the same key ring protected the value under the same purpose.
+    // Throws SecretProtectionFailed unless the same key ring protected the value under the same purpose.
     string Unprotect(SecretPurpose purpose, string protectedSecret);
 }
 
@@ -19,7 +19,6 @@ public sealed class SecretPurpose(string root, params string[] chain)
     public IReadOnlyList<string> Chain { get; } = [.. chain];
 }
 
-// The value was protected under another purpose or key ring, is damaged, or the key ring is unavailable.
-public sealed class SecretUnreadable(Exception? cause = null) : Exception("The protected secret cannot be read.", cause);
-
-public sealed class SecretProtectionUnavailable(Exception? cause = null) : Exception("The secret cannot be protected.", cause);
+// The key ring is unavailable, or a value was protected under another purpose or key ring, or is damaged.
+// Callers treat every case alike: the stored secret cannot be used now.
+public sealed class SecretProtectionFailed(string message, Exception? cause = null) : Exception(message, cause);
