@@ -315,8 +315,9 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
             return false;
         }
         held.Clear();
-        // An active, failed or unrecognized loaded session keeps its input here without taking global admission.
-        if (!create && codex.Loaded(session) && codex.Status(session) != Codex.SessionStatus.Idle) return false;
+        // An active or unrecognized loaded session keeps its input here without taking global admission. The session of a
+        // failed turn (systemError) takes its next input without a restart.
+        if (!create && codex.Loaded(session) && !Codex.Admits(codex.Status(session))) return false;
         // After a failed attempt the batch waits for its backoff.
         if (RetryAt(waiting) > clock.GetUtcNow()) return false;
         // Global capacity counts running native turns only; stored idle sessions and retrying deliveries take no slot.
@@ -365,9 +366,9 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 admission?.Bind(session);
                 await codex.Load(session, ct);
             }
-            if (codex.Status(session) != Codex.SessionStatus.Idle)
+            if (!Codex.Admits(codex.Status(session)))
             {
-                // Unknown, unloaded, failed or active native status is never assumed idle.
+                // Unknown, unloaded or active native status is never assumed idle.
                 if (record.Remove("pending")) store.Save();
                 admission?.Abandon();
                 return false;

@@ -101,6 +101,24 @@ public sealed class ActiveSessionLimitTests
         Assert.Empty(await controller.Waiting());
     }
 
+    [Fact]
+    public async Task A_failed_turn_leaves_its_session_ready_for_the_next_input_without_a_restart()
+    {
+        await using var controller = new Controller(discussions: 1);
+        await controller.Start();
+        var failed = await controller.Turn(1);
+        // Pinned native order for a failed turn: the thread reports systemError, then turn/completed with status failed.
+        await controller.Finish(failed, failed: true);
+
+        controller.Comment(1, "C1", "Please try that again.");
+        await controller.Poll();
+
+        var next = await controller.Turn(2);
+        Assert.Equal((failed.Thread, failed.Discussion), (next.Thread, next.Discussion));
+        Assert.Equal("C1", Assert.Single(next.Envelope["changes"]!.AsArray())!["subject"]!["id"]!.GetValue<string>());
+        Assert.Empty(await controller.Waiting());
+    }
+
     static string Url(int discussion) => "https://github.com/owner/repository/discussions/" + discussion;
 
     /// <summary>One native turn the controlled peer accepted, with the Discussion its envelope carried.</summary>

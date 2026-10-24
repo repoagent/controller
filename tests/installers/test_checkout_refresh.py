@@ -508,7 +508,28 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertNotIn('waiting', json.loads(f.state.read_text())['discussions']['D1'])
             print('IDLE_DISPATCH waiting-polls=2 premature-eyes=none batch=C1,C2 eyes-after-acceptance=true', flush=True)
 
-    def test_error_and_unknown_status_hold_input_in_order_across_restart(self):
+    def test_failed_turn_session_takes_the_next_input_without_a_restart(self):
+        with self.fixture(protocol=True) as f, self.controller(f):
+            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+            request = self.rpc(f, 'thread/start')
+            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+            f.wait('poll-completed success=True')
+            # Pinned native leaves a failed turn's thread in systemError until its next turn, and accepts that turn.
+            self.terminal(f, 'S1', 'T1', status='systemError', outcome='failed'); f.wait('native-event')
+            f.provider.comments = {'D1': [self.comment(1, 'alice', 'first after error'), self.comment(2, 'bob', 'second after error')]}
+            request = self.rpc(f, 'turn/start')
+            self.assertEqual(request['params']['threadId'], 'S1')
+            envelope = self.dispatched(request)
+            self.assertEqual(envelope['_bridge']['mode'], 'continue')
+            self.assertEqual(self.subjects(envelope), [('C1', 'alice', 'first after error'), ('C2', 'bob', 'second after error')])
+            self.reply(f, request, dict(turn=dict(id='T2')))
+            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-2')
+            self.assertEqual(f.provider.reactions, ['D1', 'C1', 'C2'])
+            self.terminal(f, 'S1', 'T2'); f.wait('native-event')
+            print('IDLE_STATUS failed-turn=next-input-dispatched restart=none order=C1,C2', flush=True)
+
+    def test_unknown_and_active_status_hold_input_in_order_across_restart(self):
         for resumed in ('active', 'unrecognized'):
             with self.subTest(resumed=resumed), self.fixture(protocol=True) as f:
                 with self.controller(f):
@@ -517,12 +538,12 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
                     request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
                     f.wait('poll-completed success=True')
-                    self.terminal(f, 'S1', 'T1', status='systemError'); f.wait('native-event')
+                    self.terminal(f, 'S1', 'T1', status='fixtureFutureStatus'); f.wait('native-event')
                     f.provider.comments = {'D1': [self.comment(1, 'alice', 'first after error'), self.comment(2, 'bob', 'second after error')]}
                     line = f.wait_or_native('input-waiting')
-                    self.assertIsNotNone(line, 'Input reached a session whose native status is systemError')
-                    self.assertIn('status=SystemError', line)
-                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Input reached a failed session')
+                    self.assertIsNotNone(line, 'Input reached a session whose native status is unrecognized')
+                    self.assertIn('status=Unknown', line)
+                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Input reached a session not reported idle')
                     self.eyes(f, ['D1'])
                 saved = json.loads(f.state.read_text())['discussions']['D1']
                 self.assertNotIn('pending', saved)
@@ -548,7 +569,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                     f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-2')
                     self.assertEqual(f.provider.reactions, ['D1', 'C1', 'C2'])
                     self.terminal(f, 'S1', 'T2'); f.wait('native-event')
-                print('IDLE_STATUS error=held restart-resume=' + resumed + ' held-until-idle=true order=C1,C2', flush=True)
+                print('IDLE_STATUS unknown=held restart-resume=' + resumed + ' held-until-idle=true order=C1,C2', flush=True)
 
     def test_oversized_waiting_input_splits_into_ordered_batches_without_loss(self):
         with self.fixture(protocol=True) as f, self.controller(f):
@@ -710,10 +731,10 @@ class CheckoutRefreshTests(unittest.TestCase):
     def notify(self, f, method, **params):
         f.commands.write(json.dumps(dict(method=method, params=params)) + '\n'); f.commands.flush()
 
-    def terminal(self, f, thread, turn, status='idle'):
+    def terminal(self, f, thread, turn, status='idle', outcome='completed'):
         # Pinned native order: the thread status changes before turn/completed.
         self.notify(f, 'thread/status/changed', threadId=thread, status=dict(type=status))
-        self.notify(f, 'turn/completed', threadId=thread, turn=dict(id=turn, status='completed'))
+        self.notify(f, 'turn/completed', threadId=thread, turn=dict(id=turn, status=outcome))
 
     def pending(self, f):
         for _ in range(5):

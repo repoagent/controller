@@ -6,8 +6,15 @@ namespace RepoAgentController;
 
 sealed class Codex : IAsyncDisposable
 {
-    /// <summary>Native-reported runtime status of a session in this app-server process. Only Idle admits input.</summary>
+    /// <summary>Native-reported runtime status of a session in this app-server process; see <see cref="Admits"/>.</summary>
     public enum SessionStatus { Unknown, NotLoaded, Idle, Active, SystemError }
+
+    /// <summary>
+    /// Whether a loaded session in <paramref name="status"/> can receive its next batch. Pinned Codex leaves the thread of a
+    /// failed turn in systemError until its next turn; it accepts turn/start there and runs that turn normally, while resume
+    /// and reload keep reporting systemError. Active, unloaded and unrecognized statuses never admit input.
+    /// </summary>
+    public static bool Admits(SessionStatus status) => status is SessionStatus.Idle or SessionStatus.SystemError;
 
     /// <summary>The native answered a request with an error, so it did not perform it. Timeouts and transport loss are not rejections.</summary>
     public sealed class RequestRejected(string message) : IOException(message);
@@ -299,9 +306,9 @@ sealed class Codex : IAsyncDisposable
         bool orient;
         lock (statusLock)
         {
-            // Native turn/start adds input to an active turn (steering); only a loaded idle session receives a batch.
-            if (!resumed.Contains(id) || Current(id) != SessionStatus.Idle)
-                throw new InvalidOperationException("Native session is not loaded and idle; input must wait");
+            // Native turn/start adds input to an active turn (steering); only a loaded session that admits input receives a batch.
+            if (!resumed.Contains(id) || !Admits(Current(id)))
+                throw new InvalidOperationException("Native session is not loaded and ready for input; input must wait");
             // Each start or resume in this native process receives the shared orientation once.
             orient = !oriented.Contains(id);
         }
