@@ -503,7 +503,7 @@ public sealed class AgentVariableConformanceTests
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
         return f;
     }
-    private static AgentEnrollmentRequest Request(string profile = "polling") => new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "APPROVAL", profile);
+    private static RepositoryVariableEnrollmentRequest Request(string profile = "polling") => new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "APPROVAL", profile);
     private static object Variable(string name, string value) => new { name, value };
     private static object[] Unrelated(int count) => Enumerable.Range(0, count).Select(i => Variable($"N{i:00}", "unrelated")).ToArray();
     private static object Listing(int total, object[] variables) => new { total_count = total, variables };

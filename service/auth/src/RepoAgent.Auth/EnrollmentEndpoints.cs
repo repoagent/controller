@@ -26,7 +26,7 @@ internal static class EnrollmentEndpoints
                 var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
                 return version == 1
                     ? Result(await service.StartAsync(body.RootElement.Deserialize<EnrollmentRequest>(json) ?? throw new JsonException(), secret, context.RequestAborted))
-                    : Result(await service.StartAgentAsync(body.RootElement.Deserialize<AgentEnrollmentRequest>(json) ?? throw new JsonException(), secret, context.RequestAborted, version));
+                    : Result(await service.StartRepositoryVariableAsync(body.RootElement.Deserialize<RepositoryVariableEnrollmentRequest>(json) ?? throw new JsonException(), secret, context.RequestAborted, version));
             }
             catch (Exception ex) when (ex is JsonException or InvalidDataException or BadHttpRequestException) { return Results.StatusCode(400); }
         });
