@@ -452,7 +452,7 @@ public sealed class ControllerDashboardTests
         while (true)
         {
             try { if (observe() is { } value) return value; }
-            catch (System.Text.Json.JsonException) { } // The controlled peer is rewriting its file.
+            catch (Exception error) when (error is System.Text.Json.JsonException or IOException) { } // The controlled peer is rewriting its file.
             Assert.True(DateTime.UtcNow < deadline, "Condition was not observed before the watchdog deadline");
             await Task.Delay(50, TestContext.Current.CancellationToken);
         }

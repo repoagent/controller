@@ -52,7 +52,7 @@ Rollback is the same procedure in reverse: revoke the settings grant, wait for s
 
 A repository-settings profile token is read-only for variables, so the controller still cannot write or restore its own approval. It can read every direct repository Actions variable, however, including the nonsecret approval marker. Keep secrets out of repository variables.
 
-The controller reads each supported variable at startup, including under `--check-auth`. It then reads them again every minute while running, with one `GET` per catalogue entry. A change in a setting's state, value or reason is logged once:
+The controller reads each supported variable at startup, including under `--check-auth`. It reads them again a minute after the agent runtime starts, then a minute after each refresh finishes, with one `GET` per catalogue entry. A refresh that changed a setting finishes only after a running observation or dispatch does, so the next refresh can start later. A change in a setting's state, value or reason is logged once:
 
 ```text
 repository-setting name=REPOAGENT_MAX_ACTIVE_SESSIONS state=configured value=4
@@ -72,7 +72,7 @@ Each refresh records every setting's state, effective value and reason in `<stat
 At the limit, newly observed input waits in the controller, as it does for a busy session. It shows as `waiting` in `status`, gets no EYES, and the observation logs `input-waiting ... active=N limit=M`. When a turn finishes, waiting Discussions are dispatched again. `status` reports running turns as `work.running` against the effective limit `work.limit`, and the [dashboard](../README.md#discussion-status-dashboard) shows that count and lists such input as waiting for a free active-session slot.
 
 - **Default.** `4` applies whenever no repository value is effective: the variable is absent, the controller runs without `--repository-settings` (including every broker enrollment with a frozen profile), or the value is invalid or unreadable and no controller lifetime has read a valid one. `status` and the dashboard show that problem.
-- **Refresh.** A change applies within one settings refresh, at most one minute. Raising the limit dispatches waiting input right after that refresh. Lowering it never stops or steers a running turn; new turns wait until running turns fall below the new limit. An invalid value or a failed read keeps the last effective limit.
+- **Refresh.** A change applies when a settings refresh reads it, normally within a minute. Raising the limit dispatches waiting input right after that refresh. Lowering it never stops or steers a running turn; new turns wait until running turns fall below the new limit. An invalid value or a failed read keeps the last effective limit.
 - **Order.** There is no fairness guarantee. When a slot frees, the controller tries the oldest waiting input first, but an observation that finds a free slot can dispatch its own Discussion first. Each Discussion still runs at most one turn at a time.
 
 ## Category enrollment
@@ -89,7 +89,7 @@ At the limit, newly observed input waits in the controller, as it does for a bus
 
 **Timing and changes.**
 
-- A running controller reads a change within one minute. A Discussion created between the variable change and that read counts as preexisting, so wait for the `repository-setting name=REPOAGENT_ENROLLMENT_CATEGORIES state=configured` log line before relying on a new category.
+- A running controller normally reads a change within a minute. A Discussion created between the variable change and that read counts as preexisting, so wait for the `repository-setting name=REPOAGENT_ENROLLMENT_CATEGORIES state=configured` log line before relying on a new category.
 - The recorded time survives restarts, so Discussions created while the controller is stopped enroll when it starts again. A category first selected while the controller is stopped is recorded when the controller next starts.
 - Removing a category stops new category enrollment from it and forgets its recorded time. Discussions already enrolled keep their sessions. Selecting the category again starts afresh, so Discussions created while it was unselected stay preexisting.
 - Clearing the variable, or running without `--repository-settings`, removes every selection. An invalid value or a failed read keeps the previous selection and its recorded times, also across a restart.

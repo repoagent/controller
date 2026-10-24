@@ -191,7 +191,7 @@ public static class BridgeCommand
                             durable is null ? TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)) : Timeout.InfiniteTimeSpan, runtimeToken);
                         var bridge = new Bridge(github, codex, store, outbox, numbers, settings, reconciliation, time);
                         bridge.ResumeInterrupted();
-                        settingsRefresh = settings.RefreshUntilCancelled(bridge.ApplySettings, runtimeToken);
+                        settingsRefresh = settings.RefreshUntilCancelled(bridge.ReconcileCategoryEnrollment, runtimeToken);
                         dashboard?.Start(runtimeToken);
                         // Replaced agent credentials apply between dispatches at a global idle boundary: the checkout journal's in
                         // clone mode, else the native's. Dispatch holds its gate before refresh admission, so this order matches.

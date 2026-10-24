@@ -209,16 +209,16 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         finally { gate.Release(); }
     }
 
-    /// <summary>Applies a refreshed repository settings change to the category selection starts while no observation or
+    /// <summary>Reconciles category enrollment starts with a refreshed repository settings change while no observation or
     /// dispatch runs, so a category removed and selected again between observations starts afresh.</summary>
-    public async Task ApplySettings(CancellationToken ct)
+    public async Task ReconcileCategoryEnrollment(CancellationToken ct)
     {
         await gate.WaitAsync(ct);
         try { categories.Reconcile(); }
         // The starts stay reconciled in memory and are saved with the next state change; settings refresh continues.
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
-            Log.Write("repository-settings-error", $"the category selection starts could not be saved: {error.Message}");
+            Log.Write("repository-settings-error", $"the category enrollment starts could not be saved: {error.Message}");
         }
         finally { gate.Release(); }
     }

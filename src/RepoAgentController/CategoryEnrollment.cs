@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
 
-/// <summary>Selects new Discussions in operator-configured categories for enrollment without a mention.</summary>
+/// <summary>Category enrollment: enrolls new Discussions in operator-configured categories without a mention.</summary>
 /// <remarks>Each selected category records, in the state file, when this controller's settings refresh first observed it selected. A Discussion
 /// created before then is preexisting and is not selected. Removing a category forgets its start, so selecting it again
 /// starts afresh; the bridge reconciles every refreshed change, so this holds without an observation in between. The App's
@@ -33,7 +33,7 @@ sealed class CategoryEnrollment
     /// <summary>Records starts for newly selected categories and forgets those of removed ones.</summary>
     public void Reconcile() => Starts();
 
-    // Reconciles the recorded selection starts with the effective setting; a retained value keeps its starts. Without any
+    // Reconciles the recorded category enrollment starts with the effective setting; a retained value keeps its starts. Without any
     // known value, a failed or invalid read changes nothing: only a confirmed absence or disabled settings remove a selection.
     JsonObject Starts()
     {
