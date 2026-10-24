@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Azure.Core.Pipeline;
-using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
@@ -92,8 +91,7 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
     public IssuanceClock Clock { get; } = new();
     public GitHubTransport GitHub { get; } = new();
     public SigningTransport Signing { get; } = new();
-    private readonly DirectoryInfo keys = new(Path.Combine(Path.GetTempPath(), "enrollment-keys-" + Guid.NewGuid().ToString("N")));
-    public IDataProtectionProvider Protection => DataProtectionProvider.Create(keys);
+    public InMemorySecretProtection Secrets { get; } = new();
     private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> host = null!;
     private HttpClient client = null!;
     private readonly Dictionary<string, string?> settings = new() { ["Broker:BrokerOrigin"] = "https://broker.example" };
@@ -120,7 +118,7 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
         }).ConfigureServices(services =>
         {
             services.AddSingleton<TimeProvider>(Clock);
-            services.AddSingleton<ISecretProtection>(new DataProtectionSecretProtection(Protection));
+            services.AddSingleton<ISecretProtection>(Secrets);
             services.AddSingleton(limits);
             services.AddSingleton(new GitHubIssuance(new HttpClient(GitHub), Clock));
             services.AddSingleton(new AppJwtSigner(Signing, Clock));
@@ -147,6 +145,5 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
     {
         await StopHttpAsync();
         await Storage.DisposeAsync();
-        if (keys.Exists) keys.Delete(true);
     }
 }
