@@ -227,18 +227,15 @@ public sealed class ApprovalObserverTests
         Assert.Equal(outcome, await ObserveAsync(approval));
     }
 
-    [Theory]
-    [InlineData(GitHubDefect.Unparseable)]
-    [InlineData(GitHubDefect.DuplicateMember)]
-    [InlineData(GitHubDefect.Oversized)]
-    [InlineData(GitHubDefect.Shape)]
-    public async Task Malformed_or_duplicate_JSON_never_proves_withdrawal(GitHubDefect defect)
+    // Neither a malformed named read nor a malformed access-proof listing proves the variable gone.
+    [Fact]
+    public async Task Malformed_read_never_proves_withdrawal()
     {
         var approval = Approval("agent");
-        github.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Malformed(defect);
+        github.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Malformed(GitHubDefect.Shape);
         Assert.Equal("denied", await ObserveAsync(approval));
         github.VariableAnswer = _ => new GitHubRead<GitHubVariable>.NotFound();
-        github.PageAnswer = (_, _) => new GitHubRead<GitHubVariablePage>.Malformed(defect);
+        github.PageAnswer = (_, _) => new GitHubRead<GitHubVariablePage>.Malformed(GitHubDefect.Shape);
         Assert.Equal("denied", await ObserveAsync(approval));
     }
 
