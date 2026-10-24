@@ -52,6 +52,7 @@ namespace RepoAgentController
     {
         public void Write(string kind, string message) => Log.Write(kind, message);
     }
+
     static class RetryDelay
     {
         /// <summary>Doubles from <paramref name="first"/> with each 1-based attempt, up to <paramref name="longest"/>.</summary>

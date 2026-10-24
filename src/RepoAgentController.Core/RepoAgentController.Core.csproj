@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- The controller core (ADR 0010): decisions only, no I/O. It references no package or project.
+  <!-- The controller core (ADR 0010): decisions only, no I/O. Its only reference is the banned-API analyzer.
        BannedSymbols.txt rejects the common file, network, process, environment and wall-clock APIs
        and JsonNode; review catches the rest. Adapters live in RepoAgentController. -->
   <PropertyGroup>
