@@ -1,6 +1,6 @@
 # Controller process tests
 
-The installer (`install.*`, `repoagent*`, `scripts/*.ps1`) and the container runtime (`container/`) have no automated tests. Per [ADR 0010](../../docs/adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md), they are tested manually against the local AppHost ([#204](https://github.com/repoagent/controller/issues/204)) when they change.
+The installer (`install.*`, `repoagent*`, `scripts/*.ps1`) and the container runtime (`container/`) have no automated tests. Per [ADR 0010](../../docs/adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md), they are tested manually against the local AppHost ([#204](https://github.com/repoagent/controller/issues/204), not built yet) when they change.
 
 This directory keeps four controller process suites until [#203](https://github.com/repoagent/controller/issues/203) replaces each one with unit tests:
 

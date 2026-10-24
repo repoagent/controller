@@ -30,7 +30,7 @@ Run lifecycle commands sequentially. The trust boundary includes the current hos
 
 Existing direct-App instances remain accessible with `--key-path`. Ordinary check/start/stop require an existing container to match the selected controller image, UID1000, the controller start entrypoint/arguments, all six expected volume destinations (config read-only), and only its configured read-only PEM bind. Mismatches require manual resolution. These checks do not adopt or relabel legacy data or authorize destructive migration.
 
-Native Windows PowerShell process tests and actual Docker Desktop acceptance are separate gates. Linux execution or a mocked Docker process does not establish Windows ACL, raw-byte transfer, UID/mode, read-only mount or restart persistence acceptance. A real authenticated Codex turn and live broker approval/token-scope acceptance also require their own authorized checks.
+Native Windows PowerShell and actual Docker Desktop acceptance are manual gates. Linux execution does not establish Windows ACL, raw-byte transfer, UID/mode, read-only mount or restart persistence acceptance. A real authenticated Codex turn and live broker approval/token-scope acceptance also require their own authorized checks.
 
 ## Disable and uninstall a managed instance
 
