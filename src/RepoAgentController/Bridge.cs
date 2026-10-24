@@ -14,6 +14,8 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
+    // Bootstrap context characters, leaving room in the first batch for the Discussion and its first changes.
+    const int MaximumContextCharacters = MaximumBatchCharacters / 2;
     public const string ActiveSessionSetting = "REPOAGENT_MAX_ACTIVE_SESSIONS";
     /// <summary>Native turns that may run at once across Discussions while REPOAGENT_MAX_ACTIVE_SESSIONS has no effective value.</summary>
     public const int DefaultActiveSessions = 4;
@@ -120,8 +122,10 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 var current = new JsonObject();
                 var changes = new JsonArray();
                 var receipts = new List<string?>(); // Receipt source of each change, by index; none for a deletion.
-                // The bootstrap context captured by this observation already carries every existing body.
+                // The bootstrap context captured by this observation carries the existing bodies that fit its budget; the
+                // changes of later comments carry their own body, so a long conversation splits into bounded batches.
                 var snapshot = bootstrap && record["waiting"]?["context"] is null;
+                var (context, inContext) = snapshot ? Context(sources) : (null, []);
                 foreach (var source in sources)
                 {
                     var sourceId = source.Text("id");
@@ -145,7 +149,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                         var content = new JsonObject { ["body"] = source.Text("body") };
                         foreach (var field in state) content[field.Key] = field.Value?.Copy();
                         Add(sourceId == id ? (old is null ? "discussion.created" : "discussion.changed") : (old is null ? "comment.created" : "comment.edited"),
-                            snapshot && old is null ? null : content);
+                            snapshot && old is null && (sourceId == id || inContext.Contains(sourceId)) ? null : content);
                     }
                     // Discussion state can change independently of its original author.
                     else if (sourceId == id && !bootstrap && !JsonNode.DeepEquals(old?["state"], version["state"])) Add("discussion.stateChanged", state);
@@ -177,7 +181,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                     changes.Add((JsonNode)new JsonObject { ["kind"] = "discussion.enrolled", ["subject"] = Subject(discussion), ["replyTarget"] = new JsonObject { ["replyToId"] = null } });
                     receipts.Add(id);
                 }
-                if (changes.Count != 0) Queue(record, discussion, sources, changes, receipts, bootstrap, current);
+                if (changes.Count != 0) Queue(record, discussion, sources, changes, receipts, context, current);
                 // Quietly remember agent output so later human reactions can be compared.
                 else if (!JsonNode.DeepEquals(previous, current)) { record["sources"] = current; store.Save(); }
                 if (record["waiting"] is not JsonObject waiting) continue;
@@ -293,12 +297,12 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
     }
 
     // Caller holds the gate. Observed changes wait durably, in order, with their receipt source; the checkpoint advances.
-    void Queue(JsonObject record, JsonNode discussion, List<JsonNode> sources, JsonArray changes, List<string?> receipts, bool bootstrap, JsonObject current)
+    void Queue(JsonObject record, JsonNode discussion, List<JsonNode> sources, JsonArray changes, List<string?> receipts, JsonObject? context, JsonObject current)
     {
         var waiting = record["waiting"] as JsonObject ?? new JsonObject { ["inputs"] = new JsonArray() };
         waiting["discussion"] = Public(discussion);
         // Bootstrap context travels with the first batch delivered to the session.
-        if (bootstrap && waiting["context"] is null) waiting["context"] = new JsonObject { ["existingComments"] = Json.Array(sources.Skip(1).Select(Public)) };
+        if (context is not null) waiting["context"] = context;
         var inputs = waiting["inputs"]!.AsArray();
         var observed = DateTimeOffset.UtcNow.ToString("O");
         for (var index = 0; index < changes.Count; index++)
@@ -602,6 +606,26 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         foreach (var field in after.AsObject())
             if (!JsonNode.DeepEquals(before?[field.Key], field.Value)) changed[field.Key] = field.Value?.Copy();
         return changed;
+    }
+
+    // The leading existing comments within the context budget, and how many later ones carry their body in their change
+    // instead (App-authored ones have no change).
+    static (JsonObject? Context, HashSet<string> Included) Context(List<JsonNode> sources)
+    {
+        var comments = new JsonArray();
+        var included = new HashSet<string>();
+        long length = 0;
+        foreach (var source in sources.Skip(1))
+        {
+            var comment = Public(source);
+            length += comment.ToJsonString().Length + 1;
+            if (length > MaximumContextCharacters) break;
+            comments.Add(comment);
+            included.Add(source.Text("id"));
+        }
+        var context = new JsonObject { ["existingComments"] = comments };
+        if (included.Count < sources.Count - 1) context["laterComments"] = sources.Count - 1 - included.Count;
+        return (context, included);
     }
 
     static JsonNode Public(JsonNode source)

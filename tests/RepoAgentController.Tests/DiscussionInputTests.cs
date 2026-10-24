@@ -74,6 +74,34 @@ public sealed class DiscussionInputTests
     }
 
     [Fact]
+    public async Task A_long_enrolled_conversation_bootstraps_in_bounded_inputs_that_keep_every_comment_in_order()
+    {
+        using var controller = new GitHubOutboxTests.Controller();
+        // GitHub bodies hold at most 65,536 characters; twenty long comments exceed the native input limit of 1,048,576.
+        var bodies = Enumerable.Range(1, 20).Select(index => $"comment {index:D2} " + new string((char)('a' + index), 65_000)).ToArray();
+        for (var index = 0; index < bodies.Length; index++) controller.Comment($"C{index + 1}", bodies[index], author: "alice");
+        for (var turns = -1; turns != controller.Turns;)
+        {
+            turns = controller.Turns;
+            await controller.RunOnce();
+            Assert.True(controller.Turns < 30, "The conversation never finished dispatching");
+        }
+
+        var inputs = controller.Inputs.Select(text => (Text: text, Envelope: JsonNode.Parse(text)!)).ToArray();
+        // Each input stays within the 256 KiB batch bound, far below the native limit, so none is refused for its size.
+        Assert.All(inputs, input => Assert.InRange(input.Text.Length, 1, 256 * 1024));
+        Assert.Equal(["bootstrap", .. Enumerable.Repeat("continue", inputs.Length - 1)],
+            inputs.Select(input => input.Envelope["_bridge"]!["mode"]!.GetValue<string>()));
+        // Every comment arrives exactly once and in order: in the bootstrap context or, after it, in its change.
+        var delivered = inputs.SelectMany(input =>
+            (input.Envelope["context"]?["existingComments"]?.AsArray() ?? []).Select(comment => comment!["body"]!.GetValue<string>())
+            .Concat(input.Envelope["changes"]!.AsArray().Select(change => change!["subject"]!["body"]?.GetValue<string>()).OfType<string>()));
+        Assert.Equal(bodies, delivered);
+        Assert.Equal(Enumerable.Range(1, 20).Select(index => $"C{index}"), inputs.SelectMany(input => input.Envelope["changes"]!.AsArray())
+            .Where(change => change!["kind"]!.GetValue<string>() == "comment.created").Select(change => change!["subject"]!["id"]!.GetValue<string>()));
+    }
+
+    [Fact]
     public async Task Mixed_batch_of_edits_reactions_answer_and_comments_keeps_identity_attribution_and_thread_routing()
     {
         using var controller = new GitHubOutboxTests.Controller();
