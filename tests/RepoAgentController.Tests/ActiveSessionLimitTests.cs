@@ -119,6 +119,60 @@ public sealed class ActiveSessionLimitTests
         Assert.Empty(await controller.Waiting());
     }
 
+    [Fact]
+    public async Task A_retried_delivery_holds_no_slot_while_it_backs_off_and_then_waits_for_a_free_one()
+    {
+        await using var controller = new Controller(discussions: 2);
+        controller.Variables[Setting] = "1";
+        controller.Native.Reject(1); // The native refuses the first Discussion's first turn.
+        await controller.Start("--repository-settings");
+
+        // The refused delivery backs off without a slot, so the second Discussion takes the only one.
+        var second = await controller.Turn(1);
+        Assert.Equal(2, second.Discussion);
+        Assert.Contains(controller.Log, line => line.Contains($" delivery-retry {Url(1)} ") && line.Contains(" redelivery=true "));
+
+        // Once its backoff ends the retry still respects the limit: it waits while the slot is taken.
+        controller.Elapse(TimeSpan.FromSeconds(10));
+        await controller.Poll();
+        Assert.Equal(1, controller.Native.TurnCount);
+        Assert.Equal(new[] { 1 }, await controller.Waiting());
+
+        // The freed slot goes to the retry, still marked as a redelivery, and the limit was never exceeded.
+        await controller.Finish(second);
+        var retried = await controller.Turn(2);
+        Assert.Equal(1, retried.Discussion);
+        Assert.True(retried.Envelope["_bridge"]!["redelivery"]!.GetValue<bool>());
+        Assert.Equal(1, controller.Native.MostActive);
+        Assert.Empty(await controller.Waiting());
+    }
+
+    [Fact]
+    public async Task Input_held_by_a_selection_error_holds_no_slot_and_then_waits_for_a_free_one()
+    {
+        await using var controller = new Controller(discussions: 2);
+        controller.Variables[Setting] = "1";
+        controller.Labels(1, "repoagent:gpt-unoffered:low"); // A model the Codex account does not offer.
+        await controller.Start("--repository-settings");
+
+        // The unusable selection holds the first Discussion's input without a turn or a slot; the second one runs.
+        var second = await controller.Turn(1);
+        Assert.Equal(2, second.Discussion);
+        Assert.Contains(controller.Log, line => line.Contains($" selection-error {Url(1)}: "));
+        Assert.Equal(new[] { 1 }, await controller.Waiting());
+
+        // Removing the label makes the input dispatchable, but only once the limit has a free slot.
+        controller.Labels(1);
+        await controller.Poll();
+        Assert.Equal(1, controller.Native.TurnCount);
+        Assert.Equal(new[] { 1 }, await controller.Waiting());
+        await controller.Finish(second);
+        var first = await controller.Turn(2);
+        Assert.Equal(1, first.Discussion);
+        Assert.Equal(1, controller.Native.MostActive);
+        Assert.Empty(await controller.Waiting());
+    }
+
     static string Url(int discussion) => "https://github.com/owner/repository/discussions/" + discussion;
 
     /// <summary>One native turn the controlled peer accepted, with the Discussion its envelope carried.</summary>
@@ -134,6 +188,7 @@ public sealed class ActiveSessionLimitTests
         readonly string? path = Environment.GetEnvironmentVariable("PATH");
         readonly JsonArray discussions = [];
         readonly JsonObject comments = [];
+        readonly JsonObject labels = [];
         readonly Clock clock = new();
         readonly CancellationTokenSource shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         LogCapture? capture;
@@ -239,6 +294,16 @@ public sealed class ActiveSessionLimitTests
             return [.. waiting.Select(session => int.Parse(session!["discussion"]!.GetValue<string>().Split('/')[^1]))];
         }
 
+        /// <summary>Replaces a Discussion's labels; the controller observes them at its next observation.</summary>
+        public void Labels(int discussion, params string[] names)
+        {
+            labels["D" + discussion] = new JsonArray([.. names.Select(name => (JsonNode)JsonValue.Create(name))]);
+            Save();
+        }
+
+        /// <summary>Advances controlled time without running the one-minute loops early, for delivery backoff.</summary>
+        public void Elapse(TimeSpan by) => clock.Elapse(by);
+
         public void Comment(int discussion, string id, string body)
         {
             if (comments["D" + discussion] is not JsonArray list) comments["D" + discussion] = list = [];
@@ -256,7 +321,7 @@ public sealed class ActiveSessionLimitTests
             var temporary = world + ".tmp";
             File.WriteAllText(temporary, new JsonObject
             {
-                ["discussions"] = discussions.DeepClone(), ["comments"] = comments.DeepClone(),
+                ["discussions"] = discussions.DeepClone(), ["comments"] = comments.DeepClone(), ["labels"] = labels.DeepClone(),
                 ["variables"] = JsonSerializer.SerializeToNode(Variables), ["statuses"] = JsonSerializer.SerializeToNode(Statuses)
             }.ToJsonString());
             File.Move(temporary, world, true);
@@ -309,7 +374,7 @@ public sealed class ActiveSessionLimitTests
             elif 'comments(' in query:reply({'data':{'node':{'comments':page([message(c) for c in world['comments'].get(variables['id'],[])])}}})
             elif 'replies(' in query:reply({'data':{'node':{'replies':page([])}}})
             elif 'reactions(' in query:reply({'data':{'node':{'reactions':page([])}}})
-            elif 'labels(' in query:reply({'data':{'node':{'labels':page([])}}})
+            elif 'labels(' in query:reply({'data':{'node':{'labels':page([{'name':name} for name in world['labels'].get(variables['id'],[])])}}})
             sys.stderr.write('Unexpected GitHub request\n');sys.exit(2)
             """;
 
@@ -336,6 +401,7 @@ public sealed class ActiveSessionLimitTests
         readonly List<Turn> accepted = [];
         readonly List<(int Number, TaskCompletionSource<Turn> Seen)> waiters = [];
         readonly List<string> methods = [];
+        readonly HashSet<int> rejections = [];
         readonly Lock sync = new();
         readonly Task serving;
         Socket? connection;
@@ -353,6 +419,9 @@ public sealed class ActiveSessionLimitTests
         public Turn[] Turns { get { lock (sync) return [.. accepted]; } }
         public int MostActive { get { lock (sync) return mostActive; } }
         public string[] Methods { get { lock (sync) return [.. methods]; } }
+
+        /// <summary>Refuses the next turn/start for the Discussion with a JSON-RPC error, as a native refusing input does.</summary>
+        public void Reject(int discussion) { lock (sync) rejections.Add(discussion); }
 
         /// <summary>Completes when the <paramref name="number"/>th turn (1-based, in acceptance order) is accepted.</summary>
         public Task<Turn> Accepted(int number)
@@ -394,6 +463,12 @@ public sealed class ActiveSessionLimitTests
                     lock (sync)
                     {
                         methods.Add(method);
+                        var envelope = method == "turn/start" ? Envelope(parameters!) : null;
+                        if (envelope is not null && rejections.Remove(envelope["discussion"]!["number"]!.GetValue<int>()))
+                        {
+                            Send(new JsonObject { ["id"] = id.DeepClone(), ["error"] = new JsonObject { ["code"] = -32600, ["message"] = "Fixture refused this input" } });
+                            continue;
+                        }
                         JsonNode result = method switch
                         {
                             "initialize" => new JsonObject { ["codexHome"] = Environment.CurrentDirectory },
@@ -409,11 +484,9 @@ public sealed class ActiveSessionLimitTests
                         if (method != "turn/start") continue;
                         mostActive = Math.Max(mostActive, ++active);
                         var thread = parameters!["threadId"]!.GetValue<string>();
-                        var text = parameters["input"]![0]!["text"]!.GetValue<string>();
-                        var envelope = JsonNode.Parse(text[(text.IndexOf('\n') + 1)..])!;
                         // Pinned native reports the thread active after acknowledging its turn.
                         Send(new JsonObject { ["method"] = "thread/status/changed", ["params"] = new JsonObject { ["threadId"] = thread, ["status"] = new JsonObject { ["type"] = "active" } } });
-                        accepted.Add(new Turn(thread, "T" + (accepted.Count + 1), envelope["discussion"]!["number"]!.GetValue<int>(), envelope));
+                        accepted.Add(new Turn(thread, "T" + (accepted.Count + 1), envelope!["discussion"]!["number"]!.GetValue<int>(), envelope));
                         foreach (var waiter in waiters.Where(waiter => waiter.Number == accepted.Count).ToList())
                         {
                             waiters.Remove(waiter);
@@ -423,6 +496,13 @@ public sealed class ActiveSessionLimitTests
                 }
             }
             catch (Exception error) when (error is IOException or SocketException or ObjectDisposedException or OperationCanceledException) { }
+        }
+
+        // The bridge envelope after the skill line of a turn/start input.
+        static JsonNode Envelope(JsonNode parameters)
+        {
+            var text = parameters["input"]![0]!["text"]!.GetValue<string>();
+            return JsonNode.Parse(text[(text.IndexOf('\n') + 1)..])!;
         }
 
         // Caller holds sync.
@@ -458,6 +538,8 @@ public sealed class ActiveSessionLimitTests
             if (dueTime == TimeSpan.FromMinutes(1)) minuteTimers.Release();
             return timer;
         }
+
+        public void Elapse(TimeSpan by) => time.Advance(by);
 
         public async Task<ManualTimer> NextPoll() => await polls.Reader.ReadAsync(TestContext.Current.CancellationToken).AsTask()
             .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
