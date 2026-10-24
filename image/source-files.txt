@@ -44,6 +44,8 @@ src/RepoAgentController.Core/RepositorySettings.cs
 src/RepoAgentController.Core/IBaselineReleases.cs
 src/RepoAgentController.Core/BaselineReleases.cs
 src/RepoAgentController.Core/CategoryEnrollmentStarts.cs
+src/RepoAgentController.Core/GitHubRequestException.cs
+src/RepoAgentController.Core/WakeLoop.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs
 tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj

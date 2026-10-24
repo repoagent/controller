@@ -146,8 +146,8 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
             Json.Object(("owner", parts[0]), ("name", parts[1]), ("number", number)), ct);
         // Only the typed NOT_FOUND for this field inside the resolved repository confirms deletion. Message text,
         // repository access loss, other error types and incomplete data stay classified failures.
-        if (GitHubRequestException.ConfirmsAbsent(response, "repository", "discussion")) return null;
-        return GitHubRequestException.Classify(response)["repository"]?["discussion"]?.Copy()
+        if (ConfirmsAbsent(response, "repository", "discussion")) return null;
+        return Classify(response)["repository"]?["discussion"]?.Copy()
             ?? throw new GitHubRequestException(GitHubFailure.Transient, "incomplete Discussion response");
     }
 
@@ -253,7 +253,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     }
 
     // Controller-owned requests: classify by HTTP status, rate-limit headers and GraphQL error type.
-    async Task<JsonNode> Send(string query, JsonObject variables, CancellationToken ct) => GitHubRequestException.Classify(await Post(query, variables, ct));
+    async Task<JsonNode> Send(string query, JsonObject variables, CancellationToken ct) => Classify(await Post(query, variables, ct));
 
     // The gh --include output of one GraphQL request, for classification.
     async Task<string> Post(string query, JsonObject variables, CancellationToken ct)
@@ -265,44 +265,16 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
             throw new GitHubRequestException(GitHubFailure.Transient, error.Message, uncertain: true);
         }
     }
-}
 
-enum GitHubFailure { Transient, RateLimited, Permanent }
-
-/// <summary>
-/// A classified failure of a controller-owned GitHub read or write. Uncertain means GitHub may have applied a write; Status is
-/// the HTTP status GitHub returned, when the request got that far.
-/// </summary>
-sealed class GitHubRequestException(GitHubFailure kind, string message, bool uncertain = false, TimeSpan? retryAfter = null,
-    DateTimeOffset? resetAt = null, int? status = null) : IOException(message)
-{
     static readonly string[] Rejections = ["NOT_FOUND", "FORBIDDEN", "UNPROCESSABLE"];
-    public GitHubFailure Kind { get; } = kind;
-    public bool Uncertain { get; } = uncertain;
-    public int? Status { get; } = status;
-
-    /// <summary>A REST read GitHub answered with an unexpected HTTP status.</summary>
-    public static GitHubRequestException Rejected(int status) => new(status switch
-    {
-        429 => GitHubFailure.RateLimited,
-        400 or 403 or 404 or 410 or 422 => GitHubFailure.Permanent,
-        _ => GitHubFailure.Transient
-    }, $"GitHub returned HTTP {status}", status: status);
-
-    /// <summary>The earliest retry GitHub signalled, if any.</summary>
-    public DateTimeOffset? NotBefore(DateTimeOffset now)
-    {
-        var after = retryAfter is { } delay ? now + delay : (DateTimeOffset?)null;
-        return after is null ? resetAt : resetAt is null || after > resetAt ? after : resetAt;
-    }
 
     /// <summary>
     /// True only when gh --include output is GitHub's typed NOT_FOUND for exactly the field at <paramref name="path"/>, inside
     /// a parent that resolved: that object is confirmed absent. Every other response is left to <see cref="Classify"/>.
     /// </summary>
-    public static bool ConfirmsAbsent(string response, params string[] path)
+    internal static bool ConfirmsAbsent(string response, params string[] path)
     {
-        if (GitHub.Included(response) is not (200, _, var text)) return false;
+        if (Included(response) is not (200, _, var text)) return false;
         JsonNode? body;
         try { body = JsonNode.Parse(text); } catch (System.Text.Json.JsonException) { return false; }
         if (body?["errors"] is not JsonArray { Count: 1 } errors || errors[0] is not JsonObject error || error["type"].OptionalText() != "NOT_FOUND" ||
@@ -313,9 +285,9 @@ sealed class GitHubRequestException(GitHubFailure kind, string message, bool unc
     }
 
     /// <summary>Returns GraphQL data from gh --include output, or throws the classified failure.</summary>
-    public static JsonNode Classify(string response)
+    internal static JsonNode Classify(string response)
     {
-        if (GitHub.Included(response) is not { } included)
+        if (Included(response) is not { } included)
             throw new GitHubRequestException(GitHubFailure.Transient, "unrecognized gh response", uncertain: true);
         var (status, headers, text) = included;
         JsonNode? body = null;
