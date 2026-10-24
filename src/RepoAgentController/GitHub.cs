@@ -55,27 +55,9 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return sha;
     }
 
-    /// <summary>Reads one direct repository Actions variable; null only when GitHub reports it absent (HTTP 404).</summary>
-    public async Task<string?> Variable(string name, CancellationToken ct)
-    {
-        var (status, body) = Included(await Api("GET", $"repos/{Repository}/actions/variables/{Uri.EscapeDataString(name)}", null, ct, include: true), "variable");
-        if (status == 404) return null;
-        if (status != 200) throw GitHubRequestException.Rejected(status);
-        var variable = JsonNode.Parse(body);
-        if (!string.Equals(variable?.Text("name"), name, StringComparison.OrdinalIgnoreCase) ||
-            variable?["value"] is not JsonValue value || value.GetValueKind() != System.Text.Json.JsonValueKind.String)
-            throw new IOException("Malformed GitHub variable response");
-        return value.GetValue<string>();
-    }
-
-    /// <summary>Reads the newest page of another public repository's releases, such as the controller's own baseline releases.</summary>
-    public async Task<JsonArray> Releases(string repository, CancellationToken ct)
-    {
-        var (status, body) = Included(await Api("GET", $"repos/{repository}/releases?per_page=100", null, ct, include: true), "releases");
-        if (status != 200) throw GitHubRequestException.Rejected(status);
-        try { return JsonNode.Parse(body) as JsonArray ?? throw new IOException("Malformed GitHub releases response"); }
-        catch (System.Text.Json.JsonException) { throw new IOException("Malformed GitHub releases response"); }
-    }
+    /// <summary>One REST GET with gh --include: GitHub's HTTP status and body, whatever the status.</summary>
+    public async Task<(int Status, string Body)> Get(string resource, string subject, CancellationToken ct) =>
+        Included(await Api("GET", resource, null, ct, include: true), subject);
 
     static (int Status, string Body) Included(string text, string subject) =>
         Included(text) is { } response ? (response.Status, response.Body) : throw new IOException($"Incomplete GitHub {subject} response");

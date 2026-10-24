@@ -311,113 +311,36 @@ public sealed class ControllerDashboardTests
         Assert.Equal(1, controller.Writes("categories"));
     }
 
-    [Fact]
-    public async Task Newer_baseline_release_is_offered_once_with_its_links_while_the_running_release_claims_no_update()
+    // The release check's one remaining process-level test, kept until the dashboard moves into the core (PR 4 of #203):
+    // the controller's options reach the check, and a later hourly check's outcome reaches the republished dashboard.
+    // BaselineReleaseCheckTests and ControllerDashboardUpdatesTests own the decisions and the rendered text.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Newer_baseline_release_reaches_the_dashboard_after_a_later_hourly_check(bool startupToolUpdates)
     {
         using var controller = new Controller();
-        var running = controller.Inventory("running", gh: "2.102.0", codex: "0.163.0");
+        var running = controller.Inventory("running");
         var current = controller.Publish(101, running);
-        // Neither an unpublished draft nor a baseline tag without valid release metadata is offered.
-        controller.Publish(105, controller.Inventory("draft"), draft: true);
-        controller.Release("baseline-106.1", "Hand-written notes.\n\n<!-- repoagent.baseline-release/v1 -->\n```json\n{\"schema\":\"repoagent.baseline-release/v1\"}\n```\n");
         using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token, "--dashboard-category", Category, "--image-inventory", running);
+        var run = controller.Run(shutdown.Token, ["--dashboard-category", Category, "--image-inventory", running, .. (startupToolUpdates ? ["--startup-tool-updates"] : Array.Empty<string>())]);
         try
         {
-            var upToDate = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains(ReleaseUrl(current)) ? dashboard : null);
-            TestContext.Current.TestOutputHelper?.WriteLine(upToDate.Body);
-            Assert.Matches(@"### Updates\n[^\n]*\[" + Regex.Escape(current) + @"\]\(" + Regex.Escape(ReleaseUrl(current)) + @"\)[^\n]*newest", upToDate.Body);
-            Assert.DoesNotContain("Update available", upToDate.Body);
+            var first = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains(ReleaseUrl(current)) ? dashboard : null);
+            TestContext.Current.TestOutputHelper?.WriteLine(first.Body);
+            Assert.Matches(startupToolUpdates ? @"### Updates\n\*\*Release identity uncertain\*\*[^\n]*startup tool updates"
+                : @"### Updates\nThis controller's image matches \[" + Regex.Escape(current) + @"\][^\n]*newest", first.Body);
 
-            // Two releases are published before the next check; only the newest is offered, as one notice.
-            controller.Publish(102, controller.Inventory("skipped", gh: "2.103.0", codex: "0.163.0"));
-            var newest = controller.Publish(103, controller.Inventory("newest", gh: "2.103.1", codex: "0.164.0"), out var image);
-            var offered = await Until(() =>
+            var newest = controller.Publish(102, controller.Inventory("newest", gh: "2.103.1"));
+            var later = await Until(() =>
             {
                 controller.Clock.Advance(TimeSpan.FromMinutes(5));
                 return controller.Dashboard() is { } dashboard && dashboard.Body.Contains(ReleaseUrl(newest)) ? dashboard : null;
             });
-            TestContext.Current.TestOutputHelper?.WriteLine(offered.Body);
-            Assert.Single(Regex.Matches(offered.Body, "Update available"));
-            Assert.Matches(@"Update available[^\n]*\[" + Regex.Escape(newest) + @"\]\(" + Regex.Escape(ReleaseUrl(newest)) + @"\)[^\n]*\[" + Regex.Escape(current) + @"\]", offered.Body);
-            Assert.DoesNotContain("baseline-102.1", offered.Body);
-            Assert.Contains("2 newer", offered.Body);
-            Assert.Contains("`" + image + "`", offered.Body);
-            Assert.Contains("(https://github.com/repoagent/controller/pkgs/container/controller)", offered.Body);
-            Assert.Matches(@"gh `2\.103\.1`[^\n]*Codex `0\.164\.0`", offered.Body);
-            // Publication is not deployment: the operator recreates the controller and keeps its external data.
-            Assert.Contains("never replaces itself", offered.Body);
-            Assert.Matches(@"recreates the controller[^\n]*configuration, credentials and session", offered.Body);
-            Assert.All(controller.Requests("releases"), read => Assert.True(read["include"]!.GetValue<bool>()));
-            Assert.Equal(1, controller.Writes("createDiscussion"));
-            Assert.Equal(1, controller.Turns);
-        }
-        finally { await shutdown.CancelAsync(); }
-        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
-    public async Task Failed_release_lookup_claims_no_update_until_a_later_check_succeeds()
-    {
-        using var controller = new Controller();
-        var running = controller.Inventory("running");
-        var newer = controller.Publish(102, controller.Inventory("newer", gh: "2.103.1"));
-        // Created last (its release job was re-run), so GitHub lists it first; publication order still makes 102 newer.
-        var current = controller.Publish(101, running);
-        controller.Respond(Response("releases", 503, """{"message":"Service Unavailable"}"""));
-        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token, "--dashboard-category", Category, "--image-inventory", running);
-        try
-        {
-            var failed = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("HTTP 503") ? dashboard : null);
-            TestContext.Current.TestOutputHelper?.WriteLine(failed.Body);
-            Assert.Matches(@"### Updates\n[^\n]*failed at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ[^\n]*HTTP 503", failed.Body);
-            Assert.DoesNotContain("Update available", failed.Body);
-            Assert.DoesNotContain(current, failed.Body); // Neither the running nor a newer release is claimed.
-            Assert.DoesNotContain(newer, failed.Body);
-
-            var recovered = await Until(() =>
-            {
-                controller.Clock.Advance(TimeSpan.FromMinutes(5));
-                return controller.Dashboard() is { } dashboard && dashboard.Body.Contains(ReleaseUrl(newer)) ? dashboard : null;
-            });
-            Assert.Matches(@"Update available[^\n]*\[" + Regex.Escape(newer) + @"\][^\n]*\[" + Regex.Escape(current) + @"\]", recovered.Body);
-            Assert.DoesNotContain("HTTP 503", recovered.Body);
-        }
-        finally { await shutdown.CancelAsync(); }
-        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-    }
-
-    [Theory]
-    [InlineData("derived image", "matches none of the newest published baseline releases")]
-    [InlineData("native run", "not started with a baseline image inventory")]
-    [InlineData("startup tool updates", "startup tool updates replace the image's gh and Codex")]
-    public async Task Uncertain_image_identity_is_reported_instead_of_a_replacement(string image, string reason)
-    {
-        using var controller = new Controller();
-        var baseline = controller.Inventory("baseline");
-        var current = controller.Publish(101, baseline);
-        var newer = controller.Publish(102, controller.Inventory("newer", gh: "2.103.1"));
-        string[] options = image switch
-        {
-            // Composed with a derived Dockerfile, for example: its inventory differs from every published one.
-            "derived image" => ["--image-inventory", controller.Inventory("derived")],
-            // The image is baseline-101.1, but the runtime replaced its gh and Codex with versions no release records.
-            "startup tool updates" => ["--image-inventory", baseline, "--startup-tool-updates"],
-            _ => []
-        };
-        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token, ["--dashboard-category", Category, .. options]);
-        try
-        {
-            var uncertain = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains(ReleaseUrl(newer)) ? dashboard : null);
-            TestContext.Current.TestOutputHelper?.WriteLine(uncertain.Body);
-            Assert.Matches(@"### Updates\n\*\*Release identity uncertain\*\*[^\n]*" + Regex.Escape(reason), uncertain.Body);
-            Assert.DoesNotContain("Update available", uncertain.Body);
-            Assert.DoesNotContain("recreates the controller", uncertain.Body);
-            Assert.Matches(@"Newest published baseline release: \[" + Regex.Escape(newer) + @"\]", uncertain.Body);
-            if (image == "startup tool updates") Assert.Contains($"inventory matches [{current}]({ReleaseUrl(current)})", uncertain.Body);
-            else Assert.DoesNotContain(current, uncertain.Body);
+            TestContext.Current.TestOutputHelper?.WriteLine(later.Body);
+            Assert.Matches(startupToolUpdates
+                ? @"### Updates\n\*\*Release identity uncertain\*\*[^\n]*startup tool updates[^\n]*matches \[" + Regex.Escape(current) + @"\][^\n]*\n- Newest published baseline release: \[" + Regex.Escape(newest) + @"\]"
+                : @"### Updates\n\*\*Update available:\*\* baseline release \[" + Regex.Escape(newest) + @"\][^\n]*\[" + Regex.Escape(current) + @"\]\([^)\n]*\) \(1 newer release;", later.Body);
         }
         finally { await shutdown.CancelAsync(); }
         Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
@@ -594,13 +517,11 @@ public sealed class ControllerDashboardTests
             return file;
         }
 
-        public string Publish(long run, string inventory, bool draft = false) => Publish(run, inventory, out _, draft);
-
         /// <summary>
         /// Publishes the baseline release that the real release publisher (scripts/delivery/image-release.py) renders for an
-        /// image with this inventory, so the controller reads the actual release metadata contract. Returns its tag.
+        /// image with this inventory, adding it to repoagent/controller's releases as GitHub lists them, newest first. Returns its tag.
         /// </summary>
-        public string Publish(long run, string inventory, out string image, bool draft = false)
+        public string Publish(long run, string inventory)
         {
             var artifact = Path.Combine(fixture.Directory, "artifacts", run.ToString(CultureInfo.InvariantCulture));
             Directory.CreateDirectory(artifact);
@@ -611,11 +532,10 @@ public sealed class ControllerDashboardTests
             string Digest(string seed) => Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(seed + run)));
             File.WriteAllText(Path.Combine(artifact, "build.json"), new JsonObject { ["containerimage.config.digest"] = "sha256:" + Digest("config") }.ToJsonString());
             var commit = Digest("commit")[..40];
-            image = "ghcr.io/repoagent/controller@sha256:" + Digest("manifest");
             var start = new System.Diagnostics.ProcessStartInfo("python3") { RedirectStandardOutput = true, RedirectStandardError = true };
             foreach (var argument in new[] { "-I", "-c", RenderRelease, Path.Combine(RepositoryRoot, "scripts/delivery/image-release.py"), artifact }) start.ArgumentList.Add(argument);
             start.Environment["GITHUB_SHA"] = commit;
-            start.Environment["IMAGE"] = image;
+            start.Environment["IMAGE"] = "ghcr.io/repoagent/controller@sha256:" + Digest("manifest");
             start.Environment["REFERENCE"] = $"ghcr.io/repoagent/controller:sha-{commit}-{run}-1";
             start.Environment["GITHUB_SERVER_URL"] = "https://github.com";
             start.Environment["GITHUB_REPOSITORY"] = "repoagent/controller";
@@ -626,16 +546,12 @@ public sealed class ControllerDashboardTests
             process.WaitForExit();
             Assert.True(process.ExitCode == 0, "The release publisher refused the fixture: " + error);
             var rendered = JsonNode.Parse(output)!;
-            return Release(rendered["tag"]!.GetValue<string>(), rendered["body"]!.GetValue<string>(), draft);
-        }
-
-        /// <summary>Adds a release to repoagent/controller as GitHub lists it, newest first.</summary>
-        public string Release(string tag, string body, bool draft = false)
-        {
+            var tag = rendered["tag"]!.GetValue<string>();
             Update(state => state["releases"]!.AsArray().Insert(0, new JsonObject
             {
-                ["tag_name"] = tag, ["name"] = tag, ["draft"] = draft, ["prerelease"] = false,
-                ["html_url"] = "https://github.com/repoagent/controller/releases/tag/" + tag, ["published_at"] = Clock.GetUtcNow().ToString("O"), ["body"] = body
+                ["tag_name"] = tag, ["name"] = tag, ["draft"] = false, ["prerelease"] = false,
+                ["html_url"] = "https://github.com/repoagent/controller/releases/tag/" + tag, ["published_at"] = Clock.GetUtcNow().ToString("O"),
+                ["body"] = rendered["body"]!.GetValue<string>()
             }));
             return tag;
         }

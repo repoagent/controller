@@ -144,7 +144,7 @@ public static class BridgeCommand
                         return await DiscussionWebhooks.DeactivateSaved(github, statePath) ? 0 : 1;
                     if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentialDirectory);
                     var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentialDirectory);
-                    var settings = new RepositorySettings(result.GetValue(repositorySettings) ? github : null, time, statePath);
+                    var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, result.GetValue(repositorySettings) ? new GitHubRepositorySettings(github) : null, new ControllerStateFiles(statePath), time, new ControllerLog());
                     await settings.Refresh(cancellationToken);
                     if (result.GetValue(checkAuth)) return 0;
                     agentCredentials?.Install(); // Before any owned native process starts.
@@ -152,7 +152,7 @@ public static class BridgeCommand
                     // Disposed before the outbox: a stop this lifetime handles is published, then delivery drains within a bound.
                     await using var dashboard = result.GetValue(dashboardCategory) is { } category
                         ? new ControllerDashboard(category, status, outbox,
-                            new BaselineReleases(github, result.GetValue(imageInventory)?.FullName, result.GetValue(startupToolUpdates), time),
+                            new BaselineReleases(new GitHubBaselineReleases(github), ImageInventory.Sha256(result.GetValue(imageInventory)?.FullName), result.GetValue(startupToolUpdates), time, new ControllerLog(), Log.Redact),
                             time) : null;
                     using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, credentials.BrokerCredentialLost);
                     var runtimeToken = refreshCancellation.Token;

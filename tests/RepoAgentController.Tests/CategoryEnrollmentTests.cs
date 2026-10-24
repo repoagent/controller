@@ -169,25 +169,6 @@ public sealed class CategoryEnrollmentTests
         Assert.Equal(["D2"], world.Delivered());
     }
 
-    [Theory]
-    [InlineData(" Agents ,Q&A,  Show and tell ", "state=configured value=Agents, Q&A, Show and tell")]
-    [InlineData("", Invalid)]
-    [InlineData("Agents,,Q&A", Invalid)]
-    [InlineData("Agents, agents", Invalid)]
-    [InlineData("Agents\nQ&A", Invalid)]
-    [InlineData("A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z", Invalid)]
-    public async Task Category_names_are_a_normalized_comma_separated_list_and_anything_else_is_never_consumed(string value, string reported)
-    {
-        using var world = new World();
-        world.Variables[Setting] = value;
-
-        Assert.Equal(0, await world.Check());
-
-        Assert.Contains(world.Log(), line => line.EndsWith($" repository-setting name={Setting} {reported}"));
-    }
-
-    const string Invalid = "state=invalid reason=\"must list 1 to 25 distinct Discussion category names separated by commas, each at most 100 characters\"";
-
     /// <summary>Runs the real controller entrypoint against a controlled GitHub repository and native peer.</summary>
     sealed class World : IDisposable
     {
@@ -275,13 +256,6 @@ public sealed class CategoryEnrollmentTests
             Save();
             using var http = new HttpClient(Provider, disposeHandler: false);
             return await BridgeCommand.Run([.. Arguments(options), "--once"], http, gh, Clock, TestContext.Current.CancellationToken);
-        }
-
-        public async Task<int> Check()
-        {
-            Save();
-            using var http = new HttpClient(Provider, disposeHandler: false);
-            return await BridgeCommand.Run([.. Arguments(), "--check-auth"], http, gh, Clock, TestContext.Current.CancellationToken);
         }
 
         readonly CancellationTokenSource shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
