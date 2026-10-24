@@ -1,12 +1,11 @@
 using System.Net;
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using static RepoAgent.Auth.IssuancePolicy;
 
 namespace RepoAgent.Auth;
 
-// HttpClient must have redirects and retries disabled. Only fixed api.github.com paths are used.
+// Mints and revokes GitHub tokens over GitHubRest's headers, timeout and answer bounds.
 public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
 {
     public Task<IssuedToken> MintAsync(GrantSnapshot grant, string profile, AppAuthorization app, CancellationToken ct) =>
@@ -14,7 +13,7 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
 
     internal async Task<IssuedToken> MintAsync(string repositoryId, string repository, long installationId, string profile, AppAuthorization app, CancellationToken ct)
     {
-        using var request = Request(HttpMethod.Post, $"app/installations/{installationId}/access_tokens", GitHubAppAuthorization.Jwt(app));
+        using var request = GitHubRest.Request(HttpMethod.Post, $"app/installations/{installationId}/access_tokens", GitHubAppAuthorization.Jwt(app));
         request.Content = JsonContent.Create(new { repository_ids = new[] { Id(repositoryId) }, permissions = Permissions(profile) });
         using var response = await SendAsync(request, HttpStatusCode.Created, ct);
         var root = response.RootElement;
@@ -43,87 +42,23 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
 
     public async Task RevokeAsync(string token, CancellationToken ct)
     {
-        using var request = Request(HttpMethod.Delete, "installation/token", token);
+        using var request = GitHubRest.Request(HttpMethod.Delete, "installation/token", token);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(3));
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
         if (response.StatusCode != HttpStatusCode.NoContent) throw new IssuanceDenied();
     }
 
-    // Reads one GitHub resource and reports what GitHub answered. The fact reads JSON only and decides
-    // nothing: a missing member or another kind than GitHub documents makes the answer malformed.
-    internal async Task<GitHubRead<T>> ReadAsync<T>(string path, string bearer, Func<JsonElement, T> fact, CancellationToken ct)
-    {
-        using var request = Request(HttpMethod.Get, path, bearer);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(3));
-        try
-        {
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
-            if (response.StatusCode == HttpStatusCode.NotFound) return new GitHubRead<T>.NotFound();
-            if (response.StatusCode != HttpStatusCode.OK) return new GitHubRead<T>.Refused();
-            if (await BodyAsync(response, timeout.Token) is not { } body) return new GitHubRead<T>.Malformed();
-            JsonDocument document;
-            try { document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 32 }); }
-            catch (JsonException) { return new GitHubRead<T>.Malformed(); }
-            using (document)
-            {
-                if (HasDuplicateMember(document.RootElement)) return new GitHubRead<T>.Malformed();
-                try { return GitHubRead.Found(fact(document.RootElement)); }
-                catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or FormatException)
-                {
-                    return new GitHubRead<T>.Malformed();
-                }
-            }
-        }
-        catch (Exception ex) when (ex is HttpRequestException or IOException)
-        {
-            throw new GitHubUnavailable("GitHub did not answer the read.", ex);
-        }
-    }
-
-    // A JSON string GitHub documents as never null.
-    internal static string JsonText(JsonElement element) =>
-        element.ValueKind == JsonValueKind.String ? element.GetString()! : throw new InvalidOperationException("Expected a JSON string.");
-
-    internal static string RepositoryPath(string repository) => string.Join('/', repository.Split('/').Select(Uri.EscapeDataString));
-
     private async Task<JsonDocument> SendAsync(HttpRequestMessage request, HttpStatusCode expected, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(3));
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
-        if (response.StatusCode != expected || await BodyAsync(response, timeout.Token) is not { } body) throw new IssuanceDenied();
+        if (response.StatusCode != expected || await GitHubRest.BodyAsync(response, timeout.Token) is not { } body) throw new IssuanceDenied();
         var document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 32 });
-        if (!HasDuplicateMember(document.RootElement)) return document;
+        if (!GitHubRest.HasDuplicateMember(document.RootElement)) return document;
         document.Dispose();
         throw new IssuanceDenied();
-    }
-    // At most 64 KiB; null when GitHub sends more.
-    private static async Task<byte[]?> BodyAsync(HttpResponseMessage response, CancellationToken ct)
-    {
-        if (response.Content.Headers.ContentLength is > 65536) return null;
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var bytes = new MemoryStream();
-        var buffer = new byte[4096];
-        while (true)
-        {
-            var count = await stream.ReadAsync(buffer, ct);
-            if (count == 0) break;
-            if (bytes.Length + count > 65536) return null;
-            bytes.Write(buffer, 0, count);
-        }
-        return bytes.ToArray();
-    }
-    private static HttpRequestMessage Request(HttpMethod method, string path, string token)
-    {
-        var request = new HttpRequestMessage(method, new Uri("https://api.github.com/" + path));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        request.Headers.UserAgent.ParseAdd("repoagent-credential-broker/1");
-        request.Headers.Accept.ParseAdd("application/vnd.github+json");
-        request.Headers.Add("X-GitHub-Api-Version", "2026-03-10");
-        request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true, NoStore = true };
-        return request;
     }
     // Shape validation is separate from comparison: malformed evidence never proves withdrawal.
     private static void ValidateRepository(JsonElement repositories, string repositoryId, string repository)
@@ -133,19 +68,5 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         var name = repositories[0].GetProperty("full_name").GetString();
         if (id <= 0 || !IsRepositoryName(name)) throw new IssuanceDenied();
         if (id != Id(repositoryId) || !string.Equals(name, repository, StringComparison.OrdinalIgnoreCase)) throw new IssuanceDenied();
-    }
-
-    private static bool HasDuplicateMember(JsonElement element)
-    {
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            var names = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var property in element.EnumerateObject())
-                if (!names.Add(property.Name) || HasDuplicateMember(property.Value)) return true;
-        }
-        else if (element.ValueKind == JsonValueKind.Array)
-            foreach (var child in element.EnumerateArray())
-                if (HasDuplicateMember(child)) return true;
-        return false;
     }
 }

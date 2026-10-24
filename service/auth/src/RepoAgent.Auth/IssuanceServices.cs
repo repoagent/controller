@@ -74,11 +74,13 @@ public static class IssuanceServices
             .ProtectKeysWithAzureKeyVault(wrapping, new KeyResolver(credential, CryptoOptions()));
         builder.Services.AddSingleton<ISecretProtection, DataProtectionSecretProtection>();
         builder.Services.AddSingleton(new CryptographyClient(signing, credential, CryptoOptions()));
-        builder.Services.AddSingleton(new GitHubIssuance(new HttpClient(new SocketsHttpHandler
+        var github = new HttpClient(new SocketsHttpHandler
         {
             AllowAutoRedirect = false, UseCookies = false, MaxConnectionsPerServer = 8,
             ConnectTimeout = TimeSpan.FromSeconds(3), MaxResponseHeadersLength = 16
-        }) { Timeout = Timeout.InfiniteTimeSpan }, TimeProvider.System));
+        }) { Timeout = Timeout.InfiniteTimeSpan };
+        builder.Services.AddSingleton(new GitHubRest(github));
+        builder.Services.AddSingleton(new GitHubIssuance(github, TimeProvider.System));
         builder.Services.AddSingleton(IssuanceLimits.Read(builder.Configuration));
         builder.Services.AddSingleton<IssuanceStore>();
         builder.Services.AddSingleton<IAppInstallations, GitHubAppInstallations>();
