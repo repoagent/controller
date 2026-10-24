@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- The credential broker core (ADR 0010): decisions only, no I/O. It references no Azure,
-       ASP.NET Core or HTTP types; BannedSymbols.txt rejects the file, network, process, console,
-       environment and wall-clock APIs of the shared framework that the core could otherwise reach. Adapters live in RepoAgent.Auth. -->
+       ASP.NET Core or HTTP types. BannedSymbols.txt rejects the common file, network, process,
+       environment and wall-clock APIs; review catches the rest. Adapters live in RepoAgent.Auth. -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>

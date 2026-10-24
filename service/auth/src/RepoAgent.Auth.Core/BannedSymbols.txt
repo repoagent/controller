@@ -1,5 +1,7 @@
 N:System.Net.Http;The broker core does no network I/O; call a port
 N:System.Net.Sockets;The broker core does no network I/O; call a port
+N:System.Net.WebSockets;The broker core does no network I/O; call a port
+T:System.Net.Dns;The broker core does no network I/O; call a port
 T:System.Net.WebClient;The broker core does no network I/O; call a port
 T:System.Net.WebRequest;The broker core does no network I/O; call a port
 T:System.Net.HttpWebRequest;The broker core does no network I/O; call a port
@@ -10,6 +12,11 @@ T:System.IO.FileSystemInfo;The broker core does no file I/O; call a port
 T:System.IO.Directory;The broker core does no file I/O; call a port
 T:System.IO.DirectoryInfo;The broker core does no file I/O; call a port
 T:System.IO.RandomAccess;The broker core does no file I/O; call a port
+N:System.IO.Pipes;The broker core does no file I/O; call a port
+N:System.IO.MemoryMappedFiles;The broker core does no file I/O; call a port
+T:System.IO.Compression.ZipFile;The broker core does no file I/O; call a port
+M:System.IO.Path.GetTempFileName;The broker core does no file I/O; call a port
+M:System.IO.Path.GetTempPath;The broker core does no file I/O; call a port
 T:System.IO.StreamReader;The broker core does no file I/O; call a port
 T:System.IO.StreamWriter;The broker core does no file I/O; call a port
 T:System.Diagnostics.Process;The broker core starts no processes
