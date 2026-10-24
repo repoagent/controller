@@ -723,16 +723,29 @@ class HostEnrollmentTests(unittest.TestCase):
                 self.assertFalse((journey.state / 'recovery.json').exists())
                 self.assertFalse(any('POST' in event['argv'] for event in journey.github()))
 
-    def test_multi_page_nonappearance_cannot_create_approval(self):
+    def test_unrelated_variables_beyond_one_listing_page_do_not_block_enrollment(self):
+        # CI workflows and repository settings share the direct repository Actions variables.
+        unrelated = {f'CI_SETTING_{index:03}': 'public' for index in range(100)}
         journey = EnrollmentJourney(self)
-        entries = [{'name': f'OTHER_{index}', 'value': 'public'} for index in range(30)]
+        journey.model.write_text(json.dumps({'variables': dict(unrelated)}), encoding='utf-8')
+        result = journey.run()
+        self.assertEqual(result.returncode, 0, journey.diagnostic(result))
+        writes = [event['body'] for event in journey.github() if 'POST' in event['argv']]
+        self.assertEqual(writes, [{'name': journey.variable, 'value': journey.marker}])
+        self.assertEqual(json.loads(journey.model.read_text(encoding='utf-8'))['variables'],
+                         {**unrelated, journey.variable: journey.marker})
+        self.assertEqual(journey.errors, [])
+
+    def test_absence_is_never_inferred_from_a_listing_that_contradicts_the_named_read(self):
+        # A listing page showing the selected name while its named read is 404 proves nothing.
+        journey = EnrollmentJourney(self)
         journey.model.write_text(json.dumps({'variables': {}, 'listing': {
-            'total_count': 31, 'variables': entries}}), encoding='utf-8')
+            'total_count': 1, 'variables': [{'name': journey.variable, 'value': 'another grant'}]}}), encoding='utf-8')
         result = journey.run()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('unverifiable', result.stdout)
         self.assertEqual(len(journey.events), 1)
         self.assertFalse(any('POST' in event['argv'] for event in journey.github()))
+        self.assertFalse((journey.state / 'enrollment.json').exists())
 
     def test_lost_start_or_completion_replays_same_private_identity_and_deadline(self):
         for fault in ('lost-start', 'lost-completion'):
