@@ -235,6 +235,52 @@ public sealed class IssuanceFaultTests
         Assert.Equal(slots + 1, f.GlobalQuota.Slots);
     }
 
+    // A Replace writes the whole row, so issuance must never act on, or rewrite, a row with a property no record maps.
+    // Rows read before the first commit leave nothing written; the repository quota is read after the global charge,
+    // which is never compensated.
+    [Theory]
+    [InlineData("locator", false, 0)]
+    [InlineData("gate", false, 0)]
+    [InlineData("enrollment", false, 0)]
+    [InlineData("enrollment-quota", false, 0)]
+    [InlineData("issuance-quota", false, 0)]
+    [InlineData("candidate", false, 0)]
+    [InlineData("occupied-slot", false, 0)]
+    [InlineData("verifier-attempt", true, 0)]
+    [InlineData("runtime-attempt", true, 0)]
+    [InlineData("ledger", true, 0)]
+    [InlineData("repository-quota", true, 1)]
+    public async Task Row_with_an_unknown_property_answers_503_before_GitHub_work(string row, bool issued, int commits)
+    {
+        var f = IssuanceFixture.Create();
+        if (issued) Assert.Equal(200, (await f.IssueAsync(Token)).Status);
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var runtime = issued ? f.Attempt("runtime") : null;
+        StateKey key = row switch
+        {
+            "locator" => EnrollmentLocator.Key(f.Device.DeviceId),
+            "gate" => IssuanceFixture.GateKey,
+            "enrollment" => f.EnrollmentKey,
+            "enrollment-quota" => EnrollmentQuota.Key,
+            "issuance-quota" => IssuanceQuota.Key,
+            "candidate" => CandidateRepository.Key(IssuanceFixture.RepositoryId),
+            "occupied-slot" => IssuanceSlot.Key(0),
+            "verifier-attempt" => IssuanceAttempt.Key(IssuanceFixture.RepositoryId, f.Gate.VerifierAttempt!),
+            "runtime-attempt" => IssuanceAttempt.Key(IssuanceFixture.RepositoryId, runtime!.OperationId!),
+            "ledger" => IssuanceLedger.Key(runtime!.OperationId!),
+            _ => IssuanceFixture.QuotaKey,
+        };
+        f.State.Change(key, stored => stored["Unknown"] = "kept by no record");
+        var (before, authorizations, mints) = (f.State.Commits, f.GitHub.Authorizations, f.GitHub.Mints);
+
+        Assert.Equal(503, (await f.IssueAsync(Token)).Status);
+
+        Assert.Equal(commits, f.State.Commits - before);
+        Assert.Equal(authorizations, f.GitHub.Authorizations);
+        Assert.Equal(mints, f.GitHub.Mints);
+        Assert.Equal("kept by no record", f.State.Row(key)!["Unknown"]);
+    }
+
     [Fact]
     public async Task Concurrent_verifier_acquisition_never_duplicates_the_inflight_mint()
     {
