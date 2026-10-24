@@ -103,14 +103,14 @@ public sealed class ControllerDashboardTests
     }
 
     [Fact]
-    public async Task Input_waiting_for_an_active_session_is_listed_as_queued()
+    public async Task A_running_turn_and_the_input_waiting_for_it_are_listed_against_the_active_session_limit()
     {
         using var controller = new Controller();
         using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var run = controller.Run(shutdown.Token, "--dashboard-category", Category);
         try
         {
-            var idle = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains(First) ? dashboard : null);
+            var idle = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("0 of 4 turns running") ? dashboard : null);
             Assert.Contains("### Active and queued sessions\nNone.", idle.Body);
 
             // The next turn stays active, so a later comment waits in the controller instead of steering it.
@@ -122,14 +122,18 @@ public sealed class ControllerDashboardTests
                 controller.Clock.Advance(TimeSpan.FromMinutes(5));
                 return controller.Turns == 2 ? controller : null;
             });
+            // Native turns are tracked in every mode, against the active-session limit (default 4).
+            var running = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("1 of 4 turns running") ? dashboard : null);
+            Assert.Matches(@"\*\*Sessions:\*\* 1 stored; 1 of 4 turns running \(active-session limit\); 0 awaiting native acknowledgement; 0 inputs waiting\n", running.Body);
+            Assert.Matches(@"### Active and queued sessions\n- \[Discussion #1\]\(" + Regex.Escape(First) + @"\): running a turn since \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\n", running.Body);
             controller.Comment("C2", "One more detail for it.");
             var queued = await Until(() =>
             {
                 controller.Clock.Advance(TimeSpan.FromMinutes(5));
                 return controller.Dashboard() is { } dashboard && dashboard.Body.Contains("1 inputs waiting") ? dashboard : null;
             });
-            Assert.Matches(@"\*\*Sessions:\*\* 1 stored;[^\n]* 1 inputs waiting", queued.Body);
-            Assert.Matches(@"### Active and queued sessions\n- \[Discussion #1\]\(" + Regex.Escape(First) + @"\): [^\n]*1 inputs waiting for the session to become idle\n", queued.Body);
+            Assert.Matches(@"\*\*Sessions:\*\* 1 stored; 1 of 4 turns running[^\n]* 1 inputs waiting", queued.Body);
+            Assert.Matches(@"### Active and queued sessions\n- \[Discussion #1\]\(" + Regex.Escape(First) + @"\): running a turn since [^\n]*; 1 inputs waiting for that turn to finish\n", queued.Body);
             Assert.DoesNotContain("checkout refresh", queued.Body);
             Assert.Equal(2, controller.Turns);
             Assert.False(controller.HasEyes("C2"));
@@ -222,8 +226,37 @@ public sealed class ControllerDashboardTests
             Assert.Contains("**Authentication:** healthy", attention.Body);
             Assert.Matches(@"\*\*Codex authentication:\*\* failed at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ: `[^`\n]*401 Unauthorized[^`\n]*`", attention.Body);
             Assert.Matches(@"`codex-auth-failed`: `[^`\n]*401 Unauthorized", attention.Body);
+            // The rejected turn's input is back in the queue, held for replacement credentials.
+            var held = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("inputs held until") ? dashboard : null);
+            Assert.Matches(@"- \[Discussion #1\]\(" + Regex.Escape(First) + @"\): 1 inputs held until the Codex account credentials are replaced\n", held.Body);
             Assert.Equal(1, controller.Turns);
             controller.AssertNoSecrets();
+        }
+        finally { await shutdown.CancelAsync(); }
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Input_held_by_the_active_session_limit_is_listed_with_that_reason()
+    {
+        using var controller = new Controller(direct: true);
+        controller.App!.Variables = true;
+        controller.Variable("REPOAGENT_MAX_ACTIVE_SESSIONS", "1");
+        controller.HoldTurns(); // The first Discussion's bootstrap turn keeps the only slot.
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = controller.Run(shutdown.Token, "--dashboard-category", Category, "--repository-settings");
+        try
+        {
+            await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("1 of 1 turns running") ? dashboard : null);
+            var second = controller.Discussion("D2", 2, "@test-app[bot] please look at this as well.", "General");
+            var held = await Until(() =>
+            {
+                controller.Clock.Advance(TimeSpan.FromMinutes(5));
+                return controller.Dashboard() is { } dashboard && dashboard.Body.Contains(second) ? dashboard : null;
+            });
+            Assert.Matches(@"\*\*Sessions:\*\* 1 stored; 1 of 1 turns running \(active-session limit\);[^\n]* 1 inputs waiting\n", held.Body);
+            Assert.Contains($"- [Discussion #2]({second}): 1 inputs waiting for a free active-session slot\n", held.Body);
+            Assert.Equal(1, controller.Turns);
         }
         finally { await shutdown.CancelAsync(); }
         Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));

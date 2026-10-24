@@ -18,7 +18,7 @@ sealed class ControllerStatus : IDisposable
         "codex-auth-failed", "codex-auth-invalid", "codex-auth-error", "selection-error", "label-read-error"];
     static readonly HashSet<string> ActivityKinds = ["session-created", "forwarded"];
     // Events after which the state file holds different work, such as input now waiting for its session.
-    static readonly HashSet<string> WorkKinds = ["input-waiting", "input-requeued"];
+    static readonly HashSet<string> WorkKinds = ["input-waiting", "input-requeued", "turn-ended"];
     // Terminal-readable output; status is never embedded in HTML.
     static readonly JsonSerializerOptions Indented = new() { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     readonly string statePath;
@@ -120,9 +120,14 @@ sealed class ControllerStatus : IDisposable
     static JsonObject Compose(string statePath, JsonObject? recorded)
     {
         var state = ReadObject(statePath);
-        // Managed clone mode tracks native turns in its refresh journal; other modes do not observe them.
+        // Managed clone mode also records native turns in its refresh journal, for checkout refresh admission.
         var journal = ReadObject(statePath + ".refresh.json");
         var active = journal?["active"] as JsonObject;
+        var settings = RepositorySettings.Read(RepositorySettings.PathFor(statePath));
+        var limit = settings?[Bridge.ActiveSessionSetting]?["value"] is JsonValue configured && configured.TryGetValue<string>(out var text) &&
+            int.TryParse(text, System.Globalization.CultureInfo.InvariantCulture, out var number) ? number : Bridge.DefaultActiveSessions;
+        // Turns end with their lifetime, so only a running controller can report one.
+        var live = recorded?["controller"]?.Text("state") is "starting" or "running";
         var sessions = new JsonArray();
         int pending = 0, retrying = 0, running = 0, started = 0, waiting = 0;
         foreach (var (_, value) in state?["discussions"] as JsonObject ?? new JsonObject())
@@ -133,14 +138,16 @@ sealed class ControllerStatus : IDisposable
             var marker = discussion["pending"];
             // A failed or unacknowledged delivery waiting for its next attempt.
             var retry = discussion["waiting"]?["retry"];
-            var turn = session.Length != 0 && active is not null && active.Any(entry => entry.Value?.Text("thread") == session);
-            var activity = marker is not null ? "pending" : retry is not null ? "retrying" : turn ? "running" : journal is null ? "accepted" : "idle";
+            var turn = live && (discussion["running"] is JsonObject ||
+                session.Length != 0 && active is not null && active.Any(entry => entry.Value?.Text("thread") == session));
+            var activity = marker is not null ? "pending" : retry is not null ? "retrying" : turn ? "running" : "idle";
             if (marker is not null) pending++;
             else if (retry is not null) retrying++;
             else if (turn) running++;
             var item = Json.Object(("discussion", discussion.Text("url")), ("session", session.Length == 0 ? null : session), ("state", activity));
             if (marker is not null) { item["since"] = marker["since"]?.Copy(); item["operation"] = marker["operation"]?.Copy(); }
             else if (retry is not null) { item["attempts"] = retry["attempts"]?.Copy(); item["retryAt"] = retry["after"]?.Copy(); }
+            else if (turn && discussion["running"]?["since"] is { } since) item["since"] = since.Copy();
             // Observed input held in the controller until its session is idle.
             if (discussion["waiting"]?["inputs"] is JsonArray inputs && inputs.Count != 0) { item["waiting"] = inputs.Count; waiting += inputs.Count; }
             sessions.Add((JsonNode)item);
@@ -155,9 +162,10 @@ sealed class ControllerStatus : IDisposable
             ["authentication"] = recorded?["authentication"]?.Copy() ?? Json.Object(("state", "unknown")),
             ["codexAuthentication"] = recorded?["codexAuthentication"]?.Copy() ?? Json.Object(("state", "unknown")),
             // Each repository setting's latest observation: state, effective value and since when, and why it is unusable.
-            ["settings"] = RepositorySettings.Read(RepositorySettings.PathFor(statePath)),
-            ["work"] = Json.Object(("sessions", started), ("pending", pending), ("retrying", retrying), ("waiting", waiting), ("running", journal is null ? null : running),
-                ("admissionBlocked", journal?["blocked"]?.Copy())),
+            ["settings"] = settings,
+            // Running native turns against the effective active-session limit.
+            ["work"] = Json.Object(("sessions", started), ("pending", pending), ("retrying", retrying), ("waiting", waiting), ("running", running),
+                ("limit", limit), ("admissionBlocked", journal?["blocked"]?.Copy())),
             ["sessions"] = sessions,
             ["failures"] = recorded?["failures"]?.Copy() ?? new JsonArray(),
             ["latestActivity"] = recorded?["latestActivity"]?.Copy()

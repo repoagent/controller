@@ -130,8 +130,10 @@ sealed class ControllerDashboard : IAsyncDisposable
         });
         Settings(text, snapshot["settings"] as JsonObject);
         var work = snapshot["work"] ?? new JsonObject();
-        text.AppendLine($"- **Sessions:** {Count(work["sessions"])} stored; {(work["running"] is null ? "running turns are not tracked in this mode" : Count(work["running"]) + " running")}; " +
-            $"{Count(work["pending"])} awaiting native acknowledgement; {Count(work["waiting"])} inputs waiting" +
+        var full = Count(work["running"]) >= Count(work["limit"]);
+        text.AppendLine($"- **Sessions:** {Count(work["sessions"])} stored; " +
+            (stopped is null ? $"{Count(work["running"])} of {Count(work["limit"])} turns running (active-session limit)" : "no turns run while the controller is stopped") +
+            $"; {Count(work["pending"])} awaiting native acknowledgement; {Count(work["waiting"])} inputs waiting" +
             (work["admissionBlocked"] is JsonValue blocked && blocked.TryGetValue<bool>(out var held) && held ? "; new turns are held for a checkout refresh" : ""));
         var activity = snapshot["latestActivity"];
         text.AppendLine("- **Latest activity:** " + (activity is null ? "none recorded" :
@@ -142,15 +144,29 @@ sealed class ControllerDashboard : IAsyncDisposable
         text.AppendLine("### Active and queued sessions");
         var busy = (snapshot["sessions"] as JsonArray ?? []).OfType<JsonObject>()
             .Where(session => session.Text("state") is "pending" or "running" || Count(session["waiting"]) != 0).ToArray();
+        var codexFailed = snapshot["codexAuthentication"]?.Text("state") == "failed";
         foreach (var session in busy.Take(MaximumSessions))
-            text.AppendLine($"- {Link(session.Text("discussion"))}: " + session.Text("state") switch
+        {
+            var waiting = Count(session["waiting"]);
+            var state = session.Text("state");
+            string? doing = state switch
             {
                 "pending" => "awaiting native acknowledgement",
                 "retrying" => $"delivery failed or was unacknowledged; attempt {Count(session["attempts"]) + 1} at {Time(session.Text("retryAt"))}",
-                "running" => "running a turn",
-                "accepted" => "earlier input accepted; turns are not tracked in this mode",
-                var state => state
-            } + (Count(session["waiting"]) == 0 ? "" : $"; {Count(session["waiting"])} inputs waiting for the session to become idle"));
+                "running" => stopped is null ? $"running a turn since {Time(session.Text("since"))}" : "its turn ended with the controller",
+                _ => null
+            };
+            // Why idle input still waits, from the most specific cause status shows; others appear under recent failures.
+            var reason = waiting == 0 ? null : state switch
+            {
+                "running" when stopped is null => $"{waiting} inputs waiting for that turn to finish",
+                "pending" or "retrying" or "running" => $"{waiting} inputs waiting",
+                _ when codexFailed => $"{waiting} inputs held until the Codex account credentials are replaced",
+                _ when full && stopped is null => $"{waiting} inputs waiting for a free active-session slot",
+                _ => $"{waiting} inputs waiting for dispatch"
+            };
+            text.AppendLine($"- {Link(session.Text("discussion"))}: " + string.Join("; ", new[] { doing, reason }.OfType<string>()));
+        }
         if (busy.Length > MaximumSessions) text.AppendLine($"- and {busy.Length - MaximumSessions} more");
         if (busy.Length == 0) text.AppendLine("None.");
         text.AppendLine();
