@@ -19,8 +19,10 @@ public sealed record ReleaseNotice(DateTimeOffset CheckedAt, BaselineRelease? Ru
 /// </summary>
 /// <param name="inventorySha256">The SHA-256 of this controller's image inventory, read at every check; null when the
 /// controller was started without one.</param>
+/// <param name="redact">Removes the secrets the controller knows from a failure's message. A failure is kept redacted, so
+/// failures that differ only in a secret are the same outcome.</param>
 public sealed class BaselineReleases(IBaselineReleases published, Func<CancellationToken, Task<string?>> inventorySha256, bool startupToolUpdates,
-    TimeProvider clock, IControllerLog log) : IAsyncDisposable
+    TimeProvider clock, IControllerLog log, Func<string, string> redact) : IAsyncDisposable
 {
     public const string Repository = "repoagent/controller";
     static readonly TimeSpan CheckInterval = TimeSpan.FromHours(1);
@@ -28,8 +30,7 @@ public sealed class BaselineReleases(IBaselineReleases published, Func<Cancellat
     Task running = Task.CompletedTask;
     volatile ReleaseNotice? current;
 
-    /// <summary>The latest completed check, or null before the first one completes. A failure is not redacted; redact it
-    /// before it leaves the controller.</summary>
+    /// <summary>The latest completed check, or null before the first one completes. A failure is redacted.</summary>
     public ReleaseNotice? Current => current;
 
     /// <summary>Raised after each completed check. Handlers must not log.</summary>
@@ -59,7 +60,7 @@ public sealed class BaselineReleases(IBaselineReleases published, Func<Cancellat
         try { notice = await Compare(ct); }
         catch (Exception error) when (!ct.IsCancellationRequested)
         {
-            notice = new(clock.GetUtcNow(), null, null, 0, null, error.Message);
+            notice = new(clock.GetUtcNow(), null, null, 0, null, redact(error.Message));
         }
         // Logged when the outcome changes, not on every hourly check.
         if (current is not { } previous || previous with { CheckedAt = default } != notice with { CheckedAt = default })

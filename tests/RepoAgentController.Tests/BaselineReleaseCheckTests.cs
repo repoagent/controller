@@ -14,8 +14,8 @@ public sealed class BaselineReleaseCheckTests
     readonly InMemoryBaselineReleases published = new();
     readonly RecordingLog log = new();
 
-    BaselineReleases Check(string? inventory, bool startupToolUpdates = false, TimeProvider? time = null) =>
-        new(published, _ => Task.FromResult(inventory), startupToolUpdates, time ?? clock, log);
+    BaselineReleases Check(string? inventory, bool startupToolUpdates = false, TimeProvider? time = null, Func<string, string>? redact = null) =>
+        new(published, _ => Task.FromResult(inventory), startupToolUpdates, time ?? clock, log, redact ?? (text => text));
 
     /// <summary>A baseline release as the release publisher describes it; its image inventory digest is derived from <paramref name="image"/>.</summary>
     internal static BaselineRelease Release(long run, int attempt = 1, string? image = null, string gh = "2.102.0", string codex = "0.163.0") =>
@@ -97,11 +97,31 @@ public sealed class BaselineReleaseCheckTests
     }
 
     [Fact]
+    public async Task A_failure_is_kept_redacted_so_failures_that_differ_only_in_a_secret_are_logged_once()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        string[] secrets = ["ghs_first", "ghs_second"];
+        var releases = Check(Inventory("running"), redact: text => secrets.Aggregate(text, (redacted, secret) => redacted.Replace(secret, "<redacted>", StringComparison.Ordinal)));
+
+        published.Fail(new IOException("gh failed: HTTP 401 for token ghs_first"));
+        await releases.Check(ct);
+        Assert.Equal(new ReleaseNotice(Start, null, null, 0, null, "gh failed: HTTP 401 for token <redacted>"), releases.Current);
+
+        // The token was replaced before the next check, and that one fails the same way.
+        clock.Advance(TimeSpan.FromHours(1));
+        published.Fail(new IOException("gh failed: HTTP 401 for token ghs_second"));
+        await releases.Check(ct);
+        Assert.Equal(new ReleaseNotice(Start.AddHours(1), null, null, 0, null, "gh failed: HTTP 401 for token <redacted>"), releases.Current);
+
+        Assert.Equal([("release-check-error", "gh failed: HTTP 401 for token <redacted>; the next check is in about an hour")], log.Entries);
+    }
+
+    [Fact]
     public async Task An_unreadable_image_inventory_fails_the_check_like_an_unreadable_release_list()
     {
         published.Publish(Release(101));
         var releases = new BaselineReleases(published, _ => throw new FileNotFoundException("Could not find file '/opt/repoagent/image-inventory.json'."),
-            false, clock, log);
+            false, clock, log, text => text);
 
         await releases.Check(TestContext.Current.CancellationToken);
 

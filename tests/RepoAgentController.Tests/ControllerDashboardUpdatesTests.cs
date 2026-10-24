@@ -46,12 +46,10 @@ public sealed class ControllerDashboardUpdatesTests
     }
 
     [Fact]
-    public void A_failed_check_claims_neither_release_and_publishes_its_failure_redacted()
+    public void A_failed_check_claims_neither_release_and_publishes_its_failure()
     {
-        var secret = "ghs_" + Guid.NewGuid().ToString("N");
-        Log.Protect(secret);
-
-        var text = Updates(new(At, null, null, 0, null, $"gh failed: HTTP 503 for token {secret}\n  retry later"));
+        // As the check keeps it: redacted.
+        var text = Updates(new(At, null, null, 0, null, "gh failed: HTTP 503 for token <redacted>\n  retry later"));
 
         Assert.Equal($"### Updates\nThe baseline release check failed at {Checked}: `gh failed: HTTP 503 for token <redacted> retry later`. No update is claimed; the next check is in about an hour.\n",
             text);
