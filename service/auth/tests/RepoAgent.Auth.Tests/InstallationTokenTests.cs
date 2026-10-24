@@ -101,11 +101,10 @@ public sealed class InstallationTokenTests
     public async Task Revoke_after_runtime_mint_prevents_release_and_revokes_known_token()
     {
         await using var f = await IssuanceFixture.CreateAsync();
-        f.GitHub.Before = async request =>
+        f.GitHub.BeforeMint = async mint =>
         {
-            if (request.Method == HttpMethod.Post && f.GitHub.Mints == 2)
+            if (mint.Number == 2)
                 Assert.Equal(204, await new DeviceRevocation(f.Storage.Table, f.Options, f.Clock).RevokeAsync(f.Device.DeviceId, f.Device.Secret, TestContext.Current.CancellationToken));
-            return null;
         };
         Assert.NotEqual(200, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         Assert.Equal("closed", (await f.GateAsync()).GetString("State"));
@@ -128,11 +127,10 @@ public sealed class InstallationTokenTests
     public async Task Lost_verifier_mint_response_quarantines_acquisition_across_restart_and_JWT_expiry()
     {
         await using var f = await IssuanceFixture.CreateAsync();
-        f.GitHub.Before = request => request.Method == HttpMethod.Post
-            ? throw new HttpRequestException("secret-bearing-upstream-response") : Task.FromResult<HttpResponseMessage?>(null);
+        f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("secret-bearing-upstream-response");
         Assert.Equal(503, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         f.Clock.Advance(TimeSpan.FromMinutes(10));
-        f.GitHub.Before = null;
+        f.GitHub.BeforeMint = null;
         Assert.Equal(503, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         Assert.Equal(1, f.GitHub.Mints);
         Assert.Equal("sending", Assert.Single(await f.AttemptsAsync()).GetString("State"));
@@ -143,10 +141,10 @@ public sealed class InstallationTokenTests
     {
         await using var f = await IssuanceFixture.CreateAsync();
         using var caller = new CancellationTokenSource();
-        f.GitHub.Before = request =>
+        f.GitHub.BeforeMint = mint =>
         {
-            if (request.Method == HttpMethod.Post && f.GitHub.Mints == 2) caller.Cancel();
-            return Task.FromResult<HttpResponseMessage?>(null);
+            if (mint.Number == 2) caller.Cancel();
+            return Task.CompletedTask;
         };
         Assert.Equal(200, (await f.IssueAsync(caller.Token)).Status);
         Assert.Equal("released", Assert.Single(await f.AttemptsAsync(), a => a.GetString("Purpose") == "runtime").GetString("State"));
@@ -169,10 +167,10 @@ public sealed class InstallationTokenTests
     public async Task Stale_admission_observation_denies_and_revokes_minted_authority()
     {
         await using var f = await IssuanceFixture.CreateAsync();
-        f.GitHub.Before = request =>
+        f.GitHub.BeforeMint = mint =>
         {
-            if (request.Method == HttpMethod.Post && f.GitHub.Mints == 2) f.Clock.Advance(TimeSpan.FromSeconds(11));
-            return Task.FromResult<HttpResponseMessage?>(null);
+            if (mint.Number == 2) f.Clock.Advance(TimeSpan.FromSeconds(11));
+            return Task.CompletedTask;
         };
         Assert.Equal(503, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         Assert.Equal(1, f.GitHub.Revokes);
@@ -183,10 +181,11 @@ public sealed class InstallationTokenTests
     public async Task Excess_runtime_scope_is_protected_then_revoked_without_release()
     {
         await using var f = await IssuanceFixture.CreateAsync();
-        f.GitHub.Before = request => Task.FromResult<HttpResponseMessage?>(request.Method == HttpMethod.Post && f.GitHub.Mints == 2
-            ? InMemoryGitHub.Json(new { token = "excess-token", expires_at = DateTimeOffset.UtcNow.AddHours(1),
-                repository_selection = "selected", permissions = new { discussions = "write", contents = "read" },
-                repositories = new[] { new { id = 123456, full_name = "owner/project" } } }, HttpStatusCode.Created) : null);
+        // Which reported scopes are out of scope is the core's rule (GitHubTokenMinterTests); this is the issuer's outcome.
+        f.GitHub.MintAnswer = (mint, token) => GitHubRead.Found(mint.Number == 2 ? token with
+        {
+            Value = "excess-token", Permissions = new Dictionary<string, string?> { ["discussions"] = "write", ["contents"] = "read" }
+        } : token);
         Assert.Equal(503, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         Assert.Equal(1, f.GitHub.Revokes);
         Assert.Equal("settled", Assert.Single(await f.AttemptsAsync(), a => a.GetString("Purpose") == "runtime").GetString("State"));

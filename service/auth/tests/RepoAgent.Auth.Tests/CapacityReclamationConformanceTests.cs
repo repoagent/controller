@@ -87,14 +87,7 @@ public sealed partial class CapacityReclamationTests
     {
         await using var f = await EnrollmentFixture.CreateAsync();
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
-        var previous = f.GitHub.Before;
-        f.GitHub.Before = request => request.Method == HttpMethod.Post
-            ? Task.FromResult<HttpResponseMessage?>(InMemoryGitHub.Json(new
-            {
-                token = "invalid-scope-token", expires_at = f.Clock.GetUtcNow().AddHours(1), repository_selection = "all",
-                permissions = new { agent_variables = "read" },
-                repositories = new[] { new { id = 123456, full_name = "owner/project" } }
-            }, HttpStatusCode.Created)) : previous!(request);
+        f.GitHub.MintAnswer = (_, token) => GitHubRead.Found(token with { Value = "invalid-scope-token", OnlyListedRepositories = false });
         using var response = await f.Send("/v2/enrollments", Request(Guid.NewGuid().ToString("N")));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         Assert.Equal(1, f.GitHub.Revokes);
@@ -124,15 +117,15 @@ public sealed partial class CapacityReclamationTests
         var send = new CapacityPause(body => body.Contains("\"State\":\"sending\"", StringComparison.Ordinal));
         var posted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finishPost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var previous = f.GitHub.Before;
-        f.GitHub.Before = async request =>
+        var previous = f.GitHub.BeforeMint;
+        f.GitHub.BeforeMint = async mint =>
         {
-            if (sendWins && request.Method == HttpMethod.Post)
+            if (sendWins)
             {
                 posted.TrySetResult();
                 await finishPost.Task.WaitAsync(TimeSpan.FromSeconds(12), Token);
             }
-            return previous is null ? null : await previous(request);
+            if (previous is not null) await previous(mint);
         };
         await f.RestartAsync(send.Transport);
         var writer = runtime ? f.Send($"/v1/devices/{active!.Device}/installation-token", secret: active.Secret)
@@ -380,9 +373,7 @@ public sealed partial class CapacityReclamationTests
     {
         await using var f = await EnrollmentFixture.CreateAsync();
         var active = await Active(f);
-        var previous = f.GitHub.Before;
-        f.GitHub.Before = request => request.Method == HttpMethod.Post
-            ? throw new HttpRequestException("Provider send outcome unknown") : previous!(request);
+        f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("Provider send outcome unknown");
         using var response = await f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         var runtime = Assert.Single(await IssuanceLedgers(f), x => x.GetString("Purpose") == "runtime");

@@ -53,9 +53,7 @@ public sealed partial class CapacityReclamationTests
         await using var f = await EnrollmentFixture.CreateAsync();
         var old = await Unacknowledged(f);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var normal = f.GitHub.Before!;
-        f.GitHub.Before = request => request.Method == HttpMethod.Post
-            ? throw new HttpRequestException("Provider send outcome unknown") : normal(request);
+        f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("Provider send outcome unknown");
         using var unknown = await f.Send("/v2/enrollments", Request(Guid.NewGuid().ToString("N")));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, unknown.StatusCode);
         f.Clock.Advance(TimeSpan.FromDays(2));

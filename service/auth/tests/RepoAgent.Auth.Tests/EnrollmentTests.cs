@@ -73,28 +73,19 @@ public sealed class EnrollmentTests
         Assert.Equal(HttpStatusCode.TooManyRequests, full.StatusCode);
         Assert.Equal(4, f.GitHub.VerifierMints);
     }
-
-    [Fact]
-    public async Task Forged_repository_name_and_ID_combination_never_returns_approval_material()
-    {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        using var response = await f.Send("/v1/enrollments", f.Request() with { Repository = "other/project" });
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        Assert.Equal(1, f.GitHub.Revokes);
-        Assert.Equal("", await response.Content.ReadAsStringAsync(Token));
-    }
 }
 
 internal sealed class EnrollmentFixture : IAsyncDisposable
 {
     public RevocationFixture Storage { get; } = new();
     public IssuanceClock Clock { get; } = new();
-    public InMemoryGitHub GitHub { get; } = new();
+    public InMemoryGitHub GitHub { get; }
     public InMemorySecretProtection Secrets { get; } = new();
     private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> host = null!;
     private HttpClient client = null!;
     private readonly Dictionary<string, string?> settings = new() { ["Broker:BrokerOrigin"] = "https://broker.example" };
     private IssuanceLimits limits = new();
+    public EnrollmentFixture() => GitHub = new(Clock);
     public static async Task<EnrollmentFixture> CreateAsync(HttpPipelineTransport? transport = null, Dictionary<string, string?>? settings = null, IssuanceLimits? limits = null)
     {
         var f = new EnrollmentFixture();
@@ -117,7 +108,7 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
             services.AddSingleton<TimeProvider>(Clock);
             services.AddSingleton<ISecretProtection>(Secrets);
             services.AddSingleton(limits);
-            services.AddSingleton<IGitHubTokens>(new GitHubTokens(new GitHubRest(new HttpClient(GitHub))));
+            services.AddSingleton<IGitHubTokens>(GitHub);
             services.AddSingleton<IAppInstallations>(GitHub);
             services.AddSingleton<IControllerApprovals>(GitHub);
             services.AddSingleton<IssuanceStore>(); services.AddSingleton<InstallationTokenIssuer>();

@@ -222,14 +222,13 @@ public sealed class EnrollmentFaultTests
     {
         await using var f = await EnrollmentFixture.CreateAsync();
         var original = f.Request();
-        var normal = f.GitHub.Before;
-        f.GitHub.Before = request => request.Method == HttpMethod.Post
-            ? throw new HttpRequestException("Unknown GitHub mint outcome") : normal!(request);
+        var normal = f.GitHub.BeforeMint;
+        f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("Unknown GitHub mint outcome");
         using var unknown = await f.Send("/v1/enrollments", original);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, unknown.StatusCode);
         var attempt = Assert.Single(await Rows(f), r => r.RowKey.StartsWith("attempt:", StringComparison.Ordinal));
         Assert.Equal("sending", attempt.GetString("State"));
-        f.GitHub.Before = normal;
+        f.GitHub.BeforeMint = normal;
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var replay = await f.Send("/v1/enrollments", original);
@@ -349,11 +348,11 @@ public sealed class EnrollmentFaultTests
         Assert.Equal(0, f.GitHub.Reads);
         Assert.Equal(0, f.GitHub.Mints);
         Assert.Equal(0, f.GitHub.Authorizations);
-        string? sentAuthorization = null;
-        f.GitHub.Before = message =>
+        int? sentAuthorization = null;
+        f.GitHub.BeforeMint = mint =>
         {
-            if (message.Method == HttpMethod.Post) sentAuthorization = message.Headers.Authorization!.Parameter;
-            return Task.FromResult<HttpResponseMessage?>(null);
+            sentAuthorization = ((InMemoryGitHub.Authorization)mint.App).Number;
+            return Task.CompletedTask;
         };
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromSeconds(delaySeconds));
@@ -383,7 +382,7 @@ public sealed class EnrollmentFaultTests
             var window = Assert.Single(f.GitHub.Windows);
             Assert.Equal(original.GetDateTimeOffset("JwtIssuedAt"), window.IssuedAt);
             Assert.Equal(original.GetDateTimeOffset("JwtExpiresAt"), window.ExpiresAt);
-            Assert.Equal("app-jwt-1", sentAuthorization);
+            Assert.Equal(1, sentAuthorization);
         }
     }
 

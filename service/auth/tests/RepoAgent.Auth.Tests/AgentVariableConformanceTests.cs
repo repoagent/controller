@@ -50,7 +50,7 @@ public sealed class AgentVariableConformanceTests
         var agent = Request();
         var legacy = f.Request() with { IdempotencyId = agent.IdempotencyId };
         // Setup v1 mints its own verifier; the Agent mint handler would refuse its permissions.
-        if (version == 1) f.GitHub.Before = null;
+        if (version == 1) f.GitHub.BeforeMint = null;
         using var start = await f.Send($"/v{version}/enrollments", version == 1 ? legacy : agent);
         Assert.Equal(HttpStatusCode.OK, start.StatusCode);
         var body = await Json(start);
@@ -88,9 +88,8 @@ public sealed class AgentVariableConformanceTests
     public async Task Legacy_incumbent_or_unknown_authority_blocks_Agent_completion(bool unknown)
     {
         await using var f = await AgentFixture();
-        var agentHandler = f.GitHub.Before!;
-        f.GitHub.Before = request => unknown && request.Method == HttpMethod.Post
-            ? throw new HttpRequestException("Unknown legacy mint outcome") : Task.FromResult<HttpResponseMessage?>(null);
+        var agentHandler = f.GitHub.BeforeMint;
+        f.GitHub.BeforeMint = _ => unknown ? throw new GitHubUnavailable("Unknown legacy mint outcome") : Task.CompletedTask;
         using var legacy = await f.Send("/v1/enrollments", f.Request());
         Assert.Equal(unknown ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK, legacy.StatusCode);
         string? incumbent = null;
@@ -102,7 +101,7 @@ public sealed class AgentVariableConformanceTests
             incumbent = Device(await Complete(f, body.GetProperty("pendingId").GetString()!, 1));
         }
         var before = (await Rows(f)).Single(r => r.RowKey.StartsWith("attempt:", StringComparison.Ordinal));
-        f.GitHub.Before = agentHandler;
+        f.GitHub.BeforeMint = agentHandler;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var pending = await Start(f);
         var reads = f.GitHub.Reads;
@@ -115,42 +114,25 @@ public sealed class AgentVariableConformanceTests
         else Assert.Equal(incumbent, rows.Single(r => r.RowKey == "gate").GetString("OwnerDeviceId"));
     }
 
+    // Which reported scopes are out of scope is the core's rule (GitHubTokenMinterTests); "extra" is the service's outcome.
     [Theory]
-    [InlineData("write")]
     [InlineData("extra")]
-    [InlineData("id")]
-    [InlineData("name")]
     [InlineData("independent-name")]
     public async Task Invalid_Agent_verifier_binding_never_discloses_marker_and_known_tokens_stay_accounted(string fault)
     {
         await using var f = await AgentFixture();
-        var normal = f.GitHub.Before!;
         var accountedBeforeRevoke = false;
         if (fault == "independent-name")
             f.GitHub.Repositories = GitHubRead.Found(new InstallationRepositories(1, [new RepositoryIdentity(123456, "other/project")]));
-        f.GitHub.Before = async request =>
+        else f.GitHub.MintAnswer = (_, token) => GitHubRead.Found(token with
         {
-            if (request.Method == HttpMethod.Delete)
-            {
-                var known = Assert.Single(await Rows(f), r => r.RowKey.StartsWith("attempt:", StringComparison.Ordinal));
-                accountedBeforeRevoke = known.GetString("State") == "known" && known.ContainsKey("ProtectedToken")
-                    && known.GetBoolean("ScopeValid") == false;
-            }
-            if (request.Method != HttpMethod.Post || fault == "independent-name") return await normal(request);
-            var input = JsonSerializer.Deserialize<JsonElement>(await request.Content!.ReadAsStringAsync(Token));
-            Assert.Equal("read", input.GetProperty("permissions").GetProperty("agent_variables").GetString());
-            object permissions = fault switch
-            {
-                "write" => new { agent_variables = "write" },
-                "extra" => new { agent_variables = "read", actions = "read" },
-                _ => new { agent_variables = "read" }
-            };
-            return InMemoryGitHub.Json(new
-            {
-                token = "invalid-binding-token", expires_at = f.Clock.GetUtcNow().AddHours(1),
-                repository_selection = "selected", permissions,
-                repositories = new[] { new { id = fault == "id" ? 999999 : 123456, full_name = fault == "name" ? "other/project" : "owner/project" } }
-            }, HttpStatusCode.Created);
+            Value = "invalid-binding-token", Permissions = new Dictionary<string, string?> { ["agent_variables"] = "read", ["actions"] = "read" }
+        });
+        f.GitHub.BeforeRevoke = async _ =>
+        {
+            var known = Assert.Single(await Rows(f), r => r.RowKey.StartsWith("attempt:", StringComparison.Ordinal));
+            accountedBeforeRevoke = known.GetString("State") == "known" && known.ContainsKey("ProtectedToken")
+                && known.GetBoolean("ScopeValid") == false;
         };
         using var start = await f.Send("/v2/enrollments", Request());
         Assert.Equal(HttpStatusCode.ServiceUnavailable, start.StatusCode);

@@ -72,46 +72,26 @@ public sealed class AgentVariableEnrollmentTests
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
 
-    // Mints the Agent verifier and runtime tokens. The Agent variables hold f.GitHub.Marker.
-    internal static void ConfigureGitHub(EnrollmentFixture f)
+    // Agent enrollments mint their verifier with exactly Agent variables read, and runtime tokens with Discussions
+    // write plus, for webhook profiles, repository hooks write. The Agent variables hold f.GitHub.Marker.
+    internal static void ConfigureGitHub(EnrollmentFixture f) => f.GitHub.BeforeMint = mint =>
     {
-        f.GitHub.Before = async request =>
+        Assert.Equal(InMemoryGitHub.Project.Id, mint.Repository.Id);
+        var permissions = mint.Authority.Permissions;
+        if (permissions.ContainsKey("agent_variables"))
+            Assert.Equal(new Dictionary<string, string> { ["agent_variables"] = "read" }, permissions);
+        else
         {
-            if (request.Method == HttpMethod.Post)
+            Assert.DoesNotContain(permissions.Keys, name => name is "actions" or "environments");
+            Assert.Equal("write", permissions["discussions"]);
+            if (permissions.TryGetValue("repository_hooks", out var hooks))
             {
-                var input = JsonSerializer.Deserialize<JsonElement>(await request.Content!.ReadAsStringAsync(Token));
-                var permissions = input.GetProperty("permissions");
-                if (permissions.TryGetProperty("agent_variables", out var access))
-                {
-                    Assert.Equal("read", access.GetString());
-                    Assert.Single(permissions.EnumerateObject());
-                    var ids = input.GetProperty("repository_ids");
-                    Assert.Equal(123456, Assert.Single(ids.EnumerateArray()).GetInt64());
-                    f.GitHub.VerifierMints++;
-                    return InMemoryGitHub.Json(new
-                    {
-                        token = "agent-verifier-token", expires_at = f.Clock.GetUtcNow().AddHours(1),
-                        repository_selection = "selected", permissions,
-                        repositories = new[] { new { id = 123456, full_name = "owner/project" } }
-                    }, HttpStatusCode.Created);
-                }
-                Assert.DoesNotContain(permissions.EnumerateObject(), p => p.Name is "actions" or "environments");
-                Assert.Equal("write", permissions.GetProperty("discussions").GetString());
-                if (permissions.TryGetProperty("repository_hooks", out var hooks))
-                {
-                    Assert.Equal("write", hooks.GetString());
-                    Assert.Equal(2, permissions.EnumerateObject().Count());
-                }
-                else Assert.Single(permissions.EnumerateObject());
-                return InMemoryGitHub.Json(new
-                {
-                    token = "runtime-token-" + f.GitHub.Mints, expires_at = f.Clock.GetUtcNow().Add(f.GitHub.RuntimeLifetime),
-                    repository_selection = "selected", permissions,
-                    repositories = new[] { new { id = 123456, full_name = "owner/project" } }
-                }, HttpStatusCode.Created);
+                Assert.Equal("write", hooks);
+                Assert.Equal(2, permissions.Count);
             }
-            return null;
-        };
-    }
+            else Assert.Single(permissions);
+        }
+        return Task.CompletedTask;
+    };
 
 }

@@ -105,12 +105,11 @@ public sealed partial class CapacityReclamationTests
         f.GitHub.RuntimeLifetime = TimeSpan.FromMinutes(6);
         var old = await AcknowledgedOwner(f);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var normal = f.GitHub.Before!;
-        f.GitHub.Before = request => request.Method == HttpMethod.Post
-            ? throw new HttpRequestException("Uncertain provider response") : normal(request);
+        var normal = f.GitHub.BeforeMint;
+        f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("Uncertain provider response");
         using var unknown = await f.Send($"/v1/devices/{old.Device}/installation-token", secret: old.Secret);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, unknown.StatusCode);
-        f.GitHub.Before = normal;
+        f.GitHub.BeforeMint = normal;
         using var revoke = await f.Send($"/v1/devices/{old.Device}", secret: old.Secret, method: HttpMethod.Delete);
         Assert.Equal(HttpStatusCode.NoContent, revoke.StatusCode);
         await ReclaimPending(f, old.Id);
