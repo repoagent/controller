@@ -89,8 +89,7 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
 {
     public RevocationFixture Storage { get; } = new();
     public IssuanceClock Clock { get; } = new();
-    public GitHubTransport GitHub { get; } = new();
-    public SigningTransport Signing { get; } = new();
+    public InMemoryGitHub GitHub { get; } = new();
     public InMemorySecretProtection Secrets { get; } = new();
     private Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactory<Program> host = null!;
     private HttpClient client = null!;
@@ -101,8 +100,6 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
         var f = new EnrollmentFixture();
         if (limits is not null) f.limits = limits;
         await f.Storage.InitializeAsync();
-        f.GitHub.Before = request => Task.FromResult<HttpResponseMessage?>(request.RequestUri!.AbsolutePath.EndsWith("/variables", StringComparison.Ordinal)
-            ? GitHubTransport.Json(new { total_count = f.GitHub.Marker.Length == 0 ? 0 : 1, variables = f.GitHub.Marker.Length == 0 ? Array.Empty<object>() : [new { name = "APPROVAL", value = f.GitHub.Marker }] }) : null);
         await f.RestartAsync(transport, settings: settings);
         return f;
     }
@@ -121,7 +118,8 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
             services.AddSingleton<ISecretProtection>(Secrets);
             services.AddSingleton(limits);
             services.AddSingleton(new GitHubIssuance(new HttpClient(GitHub), Clock));
-            services.AddSingleton(new AppJwtSigner(Signing, Clock));
+            services.AddSingleton<IAppInstallations>(GitHub);
+            services.AddSingleton<IControllerApprovals>(GitHub);
             services.AddSingleton<IssuanceStore>(); services.AddSingleton<InstallationTokenIssuer>();
             services.AddSingleton<EnrollmentStore>(); services.AddSingleton<EnrollmentService>();
         }));

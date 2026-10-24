@@ -89,7 +89,7 @@ public sealed partial class CapacityReclamationTests
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
         var previous = f.GitHub.Before;
         f.GitHub.Before = request => request.Method == HttpMethod.Post
-            ? Task.FromResult<HttpResponseMessage?>(GitHubTransport.Json(new
+            ? Task.FromResult<HttpResponseMessage?>(InMemoryGitHub.Json(new
             {
                 token = "invalid-scope-token", expires_at = f.Clock.GetUtcNow().AddHours(1), repository_selection = "all",
                 permissions = new { agent_variables = "read" },

@@ -59,7 +59,7 @@ public sealed class AgentVariableEnrollmentTests
         using var runtime = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
         Assert.Equal(1, f.GitHub.VerifierMints);
-        Assert.Contains("GET /repos/owner/project/agents/variables/APPROVAL", f.GitHub.Requests);
+        Assert.Contains("read variable agents owner/project APPROVAL", f.GitHub.Requests);
 
         f.GitHub.Marker = "";
         f.Clock.Advance(TimeSpan.FromMinutes(1));
@@ -72,11 +72,11 @@ public sealed class AgentVariableEnrollmentTests
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
 
+    // Mints the Agent verifier and runtime tokens. The Agent variables hold f.GitHub.Marker.
     internal static void ConfigureGitHub(EnrollmentFixture f)
     {
         f.GitHub.Before = async request =>
         {
-            var path = request.RequestUri!.AbsolutePath;
             if (request.Method == HttpMethod.Post)
             {
                 var input = JsonSerializer.Deserialize<JsonElement>(await request.Content!.ReadAsStringAsync(Token));
@@ -88,7 +88,7 @@ public sealed class AgentVariableEnrollmentTests
                     var ids = input.GetProperty("repository_ids");
                     Assert.Equal(123456, Assert.Single(ids.EnumerateArray()).GetInt64());
                     f.GitHub.VerifierMints++;
-                    return GitHubTransport.Json(new
+                    return InMemoryGitHub.Json(new
                     {
                         token = "agent-verifier-token", expires_at = f.Clock.GetUtcNow().AddHours(1),
                         repository_selection = "selected", permissions,
@@ -103,28 +103,13 @@ public sealed class AgentVariableEnrollmentTests
                     Assert.Equal(2, permissions.EnumerateObject().Count());
                 }
                 else Assert.Single(permissions.EnumerateObject());
-                return GitHubTransport.Json(new
+                return InMemoryGitHub.Json(new
                 {
                     token = "runtime-token-" + f.GitHub.Mints, expires_at = f.Clock.GetUtcNow().Add(f.GitHub.RuntimeLifetime),
                     repository_selection = "selected", permissions,
                     repositories = new[] { new { id = 123456, full_name = "owner/project" } }
                 }, HttpStatusCode.Created);
             }
-            if (path.EndsWith("/installation", StringComparison.Ordinal))
-                return GitHubTransport.Json(new
-                {
-                    id = 789, app_id = IssuancePolicy.AppId, app_slug = IssuancePolicy.AppSlug,
-                    suspended_at = (string?)null,
-                    permissions = new { discussions = "write", repository_hooks = "write", agent_variables = "read" }
-                });
-            // The legacy Agent location holds only the approval; an empty marker models its absence.
-            var variables = f.GitHub.Marker.Length == 0 ? new Dictionary<string, string>() : new() { ["APPROVAL"] = f.GitHub.Marker };
-            if (path == "/repos/owner/project/agents/variables")
-                return ActionsVariableEnrollmentTests.Repository.Listing(variables, request.RequestUri.Query);
-            if (path.StartsWith("/repos/owner/project/agents/variables/", StringComparison.Ordinal))
-                return ActionsVariableEnrollmentTests.Repository.Named(variables, path["/repos/owner/project/agents/variables/".Length..]);
-            Assert.DoesNotContain("/environments", path);
-            Assert.DoesNotContain("/orgs/", path);
             return null;
         };
     }

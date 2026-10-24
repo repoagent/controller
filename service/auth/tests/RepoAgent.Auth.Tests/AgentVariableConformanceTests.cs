@@ -10,51 +10,23 @@ public sealed class AgentVariableConformanceTests
 {
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
-    // The legacy Agent location is read by name, like the Actions location.
-    private const string Named = "/repos/owner/project/agents/variables/APPROVAL", Listed = "/repos/owner/project/agents/variables";
-
-    [Theory]
-    [InlineData("denied")]
-    [InlineData("isolated-404")]
-    [InlineData("404-without-variables-access")]
-    [InlineData("malformed")]
-    [InlineData("other-name")]
-    [InlineData("page-contradicts-404")]
-    [InlineData("malformed-page")]
-    [InlineData("stale")]
-    public async Task Unverifiable_named_read_denies_without_closing_and_a_fresh_positive_read_recovers(string observation)
+    // Which answers prove a withdrawal is the core's rule (ApprovalObserverTests); this is the completion route's outcome.
+    [Fact]
+    public async Task Unverifiable_approval_read_denies_completion_without_closing_and_a_fresh_positive_read_recovers()
     {
         await using var f = await AgentFixture();
         var pending = await Start(f);
         var receipt = await Complete(f, pending);
-        var normal = f.GitHub.Before!;
-        f.GitHub.Before = request =>
-        {
-            var path = request.RequestUri!.AbsolutePath;
-            if (path is not (Named or Listed)) return normal(request);
-            // A 404 is absence only with a later access proof; a lost or narrowed verifier also gets 404.
-            if (path == Named && observation is "isolated-404" or "404-without-variables-access" or "page-contradicts-404" or "malformed-page")
-                return Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.NotFound));
-            if (observation == "stale") f.Clock.Advance(TimeSpan.FromSeconds(11));
-            return (path, observation) switch
-            {
-                (Named, "denied") => Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.Forbidden)),
-                (Listed, "isolated-404") => Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.NotFound)),
-                (Listed, "404-without-variables-access") => Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.Forbidden)),
-                (Named, "malformed") => Reply(new { name = "APPROVAL", value = 42 }),
-                (Named, "other-name") => Reply(Variable("UNRELATED", "private-provider-value")),
-                (Listed, "page-contradicts-404") => Reply(Listing(1, [Variable("APPROVAL", f.GitHub.Marker)])),
-                (Listed, "malformed-page") => Reply(Listing(2, Unrelated(2))),
-                _ => normal(request)
-            };
-        };
+        // GitHub answers the named read with another variable, whose value the response must not disclose.
+        f.GitHub.VariableAnswer = _ => GitHubRead.Found(new GitHubVariable("UNRELATED", InMemoryGitHub.PrivateValue));
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var denied = await f.Send($"/v2/enrollments/{pending}/completion");
         Assert.Equal(HttpStatusCode.ServiceUnavailable, denied.StatusCode);
-        Assert.DoesNotContain("deviceSecret", await denied.Content.ReadAsStringAsync(Token));
-        Assert.DoesNotContain("private-provider-value", await denied.Content.ReadAsStringAsync(Token));
+        var body = await denied.Content.ReadAsStringAsync(Token);
+        Assert.DoesNotContain("deviceSecret", body);
+        Assert.DoesNotContain(InMemoryGitHub.PrivateValue, body);
 
-        f.GitHub.Before = normal;
+        f.GitHub.VariableAnswer = null;
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var recovered = await f.Send($"/v2/enrollments/{pending}/completion");
@@ -77,7 +49,7 @@ public sealed class AgentVariableConformanceTests
         await using var f = await AgentFixture();
         var agent = Request();
         var legacy = f.Request() with { IdempotencyId = agent.IdempotencyId };
-        var agentHandler = f.GitHub.Before!;
+        // Setup v1 mints its own verifier; the Agent mint handler would refuse its permissions.
         if (version == 1) f.GitHub.Before = null;
         using var start = await f.Send($"/v{version}/enrollments", version == 1 ? legacy : agent);
         Assert.Equal(HttpStatusCode.OK, start.StatusCode);
@@ -96,10 +68,6 @@ public sealed class AgentVariableConformanceTests
         Assert.Equal(mints, f.GitHub.Mints);
         var rows = await Rows(f);
         Assert.Single(rows, r => r.PartitionKey == RevocationFixture.Partition && r.RowKey.StartsWith("pending:", StringComparison.Ordinal));
-        if (version == 1)
-            f.GitHub.Before = request => request.RequestUri!.AbsolutePath.EndsWith("/variables", StringComparison.Ordinal)
-                ? Reply(Listing(1, [Variable("APPROVAL", f.GitHub.Marker)])) : Task.FromResult<HttpResponseMessage?>(null);
-        else f.GitHub.Before = agentHandler;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var receipt = await Complete(f, pending, version);
         reads = f.GitHub.Reads;
@@ -121,12 +89,8 @@ public sealed class AgentVariableConformanceTests
     {
         await using var f = await AgentFixture();
         var agentHandler = f.GitHub.Before!;
-        f.GitHub.Before = request =>
-        {
-            if (unknown && request.Method == HttpMethod.Post) throw new HttpRequestException("Unknown legacy mint outcome");
-            return request.RequestUri!.AbsolutePath.EndsWith("/variables", StringComparison.Ordinal)
-                ? Reply(Listing(1, [Variable("APPROVAL", f.GitHub.Marker)])) : Task.FromResult<HttpResponseMessage?>(null);
-        };
+        f.GitHub.Before = request => unknown && request.Method == HttpMethod.Post
+            ? throw new HttpRequestException("Unknown legacy mint outcome") : Task.FromResult<HttpResponseMessage?>(null);
         using var legacy = await f.Send("/v1/enrollments", f.Request());
         Assert.Equal(unknown ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK, legacy.StatusCode);
         string? incumbent = null;
@@ -162,6 +126,8 @@ public sealed class AgentVariableConformanceTests
         await using var f = await AgentFixture();
         var normal = f.GitHub.Before!;
         var accountedBeforeRevoke = false;
+        if (fault == "independent-name")
+            f.GitHub.Repositories = GitHubRead.Found(new InstallationRepositories(1, [new RepositoryIdentity(123456, "other/project")]));
         f.GitHub.Before = async request =>
         {
             if (request.Method == HttpMethod.Delete)
@@ -170,8 +136,6 @@ public sealed class AgentVariableConformanceTests
                 accountedBeforeRevoke = known.GetString("State") == "known" && known.ContainsKey("ProtectedToken")
                     && known.GetBoolean("ScopeValid") == false;
             }
-            if (fault == "independent-name" && request.RequestUri!.AbsolutePath == "/installation/repositories")
-                return GitHubTransport.Json(new { total_count = 1, repositories = new[] { new { id = 123456, full_name = "other/project" } } });
             if (request.Method != HttpMethod.Post || fault == "independent-name") return await normal(request);
             var input = JsonSerializer.Deserialize<JsonElement>(await request.Content!.ReadAsStringAsync(Token));
             Assert.Equal("read", input.GetProperty("permissions").GetProperty("agent_variables").GetString());
@@ -181,7 +145,7 @@ public sealed class AgentVariableConformanceTests
                 "extra" => new { agent_variables = "read", actions = "read" },
                 _ => new { agent_variables = "read" }
             };
-            return GitHubTransport.Json(new
+            return InMemoryGitHub.Json(new
             {
                 token = "invalid-binding-token", expires_at = f.Clock.GetUtcNow().AddHours(1),
                 repository_selection = "selected", permissions,
@@ -285,33 +249,24 @@ public sealed class AgentVariableConformanceTests
 
     [Theory]
     [InlineData("installation")]
-    [InlineData("repository-id")]
-    [InlineData("repository-name")]
     [InlineData("legacy-marker")]
     public async Task Confirmed_changed_binding_or_copied_legacy_marker_closes_Agent_approval(string change)
     {
         await using var f = await AgentFixture();
         var pending = await Start(f);
         await Complete(f, pending);
-        var normal = f.GitHub.Before!;
-        f.GitHub.Before = request =>
+        var marker = f.GitHub.Marker;
+        if (change == "installation") f.GitHub.Installation = Moved;
+        else
         {
-            var path = request.RequestUri!.AbsolutePath;
-            if (change == "installation" && path.EndsWith("/installation", StringComparison.Ordinal))
-                return Reply(new { id = 790, app_id = IssuancePolicy.AppId, app_slug = IssuancePolicy.AppSlug,
-                    suspended_at = (string?)null, permissions = new { discussions = "write", agent_variables = "read" } });
-            if (change.StartsWith("repository-", StringComparison.Ordinal) && path == "/installation/repositories")
-                return Reply(new { total_count = 1, repositories = new[] { new {
-                    id = change == "repository-id" ? 999999 : 123456,
-                    full_name = change == "repository-name" ? "other/project" : "owner/project" } } });
-            if (change == "legacy-marker" && path == Named)
-                return Reply(Variable("APPROVAL", f.GitHub.Marker.Replace("\"version\":2", "\"version\":1", StringComparison.Ordinal)));
-            return normal(request);
-        };
+            f.GitHub.Agent["APPROVAL"] = marker.Replace("\"version\":2", "\"version\":1", StringComparison.Ordinal);
+            Assert.NotEqual(marker, f.GitHub.Agent["APPROVAL"]);
+        }
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var changed = await f.Send($"/v2/enrollments/{pending}/completion");
         Assert.DoesNotContain("deviceSecret", await changed.Content.ReadAsStringAsync(Token));
-        f.GitHub.Before = normal;
+        f.GitHub.Installation = GitHubRead.Found(InMemoryGitHub.Installed);
+        f.GitHub.Marker = marker;
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var restored = await f.Send($"/v2/enrollments/{pending}/completion");
@@ -336,34 +291,34 @@ public sealed class AgentVariableConformanceTests
                 && current.RowKey == row.RowKey).ETag);
     }
 
-    [Theory]
-    [InlineData("changed")]
-    [InlineData("absent")]
-    public async Task Stale_negative_runtime_observation_denies_without_closure_and_fresh_approval_recovers(string observation)
+    [Fact]
+    public async Task Stale_changed_runtime_observation_denies_without_closure_and_fresh_approval_recovers()
     {
         await using var f = await AgentFixture();
         var receipt = await Complete(f, await Start(f));
         await Ack(f, receipt);
-        var normal = f.GitHub.Before!;
+        var marker = f.GitHub.Marker;
+        f.GitHub.Agent["APPROVAL"] = InMemoryGitHub.PrivateValue;
         var variableReads = 0;
-        f.GitHub.Before = request =>
+        f.GitHub.BeforeRead = request =>
         {
-            var path = request.RequestUri!.AbsolutePath;
-            if (path is not (Named or Listed)) return normal(request);
+            if (!request.StartsWith("variable ", StringComparison.Ordinal)) return Task.CompletedTask;
             variableReads++;
-            if (path == Named && observation == "absent") return Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.NotFound));
-            // The final response is well formed but its oldest contributing read
-            // is now11s old: outside freshness10s, inside operation lifetime15s.
+            // The changed answer is well formed but its oldest contributing read
+            // is now 11 s old: outside freshness (10 s), inside the operation lifetime (15 s).
             f.Clock.Advance(TimeSpan.FromSeconds(11));
-            return Reply(observation == "changed" ? Variable("APPROVAL", "changed-public-marker") : Listing(0, []));
+            return Task.CompletedTask;
         };
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var stale = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
         Assert.NotEqual(HttpStatusCode.OK, stale.StatusCode);
-        Assert.Equal(observation == "absent" ? 2 : 1, variableReads);
-        Assert.DoesNotContain("token", await stale.Content.ReadAsStringAsync(Token));
+        Assert.Equal(1, variableReads);
+        var body = await stale.Content.ReadAsStringAsync(Token);
+        Assert.DoesNotContain("token", body);
+        Assert.DoesNotContain(InMemoryGitHub.PrivateValue, body);
 
-        f.GitHub.Before = normal;
+        f.GitHub.BeforeRead = null;
+        f.GitHub.Marker = marker;
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var recovered = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
@@ -371,55 +326,27 @@ public sealed class AgentVariableConformanceTests
         Assert.Equal(Device(receipt), (await Rows(f)).Single(r => r.RowKey == "gate").GetString("OwnerDeviceId"));
     }
 
+    // Which installation and repository answers prove a binding change is the core's rule (ApprovalObserverTests);
+    // these are the runtime and continuation routes' outcomes.
     [Theory]
     [InlineData("installation", true)]
-    [InlineData("repository-name", true)]
-    [InlineData("repository-id", true)]
     [InlineData("installation-stale", false)]
-    [InlineData("repository-name-stale", false)]
-    [InlineData("repository-id-stale", false)]
     [InlineData("denied", false)]
-    [InlineData("malformed", false)]
     public async Task Runtime_binding_change_is_terminal_only_when_well_formed_and_fresh(string observation, bool terminal)
     {
         await using var f = await AgentFixture();
         var receipt = await Complete(f, await Start(f));
         await Ack(f, receipt);
-        var normal = f.GitHub.Before!;
-        var observed = false;
-        f.GitHub.Before = request =>
-        {
-            var path = request.RequestUri!.AbsolutePath;
-            if (observation == "denied" && path.EndsWith("/installation", StringComparison.Ordinal))
-            {
-                observed = true;
-                return Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.Forbidden));
-            }
-            if (observation.StartsWith("installation", StringComparison.Ordinal) && path.EndsWith("/installation", StringComparison.Ordinal))
-            {
-                observed = true;
-                if (observation.EndsWith("-stale", StringComparison.Ordinal)) f.Clock.Advance(TimeSpan.FromSeconds(11));
-                return Reply(new { id = 790, app_id = IssuancePolicy.AppId, app_slug = IssuancePolicy.AppSlug,
-                    suspended_at = (string?)null, permissions = new { discussions = "write", agent_variables = "read" } });
-            }
-            if (path == "/installation/repositories")
-            {
-                observed = true;
-                if (observation.EndsWith("-stale", StringComparison.Ordinal)) f.Clock.Advance(TimeSpan.FromSeconds(11));
-                if (observation == "malformed") return Reply(new { total_count = 1, repositories = new[] { new { id = 123456 } } });
-                return Reply(new { total_count = 1, repositories = new[] { new {
-                    id = observation.StartsWith("repository-id", StringComparison.Ordinal) ? 999999 : 123456,
-                    full_name = observation.StartsWith("repository-name", StringComparison.Ordinal) ? "other/project" : "owner/project" } } });
-            }
-            return normal(request);
-        };
+        var observed = ObserveInstallationReads(f, stale: observation.EndsWith("-stale", StringComparison.Ordinal));
+        f.GitHub.Installation = observation == "denied" ? new GitHubRead<AppInstallation>.Refused() : Moved;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var changed = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
-        Assert.True(observed);
+        Assert.True(observed());
         Assert.NotEqual(HttpStatusCode.OK, changed.StatusCode);
         Assert.DoesNotContain("token", await changed.Content.ReadAsStringAsync(Token));
 
-        f.GitHub.Before = normal;
+        f.GitHub.BeforeRead = null;
+        f.GitHub.Installation = GitHubRead.Found(InMemoryGitHub.Installed);
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var restored = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
@@ -429,17 +356,7 @@ public sealed class AgentVariableConformanceTests
 
     [Theory]
     [InlineData("empty", false, false)]
-    [InlineData("empty", true, false)]
-    [InlineData("nonpositive-id", false, false)]
-    [InlineData("nonpositive-id", true, false)]
-    [InlineData("null-name", false, false)]
-    [InlineData("null-name", true, false)]
-    [InlineData("installation-stale", false, false)]
     [InlineData("installation-stale", true, false)]
-    [InlineData("repository-id-stale", false, false)]
-    [InlineData("repository-id-stale", true, false)]
-    [InlineData("repository-name-stale", false, false)]
-    [InlineData("repository-name-stale", true, false)]
     [InlineData("installation-fresh", true, true)]
     [InlineData("repository-name-fresh", true, true)]
     public async Task Completion_and_ack_binding_uncertainty_is_recoverable_but_fresh_changes_are_terminal(string observation, bool acknowledge, bool terminal)
@@ -447,39 +364,24 @@ public sealed class AgentVariableConformanceTests
         await using var f = await AgentFixture();
         var pending = await Start(f);
         var receipt = await Complete(f, pending);
-        var normal = f.GitHub.Before!;
-        var observed = false;
-        f.GitHub.Before = request =>
-        {
-            var path = request.RequestUri!.AbsolutePath;
-            if (observation.StartsWith("installation-", StringComparison.Ordinal) && path.EndsWith("/installation", StringComparison.Ordinal))
-            {
-                observed = true;
-                if (observation.EndsWith("-stale", StringComparison.Ordinal)) f.Clock.Advance(TimeSpan.FromSeconds(11));
-                return Reply(new { id = 790, app_id = IssuancePolicy.AppId, app_slug = IssuancePolicy.AppSlug,
-                    suspended_at = (string?)null, permissions = new { discussions = "write", agent_variables = "read" } });
-            }
-            if (!observation.StartsWith("installation-", StringComparison.Ordinal) && path == "/installation/repositories")
-            {
-                observed = true;
-                if (observation.EndsWith("-stale", StringComparison.Ordinal)) f.Clock.Advance(TimeSpan.FromSeconds(11));
-                object[] repositories = observation == "empty" ? [] : [new {
-                    id = observation == "nonpositive-id" ? 0 : observation == "repository-id-stale" ? 999999 : 123456,
-                    full_name = observation == "null-name" ? null : observation.StartsWith("repository-name-", StringComparison.Ordinal) ? "other/project" : "owner/project" }];
-                return Reply(new { total_count = 1, repositories });
-            }
-            return normal(request);
-        };
+        var installation = observation.StartsWith("installation-", StringComparison.Ordinal);
+        var observed = installation ? ObserveInstallationReads(f, stale: observation.EndsWith("-stale", StringComparison.Ordinal))
+            : ObserveRepositoryReads(f);
+        if (installation) f.GitHub.Installation = Moved;
+        else f.GitHub.Repositories = GitHubRead.Found(new InstallationRepositories(1,
+            observation == "empty" ? [] : [new RepositoryIdentity(123456, "other/project")]));
         var continuationPath = acknowledge ? $"/v2/devices/{Device(receipt)}/acknowledgment" : $"/v2/enrollments/{pending}/completion";
         object? body = acknowledge ? new { completionId = receipt.GetProperty("completionId").GetString() } : null;
         var credential = acknowledge ? Secret(receipt) : null;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var denied = await f.Send(continuationPath, body, credential);
-        Assert.True(observed);
+        Assert.True(observed());
         Assert.NotEqual(HttpStatusCode.OK, denied.StatusCode);
         Assert.DoesNotContain(Secret(receipt), await denied.Content.ReadAsStringAsync(Token));
 
-        f.GitHub.Before = normal;
+        f.GitHub.BeforeRead = null;
+        f.GitHub.Installation = GitHubRead.Found(InMemoryGitHub.Installed);
+        f.GitHub.Repositories = GitHubRead.Found(new InstallationRepositories(1, [InMemoryGitHub.Project]));
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var restored = await f.Send(continuationPath, body, credential);
@@ -495,6 +397,33 @@ public sealed class AgentVariableConformanceTests
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
     }
 
+    // The same App now installed under another installation id.
+    private static GitHubRead<AppInstallation> Moved => GitHubRead.Found(InMemoryGitHub.Installed with { Id = 790 });
+
+    // Records whether the installation was read; a stale read lands 11 s late, outside freshness (10 s).
+    private static Func<bool> ObserveInstallationReads(EnrollmentFixture f, bool stale)
+    {
+        var observed = false;
+        f.GitHub.BeforeRead = request =>
+        {
+            if (!request.StartsWith("installation ", StringComparison.Ordinal)) return Task.CompletedTask;
+            observed = true;
+            if (stale) f.Clock.Advance(TimeSpan.FromSeconds(11));
+            return Task.CompletedTask;
+        };
+        return () => observed;
+    }
+    private static Func<bool> ObserveRepositoryReads(EnrollmentFixture f)
+    {
+        var observed = false;
+        f.GitHub.BeforeRead = request =>
+        {
+            observed |= request == "repositories";
+            return Task.CompletedTask;
+        };
+        return () => observed;
+    }
+
     private static async Task<EnrollmentFixture> AgentFixture()
     {
         var f = await EnrollmentFixture.CreateAsync();
@@ -502,10 +431,6 @@ public sealed class AgentVariableConformanceTests
         return f;
     }
     private static RepositoryVariableEnrollmentRequest Request(string profile = "polling") => new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "APPROVAL", profile);
-    private static object Variable(string name, string value) => new { name, value };
-    private static object[] Unrelated(int count) => Enumerable.Range(0, count).Select(i => Variable($"N{i:00}", "unrelated")).ToArray();
-    private static object Listing(int total, object[] variables) => new { total_count = total, variables };
-    private static Task<HttpResponseMessage?> Reply(object body) => Task.FromResult<HttpResponseMessage?>(GitHubTransport.Json(body));
     private static string Device(JsonElement receipt) => receipt.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
     private static string Secret(JsonElement receipt) => receipt.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
     private static Task<JsonElement> Json(HttpResponseMessage response) => response.Content.ReadFromJsonAsync<JsonElement>(Token);

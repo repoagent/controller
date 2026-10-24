@@ -127,7 +127,7 @@ public sealed class RepositorySettingsProfileTests
                 return await configured(request);
             var input = await request.Content!.ReadFromJsonAsync<JsonElement>(Token);
             if (!input.GetProperty("permissions").TryGetProperty("discussions", out _)) return await configured(request);
-            return GitHubTransport.Json(new
+            return InMemoryGitHub.Json(new
             {
                 token = "widened-runtime-token", expires_at = f.Clock.GetUtcNow().AddHours(1), repository_selection = "selected",
                 permissions = new { discussions = "write", actions_variables = "read" },

@@ -6,99 +6,17 @@ using static RepoAgent.Auth.IssuancePolicy;
 
 namespace RepoAgent.Auth;
 
-public sealed class ApprovalChanged : Exception;
-
 // HttpClient must have redirects and retries disabled. Only fixed api.github.com paths are used.
 public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
 {
-    public async Task<DateTimeOffset> ObserveAsync(GrantSnapshot grant, string jwt, string verifier, IssuanceWork work)
-    {
-        var started = clock.GetUtcNow();
-        var repositoryPath = string.Join('/', grant.Repository.Split('/').Select(Uri.EscapeDataString));
-        using var installation = await ReadAsync($"repos/{repositoryPath}/installation", jwt, work);
-        var root = installation.RootElement;
-        var installationId = root.GetProperty("id").GetInt64();
-        if (installationId <= 0 || root.GetProperty("app_id").GetInt64() != AppId
-            || root.GetProperty("app_slug").GetString() != AppSlug
-            || root.GetProperty("suspended_at").ValueKind != JsonValueKind.Null) throw new IssuanceDenied();
-        var permissions = root.GetProperty("permissions");
-        foreach (var required in Permissions(grant.Profile).Concat(Permissions(grant.Approval.VerifierProfile)))
-            if (!permissions.TryGetProperty(required.Key, out var level)
-                || level.GetString() is not { } actual || actual != required.Value && !(actual == "write" && required.Value == "read"))
-                throw new IssuanceDenied();
-        if (installationId != grant.InstallationId)
-        {
-            work.Fresh(started);
-            throw new ApprovalChanged();
-        }
-        using var repositories = await ReadAsync("installation/repositories?per_page=2", verifier, work);
-        var repos = repositories.RootElement;
-        if (repos.GetProperty("total_count").GetInt32() != 1) throw new IssuanceDenied();
-        var (repositoryId, repository) = RepositoryIdentity(repos.GetProperty("repositories"));
-        if (repositoryId != Id(grant.RepositoryId) || !string.Equals(repository, grant.Repository, StringComparison.OrdinalIgnoreCase))
-        {
-            work.Fresh(started);
-            throw new ApprovalChanged();
-        }
-        if (grant.Approval.IsRepositoryVariable)
-        {
-            var approved = await ObserveRepositoryVariableAsync(grant.Approval, grant.Repository, grant.Variable, grant.Marker, verifier, work);
-            // A negative observation is authority to close only while all contributing
-            // evidence is fresh. Stale evidence must leave the grant recoverable.
-            work.Fresh(started);
-            if (!approved) throw new ApprovalChanged();
-            return started;
-        }
-        var environmentPath = $"repos/{repositoryPath}/environments/{Uri.EscapeDataString(grant.Environment)}";
-        using var environment = await ReadAsync(environmentPath, verifier, work);
-        if (environment.RootElement.GetProperty("id").GetInt64() != grant.EnvironmentId
-            || environment.RootElement.GetProperty("name").GetString() != grant.Environment) throw new ApprovalChanged();
-        using var marker = await ReadAsync(environmentPath + "/variables/" + Uri.EscapeDataString(grant.Variable), verifier, work);
-        if (marker.RootElement.GetProperty("name").GetString() != grant.Variable
-            || marker.RootElement.GetProperty("value").GetString() != grant.Marker) throw new ApprovalChanged();
-        work.Fresh(started);
-        return started;
-    }
+    public Task<IssuedToken> MintAsync(GrantSnapshot grant, string profile, AppAuthorization app, CancellationToken ct) =>
+        MintAsync(grant.RepositoryId, grant.Repository, grant.InstallationId, profile, app, ct);
 
-    // Reads the selected variable by name from the direct repository location chosen only by the
-    // durable approval kind: Actions variables for setup v3, Agent variables for setup v2. Work is at
-    // most two reads, however many unrelated variables (CI, repository settings) share that location.
-    internal async Task<bool> ObserveRepositoryVariableAsync(ApprovalContract approval, string repository, string selected, string marker, string token, IssuanceWork work)
+    internal async Task<IssuedToken> MintAsync(string repositoryId, string repository, long installationId, string profile, AppAuthorization app, CancellationToken ct)
     {
-        var location = $"repos/{string.Join('/', repository.Split('/').Select(Uri.EscapeDataString))}/{approval.VariablesPath}";
-        using (var variable = await ReadAsync($"{location}/{Uri.EscapeDataString(selected)}", token, work, absentOnNotFound: true))
-        {
-            if (variable is not null)
-            {
-                // GitHub answers with the stored name. Another name is malformed evidence, never a change.
-                var root = variable.RootElement;
-                if (root.GetProperty("name").GetString() != selected || root.GetProperty("value").GetString() is not { } value) throw new IssuanceDenied();
-                return value == marker;
-            }
-        }
-        // GitHub also answers 404 when this token cannot read the location (lost repository access or
-        // permission), so an isolated 404 never proves withdrawal. A well-formed 200 listing page read
-        // afterwards with the same token proves the location was readable, which confirms the 404 as
-        // absence. Reading it after the 404 means access lost before or during the named read is caught.
-        // The page is only an access proof: its count never matters, and a page showing the selected
-        // name contradicts the 404 and proves nothing.
-        using var listing = await ReadAsync($"{location}?per_page=1", token, work);
-        var page = listing.RootElement;
-        var variables = page.GetProperty("variables");
-        if (page.GetProperty("total_count").GetInt32() < 0 || variables.GetArrayLength() > 1) throw new IssuanceDenied();
-        foreach (var item in variables.EnumerateArray())
-            if (item.GetProperty("name").GetString() is not { Length: > 0 } name || name == selected) throw new IssuanceDenied();
-        return false;
-    }
-
-    public Task<IssuedToken> MintAsync(GrantSnapshot grant, string profile, string jwt, CancellationToken ct) =>
-        MintAsync(grant.RepositoryId, grant.Repository, grant.InstallationId, profile, jwt, ct);
-
-    internal async Task<IssuedToken> MintAsync(string repositoryId, string repository, long installationId, string profile, string jwt, CancellationToken ct)
-    {
-        using var request = Request(HttpMethod.Post, $"app/installations/{installationId}/access_tokens", jwt);
+        using var request = Request(HttpMethod.Post, $"app/installations/{installationId}/access_tokens", GitHubAppAuthorization.Jwt(app));
         request.Content = JsonContent.Create(new { repository_ids = new[] { Id(repositoryId) }, permissions = Permissions(profile) });
-        using var response = await SendAsync(request, HttpStatusCode.Created, ct) ?? throw new IssuanceDenied();
+        using var response = await SendAsync(request, HttpStatusCode.Created, ct);
         var root = response.RootElement;
         var token = root.GetProperty("token").GetString();
         if (token is null || !IsBearer(token)) throw new IssuanceDenied();
@@ -132,36 +50,70 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         if (response.StatusCode != HttpStatusCode.NoContent) throw new IssuanceDenied();
     }
 
-    internal async Task<JsonDocument> ReadAsync(string path, string token, IssuanceWork work) =>
-        await ReadAsync(path, token, work, absentOnNotFound: false) ?? throw new IssuanceDenied();
-    // Null reports 404 only to a caller that separately proves access before treating it as absence.
-    private async Task<JsonDocument?> ReadAsync(string path, string token, IssuanceWork work, bool absentOnNotFound)
+    // Reads one GitHub resource and reports what GitHub answered. The fact reads JSON only and decides
+    // nothing: a missing member or another kind than GitHub documents makes the answer malformed.
+    internal async Task<GitHubRead<T>> ReadAsync<T>(string path, string bearer, Func<JsonElement, T> fact, CancellationToken ct)
     {
-        work.Read();
-        using var request = Request(HttpMethod.Get, path, token);
-        return await SendAsync(request, HttpStatusCode.OK, work.Cancellation, absentOnNotFound);
+        using var request = Request(HttpMethod.Get, path, bearer);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        try
+        {
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            if (response.StatusCode == HttpStatusCode.NotFound) return new GitHubRead<T>.NotFound();
+            if (response.StatusCode != HttpStatusCode.OK) return new GitHubRead<T>.Refused();
+            if (await BodyAsync(response, timeout.Token) is not { } body) return new GitHubRead<T>.Malformed();
+            JsonDocument document;
+            try { document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 32 }); }
+            catch (JsonException) { return new GitHubRead<T>.Malformed(); }
+            using (document)
+            {
+                if (HasDuplicateMember(document.RootElement)) return new GitHubRead<T>.Malformed();
+                try { return GitHubRead.Found(fact(document.RootElement)); }
+                catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or FormatException)
+                {
+                    return new GitHubRead<T>.Malformed();
+                }
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        {
+            throw new GitHubUnavailable("GitHub did not answer the read.", ex);
+        }
     }
-    private async Task<JsonDocument?> SendAsync(HttpRequestMessage request, HttpStatusCode expected, CancellationToken ct, bool absentOnNotFound = false)
+
+    // A JSON string GitHub documents as never null.
+    internal static string JsonText(JsonElement element) =>
+        element.ValueKind == JsonValueKind.String ? element.GetString()! : throw new InvalidOperationException("Expected a JSON string.");
+
+    internal static string RepositoryPath(string repository) => string.Join('/', repository.Split('/').Select(Uri.EscapeDataString));
+
+    private async Task<JsonDocument> SendAsync(HttpRequestMessage request, HttpStatusCode expected, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(3));
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
-        // An isolated 404 is never proof of approval withdrawal; it reaches only a caller that proves access separately.
-        if (absentOnNotFound && response.StatusCode == HttpStatusCode.NotFound) return null;
-        if (response.StatusCode != expected || response.Content.Headers.ContentLength is > 65536) throw new IssuanceDenied();
-        await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+        if (response.StatusCode != expected || await BodyAsync(response, timeout.Token) is not { } body) throw new IssuanceDenied();
+        var document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 32 });
+        if (!HasDuplicateMember(document.RootElement)) return document;
+        document.Dispose();
+        throw new IssuanceDenied();
+    }
+    // At most 64 KiB; null when GitHub sends more.
+    private static async Task<byte[]?> BodyAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.Content.Headers.ContentLength is > 65536) return null;
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
         using var bytes = new MemoryStream();
         var buffer = new byte[4096];
         while (true)
         {
-            var count = await stream.ReadAsync(buffer, timeout.Token);
+            var count = await stream.ReadAsync(buffer, ct);
             if (count == 0) break;
-            if (bytes.Length + count > 65536) throw new IssuanceDenied();
+            if (bytes.Length + count > 65536) return null;
             bytes.Write(buffer, 0, count);
         }
-        var document = JsonDocument.Parse(bytes.ToArray(), new JsonDocumentOptions { MaxDepth = 32 });
-        try { RejectDuplicates(document.RootElement); return document; }
-        catch { document.Dispose(); throw; }
+        return bytes.ToArray();
     }
     private static HttpRequestMessage Request(HttpMethod method, string path, string token)
     {
@@ -173,38 +125,27 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true, NoStore = true };
         return request;
     }
-    private static bool IsRepositoryName(string? repository) => repository is not null
-        && repository.Split('/') is [var owner, var name] && Segment(owner) && Segment(name);
-    private static bool Segment(string value) => value.Length is > 0 and <= 100 && value is not ("." or "..")
-        && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
-    internal static void ValidateRepository(JsonElement repositories, string repositoryId, string repository)
-    {
-        var observed = RepositoryIdentity(repositories);
-        if (observed.Id != Id(repositoryId) || !string.Equals(observed.Name, repository, StringComparison.OrdinalIgnoreCase))
-            throw new IssuanceDenied();
-    }
     // Shape validation is separate from comparison: malformed evidence never proves withdrawal.
-    internal static (long Id, string Name) RepositoryIdentity(JsonElement repositories)
+    private static void ValidateRepository(JsonElement repositories, string repositoryId, string repository)
     {
         if (repositories.ValueKind != JsonValueKind.Array || repositories.GetArrayLength() != 1) throw new IssuanceDenied();
         var id = repositories[0].GetProperty("id").GetInt64();
         var name = repositories[0].GetProperty("full_name").GetString();
         if (id <= 0 || !IsRepositoryName(name)) throw new IssuanceDenied();
-        return (id, name!);
+        if (id != Id(repositoryId) || !string.Equals(name, repository, StringComparison.OrdinalIgnoreCase)) throw new IssuanceDenied();
     }
 
-    private static void RejectDuplicates(JsonElement element)
+    private static bool HasDuplicateMember(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
             var names = new HashSet<string>(StringComparer.Ordinal);
             foreach (var property in element.EnumerateObject())
-            {
-                if (!names.Add(property.Name)) throw new IssuanceDenied();
-                RejectDuplicates(property.Value);
-            }
+                if (!names.Add(property.Name) || HasDuplicateMember(property.Value)) return true;
         }
         else if (element.ValueKind == JsonValueKind.Array)
-            foreach (var child in element.EnumerateArray()) RejectDuplicates(child);
+            foreach (var child in element.EnumerateArray())
+                if (HasDuplicateMember(child)) return true;
+        return false;
     }
 }

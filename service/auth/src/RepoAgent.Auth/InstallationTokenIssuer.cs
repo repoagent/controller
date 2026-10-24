@@ -4,11 +4,15 @@ using Azure;
 using Azure.Data.Tables;
 using Azure.Identity;
 using static RepoAgent.Auth.IssuancePolicy;
+using static RepoAgent.Auth.TableValues;
 
 namespace RepoAgent.Auth;
 
-public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance github, AppJwtSigner signer, TimeProvider clock)
+public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance github, IAppInstallations installations,
+    IControllerApprovals approvals, TimeProvider clock)
 {
+    private readonly ApprovalObserver observer = new(installations, approvals, clock);
+
     public async Task<IssuanceResult> IssueAsync(string deviceId, string? secret, CancellationToken caller, int runtimeVersion = 1)
     {
         using var work = new IssuanceWork(clock);
@@ -33,21 +37,21 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
                 return await ReuseAsync(grant, published, work, caller);
             (grant, runtime) = await store.ReserveAsync(grant, "runtime", work);
             verifier = await store.VerifierAsync(grant, work.Cancellation) ?? throw new IssuanceDenied();
-            var verifierToken = store.Recover(grant, verifier);
-            var jwt = await signer.SignAsync(runtime, work.Cancellation);
+            var verifierToken = new GitHubToken(store.Recover(grant, verifier));
+            var app = await observer.AuthorizeAsync(AppAuthorizationWindow.Read(runtime), work.Cancellation);
             work.Check();
-            var admission = await ObserveAsync(grant, jwt, verifierToken, work);
+            var admission = await ObserveAsync(grant, app, verifierToken, work);
             work.Fresh(admission);
             caller.ThrowIfCancellationRequested();
             runtime = await store.ClaimSendAsync(grant, runtime, work.Cancellation);
             // From the durable send claim onward only the bounded server-owned lifetime controls
             // completion. Client disconnect cannot cancel accounting or cause a replay.
-            known = await github.MintAsync(grant, grant.Profile, jwt, work.Cancellation);
+            known = await github.MintAsync(grant, grant.Profile, app, work.Cancellation);
             runtime = await store.RecordKnownAsync(grant, runtime, known, work.Cancellation);
             if (!known.ScopeValid) throw new IssuanceDenied();
             grant = await store.SnapshotAsync(grant.Partition, grant.DeviceId, work.Cancellation);
             grant.RequireActive(clock.GetUtcNow());
-            var release = await ObserveAsync(grant, jwt, verifierToken, work);
+            var release = await ObserveAsync(grant, app, verifierToken, work);
             work.Fresh(admission);
             work.Fresh(release);
             await store.ReleaseAsync(grant, runtime, verifier, work.Cancellation);
@@ -71,10 +75,10 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
         attempt = reservation.Attempt;
         var verifier = await store.VerifierAsync(grant, work.Cancellation) ?? throw new IssuanceDenied();
         var token = store.Recover(grant, attempt);
-        var jwt = await signer.SignAsync(reservation.Jwt, work.Cancellation);
-        var verifierToken = store.Recover(grant, verifier);
-        var admission = await ObserveAsync(grant, jwt, verifierToken, work);
-        var release = await ObserveAsync(grant, jwt, verifierToken, work);
+        var app = await observer.AuthorizeAsync(AppAuthorizationWindow.Read(reservation.Jwt), work.Cancellation);
+        var verifierToken = new GitHubToken(store.Recover(grant, verifier));
+        var admission = await ObserveAsync(grant, app, verifierToken, work);
+        var release = await ObserveAsync(grant, app, verifierToken, work);
         work.Fresh(admission);
         work.Fresh(release);
         caller.ThrowIfCancellationRequested();
@@ -105,10 +109,10 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
         try
         {
             (grant, attempt) = await store.ReserveAsync(grant, "verification", work);
-            var jwt = await signer.SignAsync(attempt, work.Cancellation);
+            var app = await observer.AuthorizeAsync(AppAuthorizationWindow.Read(attempt), work.Cancellation);
             work.Check();
             attempt = await store.ClaimSendAsync(grant, attempt, work.Cancellation);
-            token = await github.MintAsync(grant, grant.Approval.VerifierProfile, jwt, work.Cancellation);
+            token = await github.MintAsync(grant, grant.Approval.VerifierProfile, app, work.Cancellation);
             attempt = await store.RecordKnownAsync(grant, attempt, token, work.Cancellation);
             if (!token.ScopeValid) throw new IssuanceDenied();
             return attempt;
@@ -120,9 +124,9 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
         }
     }
 
-    private async Task<DateTimeOffset> ObserveAsync(GrantSnapshot grant, string jwt, string verifier, IssuanceWork work)
+    private async Task<DateTimeOffset> ObserveAsync(GrantSnapshot grant, AppAuthorization app, GitHubToken verifier, IssuanceWork work)
     {
-        try { return await github.ObserveAsync(grant, jwt, verifier, work); }
+        try { return await observer.ObserveAsync(grant.BoundApproval(), app, verifier, work); }
         catch (ApprovalChanged)
         {
             await store.CloseChangedApprovalAsync(grant, work.Cancellation);
@@ -145,5 +149,5 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
     private static bool Expected(Exception ex) => ex is IssuanceDenied or RequestFailedException or AuthenticationFailedException
         or HttpRequestException or IOException or InvalidDataException or InvalidCastException or FormatException or JsonException
         or OverflowException or OperationCanceledException or CryptographicException or KeyNotFoundException or InvalidOperationException or ArgumentException
-        or SecretProtectionFailed;
+        or SecretProtectionFailed or GitHubUnavailable;
 }
