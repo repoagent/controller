@@ -13,7 +13,8 @@ namespace RepoAgent.Auth;
 internal sealed class GitHubAppAuthorization(string jwt) : AppAuthorization
 {
     private string Value { get; } = jwt;
-    public static string Jwt(AppAuthorization app) => (app as GitHubAppAuthorization ?? throw new IssuanceDenied()).Value;
+    public static string Jwt(AppAuthorization app) => (app as GitHubAppAuthorization
+        ?? throw new InvalidOperationException("Only GitHubAppInstallations issues the broker's App authorizations.")).Value;
 }
 
 // App installations on GitHub, read with the App's JWT or an installation token.

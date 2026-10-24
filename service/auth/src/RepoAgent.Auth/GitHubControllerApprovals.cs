@@ -22,7 +22,8 @@ internal sealed class GitHubControllerApprovals(GitHubIssuance github) : IContro
     private static string VariablesPath(ApprovalVariable variable) =>
         variable.Contract.IsActions ? $"repos/{GitHubIssuance.RepositoryPath(variable.Repository)}/actions/variables"
         : variable.Contract.IsAgent ? $"repos/{GitHubIssuance.RepositoryPath(variable.Repository)}/agents/variables"
-        : EnvironmentPath(variable.Repository, variable.Environment ?? throw new IssuanceDenied()) + "/variables";
+        : EnvironmentPath(variable.Repository, variable.Environment
+            ?? throw new InvalidOperationException("A setup v1 approval variable names its environment.")) + "/variables";
 
     private static string EnvironmentPath(string repository, string environment) =>
         $"repos/{GitHubIssuance.RepositoryPath(repository)}/environments/{Uri.EscapeDataString(environment)}";
