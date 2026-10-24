@@ -109,7 +109,7 @@ def verify_binding(expected, config=None):
     config = read(Path('/data/config/settings.json')) if config is None else config
     fields = {'repository', 'appId', 'installationId', 'brokerUrl', 'keyPath', 'mentionUser', 'model', 'mode',
               'publicUrl', 'listenPort', 'reconcileInterval', 'toolUpdates', 'webSearch', 'clone', 'enroll', 'repositoryId',
-              'repositorySettings'}
+              'repositorySettings', 'dashboardCategory'}
     if set(config) - fields or any(not isinstance(config.get(key), str) for key in ('repository', 'appId', 'brokerUrl', 'mode')):
         raise ValueError('Invalid runtime settings')
     types = {'clone': bool, 'listenPort': int, 'reconcileInterval': int, 'enroll': list, 'repositoryId': int, 'repositorySettings': bool}
