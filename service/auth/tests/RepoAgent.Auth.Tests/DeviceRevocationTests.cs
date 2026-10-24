@@ -64,9 +64,14 @@ public sealed class DeviceRevocationTests
         Enroll(shape: enrollment => enrollment.State = lifecycle);
         state.Change(GateKey, row => row["State"] = lifecycle);
         var attempt = state.Version(Partition, "attempt:one");
+        // Revocation adds only FirstTerminalAt and removes nothing.
+        var gateFields = state.Row(GateKey)!.Keys.Order().ToList();
+        var enrollmentFields = state.Row(EnrollmentKey())!.Keys.Append("FirstTerminalAt").Order().ToList();
 
         Assert.Equal(204, await RevokeAsync());
 
+        Assert.Equal(gateFields, state.Row(GateKey)!.Keys.Order());
+        Assert.Equal(enrollmentFields, state.Row(EnrollmentKey())!.Keys.Order());
         var (gate, enrollment, receipt) = (state.Get(GateKey)!, state.Get(EnrollmentKey())!, state.Get(ReceiptKey())!);
         Assert.Equal("closed", gate.State);
         Assert.Equal(8L, gate.Sequence);
@@ -161,6 +166,7 @@ public sealed class DeviceRevocationTests
     [InlineData("gate-epoch")]
     [InlineData("expired")]
     [InlineData("expires-during-revocation")]
+    [InlineData("expired-with-unknown-contract")]
     [InlineData("locator-binding")]
     [InlineData("orphan-locator")]
     [InlineData("missing-locator")]
@@ -178,6 +184,9 @@ public sealed class DeviceRevocationTests
             case "device-epoch": state.Change(EnrollmentKey(), row => row["Epoch"] = "old"); break;
             case "gate-epoch": state.Change(GateKey, row => row["Epoch"] = "old"); break;
             case "expired": state.Change(EnrollmentKey(), row => row["ExpiresAt"] = clock.GetUtcNow().AddHours(-1)); break;
+            case "expired-with-unknown-contract":
+                state.Change(EnrollmentKey(), row => (row["ExpiresAt"], row["ApprovalKind"]) = (clock.GetUtcNow().AddHours(-1), "unknown"));
+                break;
             case "locator-binding": state.Change(LocatorKey(), row => row["DeviceId"] = "999"); break;
             case "orphan-locator": state.Change(LocatorKey(), row => row["RepositoryId"] = "999"); break;
             case "missing-locator": state.Remove(LocatorKey()); break;
@@ -249,6 +258,7 @@ public sealed class DeviceRevocationTests
     [Theory]
     [InlineData("string-sequence")]
     [InlineData("int32-sequence")]
+    [InlineData("int32-pending-count")]
     [InlineData("nonfinite-sequence")]
     [InlineData("negative-sequence")]
     [InlineData("secret-hash")]
@@ -268,6 +278,7 @@ public sealed class DeviceRevocationTests
         {
             case "string-sequence": state.Change(GateKey, row => row["Sequence"] = "7"); break;
             case "int32-sequence": state.Change(GateKey, row => row["Sequence"] = 7); break;
+            case "int32-pending-count": state.Change(GateKey, row => row["PendingCount"] = 1); break;
             case "nonfinite-sequence": state.Change(GateKey, row => row["Sequence"] = double.NaN); break;
             case "negative-sequence": state.Change(GateKey, row => row["Sequence"] = -1L); break;
             case "secret-hash": state.Change(EnrollmentKey(), row => row["SecretHash"] = "invalid"); break;
@@ -287,6 +298,7 @@ public sealed class DeviceRevocationTests
 
         Assert.Equal(0, state.Commits);
         AssertUncommitted(before);
+        Assert.InRange(state.Reads, 1, 4); // Corrupt records fail at once and never spend the retry budget.
     }
 
     [Fact]
