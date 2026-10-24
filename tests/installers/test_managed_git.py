@@ -423,6 +423,8 @@ class GitProvider:
         self.lease_offset_minutes = 0
         self.lease_status = 200
         self.requests = []
+        # Authorization headers of installation-token revocations (DELETE /installation/token), in order.
+        self.revocations = []
         self.responses, self.model_requests, self.denied = responses, [], []
         self.model_request_limit = 2
         # Discussion comment/reply nodes keyed by parent node ID, label names keyed by Discussion ID, and EYES subjects in mutation order.
@@ -512,6 +514,9 @@ class GitProvider:
             def do_PATCH(self):
                 self.dispatch()
 
+            def do_DELETE(self):
+                self.dispatch()
+
             def dispatch(self):
                 if self.headers.get('Transfer-Encoding', '').lower() == 'chunked':
                     chunks = []
@@ -552,6 +557,12 @@ class GitProvider:
                 if host == 'api.github.com':
                     if hasattr(provider, 'api_authorizations'):
                         provider.api_authorizations.append(self.headers.get('Authorization', ''))
+                    if self.command == 'DELETE' and self.path == '/installation/token':
+                        provider.revocations.append(self.headers.get('Authorization', ''))
+                        self.send_response(204)
+                        self.send_header('Content-Length', '0')
+                        self.end_headers()
+                        return
                     if getattr(provider, 'webhooks', False) and self.command in ('POST', 'PATCH') and self.path in ('/repos/' + repository + '/hooks', '/repos/' + repository + '/hooks/456'):
                         hook = json.loads(body); provider.hooks.append(hook)
                         return self.reply(dict(id=456, **hook))

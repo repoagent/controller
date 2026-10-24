@@ -150,18 +150,21 @@ public sealed class DiscussionJourney
             Assert.Equal(originalSession, await Session(a));
             Pass("C11", new { session = originalSession });
 
-            await Until(async () => NativeTurnsFinished(await Logs()), "turn completion before the receipt fault fixture");
-            await Control("read-only-credential");
-            var receiptFailure = await Comment(a, "Receipt-failure fixture: this input should be accepted once. Attempt one reply with RECEIPT_FAULT_" + run + "; if publication is denied, report the operational failure and finish without retrying.");
-            try
-            {
-                await Until(async () => (await Logs()).Split('\n').Any(line => line.Contains(" receipt-error ") && line.Contains(receiptFailure["url"]!.ToString())), "real GitHub receipt permission failure after acceptance");
-                Assert.Equal(1, CountAcceptedSources(await Logs(), receiptFailure["id"]!.ToString()));
-                Assert.Equal(0, Eyes(await Source(receiptFailure["id"]!.ToString())));
-            }
-            finally { await Control("restore-credential"); }
-            await StableAcrossPolls(log => CountAcceptedSources(log, receiptFailure["id"]!.ToString()) == 1, "accepted input is not replayed after receipt failure");
-            Pass("C12", new { source = receiptFailure["url"]!.ToString(), mechanism = "real GitHub read-only App token rejects writes; original credential restored", acceptedOnce = true });
+            await Until(async () => NativeTurnsFinished(await Logs()), "turn completion before the credential fault fixture");
+            // The controller holds its App token only in memory: the fixture revokes that live token at GitHub
+            // through the controller's credential handoff, and only a new controller lifetime acquires another.
+            var beforeFault = (await Logs()).Split('\n').Length;
+            await Control("revoke-credential");
+            var outage = await Comment(a, "Credential-revocation fixture: reply once with CREDENTIAL_FAULT_" + run);
+            await Until(async () => (await Logs()).Split('\n').Skip(beforeFault).Any(line => IsEvent(line, "poll-error") && line.Contains("401")),
+                "real GitHub rejection of the revoked controller credential");
+            Assert.Equal(0, CountAcceptedSources(await Logs(), outage["id"]!.ToString()));
+            Assert.Equal(0, Eyes(await Source(outage["id"]!.ToString())));
+            await Control("replace");
+            await Reply(a, "CREDENTIAL_FAULT_" + run, outage["id"]!.ToString());
+            await Receipt(outage["id"]!.ToString());
+            await StableAcrossPolls(log => CountAcceptedSources(log, outage["id"]!.ToString()) == 1, "input from the credential outage is accepted exactly once");
+            Pass("C12", new { source = outage["url"]!.ToString(), mechanism = "real GitHub revoked the controller's in-memory App token; a replacement lifetime acquired a fresh token", acceptedOnce = true });
 
             foreach (var fixture in fixtures)
             {
