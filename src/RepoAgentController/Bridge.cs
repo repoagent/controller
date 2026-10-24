@@ -304,7 +304,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         // Bootstrap context travels with the first batch delivered to the session.
         if (context is not null) waiting["context"] = context;
         var inputs = waiting["inputs"]!.AsArray();
-        var observed = DateTimeOffset.UtcNow.ToString("O");
+        var observed = clock.GetUtcNow().ToString("O");
         for (var index = 0; index < changes.Count; index++)
         {
             var input = new JsonObject { ["observedAt"] = observed, ["change"] = changes[index]!.Copy() };
@@ -367,7 +367,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         catch { admission?.Abandon(); throw; }
         if (selection is null) { admission?.Abandon(); return false; }
         // Durable while the native outcome is unknown; an interrupted lifetime leaves it for redelivery at the next start.
-        var pending = new JsonObject { ["operation"] = create ? "create-and-send" : "send", ["since"] = DateTimeOffset.UtcNow.ToString("O"), ["sourceIds"] = new JsonArray(receipts.Select(receipt => (JsonNode?)JsonValue.Create(receipt.Text("id"))).ToArray()), ["inputs"] = count };
+        var pending = new JsonObject { ["operation"] = create ? "create-and-send" : "send", ["since"] = clock.GetUtcNow().ToString("O"), ["sourceIds"] = new JsonArray(receipts.Select(receipt => (JsonNode?)JsonValue.Create(receipt.Text("id"))).ToArray()), ["inputs"] = count };
         var offered = false;
         var turn = "";
         try
