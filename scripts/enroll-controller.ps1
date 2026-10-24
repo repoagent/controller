@@ -17,13 +17,13 @@ Import-Module "$PSScriptRoot/host-enrollment.psm1" -Force -DisableNameChecking
 $script:Diagnostic = 'Enrollment could not be verified. Inspect host authentication, selected coordinates and private state before retrying.'
 $script:Calls = 0
 $script:Clock = [Diagnostics.Stopwatch]::StartNew()
-$script:Label = 'Actions'
+$script:LocationName = 'Actions'
 function Stop-Enrollment([string]$Message) { $script:Diagnostic = $Message; throw 'Enrollment stopped.' }
 function GitHub([string]$Method, [string]$Endpoint, $Body = $null) {
     $script:Calls++
     if ($script:Calls -gt 12 -or $script:Clock.Elapsed.TotalMinutes -gt 15) { Stop-Enrollment 'GitHub work limit reached; inspect before retrying.' }
     $result = Invoke-HostGitHub $Method $Endpoint $Body
-    if ($result.Status -in @(401, 403, 422)) { Stop-Enrollment "GitHub denied this operation (HTTP $($result.Status)). Check host gh access, repository $($script:Label) variables read/write permission and API availability." }
+    if ($result.Status -in @(401, 403, 422)) { Stop-Enrollment "GitHub denied this operation (HTTP $($result.Status)). Check host gh access, repository $($script:LocationName) variables read/write permission and API availability." }
     return $result
 }
 function Read-Repository {
@@ -37,12 +37,12 @@ function Read-VariableAccess {
     # One listing page proves that host gh can read the selected location. The number of variables
     # never limits enrollment: CI workflows and repository settings share these variables.
     $r = GitHub GET ($variablesPath + '?per_page=1&page=1')
-    if ($r.Status -ne 200) { Stop-Enrollment "Direct repository $($script:Label) variables are unavailable; absence and write access are unconfirmed." }
+    if ($r.Status -ne 200) { Stop-Enrollment "Direct repository $($script:LocationName) variables are unavailable; absence and write access are unconfirmed." }
     $v = Read-HostJson $r.Body
     Assert-Fields $v @('total_count','variables')
-    if (($v.total_count -isnot [long] -and $v.total_count -isnot [int]) -or $v.total_count -lt 0 -or $v.variables -isnot [array] -or $v.variables.Count -ne [Math]::Min(1, $v.total_count)) { Stop-Enrollment "$($script:Label)-variable listing is malformed or incomplete." }
+    if (($v.total_count -isnot [long] -and $v.total_count -isnot [int]) -or $v.total_count -lt 0 -or $v.variables -isnot [array] -or $v.variables.Count -ne [Math]::Min(1, $v.total_count)) { Stop-Enrollment "$($script:LocationName)-variable listing is malformed or incomplete." }
     foreach ($item in $v.variables) {
-        if ($item -isnot [Collections.IDictionary] -or $item.name -isnot [string] -or [string]::IsNullOrEmpty($item.name) -or $item.value -isnot [string]) { Stop-Enrollment "$($script:Label)-variable listing is malformed." }
+        if ($item -isnot [Collections.IDictionary] -or $item.name -isnot [string] -or [string]::IsNullOrEmpty($item.name) -or $item.value -isnot [string]) { Stop-Enrollment "$($script:LocationName)-variable listing is malformed." }
     }
     return $v
 }
@@ -51,13 +51,13 @@ function Confirm-Absent {
     # access, so the 404 is absence; a page that shows the selected name contradicts it.
     $v = Read-VariableAccess
     foreach ($item in $v.variables) {
-        if ($item.name -ieq $ApprovalVariable) { Stop-Enrollment "The selected $($script:Label) variable already exists. Rerun to inspect it; no write was attempted." }
+        if ($item.name -ieq $ApprovalVariable) { Stop-Enrollment "The selected $($script:LocationName) variable already exists. Rerun to inspect it; no write was attempted." }
     }
 }
 function Check-Recovery {
     Assert-Fields $recovery @('version','setupVersion','approvalKind','request','secret','completionId','lastWorkAt','acknowledged','ackAttempted')
     Assert-Id $recovery.version; Assert-Id $recovery.setupVersion
-    if ($recovery.version -ne $setupVersion -or $recovery.setupVersion -ne $setupVersion -or $recovery.approvalKind -cne $approvalKind) { Stop-Enrollment "Recovery state is not $($script:Label)-variable enrollment v$setupVersion; it cannot be migrated or replayed." }
+    if ($recovery.version -ne $setupVersion -or $recovery.setupVersion -ne $setupVersion -or $recovery.approvalKind -cne $approvalKind) { Stop-Enrollment "Recovery state is not $($script:LocationName)-variable enrollment v$setupVersion; it cannot be migrated or replayed." }
     Assert-Fields $recovery.request @('idempotencyId','repositoryId','repository','variable','profile')
     Assert-Id $recovery.request.repositoryId
     Assert-Text $recovery.request.idempotencyId '\A[0-9a-f]{32}\z'
@@ -164,13 +164,14 @@ try {
     $configPath = Join-Path $StateDirectory 'approval.json'; $recoveryPath = Join-Path $StateDirectory 'recovery.json'; $enrollmentPath = Join-Path $StateDirectory 'enrollment.json'
     if ($ApprovalVariable) { $ApprovalVariable = $ApprovalVariable.ToUpperInvariant() }
     if ($BrokerOrigin) { $BrokerOrigin = Get-BrokerOrigin $BrokerOrigin }
+    if ($ApprovalLocation) { $ApprovalLocation = (Get-ApprovalLocation -Location $ApprovalLocation).Location }
     $config = $null
     if (Test-Path -LiteralPath $configPath) {
         $config = Read-PrivateJson $configPath
         $savedKind = Get-ApprovalStateKind $config
         if ($savedKind -ceq 'environment-variable') { Stop-Enrollment 'Legacy Environment enrollment cannot resume through repository-variable setup. Retain its files, revoke/settle old authority separately and use a new state directory for fresh enrollment.' }
         # Saved approvals keep their recorded location; migration is a separate, deliberate fresh enrollment.
-        $savedLocation = if ($savedKind -ceq 'repository-actions-variable') { 'ActionsVariable' } else { 'AgentVariable' }
+        $savedLocation = (Get-ApprovalLocation -Kind $savedKind).Location
         if ($ApprovalLocation -and $ApprovalLocation -cne $savedLocation) { Stop-Enrollment "Saved $savedKind enrollment cannot be reinterpreted as $ApprovalLocation approval. Revoke and settle it, then enroll afresh in a new state directory." }
         $ApprovalLocation = $savedLocation
         foreach ($pair in @(@('Repository','repository'),@('BrokerOrigin','brokerOrigin'),@('ApprovalVariable','approvalVariable'),@('Profile','profile'))) {
@@ -179,12 +180,12 @@ try {
             Set-Variable -Name $pair[0] -Value $config[$pair[1]]
         }
     }
-    if (-not $ApprovalLocation) { $ApprovalLocation = 'ActionsVariable' }
-    $actions = $ApprovalLocation -ceq 'ActionsVariable'
-    $setupVersion = if ($actions) { 3 } else { 2 }
-    $approvalKind = if ($actions) { 'repository-actions-variable' } else { 'repository-agent-variable' }
-    $script:Label = if ($actions) { 'Actions' } else { 'Agent' }
-    $defaultVariable = if ($actions) { 'REPOAGENT_APPROVAL' } else { 'APPROVED_CONTROLLER' }
+    $location = Get-ApprovalLocation -Location $ApprovalLocation
+    $actions = $location.Location -ceq 'ActionsVariable'
+    $setupVersion = $location.SetupVersion
+    $approvalKind = $location.Kind
+    $script:LocationName = $location.Name
+    $defaultVariable = $location.DefaultVariable
     if (-not $Repository -and -not $NonInteractive) { $Repository = Read-Host 'Repository (OWNER/REPO)' }
     if (-not $BrokerOrigin -and -not $NonInteractive) { $BrokerOrigin = Read-Host 'Trusted broker HTTPS origin' }
     if (-not $ApprovalVariable) { $ApprovalVariable = if ($NonInteractive) { $defaultVariable } else { $answer = Read-Host "Approval variable [$defaultVariable]"; if ($answer) { $answer } else { $defaultVariable } } }
@@ -203,7 +204,7 @@ try {
     if ($clone) { $permissionPreview += ', contents:read' }
     if ($Profile.StartsWith('webhook', [StringComparison]::Ordinal)) { $permissionPreview += ', repository_hooks:write' }
     if ($settings) { $permissionPreview += ', actions_variables:read' }
-    $script:Diagnostic = "Supply OWNER/REPO, a trusted HTTPS broker origin, and a valid $($script:Label) approval variable of at most 100 characters."
+    $script:Diagnostic = "Supply OWNER/REPO, a trusted HTTPS broker origin, and a valid $($script:LocationName) approval variable of at most 100 characters."
     Assert-Text $Repository '\A[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\z'
     if (@($Repository.Split('/') | Where-Object { $_ -in @('.', '..') }).Count) { Stop-Enrollment 'Invalid repository.' }
     Assert-Text $ApprovalVariable '\A[A-Za-z_][A-Za-z0-9_]{0,99}\z'
@@ -219,14 +220,14 @@ try {
     } elseif ($config.pendingId -or (Test-Path -LiteralPath $enrollmentPath)) { Stop-Enrollment 'Recovery journal is missing; do not create a replacement enrollment.' }
     Write-Host "Repository: $Repository; broker: $BrokerOrigin; App: 5387625 / repo-agent-connector; profile: $Profile"
     Write-Host "Setup/marker: $setupVersion; controller/runtime: $runtimeVersion; policy: $policy; permissions: $permissionPreview"
-    Write-Host "Repository $($script:Label)-variable approval: $ApprovalVariable; state: $StateDirectory"
+    Write-Host "Repository $($script:LocationName)-variable approval: $ApprovalVariable; state: $StateDirectory"
     if (-not $actions) { Write-Host 'Legacy location: this enrollment stays on repository Agent variables until it is revoked and replaced by a fresh Actions-variable enrollment.' }
-    Write-Host "Apply may start one pending $($script:Label)-variable enrollment, write its validated public marker, save a private device credential and acknowledge it. Existing matching approval is reused; conflicts stop."
+    Write-Host "Apply may start one pending $($script:LocationName)-variable enrollment, write its validated public marker, save a private device credential and acknowledge it. Existing matching approval is reused; conflicts stop."
     if (-not $Apply) { Write-Host 'Read-only plan. Use -Apply to execute. The fresh marker is available only after start.'; exit 0 }
     $script:Diagnostic = 'Private enrollment state could not be verified. Use an owned local directory with mode 0700/0600 on Linux or a current-user-only protected DACL on Windows; do not discard recovery state.'
     $null = Initialize-PrivateDirectory $StateDirectory
     $repoPath = 'repos/' + (($Repository.Split('/') | ForEach-Object { [Uri]::EscapeDataString($_) }) -join '/')
-    $variablesPath = $repoPath + $(if ($actions) { '/actions/variables' } else { '/agents/variables' })
+    $variablesPath = $repoPath + '/' + $location.Path
     $varPath = $variablesPath + '/' + [Uri]::EscapeDataString($ApprovalVariable)
     $brokerSetup = "/v$setupVersion"
     $script:Diagnostic = 'Enrollment transport or document validation failed. Check host gh authentication, broker availability and the saved binding; no automatic repair was attempted.'

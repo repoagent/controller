@@ -228,7 +228,7 @@ try {
     $resolvedProfile = ''
     $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin
     # Saved names are reused; fresh Actions-variable approval uses a REPOAGENT_ name.
-    $ApprovalVariable = Setting ApprovalVariable $(if ($ApprovalVariable) { $ApprovalVariable } elseif ($ApprovalLocation -eq 'AgentVariable') { 'APPROVED_CONTROLLER' } else { 'REPOAGENT_APPROVAL' })
+    $ApprovalVariable = Setting ApprovalVariable $(if ($ApprovalVariable) { $ApprovalVariable } else { (Get-ApprovalLocation -Location $ApprovalLocation).DefaultVariable })
     $AppId = Setting AppId
     $KeyPath = Setting KeyPath
     $InstallationId = Setting InstallationId
