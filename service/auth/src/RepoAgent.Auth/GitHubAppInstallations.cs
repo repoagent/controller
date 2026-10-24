@@ -42,10 +42,13 @@ internal sealed class GitHubAppInstallations(GitHubIssuance github, Cryptography
     public Task<GitHubRead<InstallationRepositories>> RepositoriesAsync(GitHubToken token, CancellationToken ct) =>
         github.ReadAsync("installation/repositories?per_page=2", token.Value, Repositories, ct);
 
+    // A permission level that is not a JSON string is passed on as null, so a permission the broker
+    // does not need never fails the read.
     private static AppInstallation Installation(JsonElement root) => new(root.GetProperty("id").GetInt64(),
         root.GetProperty("app_id").GetInt64(), GitHubIssuance.JsonText(root.GetProperty("app_slug")),
         root.GetProperty("suspended_at").ValueKind != JsonValueKind.Null,
-        root.GetProperty("permissions").EnumerateObject().ToDictionary(p => p.Name, p => GitHubIssuance.JsonText(p.Value), StringComparer.Ordinal));
+        root.GetProperty("permissions").EnumerateObject().ToDictionary(p => p.Name,
+            p => p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : null, StringComparer.Ordinal));
 
     private static InstallationRepositories Repositories(JsonElement root) => new(root.GetProperty("total_count").GetInt32(),
         [.. root.GetProperty("repositories").EnumerateArray()

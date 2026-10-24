@@ -27,7 +27,8 @@ public sealed record AppAuthorizationWindow(DateTimeOffset IssuedAt, DateTimeOff
             ? new(issuedAt, expiresAt) : throw new IssuanceDenied();
 }
 
-public sealed record AppInstallation(long Id, long AppId, string AppSlug, bool Suspended, IReadOnlyDictionary<string, string> Permissions);
+// Permissions maps each permission GitHub lists to its level, or to null when GitHub gave no string level.
+public sealed record AppInstallation(long Id, long AppId, string AppSlug, bool Suspended, IReadOnlyDictionary<string, string?> Permissions);
 
 public sealed record RepositoryIdentity(long Id, string FullName);
 

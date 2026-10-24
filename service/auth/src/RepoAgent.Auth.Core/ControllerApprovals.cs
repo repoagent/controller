@@ -19,6 +19,8 @@ public sealed record ApprovalVariable(ApprovalContract Contract, string Reposito
 
 public sealed record ApprovalEnvironment(long Id, string Name);
 
-public sealed record GitHubVariable(string Name, string Value);
+// A variable as GitHub answered it. Value is null when the answer holds no string value; only the core
+// decides whether that matters, so an unread value elsewhere in a listing never fails the read.
+public sealed record GitHubVariable(string Name, string? Value);
 
 public sealed record GitHubVariablePage(int TotalCount, IReadOnlyList<GitHubVariable> Variables);

@@ -69,6 +69,8 @@ public sealed class ApprovalObserver(IAppInstallations installations, IControlle
         if (environment.Id != approval.EnvironmentId || environment.Name != name) throw new ApprovalChanged();
         work.Read();
         var marker = Value(await approvals.VariableAsync(verifier, variable, work.Cancellation));
+        // A variable without a readable value is no evidence, so it never proves a change.
+        if (marker.Value is null) throw new IssuanceDenied();
         if (marker.Name != approval.Variable || marker.Value != approval.Marker) throw new ApprovalChanged();
         work.Fresh(started);
         return started;
@@ -137,7 +139,8 @@ public sealed class ApprovalObserver(IAppInstallations installations, IControlle
             foreach (var item in listing.Variables)
             {
                 if (!seen.Add(item.Name)) throw new IssuanceDenied();
-                if (item.Name == variable.Name) shown = item.Value == marker;
+                // Only the approval variable's value is read; without a readable value it proves nothing.
+                if (item.Name == variable.Name) shown = (item.Value ?? throw new IssuanceDenied()) == marker;
             }
             if (seen.Count == total && listing.Variables.Count < 100 || seen.Count == total && total == page * 100)
             {
@@ -157,8 +160,8 @@ public sealed class ApprovalObserver(IAppInstallations installations, IControlle
         switch (await approvals.VariableAsync(verifier, variable, work.Cancellation))
         {
             case GitHubRead<GitHubVariable>.Found { Value: var found }:
-                // GitHub answers with the stored name. Another name is malformed evidence, never a change.
-                if (found.Name != variable.Name) throw new IssuanceDenied();
+                // GitHub answers with the stored name. Another name, or no readable value, is malformed evidence, never a change.
+                if (found.Name != variable.Name || found.Value is null) throw new IssuanceDenied();
                 return found.Value == marker;
             case GitHubRead<GitHubVariable>.NotFound:
                 break;

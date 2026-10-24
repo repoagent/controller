@@ -27,6 +27,8 @@ internal sealed class GitHubControllerApprovals(GitHubIssuance github) : IContro
     private static string EnvironmentPath(string repository, string environment) =>
         $"repos/{GitHubIssuance.RepositoryPath(repository)}/environments/{Uri.EscapeDataString(environment)}";
 
+    // A value that is missing or not a JSON string is passed on as null: listings carry values the broker never reads.
     private static GitHubVariable Variable(JsonElement variable) =>
-        new(GitHubIssuance.JsonText(variable.GetProperty("name")), GitHubIssuance.JsonText(variable.GetProperty("value")));
+        new(GitHubIssuance.JsonText(variable.GetProperty("name")),
+            variable.TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null);
 }

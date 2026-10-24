@@ -86,6 +86,7 @@ public sealed class ApprovalObserverTests
     [InlineData("missing-runtime-permission")]
     [InlineData("missing-verifier-permission")]
     [InlineData("read-for-write")]
+    [InlineData("unreadable-runtime-permission")]
     [InlineData("refused")]
     [InlineData("not-found")]
     [InlineData("malformed")]
@@ -101,6 +102,15 @@ public sealed class ApprovalObserverTests
             _ => GitHubRead.Found(Installation(fault))
         };
         Assert.Equal("denied", await ObserveAsync(approval));
+    }
+
+    [Fact]
+    public async Task Unreadable_level_of_a_permission_the_broker_does_not_need_is_ignored()
+    {
+        var approval = Approval("agent");
+        Publish(approval, approval.Marker);
+        github.Installation = GitHubRead.Found(Installation("", ("pages", null)));
+        Assert.Equal("approved", await ObserveAsync(approval));
     }
 
     [Fact]
@@ -172,9 +182,11 @@ public sealed class ApprovalObserverTests
     [InlineData("changed", "changed")]
     [InlineData("removed", "changed")]
     [InlineData("removed-among-unrelated", "changed")]
+    [InlineData("removed-with-unreadable-listing-value", "changed")]
     [InlineData("changed-stale", "denied")]
     [InlineData("removed-stale", "denied")]
     [InlineData("other-name", "denied")]
+    [InlineData("unreadable-value", "denied")]
     [InlineData("refused", "denied")]
     [InlineData("listing-not-found", "denied")]
     [InlineData("listing-refused", "denied")]
@@ -197,6 +209,7 @@ public sealed class ApprovalObserverTests
         github.VariableAnswer = observation switch
         {
             "other-name" => _ => GitHubRead.Found(Variable("REPOAGENT_OTHER")),
+            "unreadable-value" => _ => GitHubRead.Found(new GitHubVariable(approval.Variable, null)),
             "refused" => _ => new GitHubRead<GitHubVariable>.Refused(403),
             _ => null
         };
@@ -208,6 +221,7 @@ public sealed class ApprovalObserverTests
             "listing-of-two" => (_, _) => GitHubRead.Found(new GitHubVariablePage(2, [Variable("A"), Variable("B")])),
             "listing-negative-total" => (_, _) => GitHubRead.Found(new GitHubVariablePage(-1, [])),
             "listing-unnamed-variable" => (_, _) => GitHubRead.Found(new GitHubVariablePage(1, [Variable("")])),
+            "removed-with-unreadable-listing-value" => (_, _) => GitHubRead.Found(new GitHubVariablePage(1, [new("CI_SETTING", null)])),
             _ => null
         };
         Assert.Equal(outcome, await ObserveAsync(approval));
@@ -241,6 +255,7 @@ public sealed class ApprovalObserverTests
     [InlineData("environment-id", "changed")]
     [InlineData("environment-name", "changed")]
     [InlineData("marker", "changed")]
+    [InlineData("unreadable-marker", "denied")]
     [InlineData("environment-refused", "denied")]
     [InlineData("variable-not-found", "denied")]
     public async Task Setup_v1_approval_changes_with_its_environment_or_marker(string observation, string outcome)
@@ -255,6 +270,7 @@ public sealed class ApprovalObserverTests
             _ => github.Environment
         };
         if (observation == "variable-not-found") github.EnvironmentVariables.Clear();
+        if (observation == "unreadable-marker") github.VariableAnswer = _ => GitHubRead.Found(new GitHubVariable(approval.Variable, null));
         Assert.Equal(outcome, await ObserveAsync(approval));
     }
 
@@ -341,6 +357,8 @@ public sealed class ApprovalObserverTests
     [InlineData("shown", "approved")]
     [InlineData("absent", "pending")]
     [InlineData("changed", "pending")]
+    [InlineData("unrelated-without-value", "approved")]
+    [InlineData("approval-without-value", "denied")]
     [InlineData("partial", "denied")]
     [InlineData("listing-not-found", "denied")]
     [InlineData("duplicate-name", "denied")]
@@ -356,6 +374,8 @@ public sealed class ApprovalObserverTests
         github.PageAnswer = observation switch
         {
             "partial" => (_, _) => GitHubRead.Found(new GitHubVariablePage(2, [unrelated])),
+            "unrelated-without-value" => (_, _) => GitHubRead.Found(new GitHubVariablePage(2, [new("APPROVAL", request.Marker), new("UNRELATED", null)])),
+            "approval-without-value" => (_, _) => GitHubRead.Found(new GitHubVariablePage(2, [new("APPROVAL", null), unrelated])),
             "listing-not-found" => (_, _) => new GitHubRead<GitHubVariablePage>.NotFound(),
             "duplicate-name" => (_, _) => GitHubRead.Found(new GitHubVariablePage(2, [unrelated, unrelated])),
             "over-500" => (_, _) => GitHubRead.Found(new GitHubVariablePage(501, [unrelated])),
@@ -421,12 +441,13 @@ public sealed class ApprovalObserverTests
         };
     }
 
-    private static AppInstallation Installation(string fault, params (string Name, string Level)[] grants)
+    private static AppInstallation Installation(string fault, params (string Name, string? Level)[] grants)
     {
-        var permissions = new Dictionary<string, string> { ["discussions"] = "write", ["repository_hooks"] = "write", ["agent_variables"] = "read" };
+        var permissions = new Dictionary<string, string?> { ["discussions"] = "write", ["repository_hooks"] = "write", ["agent_variables"] = "read" };
         if (fault == "missing-runtime-permission") permissions.Remove("repository_hooks");
         if (fault == "missing-verifier-permission") permissions.Remove("agent_variables");
         if (fault == "read-for-write") permissions["repository_hooks"] = "read";
+        if (fault == "unreadable-runtime-permission") permissions["repository_hooks"] = null;
         foreach (var (name, level) in grants) permissions[name] = level;
         return new(fault == "nonpositive-id" ? 0 : 789, fault == "other-app" ? 1 : IssuancePolicy.AppId,
             fault == "other-slug" ? "other-app" : IssuancePolicy.AppSlug, fault == "suspended", permissions);
