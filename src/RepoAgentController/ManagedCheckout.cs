@@ -164,7 +164,8 @@ internal sealed class ManagedCheckout : IDisposable
         try { target = await github.CheckoutCommit(current.Branch, ct); }
         catch (IOException) { throw Deferred("authoritative default-branch lookup unavailable; retry pending"); }
         var previous = metadata.Text("commit");
-        if (target == previous) return false;
+        // An unmoved origin still restores local edits, commits, branch switches and merge state left in the owned checkout.
+        if (target == previous && await Matches(target, ct)) return false;
         var fetched = Path.Combine(Root, ".git", "FETCH_HEAD");
         CheckPath(fetched);
         try
@@ -193,9 +194,18 @@ internal sealed class ManagedCheckout : IDisposable
         if (await Inspect(git, Root, repository, ct) != target) throw Blocked("applied commit differs");
         metadata["commit"] = target;
         SaveFile(record, metadata.ToJsonString(), CheckoutMetadataMode);
-        Log.Write("checkout-refreshed", $"root={Root} commit={target}");
+        Log.Write("checkout-refreshed", $"root={Root} commit={target}" + (target == previous ? " restored=local-changes" : ""));
         return true;
     }
+
+    // The owned checkout is on its default branch at the commit, with no tracked, untracked, hidden or merge-like local state.
+    // Ignored files do not count.
+    async Task<bool> Matches(string commit, CancellationToken ct) =>
+        (await Local(git, Root, ct, "rev-parse", "--symbolic-full-name", "HEAD")).Trim() == "refs/heads/" + repository.Branch &&
+        (await Local(git, Root, ct, "rev-parse", "--verify", "HEAD^{commit}")).Trim() == commit &&
+        await Local(git, Root, ct, "status", "--porcelain=v1", "--untracked-files=all") == "" &&
+        !Hidden(await Local(git, Root, ct, "ls-files", "-v", "-z")).Any() &&
+        !new[] { "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD" }.Any(name => Path.Exists(Path.Combine(Root, ".git", name)));
 
     // Origin is authoritative inside the owned checkout: local edits, commits, branch switches, hidden index flags and
     // merge-like state are discarded. Ignored files and nested repositories stay; other branches and worktrees are untouched.

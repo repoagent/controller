@@ -385,6 +385,41 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual((artifacts / 'result').read_bytes(), b'retained artifact')
                 self.settled(f)
 
+    def test_idle_refresh_restores_local_and_diverged_checkout_while_origin_has_not_moved(self):
+        for case in ('dirty', 'untracked', 'commit', 'branch', 'skip-worktree', 'merge', 'ignored', 'rebase'):
+            with self.subTest(case=case), self.fixture() as f, self.controller(f):
+                initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+                history = f.directory / 'history-worktree'
+                f.git('-C', f.checkout, 'worktree', 'add', '--quiet', '-b', 'history', history, initial)
+                (history / 'README').write_text('historical mutation\n')
+                if case == 'rebase':
+                    # An interrupted operation defers the restore and leaves every local byte in place.
+                    self.diverge(f, 'dirty'); (f.checkout / '.git/rebase-merge').mkdir()
+                    before = self.snapshot(f.checkout)
+                    f.wait('refresh-pending')
+                    self.assertEqual(self.snapshot(f.checkout), before)
+                    continue
+                self.diverge(f, case)
+                agent_branch = f.git('-C', f.checkout, 'rev-parse', 'agent-branch') if case == 'branch' else None
+                if case == 'ignored':
+                    # Ignored caches alone leave the checkout settled: nothing is restored or removed.
+                    for _ in range(3): f.wait('poll-completed success=True')
+                    self.assertFalse(any('checkout-refreshed' in line for line in f.lines))
+                    self.assertEqual((f.checkout / 'local-cache').read_bytes(), b'local bytes')
+                    continue
+                f.wait('checkout-refreshed')
+                print('MATRIX_RESTORE case=' + case + ' origin=' + initial + ' actual=' + f.git('-C', f.checkout, 'rev-parse', 'HEAD'), flush=True)
+                self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
+                self.assertEqual(f.git('-C', f.checkout, 'symbolic-ref', 'HEAD'), 'refs/heads/main')
+                self.assertEqual(f.git('-C', f.checkout, 'status', '--porcelain', '--untracked-files=all'), '')
+                self.assertFalse(any(line[0] == 'S' or line[0].islower() for line in f.git('-C', f.checkout, 'ls-files', '-v').splitlines()))
+                self.assertFalse((f.checkout / '.git/MERGE_HEAD').exists())
+                self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
+                if case == 'branch': self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'agent-branch'), agent_branch)
+                self.assertEqual((history / 'README').read_text(), 'historical mutation\n')
+                self.assertEqual(f.git('-C', history, 'rev-parse', 'HEAD'), initial)
+                self.settled(f)
+
     def test_periodic_refresh_defers_interrupted_operations_and_refuses_unsafe_remote_changes(self):
         for case in ('rebase', 'identity', 'moving-target'):
             with self.subTest(case=case), self.fixture() as f, self.controller(f):
