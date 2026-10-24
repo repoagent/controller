@@ -159,7 +159,8 @@ def run(bridge, port, environment=None):
             except TunnelUnavailable as error:
                 recovery_failed(attempt, str(error))
                 continue
-            if origin is None:
+            # A stop that arrives as connect() returns, such as while it logs, starts no replacement bridge.
+            if origin is None or stopping.is_set():
                 return None, None, attempt
             try:
                 return origin, launch(origin), attempt
