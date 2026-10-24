@@ -193,7 +193,7 @@ public static class BridgeCommand
                         try
                         {
                             var webhooks = publicUrl is null ? null : new DiscussionWebhooks(github, bridge, statePath,
-                                new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), reconciliation);
+                                new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), time, reconciliation);
                             // A long-running controller reports busy or idle in every mode; --once observes once and exits.
                             // Disposed after the webhook is deactivated: the host stops last.
                             await using var host = result.GetValue(once) ? null : await ControllerHost.Start(result.GetValue(statusPort),

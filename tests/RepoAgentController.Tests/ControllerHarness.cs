@@ -201,6 +201,9 @@ static class ControllerHarness
         /// <summary>Advances controlled time without running the one-minute loops early, for delivery backoff.</summary>
         public void Elapse(TimeSpan by) => clock.Elapse(by);
 
+        /// <summary>Completes when the controller next arms a timer of <paramref name="due"/>, such as a webhook body deadline.</summary>
+        public Task Armed(TimeSpan due) => clock.Armed(due);
+
         public void Comment(int discussion, string id, string body)
         {
             if (comments["D" + discussion] is not JsonArray list) comments["D" + discussion] = list = [];
@@ -434,6 +437,7 @@ static class ControllerHarness
         readonly FakeTimeProvider time = new(DateTimeOffset.UtcNow);
         readonly SemaphoreSlim minuteTimers = new(0);
         readonly Channel<ManualTimer> polls = Channel.CreateUnbounded<ManualTimer>();
+        readonly List<(TimeSpan Due, TaskCompletionSource Armed)> arming = [];
         public override DateTimeOffset GetUtcNow() => time.GetUtcNow();
         public override long GetTimestamp() => time.GetTimestamp();
         public override long TimestampFrequency => time.TimestampFrequency;
@@ -448,10 +452,23 @@ static class ControllerHarness
             }
             var timer = time.CreateTimer(callback, state, dueTime, period);
             if (dueTime == TimeSpan.FromMinutes(1)) minuteTimers.Release();
+            lock (arming)
+                foreach (var waiter in arming.Where(waiter => waiter.Due == dueTime).ToList())
+                {
+                    arming.Remove(waiter);
+                    waiter.Armed.TrySetResult();
+                }
             return timer;
         }
 
         public void Elapse(TimeSpan by) => time.Advance(by);
+
+        public Task Armed(TimeSpan due)
+        {
+            var armed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (arming) arming.Add((due, armed));
+            return armed.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        }
 
         public async Task<ManualTimer> NextPoll() => await polls.Reader.ReadAsync(TestContext.Current.CancellationToken).AsTask()
             .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);

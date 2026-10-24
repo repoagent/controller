@@ -16,7 +16,8 @@ sealed record WebhookConfiguration(Uri PublicUrl, int Port, TimeSpan ReconcileIn
 /// Authenticates HTTP deliveries and serializes observations with reconciliation. The controller host serves
 /// <see cref="Receive"/>; <see cref="Run"/> registers the repository webhook and deactivates it when the controller stops.
 /// </summary>
-sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, WebhookConfiguration configuration, CheckoutRefresh? refresh = null)
+sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, WebhookConfiguration configuration, TimeProvider time,
+    CheckoutRefresh? refresh = null)
 {
     readonly Channel<int> work = Channel.CreateUnbounded<int>(new UnboundedChannelOptions { SingleReader = true });
     readonly HashSet<int> queued = [];
@@ -93,9 +94,10 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
         var status = 500;
         try
         {
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stop.Token, context.RequestAborted);
-            deadline.CancelAfter(TimeSpan.FromSeconds(5));
-            status = await Accept(context.Request, registration.Secret, deadline.Token);
+            // The body must arrive within five seconds of the controller's time.
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), time);
+            using var reading = CancellationTokenSource.CreateLinkedTokenSource(stop.Token, context.RequestAborted, deadline.Token);
+            status = await Accept(context.Request, registration.Secret, reading.Token);
         }
         catch (OperationCanceledException) { status = 408; }
         catch (JsonException) { status = 400; }

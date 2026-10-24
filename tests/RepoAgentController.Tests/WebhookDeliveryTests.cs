@@ -70,7 +70,13 @@ public sealed class WebhookDeliveryTests
         foreach (var (name, delivery, expected) in cases)
             Assert.True(expected == await Send(controller, delivery), name);
         Assert.Equal(413, await Announce(controller, 2 * 1024 * 1024 + 1)); // Refused unread.
-        Assert.Equal(408, await Announce(controller, 100)); // The body never arrives within five seconds.
+        // The body never arrives: the receiver answers once five seconds of controlled time have passed.
+        var deadline = controller.Armed(TimeSpan.FromSeconds(5));
+        Assert.Equal(408, await Announce(controller, 100, async () =>
+        {
+            await deadline;
+            controller.Elapse(TimeSpan.FromSeconds(5));
+        }));
 
         Assert.Contains(controller.Log, line => line.Contains(" webhook-rejected reason=repository", StringComparison.Ordinal));
         Assert.Contains(controller.Log, line => line.Contains(" webhook-ping delivery=", StringComparison.Ordinal));
@@ -125,10 +131,11 @@ public sealed class WebhookDeliveryTests
     }
 
     /// <summary>
-    /// Announces a delivery body of <paramref name="length"/> bytes, sends none of it and reads the answer. A receiver that
-    /// refuses a body unread closes the connection, so a client still sending it could not read the status.
+    /// Announces a delivery body of <paramref name="length"/> bytes, sends none of it, runs <paramref name="meanwhile"/> and
+    /// reads the answer. A receiver that refuses a body unread closes the connection, so a client still sending it could not
+    /// read the status.
     /// </summary>
-    static async Task<int> Announce(Controller controller, int length)
+    static async Task<int> Announce(Controller controller, int length, Func<Task>? meanwhile = null)
     {
         using var client = new System.Net.Sockets.TcpClient();
         await client.ConnectAsync(IPAddress.Loopback, controller.WebhookPort, TestContext.Current.CancellationToken);
@@ -136,7 +143,9 @@ public sealed class WebhookDeliveryTests
         await stream.WriteAsync(Encoding.ASCII.GetBytes($"POST /github/webhook HTTP/1.1\r\nHost: 127.0.0.1\r\nX-GitHub-Event: discussion\r\n" +
             $"X-GitHub-Delivery: {Guid.NewGuid()}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n"),
             TestContext.Current.CancellationToken);
-        var status = await new StreamReader(stream, Encoding.ASCII).ReadLineAsync(TestContext.Current.CancellationToken);
+        if (meanwhile is not null) await meanwhile();
+        var status = await new StreamReader(stream, Encoding.ASCII).ReadLineAsync(TestContext.Current.CancellationToken)
+            .AsTask().WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         return int.Parse(status!.Split(' ')[1]);
     }
 

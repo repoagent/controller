@@ -39,6 +39,9 @@ sealed class ControllerHost : IAsyncDisposable
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             kestrel.AddServerHeader = false;
+            // The webhook receiver's own five-second body deadline runs on the controller's TimeProvider. Kestrel's minimum
+            // body data rate would race it on the wall clock and turn a stalled delivery into a 500 instead of a 408.
+            kestrel.Limits.MinRequestBodyDataRate = null;
             kestrel.ListenLocalhost(statusPort);
             if (webhooks is { } receiver) kestrel.ListenAnyIP(receiver.Port);
         });
