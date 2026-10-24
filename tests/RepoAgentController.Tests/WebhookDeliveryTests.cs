@@ -103,33 +103,6 @@ public sealed class WebhookDeliveryTests
         Assert.Contains(controller.Log, line => line.EndsWith(" webhook-disabled hook=7"));
     }
 
-    const string Unsigned = "\0";
-    static readonly HttpClient Client = new();
-
-    /// <summary>A delivery as GitHub sends it; unless a signature is given, it is signed with the registered secret.</summary>
-    sealed record Delivery(string Body)
-    {
-        public string? Event { get; init; } = "discussion";
-        public string? Id { get; init; } = Guid.NewGuid().ToString();
-        public string? Signature { get; init; }
-        public string Method { get; init; } = "POST";
-        public string Path { get; init; } = "/github/webhook";
-    }
-
-    static async Task<HttpStatusCode> Send(Controller controller, Delivery delivery)
-    {
-        using var request = new HttpRequestMessage(new HttpMethod(delivery.Method), $"http://127.0.0.1:{controller.WebhookPort}{delivery.Path}")
-        {
-            Content = new StringContent(delivery.Body, Encoding.UTF8, "application/json")
-        };
-        if (delivery.Event is not null) request.Headers.Add("X-GitHub-Event", delivery.Event);
-        if (delivery.Id is not null) request.Headers.Add("X-GitHub-Delivery", delivery.Id);
-        var signature = delivery.Signature ?? Signature(controller, delivery.Body);
-        if (signature != Unsigned) request.Headers.TryAddWithoutValidation("X-Hub-Signature-256", signature);
-        using var response = await Client.SendAsync(request, TestContext.Current.CancellationToken);
-        return response.StatusCode;
-    }
-
     /// <summary>
     /// Announces a delivery body of <paramref name="length"/> bytes, sends none of it, runs <paramref name="meanwhile"/> and
     /// reads the answer. A receiver that refuses a body unread closes the connection, so a client still sending it could not
@@ -148,19 +121,4 @@ public sealed class WebhookDeliveryTests
             .AsTask().WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         return int.Parse(status!.Split(' ')[1]);
     }
-
-    static string Signature(Controller controller, string body)
-    {
-        var secret = controller.Hooks[0]["input"]!["config"]!.Text("secret");
-        return "sha256=" + Convert.ToHexStringLower(HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(body)));
-    }
-
-    static string Event(int? number, string action = "created", string repository = "owner/repository",
-        (string Login, string Type)? sender = null) => new JsonObject
-    {
-        ["action"] = action,
-        ["repository"] = new JsonObject { ["full_name"] = repository, ["id"] = 1 },
-        ["discussion"] = number is null ? new JsonObject() : new JsonObject { ["number"] = number, ["user"] = new JsonObject { ["login"] = "participant", ["type"] = "User" }, ["body"] = "Hello" },
-        ["sender"] = new JsonObject { ["login"] = sender?.Login ?? "participant", ["type"] = sender?.Type ?? "User" }
-    }.ToJsonString();
 }

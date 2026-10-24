@@ -1414,9 +1414,12 @@ class CheckoutRefreshTests(unittest.TestCase):
                 discussions = json.loads(f.state.read_text())['discussions']
                 self.assertEqual(sorted(discussions), ['D2'], 'Waiting input, running and checkpoint state of D1 must be forgotten')
                 self.assertEqual(discussions['D2'], saved['D2'], 'Unrelated session and checkpoints must survive')
+                running = lambda: json.loads(f.run(self.controller_command + ['status', '--state', f.state]))['work']['running']
+                self.assertEqual(running(), 1, 'Status must count T1 while the agent still runs it')
                 # The native ends the turn: its slot frees and the forgotten input is never sent.
                 self.terminal(f, 'S1', 'T1')
                 f.wait('native-event method=turn/completed thread=S1 turn=T1')
+                self.assertEqual(running(), 0)
                 f.provider.discussions[0]['body'] += ' after the deletion'
                 self.assertEqual(self.delivery(f, self.discussion_event(2)), 202)
                 request = self.rpc(f, 'turn/start'); self.assertEqual(request['params']['threadId'], 'S2')

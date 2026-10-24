@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
@@ -28,6 +29,54 @@ static class ControllerHarness
         probe.Start();
         return ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
     }
+
+    /// <summary>A <see cref="Delivery.Signature"/> that sends no signature header.</summary>
+    public const string Unsigned = "\0";
+    static readonly HttpClient Client = new();
+
+    /// <summary>A repository webhook delivery as GitHub sends it; unless a signature is given, it is signed with the registered secret.</summary>
+    internal sealed record Delivery(string Body)
+    {
+        public string? Event { get; init; } = "discussion";
+        public string? Id { get; init; } = Guid.NewGuid().ToString();
+        public string? Signature { get; init; }
+        public string Method { get; init; } = "POST";
+        public string Path { get; init; } = "/github/webhook";
+    }
+
+    /// <summary>Sends a delivery to the controller's webhook receiver and returns its status code.</summary>
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    internal static async Task<HttpStatusCode> Send(Controller controller, Delivery delivery)
+    {
+        using var request = new HttpRequestMessage(new HttpMethod(delivery.Method), $"http://127.0.0.1:{controller.WebhookPort}{delivery.Path}")
+        {
+            Content = new StringContent(delivery.Body, Encoding.UTF8, "application/json")
+        };
+        if (delivery.Event is not null) request.Headers.Add("X-GitHub-Event", delivery.Event);
+        if (delivery.Id is not null) request.Headers.Add("X-GitHub-Delivery", delivery.Id);
+        var signature = delivery.Signature ?? Signature(controller, delivery.Body);
+        if (signature != Unsigned) request.Headers.TryAddWithoutValidation("X-Hub-Signature-256", signature);
+        using var response = await Client.SendAsync(request, TestContext.Current.CancellationToken);
+        return response.StatusCode;
+    }
+
+    /// <summary>The signature GitHub sends for <paramref name="body"/>, with the secret the controller registered.</summary>
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    internal static string Signature(Controller controller, string body)
+    {
+        var secret = controller.Hooks[0]["input"]!["config"]!.Text("secret");
+        return "sha256=" + Convert.ToHexStringLower(HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(body)));
+    }
+
+    /// <summary>A Discussion event payload for the controlled repository, unless another is named.</summary>
+    public static string Event(int? number, string action = "created", string repository = "owner/repository",
+        (string Login, string Type)? sender = null) => new JsonObject
+    {
+        ["action"] = action,
+        ["repository"] = new JsonObject { ["full_name"] = repository, ["id"] = 1 },
+        ["discussion"] = number is null ? new JsonObject() : new JsonObject { ["number"] = number, ["user"] = new JsonObject { ["login"] = "participant", ["type"] = "User" }, ["body"] = "Hello" },
+        ["sender"] = new JsonObject { ["login"] = sender?.Login ?? "participant", ["type"] = sender?.Type ?? "User" }
+    }.ToJsonString();
 
     /// <summary>One native turn the controlled peer accepted, with the Discussion its envelope carried.</summary>
     internal sealed record Turn(string Thread, string Id, int Discussion, JsonNode Envelope);
@@ -137,6 +186,13 @@ static class ControllerHarness
             Save();
         }
 
+        /// <summary>Deletes a Discussion, as GitHub does; a delivery for it then finds it gone.</summary>
+        public void Delete(int number)
+        {
+            discussions.Remove(discussions.Single(discussion => discussion!["number"]!.GetValue<int>() == number));
+            Save();
+        }
+
         /// <summary>Waits for the <paramref name="occurrence"/>th log line containing <paramref name="fragment"/>, failing fast if the controller exits.</summary>
         public async Task<string> Logged(string fragment, int occurrence = 1)
         {
@@ -181,11 +237,17 @@ static class ControllerHarness
             return turn;
         }
 
+        /// <summary>The operator status that the public status command prints for this controller's state.</summary>
+        public async Task<JsonNode> OperatorStatus()
+        {
+            Assert.Equal(0, await BridgeCommand.Run(["status", "--state", state]));
+            return JsonNode.Parse(Log.Last(line => line.StartsWith('{')))!;
+        }
+
         /// <summary>Discussions with input waiting in the controller, from the public status command.</summary>
         public async Task<int[]> Waiting()
         {
-            Assert.Equal(0, await BridgeCommand.Run(["status", "--state", state]));
-            var status = JsonNode.Parse(Log.Last(line => line.StartsWith('{')))!;
+            var status = await OperatorStatus();
             var waiting = status["sessions"]!.AsArray().Where(session => session!["waiting"] is not null).ToArray();
             Assert.Equal(waiting.Sum(session => session!["waiting"]!.GetValue<int>()), status["work"]!["waiting"]!.GetValue<int>());
             return [.. waiting.Select(session => int.Parse(session!["discussion"]!.GetValue<string>().Split('/')[^1]))];
@@ -285,7 +347,11 @@ static class ControllerHarness
             if 'addReaction' in query:reply({'data':{'addReaction':{'reaction':{'id':'R-'+variables['id']}}}})
             elif 'query { viewer' in query:reply({'data':{'viewer':{'login':'test-app[bot]'}}})
             elif 'discussions(' in query:reply({'data':{'repository':{'discussions':page([message(d) for d in world['discussions']])}}})
-            elif 'discussion(number:' in query:reply({'data':{'repository':{'discussion':next((message(d) for d in world['discussions'] if d['number']==variables['number']),None)}}})
+            elif 'discussion(number:' in query:
+             found=[message(d) for d in world['discussions'] if d['number']==variables['number']]
+             # GitHub's recorded response for a deleted Discussion in a resolved repository.
+             reply({'data':{'repository':{'discussion':found[0]}}} if found else {'data':{'repository':{'discussion':None}},'errors':[{'type':'NOT_FOUND','path':['repository','discussion'],
+              'locations':[{'line':1,'column':60}],'message':'Could not resolve to a Discussion with the number of %d.'%variables['number']}]})
             elif 'comments(' in query:reply({'data':{'node':{'comments':page([message(c) for c in world['comments'].get(variables['id'],[])])}}})
             elif 'replies(' in query:reply({'data':{'node':{'replies':page([])}}})
             elif 'reactions(' in query:reply({'data':{'node':{'reactions':page([])}}})

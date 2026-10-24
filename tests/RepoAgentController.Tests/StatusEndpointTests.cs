@@ -45,6 +45,29 @@ public sealed class StatusEndpointTests
     }
 
     [Fact]
+    public async Task A_turn_whose_Discussion_was_deleted_keeps_the_controller_busy_until_the_agent_ends_it()
+    {
+        await using var controller = new Controller(discussions: 1);
+        await controller.StartWebhooks();
+        var turn = await controller.Turn(1);
+
+        // The controller forgets the deleted Discussion's record, but the agent still runs its turn.
+        controller.Delete(1);
+        Assert.Equal(System.Net.HttpStatusCode.Accepted, await Send(controller, new(Event(1, action: "deleted"))));
+        await controller.Logged($" discussion-forgotten {Url(1)} ");
+        var status = await controller.Status();
+        AssertStatus("""{"state":"busy","work":{"sessions":0,"pending":0,"retrying":0,"waiting":0,"running":1,"limit":4,"admissionBlocked":null}}""",
+            status);
+        AssertStatus(status["work"]!.ToJsonString(), (await controller.OperatorStatus())["work"]!);
+
+        await controller.Finish(turn);
+        status = await controller.Status();
+        AssertStatus("""{"state":"idle","work":{"sessions":0,"pending":0,"retrying":0,"waiting":0,"running":0,"limit":4,"admissionBlocked":null}}""",
+            status);
+        AssertStatus(status["work"]!.ToJsonString(), (await controller.OperatorStatus())["work"]!);
+    }
+
+    [Fact]
     public async Task Input_waiting_to_retry_a_delivery_keeps_the_controller_busy_without_a_running_turn()
     {
         await using var controller = new Controller(discussions: 1);

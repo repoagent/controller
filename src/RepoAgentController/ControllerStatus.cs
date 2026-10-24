@@ -101,6 +101,24 @@ sealed class ControllerStatus : IDisposable
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// Records the agent sessions running a turn in this lifetime. GitHub's deletion of a Discussion forgets its record while
+    /// the agent still runs its turn, so work counts that turn by its session until the agent ends it.
+    /// </summary>
+    public void Running(string[] sessions)
+    {
+        lock (gate)
+        {
+            var current = sessions.Order(StringComparer.Ordinal).ToArray();
+            if (closed || ((runtime["runningSessions"] as JsonArray)?.Select(session => session.OptionalText()) ?? []).SequenceEqual(current)) return;
+            // Recorded only while a turn runs. Status output copies named fields only, so this stays internal.
+            if (current.Length == 0) runtime.Remove("runningSessions");
+            else runtime["runningSessions"] = new JsonArray(current.Select(session => (JsonNode?)JsonValue.Create(session)).ToArray());
+            Save();
+        }
+        Changed?.Invoke();
+    }
+
     /// <summary>A detached snapshot for in-process consumers such as status publication.</summary>
     public JsonObject Snapshot()
     {
@@ -130,12 +148,13 @@ sealed class ControllerStatus : IDisposable
         // Turns end with their lifetime, so only a running controller can report one.
         var live = recorded?["controller"]?.Text("state") is "starting" or "running";
         var sessions = new JsonArray();
+        var held = new HashSet<string>(StringComparer.Ordinal);
         int pending = 0, retrying = 0, running = 0, started = 0, waiting = 0;
         foreach (var (_, value) in state?["discussions"] as JsonObject ?? new JsonObject())
         {
             if (value is not JsonObject discussion) continue;
             var session = discussion.Text("sessionId");
-            if (session.Length != 0) started++;
+            if (session.Length != 0) { started++; held.Add(session); }
             var marker = discussion["pending"];
             // A failed or unacknowledged delivery waiting for its next attempt.
             var retry = discussion["waiting"]?["retry"];
@@ -153,6 +172,8 @@ sealed class ControllerStatus : IDisposable
             if (discussion["waiting"]?["inputs"] is JsonArray inputs && inputs.Count != 0) { item["waiting"] = inputs.Count; waiting += inputs.Count; }
             sessions.Add((JsonNode)item);
         }
+        // A turn whose Discussion record was forgotten still runs, and holds its slot, until the agent ends it.
+        if (live && recorded?["runningSessions"] is JsonArray turns) running += turns.Count(turn => turn.OptionalText() is { } session && !held.Contains(session));
         return new JsonObject
         {
             ["version"] = 1,
