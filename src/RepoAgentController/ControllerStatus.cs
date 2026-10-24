@@ -103,7 +103,8 @@ sealed class ControllerStatus : IDisposable
 
     /// <summary>
     /// Records the agent sessions running a turn in this lifetime. GitHub's deletion of a Discussion forgets its record while
-    /// the agent still runs its turn, so work counts that turn by its session until the agent ends it.
+    /// the agent still runs its turn, so work counts that turn by its session until the agent ends it. Each call replaces the
+    /// last, so calls must arrive in the order the sessions changed.
     /// </summary>
     public void Running(string[] sessions)
     {

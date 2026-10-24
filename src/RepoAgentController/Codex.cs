@@ -39,8 +39,11 @@ sealed class Codex : IAsyncDisposable
     readonly List<TurnOutcome> ended = [];
     /// <summary>Raised on the native reader after a status report, turn completion or transport loss.</summary>
     public event Action? StatusChanged;
-    /// <summary>Raised when the sessions running a turn may have changed: as <see cref="StatusChanged"/>, and after a turn is accepted.</summary>
-    public event Action? TurnsChanged;
+    /// <summary>
+    /// Raised with the sessions running a turn whenever they may have changed: as <see cref="StatusChanged"/>, and after a turn is
+    /// accepted. Raised under the turn lock, so handlers see every change in order; they must not wait for another thread.
+    /// </summary>
+    public event Action<string[]>? TurnsChanged;
 
     /// <summary>A turn the native reported completed with its native status, and whether the provider rejected the Codex account credentials for it.</summary>
     public sealed record TurnOutcome(string Session, string Turn, string Status, bool CredentialsRejected);
@@ -89,16 +92,13 @@ sealed class Codex : IAsyncDisposable
                     changed = true;
                 }
             }
+            if (changed) TurnsChanged?.Invoke([.. Running()]);
         }
         // The refresh journal records the same event before a dispatch can be woken by it.
         refresh?.Observe(source, method, parameters);
         // Before waking dispatch, so input never follows a rejected turn.
         if (completion is not null) Authentication(parameters!, completion);
-        if (changed)
-        {
-            TurnsChanged?.Invoke();
-            StatusChanged?.Invoke();
-        }
+        if (changed) StatusChanged?.Invoke();
     }
 
     // Caller holds statusLock.
@@ -129,8 +129,6 @@ sealed class Codex : IAsyncDisposable
     public bool Loaded(string id) { lock (statusLock) return resumed.Contains(id); }
     /// <summary>Sessions running a native turn in this process; idle, unloaded and failed sessions are not counted.</summary>
     public int ActiveTurns { get { lock (statusLock) return Running().Count(); } }
-    /// <summary>The sessions that <see cref="ActiveTurns"/> counts.</summary>
-    public string[] RunningSessions { get { lock (statusLock) return [.. Running()]; } }
 
     /// <summary>
     /// Takes the turns completed since the last call, together with the sessions still running a turn. Read atomically, so a
@@ -363,8 +361,8 @@ sealed class Codex : IAsyncDisposable
             // Native reports active only after this response, and its completion can overtake it.
             if (!finished.Remove((id, turn)) && response["turn"]!["status"]?.ToString() is not ("completed" or "interrupted" or "failed"))
                 turns[id] = turn;
+            TurnsChanged?.Invoke([.. Running()]);
         }
-        TurnsChanged?.Invoke();
         admission?.Accepted(id, turn);
         Log.Write("native-accepted", $"session={id} model={selection.Model} effort={selection.Effort} selection={selection.Source} turn={turn}");
         return turn;

@@ -172,7 +172,7 @@ public static class BridgeCommand
                         await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, reconciliation, credentials.BrokerCredentialLost,
                             suppliedCredentials: agentCredentials is not null);
                         // Status counts a turn by its session too, so it stays running after its Discussion record is forgotten.
-                        codex.TurnsChanged += () => status.Running(codex.RunningSessions);
+                        codex.TurnsChanged += status.Running;
                         await using var managedRefresh = reconciliation;
                         await codex.Initialize(runtimeToken);
                         if (reconciliation is not null) await reconciliation.Start(codex,
