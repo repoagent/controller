@@ -311,6 +311,43 @@ public sealed class ControllerDashboardTests
         Assert.Equal(1, controller.Writes("categories"));
     }
 
+    // The release check's one remaining process-level test, kept until the dashboard moves into the core (PR 4 of #203):
+    // the controller's options reach the check, and a later hourly check's outcome reaches the republished dashboard.
+    // BaselineReleaseCheckTests and ControllerDashboardUpdatesTests own the decisions and the rendered text.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Newer_baseline_release_reaches_the_dashboard_after_a_later_hourly_check(bool startupToolUpdates)
+    {
+        using var controller = new Controller();
+        var running = controller.Inventory("running");
+        var current = controller.Publish(101, running);
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = controller.Run(shutdown.Token, ["--dashboard-category", Category, "--image-inventory", running, .. (startupToolUpdates ? ["--startup-tool-updates"] : Array.Empty<string>())]);
+        try
+        {
+            var first = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains(ReleaseUrl(current)) ? dashboard : null);
+            TestContext.Current.TestOutputHelper?.WriteLine(first.Body);
+            Assert.Matches(startupToolUpdates ? @"### Updates\n\*\*Release identity uncertain\*\*[^\n]*startup tool updates"
+                : @"### Updates\nThis controller's image matches \[" + Regex.Escape(current) + @"\][^\n]*newest", first.Body);
+
+            var newest = controller.Publish(102, controller.Inventory("newest", gh: "2.103.1"));
+            var later = await Until(() =>
+            {
+                controller.Clock.Advance(TimeSpan.FromMinutes(5));
+                return controller.Dashboard() is { } dashboard && dashboard.Body.Contains(ReleaseUrl(newest)) ? dashboard : null;
+            });
+            TestContext.Current.TestOutputHelper?.WriteLine(later.Body);
+            Assert.Matches(startupToolUpdates
+                ? @"### Updates\n\*\*Release identity uncertain\*\*[^\n]*startup tool updates[^\n]*matches \[" + Regex.Escape(current) + @"\][^\n]*\n- Newest published baseline release: \[" + Regex.Escape(newest) + @"\]"
+                : @"### Updates\n\*\*Update available:\*\* baseline release \[" + Regex.Escape(newest) + @"\][^\n]*\[" + Regex.Escape(current) + @"\]\([^)\n]*\) \(1 newer release;", later.Body);
+        }
+        finally { await shutdown.CancelAsync(); }
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    static string ReleaseUrl(string tag) => "https://github.com/repoagent/controller/releases/tag/" + tag;
+
     sealed class CapturedConsole : IDisposable
     {
         readonly TextWriter previous = Console.Out;
@@ -465,6 +502,68 @@ public sealed class ControllerDashboardTests
             });
             return url;
         }
+
+        /// <summary>Writes an image inventory, as image composition embeds it, with these bundled tool versions.</summary>
+        public string Inventory(string name, string gh = "2.102.0", string codex = "0.163.0")
+        {
+            var file = Path.Combine(fixture.Directory, "images", name, "image-inventory.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            File.WriteAllText(file, new JsonObject
+            {
+                ["agent"] = new JsonObject { ["profile"] = "codex", ["version"] = codex },
+                ["controller"] = new JsonObject { ["sha256"] = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(name))), ["source"] = "checkout" },
+                ["githubCli"] = new JsonObject { ["version"] = gh }
+            }.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }) + "\n");
+            return file;
+        }
+
+        /// <summary>
+        /// Publishes the baseline release that the real release publisher (scripts/delivery/image-release.py) renders for an
+        /// image with this inventory, adding it to repoagent/controller's releases as GitHub lists them, newest first. Returns its tag.
+        /// </summary>
+        public string Publish(long run, string inventory)
+        {
+            var artifact = Path.Combine(fixture.Directory, "artifacts", run.ToString(CultureInfo.InvariantCulture));
+            Directory.CreateDirectory(artifact);
+            File.Copy(inventory, Path.Combine(artifact, "image-inventory.json"));
+            var tools = JsonNode.Parse(File.ReadAllText(inventory))!;
+            File.WriteAllText(Path.Combine(artifact, "versions.txt"),
+                $"gh version {tools["githubCli"]!["version"]} (2026-10-01)\nhttps://github.com/cli/cli/releases/latest\ncodex-cli {tools["agent"]!["version"]}\n");
+            string Digest(string seed) => Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(seed + run)));
+            File.WriteAllText(Path.Combine(artifact, "build.json"), new JsonObject { ["containerimage.config.digest"] = "sha256:" + Digest("config") }.ToJsonString());
+            var commit = Digest("commit")[..40];
+            var start = new System.Diagnostics.ProcessStartInfo("python3") { RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var argument in new[] { "-I", "-c", RenderRelease, Path.Combine(RepositoryRoot, "scripts/delivery/image-release.py"), artifact }) start.ArgumentList.Add(argument);
+            start.Environment["GITHUB_SHA"] = commit;
+            start.Environment["IMAGE"] = "ghcr.io/repoagent/controller@sha256:" + Digest("manifest");
+            start.Environment["REFERENCE"] = $"ghcr.io/repoagent/controller:sha-{commit}-{run}-1";
+            start.Environment["GITHUB_SERVER_URL"] = "https://github.com";
+            start.Environment["GITHUB_REPOSITORY"] = "repoagent/controller";
+            start.Environment["GITHUB_RUN_ID"] = run.ToString(CultureInfo.InvariantCulture);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            Assert.True(process.ExitCode == 0, "The release publisher refused the fixture: " + error);
+            var rendered = JsonNode.Parse(output)!;
+            var tag = rendered["tag"]!.GetValue<string>();
+            Update(state => state["releases"]!.AsArray().Insert(0, new JsonObject
+            {
+                ["tag_name"] = tag, ["name"] = tag, ["draft"] = false, ["prerelease"] = false,
+                ["html_url"] = "https://github.com/repoagent/controller/releases/tag/" + tag, ["published_at"] = Clock.GetUtcNow().ToString("O"),
+                ["body"] = rendered["body"]!.GetValue<string>()
+            }));
+            return tag;
+        }
+
+        static readonly string RepositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
+
+        const string RenderRelease = """
+            import importlib.util,json,pathlib,sys
+            spec=importlib.util.spec_from_file_location('image_release',sys.argv[1]);publisher=importlib.util.module_from_spec(spec);spec.loader.exec_module(publisher)
+            value=publisher.describe(pathlib.Path(sys.argv[2]))
+            print(json.dumps({'tag':value['release'],'body':publisher.notes(value)}))
+            """;
 
         public Task<int> RunOnce(params string[] extra) =>
             BridgeCommand.Run([.. Arguments, "--once", .. extra], appHttp ?? fixture.Http, fixture.Gh, fixture.Clock, TestContext.Current.CancellationToken);
