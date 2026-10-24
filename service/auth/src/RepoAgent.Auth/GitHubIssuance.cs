@@ -61,18 +61,18 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         {
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if (response.StatusCode == HttpStatusCode.NotFound) return new GitHubRead<T>.NotFound();
-            if (response.StatusCode != HttpStatusCode.OK) return new GitHubRead<T>.Refused((int)response.StatusCode);
-            if (await BodyAsync(response, timeout.Token) is not { } body) return new GitHubRead<T>.Malformed(GitHubDefect.Oversized);
+            if (response.StatusCode != HttpStatusCode.OK) return new GitHubRead<T>.Refused();
+            if (await BodyAsync(response, timeout.Token) is not { } body) return new GitHubRead<T>.Malformed();
             JsonDocument document;
             try { document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 32 }); }
-            catch (JsonException) { return new GitHubRead<T>.Malformed(GitHubDefect.Unparseable); }
+            catch (JsonException) { return new GitHubRead<T>.Malformed(); }
             using (document)
             {
-                if (HasDuplicateMember(document.RootElement)) return new GitHubRead<T>.Malformed(GitHubDefect.DuplicateMember);
+                if (HasDuplicateMember(document.RootElement)) return new GitHubRead<T>.Malformed();
                 try { return GitHubRead.Found(fact(document.RootElement)); }
                 catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or FormatException)
                 {
-                    return new GitHubRead<T>.Malformed(GitHubDefect.Shape);
+                    return new GitHubRead<T>.Malformed();
                 }
             }
         }

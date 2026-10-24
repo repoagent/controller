@@ -96,9 +96,9 @@ public sealed class ApprovalObserverTests
         Publish(approval, approval.Marker);
         github.Installation = fault switch
         {
-            "refused" => new GitHubRead<AppInstallation>.Refused(403),
+            "refused" => new GitHubRead<AppInstallation>.Refused(),
             "not-found" => new GitHubRead<AppInstallation>.NotFound(),
-            "malformed" => new GitHubRead<AppInstallation>.Malformed(GitHubDefect.Shape),
+            "malformed" => new GitHubRead<AppInstallation>.Malformed(),
             _ => GitHubRead.Found(Installation(fault))
         };
         Assert.Equal("denied", await ObserveAsync(approval));
@@ -157,8 +157,8 @@ public sealed class ApprovalObserverTests
             "nonpositive-id" => Repositories(1, new RepositoryIdentity(0, "owner/project")),
             "name-without-owner" => Repositories(1, new RepositoryIdentity(123456, "project")),
             "dot-segment" => Repositories(1, new RepositoryIdentity(123456, "owner/..")),
-            "refused" => new GitHubRead<InstallationRepositories>.Refused(403),
-            _ => new GitHubRead<InstallationRepositories>.Malformed(GitHubDefect.DuplicateMember)
+            "refused" => new GitHubRead<InstallationRepositories>.Refused(),
+            _ => new GitHubRead<InstallationRepositories>.Malformed()
         };
         Assert.Equal("denied", await ObserveAsync(approval));
     }
@@ -210,13 +210,13 @@ public sealed class ApprovalObserverTests
         {
             "other-name" => _ => GitHubRead.Found(Variable("REPOAGENT_OTHER")),
             "unreadable-value" => _ => GitHubRead.Found(new GitHubVariable(approval.Variable, null)),
-            "refused" => _ => new GitHubRead<GitHubVariable>.Refused(403),
+            "refused" => _ => new GitHubRead<GitHubVariable>.Refused(),
             _ => null
         };
         github.PageAnswer = observation switch
         {
             "listing-not-found" => (_, _) => new GitHubRead<GitHubVariablePage>.NotFound(),
-            "listing-refused" => (_, _) => new GitHubRead<GitHubVariablePage>.Refused(403),
+            "listing-refused" => (_, _) => new GitHubRead<GitHubVariablePage>.Refused(),
             "listing-shows-the-variable" => (_, _) => GitHubRead.Found(new GitHubVariablePage(1, [new(approval.Variable, approval.Marker)])),
             "listing-of-two" => (_, _) => GitHubRead.Found(new GitHubVariablePage(2, [Variable("A"), Variable("B")])),
             "listing-negative-total" => (_, _) => GitHubRead.Found(new GitHubVariablePage(-1, [])),
@@ -232,10 +232,10 @@ public sealed class ApprovalObserverTests
     public async Task Malformed_read_never_proves_withdrawal()
     {
         var approval = Approval("agent");
-        github.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Malformed(GitHubDefect.Shape);
+        github.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Malformed();
         Assert.Equal("denied", await ObserveAsync(approval));
         github.VariableAnswer = _ => new GitHubRead<GitHubVariable>.NotFound();
-        github.PageAnswer = (_, _) => new GitHubRead<GitHubVariablePage>.Malformed(GitHubDefect.Shape);
+        github.PageAnswer = (_, _) => new GitHubRead<GitHubVariablePage>.Malformed();
         Assert.Equal("denied", await ObserveAsync(approval));
     }
 
@@ -263,7 +263,7 @@ public sealed class ApprovalObserverTests
         {
             "environment-id" => GitHubRead.Found(new ApprovalEnvironment(988, "approval/environment")),
             "environment-name" => GitHubRead.Found(new ApprovalEnvironment(987, "approval/renamed")),
-            "environment-refused" => new GitHubRead<ApprovalEnvironment>.Refused(403),
+            "environment-refused" => new GitHubRead<ApprovalEnvironment>.Refused(),
             _ => github.Environment
         };
         if (observation == "variable-not-found") github.EnvironmentVariables.Clear();
@@ -346,7 +346,7 @@ public sealed class ApprovalObserverTests
         var request = Bound(Request("actions"));
         if (observation == "shown") github.Actions[request.Variable] = request.Marker!;
         if (observation == "changed") github.Actions[request.Variable] = "earlier-marker";
-        if (observation == "uncertain") github.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Refused(403);
+        if (observation == "uncertain") github.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Refused();
         Assert.Equal(outcome, await ObservePendingAsync(request));
     }
 

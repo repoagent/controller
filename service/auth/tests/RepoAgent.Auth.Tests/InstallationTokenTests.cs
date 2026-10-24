@@ -90,7 +90,7 @@ public sealed class InstallationTokenTests
     public async Task Unverifiable_approval_denies_without_fabricating_withdrawal()
     {
         await using var f = await IssuanceFixture.CreateAsync();
-        f.GitHub.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Refused(403);
+        f.GitHub.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Refused();
         Assert.NotEqual(200, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         Assert.Equal("active", (await f.GateAsync()).GetString("State"));
         Assert.False((await f.DeviceAsync()).ContainsKey("LastActivityAt"));

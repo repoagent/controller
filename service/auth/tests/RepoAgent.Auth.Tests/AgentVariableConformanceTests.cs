@@ -338,7 +338,7 @@ public sealed class AgentVariableConformanceTests
         var receipt = await Complete(f, await Start(f));
         await Ack(f, receipt);
         var observed = ObserveInstallationReads(f, stale: observation.EndsWith("-stale", StringComparison.Ordinal));
-        f.GitHub.Installation = observation == "denied" ? new GitHubRead<AppInstallation>.Refused(403) : Moved;
+        f.GitHub.Installation = observation == "denied" ? new GitHubRead<AppInstallation>.Refused() : Moved;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var changed = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
         Assert.True(observed());

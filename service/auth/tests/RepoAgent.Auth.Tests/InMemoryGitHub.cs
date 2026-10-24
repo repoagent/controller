@@ -73,7 +73,7 @@ internal sealed class InMemoryGitHub(TimeProvider? clock = null) : HttpMessageHa
     public async Task<GitHubRead<AppInstallation>> FindAsync(AppAuthorization app, string repository, CancellationToken ct)
     {
         await ReadAsync("installation " + repository, null);
-        return app is GitHubAppAuthorization ? Installation : new GitHubRead<AppInstallation>.Refused(401);
+        return app is GitHubAppAuthorization ? Installation : new GitHubRead<AppInstallation>.Refused();
     }
 
     public async Task<GitHubRead<InstallationRepositories>> RepositoriesAsync(GitHubToken token, CancellationToken ct)

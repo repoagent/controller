@@ -13,22 +13,11 @@ public abstract record GitHubRead<T>
     public sealed record NotFound : GitHubRead<T>;
 
     // GitHub answered with another status, such as 403 or a redirect.
-    public sealed record Refused(int Status) : GitHubRead<T>;
+    public sealed record Refused : GitHubRead<T>;
 
-    // GitHub answered, but the answer cannot be read as T.
-    public sealed record Malformed(GitHubDefect Defect) : GitHubRead<T>;
-}
-
-public enum GitHubDefect
-{
-    // The body is not JSON, or nests too deeply.
-    Unparseable,
-    // An object names one member twice, so which value GitHub meant is unknown.
-    DuplicateMember,
-    // The body is larger than any answer the broker reads.
-    Oversized,
-    // The JSON lacks a member, or a member has another kind or range than GitHub documents.
-    Shape,
+    // GitHub answered, but the answer cannot be read as T: it is not JSON, names one member twice, is larger
+    // than any answer the broker reads, or lacks a member or has one of another kind than GitHub documents.
+    public sealed record Malformed : GitHubRead<T>;
 }
 
 // GitHub could not be reached or did not answer in time. Callers treat it like any unverifiable read.

@@ -168,7 +168,7 @@ public sealed class ActionsVariableEnrollmentTests
         await using var f = await EnrollmentFixture.CreateAsync();
         var github = Repository.Configure(f);
         var active = await Active(f, github);
-        if (observation == "denied") f.GitHub.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Refused(403);
+        if (observation == "denied") f.GitHub.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Refused();
         if (observation == "changed") github.Actions["REPOAGENT_APPROVAL"] = active.Marker.Replace("\"version\":3", "\"version\":2", StringComparison.Ordinal);
         if (observation == "removed") github.Actions.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
