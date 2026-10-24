@@ -19,7 +19,7 @@ sealed class GitHubOutbox : IAsyncDisposable
     readonly object sync = new();
     readonly JsonObject state;
     readonly CancellationTokenSource stop = new();
-    TaskCompletionSource wake = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    readonly WakeLoop loop;
     Task running = Task.CompletedTask;
     // The owned dashboard found or created during this lifetime; only the delivering attempt touches these.
     (string Id, string Url)? dashboard;
@@ -28,6 +28,7 @@ sealed class GitHubOutbox : IAsyncDisposable
 
     public GitHubOutbox(string path, GitHub github, TimeProvider clock)
     {
+        loop = new(clock);
         this.path = path;
         this.github = github;
         this.clock = clock;
@@ -94,12 +95,21 @@ sealed class GitHubOutbox : IAsyncDisposable
             if (existing is null) Operations.Add((JsonNode)operation);
             else Operations[Operations.IndexOf(existing)] = operation;
             Save();
-            wake.TrySetResult();
+            loop.Signal();
         }
     }
 
     /// <summary>Delivers due operations in the background until disposal; retained work survives restarts.</summary>
-    public void Start(CancellationToken ct) => running = Run(CancellationTokenSource.CreateLinkedTokenSource(ct, stop.Token));
+    public void Start(CancellationToken ct) => running = loop.Run(CancellationTokenSource.CreateLinkedTokenSource(ct, stop.Token), async token =>
+    {
+        try { await Deliver(token); }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            // A failed save leaves the in-memory schedule current; keep delivering and retry the save later.
+            Log.Write("outbox-error", $"{error.Message}; retained operations stay queued");
+        }
+        lock (sync) return (NextDue() is { } due ? TimeSpan.FromTicks(Math.Max(0, (due - clock.GetUtcNow()).Ticks)) : Timeout.InfiniteTimeSpan, true);
+    });
 
     /// <summary>Attempts each due operation once. True only when nothing failed and nothing remains retained.</summary>
     public async Task<bool> Flush(CancellationToken ct)
@@ -114,37 +124,6 @@ sealed class GitHubOutbox : IAsyncDisposable
         await stop.CancelAsync();
         await running;
         return await Flush(ct);
-    }
-
-    async Task Run(CancellationTokenSource lifetime)
-    {
-        var ct = lifetime.Token;
-        try
-        {
-            while (true)
-            {
-                Task signal;
-                lock (sync)
-                {
-                    if (wake.Task.IsCompleted) wake = new(TaskCreationOptions.RunContinuationsAsynchronously);
-                    signal = wake.Task;
-                }
-                try { await Deliver(ct); }
-                catch (Exception error) when (error is not OperationCanceledException)
-                {
-                    // A failed save leaves the in-memory schedule current; keep delivering and retry the save later.
-                    Log.Write("outbox-error", $"{error.Message}; retained operations stay queued");
-                }
-                TimeSpan delay;
-                lock (sync) delay = NextDue() is { } due ? TimeSpan.FromTicks(Math.Max(0, (due - clock.GetUtcNow()).Ticks)) : Timeout.InfiniteTimeSpan;
-                using var timer = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                await Task.WhenAny(signal, Task.Delay(delay, clock, timer.Token));
-                await timer.CancelAsync();
-                ct.ThrowIfCancellationRequested();
-            }
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        finally { lifetime.Dispose(); }
     }
 
     async Task<bool> Deliver(CancellationToken ct)
@@ -191,7 +170,7 @@ sealed class GitHubOutbox : IAsyncDisposable
         }
         catch (Exception error)
         {
-            var failure = error as GitHubWriteException ?? new GitHubWriteException(GitHubFailure.Transient, error.Message, uncertain: true);
+            var failure = error as GitHubRequestException ?? new GitHubRequestException(GitHubFailure.Transient, error.Message, uncertain: true);
             var context = $"{url}{(subject.Length == 0 ? "" : " subject=" + subject)} attempt={attempt} {failure.Kind}: {failure.Message}";
             if (failure.Kind == GitHubFailure.Permanent)
             {
@@ -209,7 +188,7 @@ sealed class GitHubOutbox : IAsyncDisposable
                 return false;
             }
             var now = clock.GetUtcNow();
-            var due = now + TimeSpan.FromTicks(Math.Min(LongestRetry.Ticks, FirstRetry.Ticks << Math.Min(attempt - 1, 16)));
+            var due = now + RetryDelay.Doubling(FirstRetry, LongestRetry, attempt);
             lock (sync)
             {
                 if (failure.Kind == GitHubFailure.RateLimited)
@@ -266,7 +245,7 @@ sealed class GitHubOutbox : IAsyncDisposable
                 (dashboard, dashboardCategory) = (owned, category);
                 return (found is null ? "dashboard-created" : "dashboard", owned.Url);
             default:
-                throw new GitHubWriteException(GitHubFailure.Permanent, $"unsupported outbox operation kind '{operation.Text("kind")}'");
+                throw new GitHubRequestException(GitHubFailure.Permanent, $"unsupported outbox operation kind '{operation.Text("kind")}'");
         }
     }
 

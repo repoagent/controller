@@ -55,17 +55,12 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return sha;
     }
 
-    internal sealed class StatusException(int status) : IOException($"GitHub returned HTTP {status}")
-    {
-        public int Status { get; } = status;
-    }
-
     /// <summary>Reads one direct repository Actions variable; null only when GitHub reports it absent (HTTP 404).</summary>
     public async Task<string?> Variable(string name, CancellationToken ct)
     {
         var (status, body) = Included(await Api("GET", $"repos/{Repository}/actions/variables/{Uri.EscapeDataString(name)}", null, ct, include: true), "variable");
         if (status == 404) return null;
-        if (status != 200) throw new StatusException(status);
+        if (status != 200) throw GitHubRequestException.Rejected(status);
         var variable = JsonNode.Parse(body);
         if (!string.Equals(variable?.Text("name"), name, StringComparison.OrdinalIgnoreCase) ||
             variable?["value"] is not JsonValue value || value.GetValueKind() != System.Text.Json.JsonValueKind.String)
@@ -77,17 +72,23 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     public async Task<JsonArray> Releases(string repository, CancellationToken ct)
     {
         var (status, body) = Included(await Api("GET", $"repos/{repository}/releases?per_page=100", null, ct, include: true), "releases");
-        if (status != 200) throw new StatusException(status);
+        if (status != 200) throw GitHubRequestException.Rejected(status);
         try { return JsonNode.Parse(body) as JsonArray ?? throw new IOException("Malformed GitHub releases response"); }
         catch (System.Text.Json.JsonException) { throw new IOException("Malformed GitHub releases response"); }
     }
 
-    // gh --include output: the HTTP status line and headers, then the body.
-    static (int Status, string Body) Included(string text, string subject)
+    static (int Status, string Body) Included(string text, string subject) =>
+        Included(text) is { } response ? (response.Status, response.Body) : throw new IOException($"Incomplete GitHub {subject} response");
+
+    /// <summary>gh --include output: the HTTP status line and headers, a blank line, then the body; null for any other output.</summary>
+    internal static (int Status, Dictionary<string, string> Headers, string Body)? Included(string text)
     {
-        var head = Regex.Match(text, @"\AHTTP/[0-9.]+ (?<status>[0-9]{3})[^\r\n]*\r?\n(?:[^\r\n]+\r?\n)*\r?\n");
-        if (!head.Success) throw new IOException($"Incomplete GitHub {subject} response");
-        return (int.Parse(head.Groups["status"].Value, System.Globalization.CultureInfo.InvariantCulture), text[head.Length..]);
+        var head = Regex.Match(text, @"\AHTTP/[0-9.]+ (?<status>[0-9]{3})[^\r\n]*\r?\n(?<headers>(?:[^\r\n]+\r?\n)*)\r?\n");
+        if (!head.Success) return null;
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in head.Groups["headers"].Value.Split('\n'))
+            if (line.Split(':', 2) is [var name, var field]) headers[name.Trim()] = field.Trim();
+        return (int.Parse(head.Groups["status"].Value, System.Globalization.CultureInfo.InvariantCulture), headers, text[head.Length..]);
     }
 
     async Task<string> Api(string method, string resource, JsonNode? input, CancellationToken ct, bool include = false)
@@ -204,14 +205,14 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     {
         var data = await Send("mutation($id:ID!) { addReaction(input:{subjectId:$id,content:EYES}) { reaction { id } } }", Json.Object(("id", subjectId)), ct);
         if (data["addReaction"]?["reaction"]?["id"] is null)
-            throw new GitHubWriteException(GitHubFailure.Transient, "receipt mutation returned no reaction", uncertain: true);
+            throw new GitHubRequestException(GitHubFailure.Transient, "receipt mutation returned no reaction", uncertain: true);
     }
 
     /// <summary>Reads whether the App's EYES receipt exists, to reconcile an uncertain earlier write.</summary>
     public async Task<bool> HasReceipt(string subjectId, CancellationToken ct)
     {
         var node = (await Send("query($id:ID!) { node(id:$id) { ... on Reactable { reactionGroups { content viewerHasReacted } } } }", Json.Object(("id", subjectId)), ct))["node"];
-        return node is null ? throw new GitHubWriteException(GitHubFailure.Permanent, "receipt subject no longer exists") : HasViewerReceipt(node);
+        return node is null ? throw new GitHubRequestException(GitHubFailure.Permanent, "receipt subject no longer exists") : HasViewerReceipt(node);
     }
 
     /// <summary>Hidden in the rendered dashboard body; with App authorship it identifies the controller-owned dashboard.</summary>
@@ -226,9 +227,9 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     {
         var parts = Repository.Split('/');
         var repository = (await Send("query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { id discussionCategories(first:100) { nodes { id name } } } }",
-            Json.Object(("owner", parts[0]), ("name", parts[1])), ct))["repository"] ?? throw new GitHubWriteException(GitHubFailure.Permanent, "repository not found");
+            Json.Object(("owner", parts[0]), ("name", parts[1])), ct))["repository"] ?? throw new GitHubRequestException(GitHubFailure.Permanent, "repository not found");
         var category = repository["discussionCategories"]?["nodes"]?.AsArray().FirstOrDefault(node => string.Equals(node!.Text("name"), name, StringComparison.OrdinalIgnoreCase))
-            ?? throw new GitHubWriteException(GitHubFailure.Permanent, $"dashboard Discussion category '{name}' does not exist");
+            ?? throw new GitHubRequestException(GitHubFailure.Permanent, $"dashboard Discussion category '{name}' does not exist");
         return (repository.Text("id"), category.Text("id"));
     }
 
@@ -241,7 +242,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         {
             var connection = (await Send("query($owner:String!,$name:String!,$category:ID!,$cursor:String) { repository(owner:$owner,name:$name) { discussions(first:50,after:$cursor,categoryId:$category,orderBy:{field:CREATED_AT,direction:ASC}) { nodes { id url body author { __typename login } } " + PageInfo + " } } }",
                 Json.Object(("owner", parts[0]), ("name", parts[1]), ("category", category), ("cursor", cursor)), ct))["repository"]?["discussions"]
-                ?? throw new GitHubWriteException(GitHubFailure.Permanent, "repository Discussions are not readable");
+                ?? throw new GitHubRequestException(GitHubFailure.Permanent, "repository Discussions are not readable");
             if (connection["nodes"]!.AsArray().FirstOrDefault(node => IsDashboard(node!)) is { } owned) return (owned.Text("id"), owned.Text("url"));
             cursor = Next(connection);
         } while (cursor is not null);
@@ -252,7 +253,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     {
         var created = (await Send("mutation($repository:ID!,$category:ID!,$title:String!,$body:String!) { createDiscussion(input:{repositoryId:$repository,categoryId:$category,title:$title,body:$body}) { discussion { id url } } }",
             Json.Object(("repository", target.Repository), ("category", target.Category), ("title", title), ("body", body)), ct))["createDiscussion"]?["discussion"]
-            ?? throw new GitHubWriteException(GitHubFailure.Transient, "dashboard creation returned no Discussion", uncertain: true);
+            ?? throw new GitHubRequestException(GitHubFailure.Transient, "dashboard creation returned no Discussion", uncertain: true);
         return (created.Text("id"), created.Text("url"));
     }
 
@@ -261,7 +262,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         // Replacing the whole title and body is idempotent, so an uncertain earlier update needs no reconciliation.
         if ((await Send("mutation($id:ID!,$title:String!,$body:String!) { updateDiscussion(input:{discussionId:$id,title:$title,body:$body}) { discussion { id } } }",
             Json.Object(("id", id), ("title", title), ("body", body)), ct))["updateDiscussion"]?["discussion"] is null)
-            throw new GitHubWriteException(GitHubFailure.Transient, "dashboard update returned no Discussion", uncertain: true);
+            throw new GitHubRequestException(GitHubFailure.Transient, "dashboard update returned no Discussion", uncertain: true);
     }
 
     // Controller-owned requests: classify by HTTP status, rate-limit headers and GraphQL error type.
@@ -272,21 +273,33 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         catch (Exception error) when (error is not OperationCanceledException)
         {
             // No HTTP response was observed, so the request may still have been applied.
-            throw new GitHubWriteException(GitHubFailure.Transient, error.Message, uncertain: true);
+            throw new GitHubRequestException(GitHubFailure.Transient, error.Message, uncertain: true);
         }
-        return GitHubWriteException.Classify(response);
+        return GitHubRequestException.Classify(response);
     }
 }
 
 enum GitHubFailure { Transient, RateLimited, Permanent }
 
-/// <summary>A classified controller-owned GitHub request failure. Uncertain means GitHub may have applied it.</summary>
-sealed class GitHubWriteException(GitHubFailure kind, string message, bool uncertain = false, TimeSpan? retryAfter = null,
-    DateTimeOffset? resetAt = null) : IOException(message)
+/// <summary>
+/// A classified failure of a controller-owned GitHub read or write. Uncertain means GitHub may have applied a write; Status is
+/// the HTTP status GitHub returned, when the request got that far.
+/// </summary>
+sealed class GitHubRequestException(GitHubFailure kind, string message, bool uncertain = false, TimeSpan? retryAfter = null,
+    DateTimeOffset? resetAt = null, int? status = null) : IOException(message)
 {
     static readonly string[] Rejections = ["NOT_FOUND", "FORBIDDEN", "UNPROCESSABLE"];
     public GitHubFailure Kind { get; } = kind;
     public bool Uncertain { get; } = uncertain;
+    public int? Status { get; } = status;
+
+    /// <summary>A REST read GitHub answered with an unexpected HTTP status.</summary>
+    public static GitHubRequestException Rejected(int status) => new(status switch
+    {
+        429 => GitHubFailure.RateLimited,
+        400 or 403 or 404 or 410 or 422 => GitHubFailure.Permanent,
+        _ => GitHubFailure.Transient
+    }, $"GitHub returned HTTP {status}", status: status);
 
     /// <summary>The earliest retry GitHub signalled, if any.</summary>
     public DateTimeOffset? NotBefore(DateTimeOffset now)
@@ -298,15 +311,11 @@ sealed class GitHubWriteException(GitHubFailure kind, string message, bool uncer
     /// <summary>Returns GraphQL data from gh --include output, or throws the classified failure.</summary>
     public static JsonNode Classify(string response)
     {
-        var lines = response.Split('\n');
-        if (!int.TryParse(lines[0].Split(' ', 3).ElementAtOrDefault(1), out var status))
-            throw new GitHubWriteException(GitHubFailure.Transient, "unrecognized gh response", uncertain: true);
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var index = 1;
-        for (; index < lines.Length && lines[index].TrimEnd('\r').Length != 0; index++)
-            if (lines[index].Split(':', 2) is [var name, var field]) headers[name.Trim()] = field.Trim();
+        if (GitHub.Included(response) is not { } included)
+            throw new GitHubRequestException(GitHubFailure.Transient, "unrecognized gh response", uncertain: true);
+        var (status, headers, text) = included;
         JsonNode? body = null;
-        try { body = JsonNode.Parse(string.Join('\n', lines.Skip(index + 1))); } catch (System.Text.Json.JsonException) { }
+        try { body = JsonNode.Parse(text); } catch (System.Text.Json.JsonException) { }
         var errors = body?["errors"] as JsonArray ?? [];
         var types = errors.Select(error => error?["type"].OptionalText() ?? "").ToArray();
         var detail = (errors.FirstOrDefault()?["message"] ?? body?["message"]).OptionalText() ?? "";
@@ -316,16 +325,16 @@ sealed class GitHubWriteException(GitHubFailure kind, string message, bool uncer
         DateTimeOffset? reset = exhausted && long.TryParse(headers.GetValueOrDefault("X-RateLimit-Reset"), out var epoch) ? DateTimeOffset.FromUnixTimeSeconds(epoch) : null;
         if (status == 429 || types.Contains("RATE_LIMITED") || (status == 403 && (retryAfter is not null || exhausted ||
             detail.Contains("rate limit", StringComparison.OrdinalIgnoreCase) || detail.Contains("abuse", StringComparison.OrdinalIgnoreCase))))
-            throw new GitHubWriteException(GitHubFailure.RateLimited, description, retryAfter: retryAfter, resetAt: reset);
+            throw new GitHubRequestException(GitHubFailure.RateLimited, description, retryAfter: retryAfter, resetAt: reset);
         if (status is >= 200 and < 300)
         {
-            if (errors.Count == 0) return body?["data"] ?? throw new GitHubWriteException(GitHubFailure.Transient, description + ": no data", uncertain: true);
-            if (types.All(Rejections.Contains)) throw new GitHubWriteException(GitHubFailure.Permanent, description);
-            throw new GitHubWriteException(GitHubFailure.Transient, description, uncertain: true);
+            if (errors.Count == 0) return body?["data"] ?? throw new GitHubRequestException(GitHubFailure.Transient, description + ": no data", uncertain: true);
+            if (types.All(Rejections.Contains)) throw new GitHubRequestException(GitHubFailure.Permanent, description);
+            throw new GitHubRequestException(GitHubFailure.Transient, description, uncertain: true);
         }
         // 401: renewal may recover the credential. 408, 409 and 5xx may have been applied before failing.
-        if (status == 401) throw new GitHubWriteException(GitHubFailure.Transient, description);
-        if (status is 400 or 403 or 404 or 410 or 422) throw new GitHubWriteException(GitHubFailure.Permanent, description);
-        throw new GitHubWriteException(GitHubFailure.Transient, description, uncertain: true);
+        if (status == 401) throw new GitHubRequestException(GitHubFailure.Transient, description);
+        if (status is 400 or 403 or 404 or 410 or 422) throw new GitHubRequestException(GitHubFailure.Permanent, description);
+        throw new GitHubRequestException(GitHubFailure.Transient, description, uncertain: true);
     }
 }

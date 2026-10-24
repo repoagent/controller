@@ -276,7 +276,6 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
     static DateTimeOffset RetryAt(JsonObject waiting) => waiting["retry"]?["after"] is JsonValue after
         ? DateTimeOffset.Parse(after.GetValue<string>(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind) : DateTimeOffset.MinValue;
 
-    static TimeSpan Backoff(int attempts) => TimeSpan.FromTicks(Math.Min(LastRetry.Ticks, FirstRetry.Ticks << Math.Min(attempts - 1, 16)));
 
     // Caller holds the gate. Model labels are configuration, not input: a change is kept for the next turn and queues nothing.
     async Task ObserveLabels(JsonObject record, string id, CancellationToken ct)
@@ -497,7 +496,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var inputs = waiting["inputs"]!.AsArray();
         if (offered) for (var index = 0; index < count; index++) inputs[index]!["redelivery"] = true;
         var attempts = (waiting["retry"]?["attempts"]?.GetValue<int>() ?? 0) + 1;
-        var after = clock.GetUtcNow() + (immediate ? TimeSpan.Zero : Backoff(attempts));
+        var after = clock.GetUtcNow() + (immediate ? TimeSpan.Zero : RetryDelay.Doubling(FirstRetry, LastRetry, attempts));
         waiting["retry"] = new JsonObject { ["attempts"] = attempts, ["after"] = after.ToString("O") };
         record.Remove("pending");
         Wake();

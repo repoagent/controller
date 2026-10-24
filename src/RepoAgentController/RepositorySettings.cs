@@ -95,7 +95,7 @@ sealed class RepositorySettings
             }
             catch (Exception error) when (!ct.IsCancellationRequested)
             {
-                observed = new("read-failed", retained, error is GitHub.StatusException status ? $"HTTP {status.Status}" : "GitHub read failed");
+                observed = new("read-failed", retained, error is GitHubRequestException { Status: { } status } ? $"HTTP {status}" : "GitHub read failed");
             }
             observed = observed with { Since = observed.Value == previous[setting.Name].Value ? previous[setting.Name].Since : clock.GetUtcNow() };
             next[setting.Name] = observed;

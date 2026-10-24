@@ -22,9 +22,8 @@ sealed class ControllerDashboard : IAsyncDisposable
     readonly GitHubOutbox outbox;
     readonly BaselineReleases releases;
     readonly TimeProvider clock;
-    readonly Lock sync = new();
     readonly CancellationTokenSource stop = new();
-    TaskCompletionSource wake = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    readonly WakeLoop loop;
     Task running = Task.CompletedTask;
     bool started;
     string? failure;
@@ -36,48 +35,24 @@ sealed class ControllerDashboard : IAsyncDisposable
         this.outbox = outbox;
         this.releases = releases;
         this.clock = clock;
+        loop = new(clock);
         status.Changed += Wake;
         releases.Changed += Wake;
     }
 
-    void Wake() { lock (sync) wake.TrySetResult(); }
+    void Wake() => loop.Signal();
 
     /// <summary>Publishes the current status now, then on every change, release check and heartbeat until disposal.</summary>
     public void Start(CancellationToken ct)
     {
         started = true;
-        running = Run(CancellationTokenSource.CreateLinkedTokenSource(ct, stop.Token));
+        // A failed publication waits for the heartbeat, so reporting that failure cannot spin this loop.
+        running = loop.Run(CancellationTokenSource.CreateLinkedTokenSource(ct, stop.Token), _ => Task.FromResult((HeartbeatInterval, Publish(null))));
         releases.Start(ct);
     }
 
     /// <summary>Records that this lifetime is ending on an error rather than an operator stop.</summary>
     public void Failed(string message) => failure = Log.Redact(message);
-
-    async Task Run(CancellationTokenSource lifetime)
-    {
-        var ct = lifetime.Token;
-        try
-        {
-            while (true)
-            {
-                Task signal;
-                lock (sync)
-                {
-                    if (wake.Task.IsCompleted) wake = new(TaskCreationOptions.RunContinuationsAsynchronously);
-                    signal = wake.Task;
-                }
-                var published = Publish(null);
-                using var timer = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                var heartbeat = Task.Delay(HeartbeatInterval, clock, timer.Token);
-                // A failed publication waits for the heartbeat, so reporting that failure cannot spin this loop.
-                await (published ? Task.WhenAny(signal, heartbeat) : heartbeat);
-                await timer.CancelAsync();
-                ct.ThrowIfCancellationRequested();
-            }
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        finally { lifetime.Dispose(); }
-    }
 
     bool Publish((DateTimeOffset At, string? Failure)? stopped)
     {
