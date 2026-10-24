@@ -234,6 +234,7 @@ try {
     $InstallationId = Setting InstallationId
     $MentionUser = Setting MentionUser
     $Model = Setting Model 'gpt-6.1-sol'
+    # A new install runs the image's tools. Launch records always carry their saved choice (every field is required).
     $ToolUpdates = Setting ToolUpdates 'pinned'
     $WebSearch = Setting WebSearch 'live'
     $PublicUrl = Setting PublicUrl
