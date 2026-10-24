@@ -213,10 +213,35 @@ sealed class RecordingLog : IControllerLog
 {
     readonly Lock sync = new();
     readonly List<(string Kind, string Message)> entries = [];
+    readonly List<(int Count, TaskCompletionSource Reached)> waiters = [];
 
     public IReadOnlyList<(string Kind, string Message)> Entries { get { lock (sync) return [.. entries]; } }
 
-    public void Write(string kind, string message) { lock (sync) entries.Add((kind, message)); }
+    public void Write(string kind, string message)
+    {
+        lock (sync)
+        {
+            entries.Add((kind, message));
+            foreach (var waiter in waiters.Where(waiter => entries.Count >= waiter.Count).ToArray())
+            {
+                waiters.Remove(waiter);
+                waiter.Reached.TrySetResult();
+            }
+        }
+    }
+
+    /// <summary>Completes once <paramref name="count"/> entries are written: the end of work a loop does on another thread when it
+    /// arms no further timer.</summary>
+    public Task Written(int count)
+    {
+        lock (sync)
+        {
+            if (entries.Count >= count) return Task.CompletedTask;
+            var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            waiters.Add((count, reached));
+            return reached.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        }
+    }
 }
 
 /// <summary>Controlled time that reports each timer a loop arms, so a test moves time only once the loop waits.</summary>
@@ -242,18 +267,4 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 
     /// <summary>Whether a timer was armed since the last <see cref="Armed"/>, without waiting.</summary>
     public bool WasArmed() => armed.CurrentCount != 0;
-}
-
-static class Eventually
-{
-    /// <summary>Waits for work the test started on another thread; a real-time watchdog only, never the controlled clock.</summary>
-    public static async Task Until(Func<bool> condition)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(10);
-        while (!condition())
-        {
-            Assert.True(DateTime.UtcNow < deadline, "Condition was not observed before the watchdog deadline");
-            await Task.Delay(10, TestContext.Current.CancellationToken);
-        }
-    }
 }

@@ -91,7 +91,7 @@ public sealed class GitHubOutboxDeliveryTests
         time.Advance(TimeSpan.FromSeconds(15));
         await time.Armed();
         time.Advance(TimeSpan.FromSeconds(30));
-        await Eventually.Until(() => log.Entries.Count == 3);
+        await log.Written(3); // Nothing remains retained, so the loop arms no timer to wait for.
 
         // A failure GitHub did not apply is written again without first reading the reaction.
         Assert.Equal(["addReaction D1", "addReaction D1", "addReaction D1"], github.Calls);
