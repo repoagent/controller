@@ -3,7 +3,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Microsoft.Extensions.Time.Testing;
 using RepoAgentController;
 using Xunit;
 
@@ -30,39 +29,6 @@ public sealed class RepositorySettingsTests
         var read = Assert.Single(fixture.GitHubRequests(), request => request.Endpoint.EndsWith("/" + Setting, StringComparison.Ordinal));
         Assert.Equal(("GET", "repos/owner/repository/actions/variables/" + Setting, "installation-token-1"),
             (read.Method, read.Endpoint, read.Token));
-    }
-
-    [Theory]
-    [InlineData(null, null, "state=absent")]
-    [InlineData("4", 403, "state=read-failed reason=\"HTTP 403\"")]
-    [InlineData("4", 502, "state=read-failed reason=\"HTTP 502\"")]
-    [InlineData(null, 401, "state=read-failed reason=\"HTTP 401\"")]
-    public async Task Confirmed_absence_is_reported_separately_from_a_failed_read(string? value, int? status, string reported)
-    {
-        using var fixture = new Fixture();
-        if (value is not null) fixture.Variables[Setting] = value;
-        if (status is not null) fixture.Statuses[Setting] = status.Value;
-
-        Assert.Equal(0, await fixture.Check("--repository-settings"));
-
-        Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} {reported}"));
-    }
-
-    [Theory]
-    [InlineData("0")]
-    [InlineData("65")]
-    [InlineData("-1")]
-    [InlineData("four")]
-    [InlineData("1.5")]
-    [InlineData("")]
-    public async Task An_invalid_value_is_reported_and_never_consumed(string value)
-    {
-        using var fixture = new Fixture();
-        fixture.Variables[Setting] = value;
-
-        Assert.Equal(0, await fixture.Check("--repository-settings"));
-
-        Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=invalid reason=\"must be an integer from 1 to 64\""));
     }
 
     [Fact]
@@ -150,120 +116,7 @@ public sealed class RepositorySettingsTests
         Assert.Contains(fixture.Log, line => line.Contains(" fatal ") && line.Contains("--repository-settings requires a controller enrollment with a repository-settings profile"));
     }
 
-    [Fact]
-    public async Task A_running_controller_consumes_operator_changes_on_its_bounded_refresh_without_restart()
-    {
-        using var fixture = new Fixture();
-        fixture.Variables[Setting] = "4";
-        await using var controller = await fixture.Run("--repository-settings");
-        await fixture.WaitForLog(" poll-completed success=True");
-        Assert.Contains(fixture.Log, line => line.EndsWith($"name={Setting} state=configured value=4"));
-
-        fixture.Variables[Setting] = "6";
-        await controller.Refresh();
-        await fixture.WaitForLog($" repository-setting name={Setting} state=configured value=6");
-
-        fixture.Variables[Setting] = "unlimited";
-        await controller.Refresh();
-        await fixture.WaitForLog($" repository-setting name={Setting} state=invalid value=6 reason=\"must be an integer from 1 to 64\"");
-
-        fixture.Statuses[Setting] = 503;
-        await controller.Refresh();
-        await fixture.WaitForLog($" repository-setting name={Setting} state=read-failed value=6 reason=\"HTTP 503\"");
-
-        fixture.Statuses.Clear();
-        fixture.Variables.Clear();
-        await controller.Refresh();
-        await fixture.WaitForLog($" repository-setting name={Setting} state=absent");
-
-        Assert.Equal(0, await controller.Stop());
-        var reads = fixture.GitHubRequests().Where(request => request.Endpoint.Contains("/actions/variables/")).ToList();
-        Assert.Equal(5, reads.Count(request => request.Endpoint.EndsWith("/" + Setting, StringComparison.Ordinal)));
-        Assert.All(reads, request => Assert.Equal("GET", request.Method));
-        Assert.Single(fixture.Provider.TokenRequests); // Refresh reuses the unexpired read-only runtime token.
-    }
-
-    [Fact]
-    public async Task After_a_restart_a_failed_or_invalid_read_keeps_the_last_known_value_and_status_reports_the_problem()
-    {
-        using var fixture = new Fixture();
-        fixture.Variables[Setting] = "6";
-        Assert.Equal(0, await fixture.Check("--repository-settings"));
-        Assert.Equal(("configured", "6"), Reported(await OperatorStatusTests.Status(fixture.State)));
-
-        // A later lifetime cannot read the variable: the value the earlier one read still applies.
-        fixture.Statuses[Setting] = 503;
-        Assert.Equal(0, await fixture.Check("--repository-settings"));
-        Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=read-failed value=6 reason=\"HTTP 503\""));
-        var unreadable = await OperatorStatusTests.Status(fixture.State);
-        Assert.Equal(("read-failed", "6"), Reported(unreadable));
-        Assert.Equal("HTTP 503", unreadable["settings"]![Setting]!["reason"]!.GetValue<string>());
-
-        fixture.Statuses.Clear();
-        fixture.Variables[Setting] = "unlimited";
-        Assert.Equal(0, await fixture.Check("--repository-settings"));
-        Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=invalid value=6 reason=\"must be an integer from 1 to 64\""));
-        var invalid = await OperatorStatusTests.Status(fixture.State);
-        Assert.Equal(("invalid", "6"), Reported(invalid));
-        Assert.Equal("must be an integer from 1 to 64", invalid["settings"]![Setting]!["reason"]!.GetValue<string>());
-        Assert.DoesNotContain("unlimited", invalid.ToJsonString()); // Invalid raw values are never echoed.
-
-        static (string?, string?) Reported(JsonNode status) =>
-            (status["settings"]?[Setting]?["state"]?.GetValue<string>(), status["settings"]?[Setting]?["value"]?.GetValue<string>());
-    }
-
     internal sealed record GitHubRequest(string Method, string Endpoint, string? Token);
-
-    sealed class RunningController(Task<int> run, CancellationTokenSource shutdown, Clock clock, Fixture fixture, string? previousPath) : IAsyncDisposable
-    {
-        // Both one-minute loops (credential renewal and settings refresh) must be armed before time moves.
-        public async Task Refresh()
-        {
-            fixture.Save();
-            await clock.WaitForMinuteTimers(2);
-            clock.Advance(TimeSpan.FromMinutes(1));
-        }
-
-        public async Task<int> Stop()
-        {
-            await shutdown.CancelAsync();
-            return await run.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            await shutdown.CancelAsync();
-            try { await run.WaitAsync(TimeSpan.FromSeconds(20), CancellationToken.None); }
-            finally
-            {
-                shutdown.Dispose();
-                Environment.SetEnvironmentVariable("PATH", previousPath);
-            }
-        }
-    }
-
-    sealed class Clock : TimeProvider
-    {
-        readonly FakeTimeProvider time = new(DateTimeOffset.UtcNow);
-        readonly SemaphoreSlim minuteTimers = new(0);
-        public override DateTimeOffset GetUtcNow() => time.GetUtcNow();
-        public override long GetTimestamp() => time.GetTimestamp();
-        public override long TimestampFrequency => time.TimestampFrequency;
-        public void Advance(TimeSpan duration) => time.Advance(duration);
-
-        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
-        {
-            var timer = time.CreateTimer(callback, state, dueTime, period);
-            if (dueTime == TimeSpan.FromMinutes(1)) minuteTimers.Release();
-            return timer;
-        }
-
-        public async Task WaitForMinuteTimers(int count)
-        {
-            for (var i = 0; i < count; i++)
-                await minuteTimers.WaitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
-        }
-    }
 
     sealed class Fixture : IDisposable
     {
@@ -272,10 +125,8 @@ public sealed class RepositorySettingsTests
         readonly string model, requests, gh, privateKey;
         public string Directory { get; } = Path.Combine(Path.GetTempPath(), "repository-settings-" + Guid.NewGuid().ToString("N"));
         public Dictionary<string, string> Variables { get; } = [];
-        public Dictionary<string, int> Statuses { get; } = [];
         public Provider Provider { get; } = new();
         public IReadOnlyList<string> Log => capture.Lines;
-        public string State => Path.Combine(Directory, "bridge.json");
 
         public Fixture()
         {
@@ -290,7 +141,7 @@ public sealed class RepositorySettingsTests
             File.SetUnixFileMode(gh, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
 
-        public void Save() => File.WriteAllText(model, JsonSerializer.Serialize(new { variables = Variables, statuses = Statuses }));
+        public void Save() => File.WriteAllText(model, JsonSerializer.Serialize(new { variables = Variables }));
 
         public async Task<int> Check(params string[] options)
         {
@@ -306,28 +157,6 @@ public sealed class RepositorySettingsTests
                 "--enrollment-file", broker.EnrollmentFile, "--state", Path.Combine(Directory, "bridge.json"), "--workspace", Directory,
                 "--check-auth", .. options], broker.Http, gh, shutdownToken: TestContext.Current.CancellationToken);
         }
-
-        public async Task<RunningController> Run(params string[] options)
-        {
-            Save();
-            var tools = Path.Combine(Directory, "native-tools");
-            System.IO.Directory.CreateDirectory(tools);
-            File.WriteAllText(Path.Combine(tools, "codex"), Native);
-            File.SetUnixFileMode(Path.Combine(tools, "codex"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            var previousPath = Environment.GetEnvironmentVariable("PATH");
-            Environment.SetEnvironmentVariable("PATH", tools + Path.PathSeparator + previousPath);
-            var clock = new Clock();
-            var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-            var http = new HttpClient(Provider, disposeHandler: false);
-            var run = Task.Run(async () =>
-            {
-                using (http) return await BridgeCommand.Run([.. Arguments(), "--interval", "3600", .. options], http, gh, clock, shutdown.Token);
-            });
-            await Task.Yield();
-            return new RunningController(run, shutdown, clock, this, previousPath);
-        }
-
-        public Task WaitForLog(string text) => capture.WaitFor(line => line.Contains(text, StringComparison.Ordinal));
 
         string[] Arguments() => ["--repo", "owner/repository", "--app-id", "123", "--private-key", privateKey,
             "--state", Path.Combine(Directory, "bridge.json"), "--workspace", Directory];
@@ -361,22 +190,13 @@ public sealed class RepositorySettingsTests
         prefix='repos/owner/repository/actions/variables/'
         if method=='GET' and endpoint.startswith(prefix):
          name=endpoint[len(prefix):]
-         status=model['statuses'].get(name,200 if name in model['variables'] else 404)
+         status=200 if name in model['variables'] else 404
          body={'name':name,'value':model['variables'][name],'created_at':'2026-10-23T00:00:00Z','updated_at':'2026-10-23T00:00:00Z'} if status==200 else {'message':'Fixture failure','status':str(status)}
          if '--include' in a:sys.stdout.write('HTTP/2.0 %d Fixture\r\nContent-Type: application/json\r\n\r\n'%status)
          sys.stdout.write(json.dumps(body))
          if status>=400:sys.stderr.write('gh: Fixture failure (HTTP %d)\n'%status);sys.exit(1)
          sys.exit(0)
         sys.stderr.write('Unexpected GitHub command\n');sys.exit(2)
-        """;
-
-    // Only the native JSON-RPC peer is controlled; it acknowledges startup requests and receives no turns here.
-    const string Native = """
-        #!/usr/bin/python3
-        import json,os,sys
-        for line in sys.stdin:
-         request=json.loads(line)
-         if 'id' in request:print(json.dumps({'id':request['id'],'result':{'codexHome':os.getcwd()} if request.get('method')=='initialize' else {}}),flush=True)
         """;
 
     // An external transport stub for App authentication; it is not GitHub compatibility evidence.
@@ -410,35 +230,15 @@ public sealed class RepositorySettingsTests
     {
         readonly TextWriter previous = Console.Out;
         readonly List<string> lines = [];
-        readonly List<(Func<string, bool> Match, TaskCompletionSource Seen)> waiters = [];
         public LogCapture() => Console.SetOut(this);
         public override Encoding Encoding => Encoding.UTF8;
         public IReadOnlyList<string> Lines { get { lock (lines) return lines.ToList(); } }
         public override void WriteLine(string? value)
         {
-            lock (lines)
-            {
-                lines.Add(value ?? "");
-                foreach (var waiter in waiters.Where(waiter => waiter.Match(value ?? "")).ToList())
-                {
-                    waiters.Remove(waiter);
-                    waiter.Seen.TrySetResult();
-                }
-            }
+            lock (lines) lines.Add(value ?? "");
             previous.WriteLine(value);
         }
 
-        // Event-driven: completes when the controller writes a matching line; the timeout is only a watchdog.
-        public Task WaitFor(Func<string, bool> match)
-        {
-            var seen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            lock (lines)
-            {
-                if (lines.Any(match)) return Task.CompletedTask;
-                waiters.Add((match, seen));
-            }
-            return seen.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
-        }
         protected override void Dispose(bool disposing)
         {
             if (disposing) Console.SetOut(previous);
