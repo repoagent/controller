@@ -9,11 +9,11 @@ namespace RepoAgentController;
 
 sealed record WebhookConfiguration(Uri PublicUrl, int Port, TimeSpan ReconcileInterval)
 {
-    public Uri Endpoint => new(PublicUrl, ControllerHost.WebhookPath);
+    public Uri Endpoint => new(PublicUrl, ControllerHttpServer.WebhookPath);
 }
 
 /// <summary>
-/// Authenticates HTTP deliveries and serializes observations with reconciliation. The controller host serves
+/// Authenticates HTTP deliveries and serializes observations with reconciliation. The controller's HTTP server serves
 /// <see cref="Receive"/>; <see cref="Run"/> registers the repository webhook and deactivates it when the controller stops.
 /// </summary>
 sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, WebhookConfiguration configuration, TimeProvider time,
@@ -30,7 +30,7 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
     public static Task<bool> DeactivateSaved(GitHub github, string statePath) => new Registration(github, statePath + ".webhook").Deactivate();
 
     /// <summary>Registers the webhook, then observes deliveries and reconciles until <paramref name="ct"/> stops the controller.</summary>
-    /// <remarks>The host must already serve <see cref="Receive"/>: GitHub pings a newly registered hook at once.</remarks>
+    /// <remarks>The HTTP server must already serve <see cref="Receive"/>: GitHub pings a newly registered hook at once.</remarks>
     public async Task Run(CancellationToken ct)
     {
         using var stopping = ct.UnsafeRegister(_ => stop.Cancel(), null);

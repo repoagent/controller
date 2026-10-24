@@ -9,21 +9,21 @@ namespace RepoAgentController;
 
 /// <summary>
 /// The controller's HTTP surface: Kestrel on the slim ASP.NET Core builder (ADR 0009). The controller's command line owns
-/// configuration, logging and process signals, so the host reads no configuration files or variables, writes no framework
+/// configuration, logging and process signals, so the server reads no configuration files or variables, writes no framework
 /// log and stops only when the controller stops it.
 /// </summary>
-sealed class ControllerHost : IAsyncDisposable
+sealed class ControllerHttpServer : IAsyncDisposable
 {
     public const string WebhookPath = "/github/webhook";
     readonly WebApplication app;
 
-    ControllerHost(WebApplication app) => this.app = app;
+    ControllerHttpServer(WebApplication app) => this.app = app;
 
     /// <summary>
     /// Serves GET /status on the loopback <paramref name="statusPort"/> and, in webhook mode, the repository webhook receiver
     /// at POST <see cref="WebhookPath"/> on every interface of its own port.
     /// </summary>
-    public static async Task<ControllerHost> Start(int statusPort, Func<StatusSnapshot> status, (int Port, RequestDelegate Receive)? webhooks,
+    public static async Task<ControllerHttpServer> Start(int statusPort, Func<StatusSnapshot> status, (int Port, RequestDelegate Receive)? webhooks,
         CancellationToken ct)
     {
         // The content root is the installed controller, never the agent's workspace. The environment name is fixed: the
@@ -59,7 +59,7 @@ sealed class ControllerHost : IAsyncDisposable
             await app.DisposeAsync();
             throw;
         }
-        return new ControllerHost(app);
+        return new ControllerHttpServer(app);
     }
 
     static RequestDelegate OnPort(int port, RequestDelegate handler) => context =>
@@ -77,7 +77,7 @@ sealed class ControllerHost : IAsyncDisposable
         finally { await app.DisposeAsync(); }
     }
 
-    /// <summary>Replaces the console lifetime: process signals reach the controller's command line, not the host.</summary>
+    /// <summary>Replaces the console lifetime: process signals reach the controller's command line, not the ASP.NET Core generic host.</summary>
     sealed class ControlledLifetime : IHostLifetime
     {
         public Task WaitForStartAsync(CancellationToken cancellationToken) => Task.CompletedTask;

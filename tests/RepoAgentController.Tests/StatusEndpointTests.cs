@@ -79,7 +79,7 @@ public sealed class StatusEndpointTests
         try
         {
             var port = FreePort();
-            await using var server = await ControllerHost.Start(port, () => throw new InvalidOperationException("status detail"), null,
+            await using var server = await ControllerHttpServer.Start(port, () => throw new InvalidOperationException("status detail"), null,
                 TestContext.Current.CancellationToken);
             using var client = new HttpClient();
             using var response = await client.GetAsync($"http://127.0.0.1:{port}/status", TestContext.Current.CancellationToken);

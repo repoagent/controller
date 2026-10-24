@@ -31,13 +31,13 @@ try
         await BridgeCommand.Run(["status", "--state", state]) != 0 || await BridgeCommand.Run(["logs", "--state", state]) != 0)
         throw new InvalidOperationException("Native AOT status or retained logs did not report the failed lifetime.");
     Console.WriteLine("Native AOT status and retained-log smoke passed.");
-    // The trimmed ASP.NET Core host serves GET /status through generated JSON metadata (ADR 0009).
+    // The trimmed ASP.NET Core HTTP server serves GET /status through generated JSON metadata (ADR 0009).
     using var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
     probe.Start();
     var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
     probe.Stop();
     using var idle = new ControllerStatus(Path.Combine(directory, "idle.json"), "storage-probe/example", "polling");
-    await using (await ControllerHost.Start(port, () => StatusSnapshot.From(idle.Snapshot()), null, CancellationToken.None))
+    await using (await ControllerHttpServer.Start(port, () => StatusSnapshot.From(idle.Snapshot()), null, CancellationToken.None))
     {
         using var client = new HttpClient();
         var body = await client.GetStringAsync($"http://127.0.0.1:{port}/status");
