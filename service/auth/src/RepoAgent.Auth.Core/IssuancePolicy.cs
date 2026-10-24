@@ -8,6 +8,9 @@ public sealed class IssuanceDenied(int status = 503) : Exception
     public int Status { get; } = status;
 }
 
+// What a broker operation answers: the HTTP status and, for 200, the JSON body.
+public sealed record IssuanceResult(int Status, object? Body = null);
+
 public static class IssuancePolicy
 {
     public const long AppId = 5387625;

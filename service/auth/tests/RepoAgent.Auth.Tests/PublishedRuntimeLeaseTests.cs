@@ -47,7 +47,7 @@ public sealed class PublishedRuntimeLeaseTests
             var row = stage == 1
                 ? (await f.Storage.Table.GetEntityAsync<TableEntity>("global:issuance-v1", "quota", cancellationToken: TestContext.Current.CancellationToken)).Value
                 : await f.GateAsync();
-            row["ConcurrentObservation"] = ++conflicts;
+            ++conflicts;
             await f.Storage.Table.UpdateEntityAsync(row, row.ETag, TableUpdateMode.Replace, TestContext.Current.CancellationToken);
             f.Clock.Advance(TimeSpan.FromSeconds(2));
         }};
@@ -238,7 +238,9 @@ public sealed class PublishedRuntimeLeaseTests
         if (settled)
         {
             var grant = await f.Store().AuthenticateAsync(f.Device.DeviceId, f.Device.Secret, TestContext.Current.CancellationToken);
-            await f.Store().MarkRevokedAsync(grant, previous, TestContext.Current.CancellationToken);
+            var key = IssuanceAttempt.Key(RevocationFixture.RepositoryId, previous.RowKey["attempt:".Length..]);
+            var read = (await new TableBrokerState(f.Storage.Table).ReadAsync(key, TestContext.Current.CancellationToken))!;
+            await f.Store().MarkRevokedAsync(grant, new(key, read.Value, read.Version), TestContext.Current.CancellationToken);
         }
 
         var result = await f.IssueAsync(TestContext.Current.CancellationToken);

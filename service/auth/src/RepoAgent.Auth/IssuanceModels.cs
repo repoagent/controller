@@ -1,5 +1,3 @@
-using System.Text.Json;
-using Azure;
 using Azure.Data.Tables;
 
 namespace RepoAgent.Auth;
@@ -23,7 +21,10 @@ internal static class AppAuthorizationWindowRows
     }
 }
 
-public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
+// A grant read as Table rows, for the enrollment, reclamation and redaction paths that still use TableEntity. Issuance
+// uses the core GrantSnapshot over IBrokerState; these checks duplicate its RequireActive and RequireBinding until
+// slices 1c and 5 move their callers to the core. Device may be a pending enrollment row when only the marker is needed.
+public sealed record GrantRows(TableEntity Gate, TableEntity Device)
 {
     public string RepositoryId => TableValues.Text(Device, "RepositoryId");
     public string DeviceId => TableValues.Text(Device, "DeviceId");
@@ -35,13 +36,7 @@ public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
     public long EnvironmentId => TableValues.Number(Device, "EnvironmentId");
     public string Variable => TableValues.Text(Device, "Variable");
     public string Marker => TableValues.Text(Device, "Marker");
-    public string Partition => Gate.PartitionKey;
     public string Epoch => TableValues.Text(Gate, "Epoch");
-    internal RepositoryIdentity BoundRepository => new(IssuancePolicy.Id(RepositoryId), Repository);
-    // The approval GitHub must still show for this enrollment.
-    internal ControllerApproval BoundApproval() => Approval == ApprovalContract.Legacy
-        ? new(Approval, BoundRepository, InstallationId, Profile, Variable, Marker, Environment, EnvironmentId)
-        : new(Approval, BoundRepository, InstallationId, Profile, Variable, Marker);
     public void RequireActive(DateTimeOffset now)
     {
         PayloadClock.RequirePayload(Device);
@@ -66,8 +61,15 @@ public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
         if (Approval == ApprovalContract.Legacy && (EnvironmentId <= 0 || Environment.Length > 255 || Environment.Any(char.IsControl)))
             throw new IssuanceDenied();
         _ = TableValues.Number(Gate, "Sequence");
-        if (Marker != ApprovalMarker.Create(this)) throw new IssuanceDenied();
+        if (Marker != CreateMarker()) throw new IssuanceDenied();
+    }
+
+    // The approval marker these rows bind (ApprovalMarker in the core encodes it).
+    public string CreateMarker()
+    {
+        var challenge = TableValues.Text(Device, "Challenge");
+        var legacy = !Approval.IsRepositoryVariable;
+        return ApprovalMarker.Create(Approval, RepositoryId, Repository, InstallationId, DeviceId, challenge, Profile, Epoch, Variable,
+            legacy ? Environment : null, legacy ? EnvironmentId : null);
     }
 }
-
-public sealed record IssuanceResult(int Status, object? Body = null);

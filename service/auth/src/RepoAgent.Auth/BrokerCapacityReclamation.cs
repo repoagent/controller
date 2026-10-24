@@ -142,7 +142,7 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
         Bind(ledger, device, false);
         var acknowledged = device.GetBoolean("Acknowledged");
         if (acknowledged is null || acknowledged == false && deadline > clock.GetUtcNow()) return;
-        new GrantSnapshot(gate, device).RequireBinding(options);
+        new GrantRows(gate, device).RequireBinding(options);
         if (pending.GetBoolean("PendingCapacityReleased") != true || Date(pending, "Deadline") != deadline
             || Text(device, "PendingId") != Text(ledger, "PendingId")
             || Text(pending, "CompletionId") != Text(device, "CompletionId")

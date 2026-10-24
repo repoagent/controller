@@ -80,7 +80,7 @@ public static class IssuanceServices
             ConnectTimeout = TimeSpan.FromSeconds(3), MaxResponseHeadersLength = 16
         }) { Timeout = Timeout.InfiniteTimeSpan }));
         builder.Services.AddSingleton(IssuanceLimits.Read(builder.Configuration));
-        builder.Services.AddSingleton<IssuanceStore>();
+        builder.Services.AddSingleton(CreateStore);
         builder.Services.AddSingleton<IAppInstallations, GitHubAppInstallations>();
         builder.Services.AddSingleton<IControllerApprovals, GitHubControllerApprovals>();
         builder.Services.AddSingleton<IGitHubTokens, GitHubTokens>();
@@ -90,6 +90,14 @@ public static class IssuanceServices
             builder.Services.AddSingleton<EnrollmentStore>();
             builder.Services.AddSingleton<EnrollmentService>();
         }
+    }
+    // The issuance store over the broker state, for this deployment's epoch and retained-ledger ceiling.
+    public static IssuanceStore CreateStore(IServiceProvider services)
+    {
+        var options = services.GetRequiredService<BrokerOptions>();
+        return new(services.GetRequiredService<IBrokerState>(), options.DeploymentEpoch, options.RetainedIssuanceLimit,
+            services.GetRequiredService<ISecretProtection>(), services.GetRequiredService<TimeProvider>(),
+            services.GetRequiredService<IssuanceLimits>());
     }
     private static Uri HttpsUri(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri)
         && uri.Scheme == "https" && string.IsNullOrEmpty(uri.UserInfo) && uri.Query.Length == 0 && uri.Fragment.Length == 0

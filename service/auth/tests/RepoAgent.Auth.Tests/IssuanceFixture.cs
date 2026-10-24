@@ -12,8 +12,8 @@ internal sealed class IssuanceFixture : IAsyncDisposable
     public IssuanceFixture() => GitHub = new(Clock);
     public InMemorySecretProtection Secrets { get; } = new();
     public BrokerOptions Options => new(new Uri("https://example.table.core.windows.net"), Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15);
-    public IssuanceStore Store(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) => new(Storage.CreateClient(transport), Options,
-        Secrets, Clock, limits);
+    public IssuanceStore Store(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) => new(
+        new TableBrokerState(Storage.CreateClient(transport)), RevocationFixture.Epoch, Options.RetainedIssuanceLimit, Secrets, Clock, limits);
     public InstallationTokenIssuer Issuer(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) =>
         new(Store(transport, limits), GitHub, GitHub, GitHub, Clock);
 
@@ -37,7 +37,7 @@ internal sealed class IssuanceFixture : IAsyncDisposable
         d["Variable"] = "APPROVAL";
         d["Challenge"] = new string('a', 43);
         var gate = await f.GateAsync();
-        d["Marker"] = ApprovalMarker.Create(new(gate, d));
+        d["Marker"] = new GrantRows(gate, d).CreateMarker();
         await f.Storage.Table.UpdateEntityAsync(d, d.ETag, TableUpdateMode.Replace);
         f.GitHub.Marker = (string)d["Marker"];
         return f;

@@ -26,7 +26,7 @@ public sealed class IssuanceFaultTests
         }
         var reservedAt = f.Clock.GetUtcNow();
         var priorAttempts = (await f.AttemptsAsync()).Select(a => a.RowKey).ToHashSet();
-        TableEntity? competingAttempt = null;
+        StoredAttempt? competingAttempt = null;
         var injected = false;
         var conflictStatus = 0;
         var firstBatch = false;
@@ -58,7 +58,7 @@ public sealed class IssuanceFaultTests
         var result = await f.IssueAsync(Token, transport);
         Assert.True(injected);
         Assert.Equal(412, conflictStatus); // Offline schema already created the global quota.
-        Assert.Equal("reserved", competingAttempt!.GetString("State"));
+        Assert.Equal("reserved", competingAttempt!.Value.State);
         Assert.Equal(200, result.Status);
         var slots = existingQuota ? 5 : 4;
         var global = await GlobalQuota(f);
@@ -66,7 +66,7 @@ public sealed class IssuanceFaultTests
         Assert.Equal(existingQuota ? 2 : 3, global.GetInt64("Admissions"));
         var rows = await GlobalRows(f);
         Assert.Equal(slots, rows.Count(e => e.RowKey.StartsWith("slot:", StringComparison.Ordinal)));
-        Assert.Single(rows, e => e.RowKey.StartsWith("slot:", StringComparison.Ordinal) && e.TryGetValue("OperationId", out var id) && (string)id == competingAttempt.GetString("OperationId"));
+        Assert.Single(rows, e => e.RowKey.StartsWith("slot:", StringComparison.Ordinal) && e.TryGetValue("OperationId", out var id) && (string)id == competingAttempt.Value.OperationId);
         var attempts = await f.AttemptsAsync();
         var admitted = attempts.Where(a => !priorAttempts.Contains(a.RowKey)).ToList();
         Assert.Equal(existingQuota ? 1 : 2, admitted.Count);
@@ -97,7 +97,6 @@ public sealed class IssuanceFaultTests
             // Conflict the repository admission before any approval read or provider mint.
             if (!ObservedTransport.IsBatch(message) || ++batches != 2) return;
             var row = changed == "gate" ? await f.GateAsync() : await f.DeviceAsync();
-            row["ConcurrentObservation"] = "one harmless competing write";
             await f.Storage.Table.UpdateEntityAsync(row, row.ETag, TableUpdateMode.Replace, Token);
             f.Clock.Advance(TimeSpan.FromSeconds(2));
         }};
@@ -132,7 +131,7 @@ public sealed class IssuanceFaultTests
             // Runtime's first admission consumes the fourth shared evaluation and conflicts too.
             if (++batches is not (2 or 3 or 8)) return;
             var gate = await f.GateAsync();
-            gate["ConcurrentObservation"] = ++conflicts;
+            ++conflicts;
             await f.Storage.Table.UpdateEntityAsync(gate, gate.ETag, TableUpdateMode.Replace, Token);
             f.Clock.Advance(TimeSpan.FromSeconds(1));
         }};
@@ -401,12 +400,12 @@ public sealed class IssuanceFaultTests
         device["OutstandingTokenCount"] = 0L;
         await f.Storage.ChargeOfflineEnrollmentAsync(repository, f.Device.DeviceId, f.Clock.GetUtcNow());
         device["Repository"] = "owner/competing";
-        device["Marker"] = ApprovalMarker.Create(new(gate, device));
+        device["Marker"] = new GrantRows(gate, device).CreateMarker();
         await f.Storage.Table.SubmitTransactionAsync(new[]
         {
             new TableTransactionAction(TableTransactionActionType.Add, gate),
             new TableTransactionAction(TableTransactionActionType.Add, device)
         }, Token);
-        return await f.Store().SnapshotAsync(partition, f.Device.DeviceId, Token);
+        return await f.Store().SnapshotAsync(repository, f.Device.DeviceId, Token);
     }
 }

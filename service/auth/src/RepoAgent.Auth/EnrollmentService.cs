@@ -82,7 +82,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
             s.Pending["Environment"] = binding.Environment!;
             s.Pending["EnvironmentId"] = binding.EnvironmentId!.Value;
         }
-        s.Pending["Marker"] = ApprovalMarker.Create(new(s.Gate, s.Pending));
+        s.Pending["Marker"] = new GrantRows(s.Gate, s.Pending).CreateMarker();
         s.Pending["State"] = "pending";
         store.RequireLive(s.Pending);
         work.Fresh(started);
@@ -171,8 +171,8 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
             || Text(s.Pending, "CompletionId") != completionId) throw new IssuanceDenied(401);
         if (device.GetBoolean("Acknowledged") == true)
         {
-            new GrantSnapshot(s.Gate, device).RequireBinding(options);
-            new GrantSnapshot(s.Gate, device).RequireActive(clock.GetUtcNow());
+            new GrantRows(s.Gate, device).RequireBinding(options);
+            new GrantRows(s.Gate, device).RequireActive(clock.GetUtcNow());
             return new(200, new { state = "active" }); // No write or lifetime extension on a lost-ack retry.
         }
         store.RequireLive(s.Pending);
@@ -239,7 +239,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
         s.Approval.Require(device);
         if (Text(device, "Marker") != Text(s.Pending, "Marker") || Text(device, "Profile") != Text(s.Pending, "Profile")
             || Number(device, "InstallationId") != Number(s.Pending, "InstallationId")) throw new IssuanceDenied();
-        new GrantSnapshot(s.Gate, device).RequireBinding(options);
+        new GrantRows(s.Gate, device).RequireBinding(options);
         return device;
     }
     private void Barrier(EnrollmentSnapshot s, TableEntity attempt, bool completed)
