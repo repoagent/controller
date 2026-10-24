@@ -48,6 +48,9 @@ namespace RepoAgentController
     static class Json
     {
         public static string Text(this JsonNode node, string name) => node[name]?.GetValue<string>() ?? "";
+        /// <summary>The string a node holds, or null when it is absent or holds another type or shape. External input reads
+        /// leniently through this; <see cref="Text"/> is for controller-written documents and throws on a wrong type.</summary>
+        public static string? OptionalText(this JsonNode? node) => node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
         public static JsonNode Copy(this JsonNode node) => node.DeepClone();
         public static JsonArray Array(IEnumerable<JsonNode> nodes) => new(nodes.Select(n => n.Copy()).ToArray());
         public static JsonObject Object(params (string Name, JsonNode? Value)[] values) =>

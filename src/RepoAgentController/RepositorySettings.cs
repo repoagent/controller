@@ -146,8 +146,8 @@ sealed class RepositorySettings
         if (file is null || Read(file) is not { } settings) return null;
         var known = new Dictionary<string, (string, DateTimeOffset)>();
         foreach (var setting in Catalogue)
-            if (settings[setting.Name] is JsonObject item && item["value"] is JsonValue value && value.TryGetValue<string>(out var text) &&
-                setting.Normalize(text, out _) == text && item["since"] is JsonValue since && since.TryGetValue<string>(out var at) &&
+            if (settings[setting.Name] is JsonObject item && item["value"].OptionalText() is { } text &&
+                setting.Normalize(text, out _) == text && item["since"].OptionalText() is { } at &&
                 DateTimeOffset.TryParse(at, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var observed))
                 known[setting.Name] = (text, observed);
         return known;

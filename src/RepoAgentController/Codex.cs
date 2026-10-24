@@ -65,21 +65,21 @@ sealed class Codex : IAsyncDisposable
         lock (statusLock)
         {
             if (source == epoch && method == "disconnect") { Forget(); changed = true; }
-            else if (source == epoch && parameters?["threadId"] is JsonValue thread && thread.TryGetValue<string>(out var id) && id.Length != 0)
+            else if (source == epoch && parameters?["threadId"].OptionalText() is { Length: > 0 } id)
             {
                 if (method == "thread/status/changed")
                 {
                     Report(id, Parse(parameters["status"])); changed = true;
                     Log.Write("session-status", $"session={id} status={Native(id)}");
                 }
-                else if (method == "turn/completed" && parameters["turn"]?["id"] is JsonValue value && value.TryGetValue<string>(out var turn))
+                else if (method == "turn/completed" && parameters["turn"]?["id"].OptionalText() is { } turn)
                 {
                     // The native reports idle before turn/completed; the session admits input after both.
                     if (turns.GetValueOrDefault(id) == turn) turns.Remove(id);
                     else { if (finished.Count >= 256) finished.Clear(); finished.Add((id, turn)); }
                     completion = parameters["turn"] as JsonObject;
                     // Held before the outcome is visible, so input returned from a rejected turn waits for new credentials.
-                    var status = completion?["status"] is JsonValue outcome && outcome.TryGetValue<string>(out var text) ? text : "";
+                    var status = completion?["status"].OptionalText() ?? "";
                     var rejection = status == "failed" ? Rejection(completion!["error"]) : null;
                     if (rejection is not null) authenticationFailure = rejection;
                     if (ended.Count >= 256) ended.RemoveAt(0);
@@ -166,7 +166,7 @@ sealed class Codex : IAsyncDisposable
 
     void Authentication(JsonNode parameters, JsonObject turn)
     {
-        var status = turn["status"] is JsonValue value && value.TryGetValue<string>(out var text) ? text : "";
+        var status = turn["status"].OptionalText() ?? "";
         if (status == "completed")
         {
             authenticationFailure = null;
@@ -187,9 +187,9 @@ sealed class Codex : IAsyncDisposable
     static string? Rejection(JsonNode? error)
     {
         var info = error?["codexErrorInfo"];
-        var rejected = info is JsonValue kind ? kind.TryGetValue<string>(out var name) && name == "unauthorized" :
+        var rejected = info is JsonValue ? info.OptionalText() == "unauthorized" :
             info is JsonObject variants && variants.Any(variant => variant.Value?["httpStatusCode"] is JsonValue code && code.TryGetValue<int>(out var status) && status == 401);
-        return !rejected ? null : error?["message"] is JsonValue message && message.TryGetValue<string>(out var detail) ? detail : "unauthorized";
+        return !rejected ? null : error?["message"].OptionalText() ?? "unauthorized";
     }
 
     public Task Reload(CancellationToken ct) => Restart(null, ct);
@@ -315,7 +315,7 @@ sealed class Codex : IAsyncDisposable
             foreach (var item in data.Select(entry => entry!))
                 models.Add(new(item.Text("model"), item["isDefault"]?.GetValue<bool>() ?? false, item.Text("defaultReasoningEffort"),
                     item["supportedReasoningEfforts"]?.AsArray().Select(effort => effort!.Text("reasoningEffort")).ToArray() ?? []));
-            cursor = page["nextCursor"] is JsonValue next && next.TryGetValue<string>(out var text) ? text : null;
+            cursor = page["nextCursor"].OptionalText();
         } while (cursor is not null);
         return models;
     }
@@ -325,8 +325,7 @@ sealed class Codex : IAsyncDisposable
     {
         var configuration = (await Request("config/read", Json.Object(("cwd", workspace)), ct))["config"] as JsonObject
             ?? throw new IOException("Native config/read returned no configuration");
-        static string? Optional(JsonNode? value) => value is JsonValue text && text.TryGetValue<string>(out var name) ? name : null;
-        return (Optional(configuration["model"]), Optional(configuration["model_reasoning_effort"]));
+        return (configuration["model"].OptionalText(), configuration["model_reasoning_effort"].OptionalText());
     }
 
     /// <summary>Starts a native turn carrying <paramref name="envelope"/> and returns its turn ID.</summary>

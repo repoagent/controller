@@ -308,8 +308,8 @@ sealed class GitHubWriteException(GitHubFailure kind, string message, bool uncer
         JsonNode? body = null;
         try { body = JsonNode.Parse(string.Join('\n', lines.Skip(index + 1))); } catch (System.Text.Json.JsonException) { }
         var errors = body?["errors"] as JsonArray ?? [];
-        var types = errors.Select(error => error?["type"] is JsonValue type && type.TryGetValue<string>(out var text) ? text : "").ToArray();
-        var detail = (errors.FirstOrDefault()?["message"] ?? body?["message"]) is JsonValue value && value.TryGetValue<string>(out var message) ? message : "";
+        var types = errors.Select(error => error?["type"].OptionalText() ?? "").ToArray();
+        var detail = (errors.FirstOrDefault()?["message"] ?? body?["message"]).OptionalText() ?? "";
         var description = $"HTTP {status}{(types.FirstOrDefault(t => t.Length != 0) is { } first ? " " + first : "")}{(detail.Length != 0 ? ": " + detail : "")}";
         var exhausted = headers.GetValueOrDefault("X-RateLimit-Remaining") == "0";
         TimeSpan? retryAfter = int.TryParse(headers.GetValueOrDefault("Retry-After"), out var seconds) && seconds >= 0 ? TimeSpan.FromSeconds(seconds) : null;

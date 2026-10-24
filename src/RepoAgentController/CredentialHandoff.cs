@@ -99,7 +99,7 @@ internal sealed class CredentialHandoff : IDisposable
     public static async Task<InstallationCredential> Request(string credentialDirectory, CancellationToken ct)
     {
         var response = await Exchange(credentialDirectory, Json.Object(("operation", "get")), ct);
-        var token = response["token"] is JsonValue value && value.TryGetValue<string>(out var text) ? text : "";
+        var token = response["token"].OptionalText() ?? "";
         if (token.Length == 0 || token.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)) ||
             !DateTimeOffset.TryParse(response.Text("expiresAt"), CultureInfo.InvariantCulture, DateTimeStyles.None, out var expiry) ||
             expiry <= DateTimeOffset.UtcNow.AddSeconds(30))

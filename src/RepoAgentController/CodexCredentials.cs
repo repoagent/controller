@@ -118,7 +118,7 @@ sealed class CodexCredentials
         JsonObject? document;
         try { document = JsonNode.Parse(value) as JsonObject; }
         catch (JsonException) { document = null; }
-        static bool Present(JsonNode? node) => node is JsonValue text && text.TryGetValue<string>(out var item) && item.Length != 0;
+        static bool Present(JsonNode? node) => node.OptionalText() is { Length: > 0 };
         if (document is null || !(Present(document["OPENAI_API_KEY"]) ||
             document["tokens"] is JsonObject tokens && (Present(tokens["refresh_token"]) || Present(tokens["access_token"]))))
             throw new ArgumentException($"--codex-auth file {path} must be a Codex auth.json holding an API key or ChatGPT sign-in tokens");

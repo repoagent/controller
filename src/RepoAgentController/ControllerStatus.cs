@@ -124,7 +124,7 @@ sealed class ControllerStatus : IDisposable
         var journal = ReadObject(statePath + ".refresh.json");
         var active = journal?["active"] as JsonObject;
         var settings = RepositorySettings.Read(RepositorySettings.PathFor(statePath));
-        var limit = settings?[Bridge.ActiveSessionSetting]?["value"] is JsonValue configured && configured.TryGetValue<string>(out var text) &&
+        var limit = settings?[Bridge.ActiveSessionSetting]?["value"].OptionalText() is { } text &&
             int.TryParse(text, System.Globalization.CultureInfo.InvariantCulture, out var number) ? number : Bridge.DefaultActiveSessions;
         // Turns end with their lifetime, so only a running controller can report one.
         var live = recorded?["controller"]?.Text("state") is "starting" or "running";

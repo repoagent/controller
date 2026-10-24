@@ -181,7 +181,7 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             if (refresh is null) return 204;
             if (payload["repository"]?["id"] is not JsonValue identity || !identity.TryGetValue<long>(out var repositoryId) ||
                 repositoryId != refresh.RepositoryId) return 403;
-            if (payload["ref"] is not JsonValue reference || !reference.TryGetValue<string>(out var pushedRef) ||
+            if (payload["ref"].OptionalText() is not { } pushedRef ||
                 pushedRef.Length is 0 or > 1024 || pushedRef.Any(char.IsControl)) return 400;
             if (pushedRef != refresh.DefaultRef) return 204;
             if (durable is not null) await durable.Enqueue(new DurableWorkHint.CheckoutRefresh(), ct);
