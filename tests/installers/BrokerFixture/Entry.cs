@@ -183,11 +183,23 @@ internal sealed class GitHubBoundary : HttpMessageHandler
         if (path.EndsWith("/installation")) result=new { id=789,app_id=5387625,app_slug="repo-agent-connector",suspended_at=(string?)null,
             permissions=new { discussions="write",actions_variables="read",agent_variables="read",contents="read",repository_hooks="write" } };
         else if(path=="/installation/repositories") result=new { total_count=1,repositories=new[]{new{id=123,full_name="example/project"}} };
-        else if(path is "/repos/example/project/actions/variables" or "/repos/example/project/agents/variables") {
+        else if(path.StartsWith("/repos/example/project/actions/variables") || path.StartsWith("/repos/example/project/agents/variables")) {
+            // The broker reads its approval by name; a 404 counts as absence only after a listing page proves access.
             using var model=JsonDocument.Parse(File.ReadAllText(Path.Combine(Entry.DirectoryPath,"github.json")));
-            var store=path.EndsWith("/actions/variables") ? "variables" : "agent_variables";
-            var variables=model.RootElement.GetProperty(store).EnumerateObject().Select(p=>new{name=p.Name,value=p.Value.GetString()}).ToArray();
-            result=new {total_count=variables.Length,variables};
+            var store=path.StartsWith("/repos/example/project/actions/") ? "variables" : "agent_variables";
+            var variables=model.RootElement.GetProperty(store).EnumerateObject().Select(p=>new{name=p.Name,value=p.Value.GetString()}).OrderBy(v=>v.name,StringComparer.Ordinal).ToArray();
+            var name=path.Split('/')[6..] is [var selected] ? Uri.UnescapeDataString(selected) : null;
+            if (name is not null) {
+                var found=variables.FirstOrDefault(v=>string.Equals(v.name,name,StringComparison.OrdinalIgnoreCase));
+                Entry.Record(new { provider=request.Method+" "+path });
+                if (found is null) return new(HttpStatusCode.NotFound) { Content=JsonContent.Create(new { message="Not Found" }) };
+                result=new { found.name, found.value, created_at="2026-10-23T00:00:00Z", updated_at="2026-10-23T00:00:00Z" };
+                return new(HttpStatusCode.OK) { Content=JsonContent.Create(result) };
+            }
+            var query=System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);
+            var size=Math.Min(30,int.TryParse(query["per_page"],out var perPage) ? perPage : 10);
+            var page=int.TryParse(query["page"],out var number) ? number : 1;
+            result=new {total_count=variables.Length,variables=variables.Skip((page-1)*size).Take(size).ToArray()};
         } else throw new InvalidOperationException("Unexpected provider endpoint "+path);
         Entry.Record(new { provider=request.Method+" "+path });
         return new(HttpStatusCode.OK) { Content=JsonContent.Create(result) };
