@@ -33,26 +33,16 @@ sealed class CategoryEnrollment
     /// <summary>Records starts for newly selected categories and forgets those of removed ones.</summary>
     public void Reconcile() => Starts();
 
-    // Reconciles the recorded category enrollment starts with the effective setting; a retained value keeps its starts. Without any
-    // known value, a failed or invalid read changes nothing: only a confirmed absence or disabled settings remove a selection.
+    // Applies the core's reconciliation of the recorded starts with the effective setting, saving any change.
     JsonObject Starts()
     {
-        var setting = settings[Setting];
-        if (setting is { Value: null, State: not (SettingState.Absent or SettingState.Disabled) }) return store.State["enrollmentCategories"] as JsonObject ?? new JsonObject();
-        var names = setting.Value?.Split(',', StringSplitOptions.TrimEntries) ?? [];
-        if (store.State["enrollmentCategories"] is not JsonObject starts)
-        {
-            if (names.Length == 0) return new JsonObject();
-            store.State["enrollmentCategories"] = starts = new JsonObject();
-        }
-        var removed = starts.Select(start => start.Key).Where(name => !names.Contains(name, StringComparer.OrdinalIgnoreCase)).ToList();
-        foreach (var name in removed) starts.Remove(name);
-        var added = names.Where(name => !starts.Any(start => string.Equals(start.Key, name, StringComparison.OrdinalIgnoreCase))).ToList();
-        // Not the observation time: a webhook may report a new Discussion long after the refresh read its category.
-        // GitHub reports creation in whole seconds.
-        var since = setting.Since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
-        foreach (var name in added) starts[name] = since;
-        if (removed.Count + added.Count == 0) return starts;
+        var starts = store.State["enrollmentCategories"] as JsonObject;
+        if (CategoryEnrollmentStarts.Reconcile(starts?.Select(start => start.Key).ToList() ?? [], settings[Setting]) is not { } changes)
+            return starts ?? new JsonObject();
+        if (starts is null) store.State["enrollmentCategories"] = starts = new JsonObject();
+        foreach (var name in changes.Forgotten) starts.Remove(name);
+        var since = changes.Since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
+        foreach (var name in changes.Started) starts[name] = since;
         if (starts.Count == 0) store.State.Remove("enrollmentCategories");
         store.Save();
         return starts;
