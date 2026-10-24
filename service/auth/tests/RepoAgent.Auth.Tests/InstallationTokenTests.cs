@@ -36,7 +36,7 @@ public sealed class InstallationTokenTests
         Assert.DoesNotContain("runtime-token", JsonSerializer.Serialize(attempts));
         Assert.DoesNotContain("verifier-token", JsonSerializer.Serialize(attempts));
         Assert.Equal(8, f.GitHub.Reads);
-        Assert.Equal(2, f.Signing.Calls);
+        Assert.Equal(2, f.GitHub.Authorizations);
         Assert.Equal(3, (await f.GateAsync()).GetInt64("OutstandingTokenCount"));
         Assert.Equal(f.Clock.GetUtcNow().AddDays(90), (await f.DeviceAsync()).GetDateTimeOffset("ExpiresAt"));
     }
@@ -67,7 +67,7 @@ public sealed class InstallationTokenTests
         await f.Storage.Table.UpdateEntityAsync(device, device.ETag, TableUpdateMode.Replace, TestContext.Current.CancellationToken);
         Assert.NotEqual(200, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         Assert.Equal(0, f.GitHub.Mints);
-        Assert.Equal(0, f.Signing.Calls);
+        Assert.Equal(0, f.GitHub.Authorizations);
     }
 
     [Fact]
@@ -85,15 +85,12 @@ public sealed class InstallationTokenTests
         Assert.Equal(1, f.GitHub.Mints);
     }
 
-    [Theory]
-    [InlineData(403)]
-    [InlineData(404)]
-    [InlineData(302)]
-    public async Task Unverifiable_approval_denies_without_fabricating_withdrawal(int status)
+    // Which answers are unverifiable is the core's rule (ApprovalObserverTests); this is the issuer's outcome.
+    [Fact]
+    public async Task Unverifiable_approval_denies_without_fabricating_withdrawal()
     {
         await using var f = await IssuanceFixture.CreateAsync();
-        f.GitHub.Before = request => Task.FromResult<HttpResponseMessage?>(request.RequestUri!.AbsolutePath.Contains("/variables/", StringComparison.Ordinal)
-            ? new((HttpStatusCode)status) : null);
+        f.GitHub.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Refused(403);
         Assert.NotEqual(200, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         Assert.Equal("active", (await f.GateAsync()).GetString("State"));
         Assert.False((await f.DeviceAsync()).ContainsKey("LastActivityAt"));
@@ -160,7 +157,7 @@ public sealed class InstallationTokenTests
     public async Task Delayed_signing_cannot_refresh_reserved_JWT_or_send_after_deadline()
     {
         await using var f = await IssuanceFixture.CreateAsync();
-        f.Signing.Before = () => { f.Clock.Advance(TimeSpan.FromSeconds(121)); return Task.CompletedTask; };
+        f.GitHub.BeforeAuthorize = () => { f.Clock.Advance(TimeSpan.FromSeconds(121)); return Task.CompletedTask; };
         Assert.Equal(503, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         Assert.Equal(0, f.GitHub.Mints);
         var attempt = Assert.Single(await f.AttemptsAsync());
@@ -187,7 +184,7 @@ public sealed class InstallationTokenTests
     {
         await using var f = await IssuanceFixture.CreateAsync();
         f.GitHub.Before = request => Task.FromResult<HttpResponseMessage?>(request.Method == HttpMethod.Post && f.GitHub.Mints == 2
-            ? GitHubTransport.Json(new { token = "excess-token", expires_at = DateTimeOffset.UtcNow.AddHours(1),
+            ? InMemoryGitHub.Json(new { token = "excess-token", expires_at = DateTimeOffset.UtcNow.AddHours(1),
                 repository_selection = "selected", permissions = new { discussions = "write", contents = "read" },
                 repositories = new[] { new { id = 123456, full_name = "owner/project" } } }, HttpStatusCode.Created) : null);
         Assert.Equal(503, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);

@@ -110,7 +110,7 @@ public sealed partial class PayloadRedactionTests
             if (request.Method == HttpMethod.Post)
             {
                 if (fault == "unknown") throw new HttpRequestException("Unknown provider outcome");
-                return Task.FromResult<HttpResponseMessage?>(GitHubTransport.Json(new { token = "known-invalid-expiry", expires_at = "invalid" }, HttpStatusCode.Created));
+                return Task.FromResult<HttpResponseMessage?>(InMemoryGitHub.Json(new { token = "known-invalid-expiry", expires_at = "invalid" }, HttpStatusCode.Created));
             }
             return normal(request);
         };

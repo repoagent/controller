@@ -1,19 +1,25 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+
 namespace RepoAgent.Auth.Tests;
 
 // GitHub as the broker's approval and installation ports see it: the App installed on owner/project, and the
 // variables an operator wrote. State answers every read unless a test replaces an answer; nothing here decides.
-internal sealed class InMemoryGitHub : IAppInstallations, IControllerApprovals
+// Token mints and revocations still arrive over HTTP until the GitHub tokens slice moves them behind a port.
+internal sealed class InMemoryGitHub(TimeProvider? clock = null) : HttpMessageHandler, IAppInstallations, IControllerApprovals
 {
     public static readonly RepositoryIdentity Project = new(123456, "owner/project");
+    // The App's installation on owner/project, with every permission a setup version asks for.
+    public static readonly AppInstallation Installed = new(789, IssuancePolicy.AppId, IssuancePolicy.AppSlug, false, new Dictionary<string, string>
+    {
+        ["discussions"] = "write", ["repository_hooks"] = "write", ["contents"] = "read", ["environments"] = "read",
+        ["actions"] = "read", ["actions_variables"] = "read", ["agent_variables"] = "read"
+    });
     private string marker = "";
     private int authorizations, reads;
 
-    public GitHubRead<AppInstallation> Installation { get; set; } = GitHubRead.Found(new AppInstallation(789, IssuancePolicy.AppId,
-        IssuancePolicy.AppSlug, false, new Dictionary<string, string>
-        {
-            ["discussions"] = "write", ["repository_hooks"] = "write", ["contents"] = "read", ["environments"] = "read",
-            ["actions"] = "read", ["actions_variables"] = "read", ["agent_variables"] = "read"
-        }));
+    public GitHubRead<AppInstallation> Installation { get; set; } = GitHubRead.Found(Installed);
     public GitHubRead<InstallationRepositories> Repositories { get; set; } = GitHubRead.Found(new InstallationRepositories(1, [Project]));
     public GitHubRead<ApprovalEnvironment> Environment { get; set; } = GitHubRead.Found(new ApprovalEnvironment(987, "approval/environment"));
 
@@ -43,6 +49,11 @@ internal sealed class InMemoryGitHub : IAppInstallations, IControllerApprovals
     public Func<string, Task>? BeforeRead { get; set; }
     public Func<Task>? BeforeAuthorize { get; set; }
 
+    public int Mints, Revokes, VerifierMints;
+    public TimeSpan RuntimeLifetime = TimeSpan.FromHours(1);
+    // Replaces GitHub's answer to a mint (POST) or revocation (DELETE); a null result keeps the default answer.
+    public Func<HttpRequestMessage, Task<HttpResponseMessage?>>? Before = static _ => Task.FromResult<HttpResponseMessage?>(null);
+
     public int Reads => reads;
     public int Authorizations => authorizations;
     public List<string> Requests { get; } = [];
@@ -54,13 +65,13 @@ internal sealed class InMemoryGitHub : IAppInstallations, IControllerApprovals
         var n = Interlocked.Increment(ref authorizations);
         lock (Windows) Windows.Add(window);
         if (BeforeAuthorize is not null) await BeforeAuthorize();
-        return new Authorization(n);
+        return new GitHubAppAuthorization("app-jwt-" + n);
     }
 
     public async Task<GitHubRead<AppInstallation>> FindAsync(AppAuthorization app, string repository, CancellationToken ct)
     {
         await ReadAsync("installation " + repository, null);
-        return app is Authorization ? Installation : new GitHubRead<AppInstallation>.Refused(401);
+        return app is GitHubAppAuthorization ? Installation : new GitHubRead<AppInstallation>.Refused(401);
     }
 
     public async Task<GitHubRead<InstallationRepositories>> RepositoriesAsync(GitHubToken token, CancellationToken ct)
@@ -110,8 +121,27 @@ internal sealed class InMemoryGitHub : IAppInstallations, IControllerApprovals
         if (BeforeRead is not null) await BeforeRead(request);
     }
 
-    private sealed class Authorization(int sequence) : AppAuthorization
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        public override string ToString() => "app authorization " + sequence;
+        lock (Requests) Requests.Add(request.Method + " " + request.RequestUri!.PathAndQuery);
+        if (request.Method == HttpMethod.Post) Mints++;
+        else if (request.Method == HttpMethod.Delete) Revokes++;
+        else throw new InvalidOperationException("The broker reads GitHub through its ports, never over HTTP.");
+        if (Before is not null && await Before(request) is { } replacement) return replacement;
+        if (request.Method == HttpMethod.Delete) return new(HttpStatusCode.NoContent);
+        var input = await request.Content!.ReadFromJsonAsync<JsonElement>(ct);
+        var ids = input.GetProperty("repository_ids");
+        if (ids.GetArrayLength() != 1 || ids[0].GetInt64() != 123456) throw new InvalidOperationException("Unexpected requested repository scope.");
+        var permissions = input.GetProperty("permissions");
+        var verifier = permissions.TryGetProperty("environments", out _);
+        if (verifier) VerifierMints++;
+        return Json(new
+        {
+            token = verifier ? "verifier-token" : "runtime-token-" + Mints,
+            expires_at = (clock ?? TimeProvider.System).GetUtcNow().Add(verifier ? TimeSpan.FromHours(1) : RuntimeLifetime),
+            repository_selection = "selected", permissions, repositories = new[] { new { id = 123456, full_name = "owner/project" } }
+        }, HttpStatusCode.Created);
     }
+
+    public static HttpResponseMessage Json(object value, HttpStatusCode status = HttpStatusCode.OK) => new(status) { Content = JsonContent.Create(value) };
 }

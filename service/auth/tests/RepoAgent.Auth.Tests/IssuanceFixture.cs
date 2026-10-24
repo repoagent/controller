@@ -1,10 +1,5 @@
-using System.Net;
-using System.Net.Http.Json;
-using System.Text.Json;
 using Azure.Core.Pipeline;
 using Azure.Data.Tables;
-using Azure.Security.KeyVault.Keys;
-using Azure.Security.KeyVault.Keys.Cryptography;
 
 namespace RepoAgent.Auth.Tests;
 
@@ -13,18 +8,14 @@ internal sealed class IssuanceFixture : IAsyncDisposable
     public RevocationFixture Storage { get; } = new();
     public EnrolledDevice Device { get; private set; } = null!;
     public IssuanceClock Clock { get; } = new();
-    public SigningTransport Signing { get; } = new();
-    public GitHubTransport GitHub { get; }
+    public InMemoryGitHub GitHub { get; }
     public IssuanceFixture() => GitHub = new(Clock);
     public InMemorySecretProtection Secrets { get; } = new();
     public BrokerOptions Options => new(new Uri("https://example.table.core.windows.net"), Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15);
     public IssuanceStore Store(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) => new(Storage.CreateClient(transport), Options,
         Secrets, Clock, limits);
-    public InstallationTokenIssuer Issuer(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null)
-    {
-        var github = new GitHubIssuance(new HttpClient(GitHub), Clock);
-        return new(Store(transport, limits), github, new GitHubAppInstallations(github, Signing), new GitHubControllerApprovals(github), Clock);
-    }
+    public InstallationTokenIssuer Issuer(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) =>
+        new(Store(transport, limits), new GitHubIssuance(new HttpClient(GitHub), Clock), GitHub, GitHub, Clock);
 
     public static async Task<IssuanceFixture> CreateAsync(TimeSpan? runtimeLifetime = null)
     {
@@ -70,54 +61,4 @@ internal sealed class IssuanceClock : TimeProvider
     private DateTimeOffset current = DateTimeOffset.UtcNow;
     public override DateTimeOffset GetUtcNow() => current;
     public void Advance(TimeSpan amount) => current += amount;
-}
-internal sealed class SigningTransport : CryptographyClient
-{
-    public int Calls;
-    public Func<Task>? Before;
-    public override async Task<SignResult> SignAsync(SignatureAlgorithm algorithm, byte[] digest, CancellationToken cancellationToken = default)
-    {
-        Interlocked.Increment(ref Calls);
-        if (Before is not null) await Before();
-        return CryptographyModelFactory.SignResult("https://example.vault.azure.net/keys/app/version", new byte[256], algorithm);
-    }
-}
-internal sealed class GitHubTransport(TimeProvider? clock = null) : HttpMessageHandler
-{
-    public string Marker = "";
-    public TimeSpan RuntimeLifetime = TimeSpan.FromHours(1);
-    public int Reads, Mints, Revokes, VerifierMints;
-    public Func<HttpRequestMessage, Task<HttpResponseMessage?>>? Before;
-    public List<string> Requests { get; } = [];
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-    {
-        Requests.Add(request.Method + " " + request.RequestUri!.PathAndQuery);
-        if (request.Method == HttpMethod.Get) Reads++;
-        if (request.Method == HttpMethod.Post) Mints++;
-        if (request.Method == HttpMethod.Delete) Revokes++;
-        if (Before is not null && await Before(request) is { } replacement) return replacement;
-        if (request.Method == HttpMethod.Delete) return new(HttpStatusCode.NoContent);
-        var path = request.RequestUri!.AbsolutePath;
-        if (request.Method == HttpMethod.Post)
-        {
-            var input = await request.Content!.ReadFromJsonAsync<JsonElement>(ct);
-            var ids = input.GetProperty("repository_ids");
-            if (ids.GetArrayLength() != 1 || ids[0].GetInt64() != 123456) throw new InvalidOperationException("Unexpected requested repository scope.");
-            var permissions = input.GetProperty("permissions");
-            var verifier = permissions.TryGetProperty("environments", out _);
-            if (verifier) VerifierMints++;
-            return Json(new { token = verifier ? "verifier-token" : "runtime-token-" + Mints,
-                expires_at = (clock ?? TimeProvider.System).GetUtcNow().Add(verifier ? TimeSpan.FromHours(1) : RuntimeLifetime), repository_selection = "selected", permissions,
-                repositories = new[] { new { id = 123456, full_name = "owner/project" } } }, HttpStatusCode.Created);
-        }
-        if (path.EndsWith("/installation", StringComparison.Ordinal)) return Json(new
-        {
-            id = 789, app_id = IssuancePolicy.AppId, app_slug = IssuancePolicy.AppSlug, suspended_at = (string?)null,
-            permissions = new { discussions = "write", environments = "read", actions = "read" }
-        });
-        if (path == "/installation/repositories") return Json(new { total_count = 1, repositories = new[] { new { id = 123456, full_name = "owner/project" } } });
-        if (path.EndsWith("/variables/APPROVAL", StringComparison.Ordinal)) return Json(new { name = "APPROVAL", value = Marker });
-        return Json(new { id = 987, name = "approval/environment" });
-    }
-    public static HttpResponseMessage Json(object value, HttpStatusCode status = HttpStatusCode.OK) => new(status) { Content = JsonContent.Create(value) };
 }

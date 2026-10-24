@@ -182,7 +182,6 @@ public sealed class CloneEnrollmentContractTests
         var agent = f.GitHub.Before!;
         f.GitHub.Before = async request =>
         {
-            var path = request.RequestUri!.AbsolutePath;
             if (request.Method == HttpMethod.Post)
             {
                 var body = await request.Content!.ReadFromJsonAsync<JsonElement>(Token);
@@ -191,7 +190,7 @@ public sealed class CloneEnrollmentContractTests
                 {
                     Assert.Equal(123456, Assert.Single(body.GetProperty("repository_ids").EnumerateArray()).GetInt64());
                     AssertPermissions(profile, permissions);
-                    return GitHubTransport.Json(new
+                    return InMemoryGitHub.Json(new
                     {
                         token = "runtime-token-" + f.GitHub.Mints, expires_at = f.Clock.GetUtcNow().Add(f.GitHub.RuntimeLifetime),
                         repository_selection = "selected", permissions,
@@ -199,13 +198,6 @@ public sealed class CloneEnrollmentContractTests
                     }, HttpStatusCode.Created);
                 }
             }
-            if (path.EndsWith("/installation", StringComparison.Ordinal))
-                return GitHubTransport.Json(new
-                {
-                    id = 789, app_id = IssuancePolicy.AppId, app_slug = IssuancePolicy.AppSlug,
-                    suspended_at = (string?)null,
-                    permissions = new { discussions = "write", contents = "read", repository_hooks = "write", agent_variables = "read" }
-                });
             return await agent(request);
         };
     }

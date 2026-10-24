@@ -95,7 +95,7 @@ public sealed class PublishedRuntimeLeaseTests
         await using var f = await IssuanceFixture.CreateAsync();
         Assert.Equal(200, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        f.Signing.Before = async () => Assert.Equal(204, await new DeviceRevocation(f.Storage.Table, f.Options, f.Clock)
+        f.GitHub.BeforeAuthorize = async () => Assert.Equal(204, await new DeviceRevocation(f.Storage.Table, f.Options, f.Clock)
             .RevokeAsync(f.Device.DeviceId, f.Device.Secret, TestContext.Current.CancellationToken));
 
         var result = await f.IssueAsync(TestContext.Current.CancellationToken);
@@ -183,9 +183,9 @@ public sealed class PublishedRuntimeLeaseTests
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        f.Signing.Before = async () =>
+        f.GitHub.BeforeAuthorize = async () =>
         {
-            if (f.Signing.Calls != 3) return;
+            if (f.GitHub.Authorizations != 3) return;
             entered.SetResult();
             await resume.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         };
@@ -221,7 +221,7 @@ public sealed class PublishedRuntimeLeaseTests
         Assert.NotEqual(200, result.Status);
         Assert.Null(result.Body);
         Assert.Equal(2, f.GitHub.Mints);
-        Assert.Equal(2, f.Signing.Calls);
+        Assert.Equal(2, f.GitHub.Authorizations);
     }
 
     [Theory]

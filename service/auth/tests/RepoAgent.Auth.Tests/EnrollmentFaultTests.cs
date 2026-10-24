@@ -91,13 +91,11 @@ public sealed class EnrollmentFaultTests
         Assert.Equal(1, f.GitHub.Mints);
     }
 
+    // Which answers prove a withdrawal or a binding change is the core's rule (ApprovalObserverTests);
+    // this is the setup v1 completion route's outcome for one of each.
     [Theory]
     [InlineData("absent", true)]
-    [InlineData("changed", true)]
     [InlineData("404", false)]
-    [InlineData("partial", false)]
-    [InlineData("installation", true)]
-    [InlineData("repository", true)]
     [InlineData("environment", true)]
     public async Task Only_verified_withdrawal_or_binding_change_closes_observed_approval(string observation, bool closed)
     {
@@ -106,30 +104,17 @@ public sealed class EnrollmentFaultTests
         using var completion = await f.Send($"/v1/enrollments/{pending}/completion");
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var delivered = await Json(completion);
-        var normal = f.GitHub.Before;
-        f.GitHub.Before = request =>
-        {
-            var path = request.RequestUri!.AbsolutePath;
-            if (observation == "installation" && path.EndsWith("/installation", StringComparison.Ordinal))
-                return Task.FromResult<HttpResponseMessage?>(GitHubTransport.Json(new { id = 790, app_id = IssuancePolicy.AppId, app_slug = IssuancePolicy.AppSlug, suspended_at = (string?)null, permissions = new { discussions = "write", environments = "read", actions = "read" } }));
-            if (observation == "repository" && path == "/installation/repositories")
-                return Task.FromResult<HttpResponseMessage?>(GitHubTransport.Json(new { total_count = 1, repositories = new[] { new { id = 123456, full_name = "other/renamed" } } }));
-            if (observation == "environment" && path.EndsWith("/environments/approval%2Fenvironment", StringComparison.OrdinalIgnoreCase))
-                return Task.FromResult<HttpResponseMessage?>(GitHubTransport.Json(new { id = 988, name = "approval/environment" }));
-            if (!path.EndsWith("/variables", StringComparison.Ordinal)) return normal!(request);
-            return Task.FromResult<HttpResponseMessage?>(observation switch
-            {
-                "404" => new HttpResponseMessage(HttpStatusCode.NotFound),
-                "partial" => GitHubTransport.Json(new { total_count = 2, variables = new[] { new { name = "UNRELATED", value = "private-provider-value" } } }),
-                "changed" => GitHubTransport.Json(new { total_count = 1, variables = new[] { new { name = "APPROVAL", value = "private-provider-value" } } }),
-                _ => GitHubTransport.Json(new { total_count = 0, variables = Array.Empty<object>() })
-            });
-        };
+        var marker = f.GitHub.Marker;
+        var environment = f.GitHub.Environment;
+        if (observation == "absent") f.GitHub.Marker = "";
+        if (observation == "404") f.GitHub.PageAnswer = (_, _) => new GitHubRead<GitHubVariablePage>.NotFound();
+        if (observation == "environment") f.GitHub.Environment = GitHubRead.Found(new ApprovalEnvironment(988, "approval/environment"));
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var observed = await f.Send($"/v1/enrollments/{pending}/completion");
         Assert.DoesNotContain("deviceSecret", await observed.Content.ReadAsStringAsync(Token));
-        Assert.DoesNotContain("private-provider-value", await observed.Content.ReadAsStringAsync(Token));
-        f.GitHub.Before = normal;
+        f.GitHub.Marker = marker;
+        f.GitHub.PageAnswer = null;
+        f.GitHub.Environment = environment;
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var retry = await f.Send($"/v1/enrollments/{pending}/completion");
@@ -178,24 +163,22 @@ public sealed class EnrollmentFaultTests
         var envelope = delivered.GetProperty("enrollment");
         var device = envelope.GetProperty("deviceId").GetString()!;
         var secret = envelope.GetProperty("deviceSecret").GetString()!;
-        var normal = f.GitHub.Before;
         var revoked = false;
-        f.GitHub.Before = async request =>
+        f.GitHub.BeforeRead = async request =>
         {
-            if (!revoked && request.RequestUri!.AbsolutePath.EndsWith("/variables", StringComparison.Ordinal))
+            if (!revoked && request.StartsWith("variables ", StringComparison.Ordinal))
             {
                 revoked = true;
                 using var result = await f.Send($"/v1/devices/{device}", secret: secret, method: HttpMethod.Delete);
                 Assert.Equal(HttpStatusCode.NoContent, result.StatusCode);
             }
-            return await normal!(request);
         };
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var body = new { completionId = delivered.GetProperty("completionId").GetString() };
         using var ack = await f.Send($"/v1/devices/{device}/acknowledgment", body, secret);
         Assert.True(revoked);
         Assert.NotEqual(HttpStatusCode.OK, ack.StatusCode);
-        f.GitHub.Before = normal;
+        f.GitHub.BeforeRead = null;
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var retry = await f.Send($"/v1/devices/{device}/acknowledgment", body, secret);
@@ -365,19 +348,12 @@ public sealed class EnrollmentFaultTests
         Assert.Equal("reserved", original.GetString("State"));
         Assert.Equal(0, f.GitHub.Reads);
         Assert.Equal(0, f.GitHub.Mints);
-        var expectedClaims = (Iat: original.GetDateTimeOffset("JwtIssuedAt")!.Value.ToUnixTimeSeconds(),
-            Exp: original.GetDateTimeOffset("JwtExpiresAt")!.Value.ToUnixTimeSeconds());
-        (long Iat, long Exp)? sentClaims = null;
-        var normal = f.GitHub.Before;
+        Assert.Equal(0, f.GitHub.Authorizations);
+        string? sentAuthorization = null;
         f.GitHub.Before = message =>
         {
-            if (message.Method == HttpMethod.Post)
-            {
-                var payload = message.Headers.Authorization!.Parameter!.Split('.')[1].Replace('-', '+').Replace('_', '/');
-                using var claims = JsonDocument.Parse(Convert.FromBase64String(payload.PadRight((payload.Length + 3) / 4 * 4, '=')));
-                sentClaims = (claims.RootElement.GetProperty("iat").GetInt64(), claims.RootElement.GetProperty("exp").GetInt64());
-            }
-            return normal!(message);
+            if (message.Method == HttpMethod.Post) sentAuthorization = message.Headers.Authorization!.Parameter;
+            return Task.FromResult<HttpResponseMessage?>(null);
         };
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromSeconds(delaySeconds));
@@ -393,7 +369,8 @@ public sealed class EnrollmentFaultTests
         if (delaySeconds == 120)
         {
             Assert.Equal(HttpStatusCode.ServiceUnavailable, resumed.StatusCode);
-            Assert.Null(sentClaims);
+            Assert.Empty(f.GitHub.Windows);
+            Assert.Null(sentAuthorization);
             Assert.Equal(0, f.GitHub.Reads);
             Assert.Equal(0, f.GitHub.Mints);
             Assert.Equal("reserved", persisted.GetString("State"));
@@ -402,8 +379,11 @@ public sealed class EnrollmentFaultTests
         {
             Assert.Equal(HttpStatusCode.OK, resumed.StatusCode);
             Assert.Equal(1, f.GitHub.Mints);
-            Assert.NotNull(sentClaims);
-            Assert.Equal(expectedClaims, sentClaims.Value);
+            // One authorization, over the original reserved window, signs the resumed mint.
+            var window = Assert.Single(f.GitHub.Windows);
+            Assert.Equal(original.GetDateTimeOffset("JwtIssuedAt"), window.IssuedAt);
+            Assert.Equal(original.GetDateTimeOffset("JwtExpiresAt"), window.ExpiresAt);
+            Assert.Equal("app-jwt-1", sentAuthorization);
         }
     }
 
