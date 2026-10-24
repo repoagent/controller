@@ -658,26 +658,7 @@ public sealed class ControllerDashboardTests
         void Update(Action<JsonObject> change) => World(state => { change(state); return true; }, write: true);
 
         // Holds the controlled peer's exclusive lock on its world while reading or changing it, as GitHub would serialize them.
-        T World<T>(Func<JsonObject, T> use, bool write = false)
-        {
-            var deadline = DateTime.UtcNow.AddSeconds(20);
-            while (true)
-            {
-                try
-                {
-                    using var file = new FileStream(world, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-                    var state = JsonNode.Parse(file)!.AsObject();
-                    var result = use(state);
-                    if (write)
-                    {
-                        file.SetLength(0);
-                        file.Write(System.Text.Encoding.UTF8.GetBytes(state.ToJsonString()));
-                    }
-                    return result;
-                }
-                catch (IOException) when (DateTime.UtcNow < deadline) { Thread.Sleep(10); }
-            }
-        }
+        T World<T>(Func<JsonObject, T> use, bool write = false) => ControllerHarness.LockedJson(world, use, write);
 
         public Task<int> Run(CancellationToken shutdown, params string[] extra) =>
             running = BridgeCommand.Run([.. Arguments, .. extra], appHttp ?? fixture.Http, fixture.Gh, fixture.Clock, shutdown);
