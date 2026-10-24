@@ -211,7 +211,4 @@ public sealed class ApprovalObserver(IAppInstallations installations, IControlle
     // Only a well-formed 200 is evidence; any other answer denies without proving anything.
     private static T Value<T>(GitHubRead<T> read) => read is GitHubRead<T>.Found found ? found.Value : throw new IssuanceDenied();
 
-    private static bool IsRepositoryName(string repository) => repository.Split('/') is [var owner, var name] && Segment(owner) && Segment(name);
-    private static bool Segment(string value) => value.Length is > 0 and <= 100 && value is not ("." or "..")
-        && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
 }

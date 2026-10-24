@@ -125,10 +125,6 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true, NoStore = true };
         return request;
     }
-    private static bool IsRepositoryName(string? repository) => repository is not null
-        && repository.Split('/') is [var owner, var name] && Segment(owner) && Segment(name);
-    private static bool Segment(string value) => value.Length is > 0 and <= 100 && value is not ("." or "..")
-        && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
     // Shape validation is separate from comparison: malformed evidence never proves withdrawal.
     private static void ValidateRepository(JsonElement repositories, string repositoryId, string repository)
     {

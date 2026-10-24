@@ -27,14 +27,12 @@ public sealed record RepositoryVariableEnrollmentRequest(string IdempotencyId, l
     public void Validate()
     {
         if (!Guid.TryParseExact(IdempotencyId, "N", out _) || RepositoryId <= 0
-            || Repository is null || Repository.Split('/') is not [var owner, var name] || !Segment(owner) || !Segment(name)
+            || !IsRepositoryName(Repository)
             || Variable is null || Variable.Length is < 1 or > 100 || char.IsAsciiDigit(Variable[0])
             || Variable.StartsWith("GITHUB_", StringComparison.OrdinalIgnoreCase)
             || !Variable.All(c => char.IsAsciiLetterOrDigit(c) || c == '_') || Profile is not ("polling" or "webhook" or "polling-clone" or "webhook-clone"
                 or "polling-settings" or "webhook-settings" or "polling-clone-settings" or "webhook-clone-settings")) throw new IssuanceDenied(400);
     }
-    private static bool Segment(string s) => s.Length is > 0 and <= 100 && s is not ("." or "..")
-        && s.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
     public string Digest() => Digest("repository-agent-variable/setup-v2");
     // Setup v3 shares this body grammar; domain separation keeps one idempotency ID from
     // replaying a request across approval locations.

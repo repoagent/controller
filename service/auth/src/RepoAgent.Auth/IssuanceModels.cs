@@ -63,7 +63,7 @@ public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
             || TableValues.Text(Device, "GitHubHost") != "github.com"
             || TableValues.Text(Device, "PolicyVersion") != Approval.Policy
             || InstallationId <= 0 || !Approval.Allows(Profile)
-            || Repository.Split('/') is not [var owner, var name] || !Segment(owner) || !Segment(name)
+            || !IssuancePolicy.IsRepositoryName(Repository)
             || Variable.Length > 100 || !Variable.All(c => char.IsAsciiLetterOrDigit(c) || c == '_'))
             throw new IssuanceDenied();
         if (Approval == ApprovalContract.Legacy && (EnvironmentId <= 0 || Environment.Length > 255 || Environment.Any(char.IsControl)))
@@ -71,8 +71,6 @@ public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
         _ = TableValues.Number(Gate, "Sequence");
         if (Marker != ApprovalMarker.Create(this)) throw new IssuanceDenied();
     }
-    private static bool Segment(string s) => s.Length is > 0 and <= 100 && s is not ("." or "..")
-        && s.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
 }
 
 public sealed record IssuedToken(string Token, DateTimeOffset ExpiresAt, bool ScopeValid);
