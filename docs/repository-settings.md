@@ -52,7 +52,7 @@ Rollback is the same procedure in reverse: revoke the settings grant, wait for s
 
 A repository-settings profile token is read-only for variables, so the controller still cannot write or restore its own approval. It can read every direct repository Actions variable, however, including the nonsecret approval marker. Keep secrets out of repository variables.
 
-The controller reads each supported variable at startup, including under `--check-auth`. Once the controller has started its agent runtime, it reads them again a minute after each refresh finishes, with one `GET` per catalogue entry. A refresh that changed a setting finishes only after a running observation or dispatch does, so the next refresh can start later. A change in a setting's state, value or reason is logged once:
+The controller reads each supported variable at startup, including under `--check-auth`. It reads them again a minute after the agent runtime starts, then a minute after each refresh finishes, with one `GET` per catalogue entry. A refresh that changed a setting finishes only after a running observation or dispatch does, so the next refresh can start later. A change in a setting's state, value or reason is logged once:
 
 ```text
 repository-setting name=REPOAGENT_MAX_ACTIVE_SESSIONS state=configured value=4
