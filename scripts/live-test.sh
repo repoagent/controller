@@ -38,7 +38,6 @@ docker run -d --name "$runner" \
 on_exit() {
   status=$?
   trap - EXIT
-  docker exec "$name" /usr/bin/python3 /opt/repoagent/control.py restore-credential >/dev/null 2>&1 || true
   docker logs "$name" 2>&1 | "${helper[@]}" capture || true
   "$root/repoagent" stop >/dev/null 2>&1 || true
   if [[ $(docker inspect --format '{{.State.Running}}' "$runner" 2>/dev/null || true) == true ]]; then
@@ -58,8 +57,9 @@ while [[ $(docker inspect --format '{{.State.Running}}' "$runner") == true ]]; d
   status=0
   case "$operation" in
     capture) docker logs "$name" 2>&1 | "${helper[@]}" capture || status=$? ;;
-    read-only-credential|restore-credential)
-      docker exec "$name" /usr/bin/python3 /opt/repoagent/control.py "$operation" || status=$? ;;
+    revoke-credential)
+      # Runs as the agent user beside the controller; a replaced or stopped agent acquires a fresh token.
+      docker exec "$name" /usr/bin/python3 /opt/repoagent/control.py revoke-credential || status=$? ;;
     replace|invalidate-session|restore-session)
       docker logs "$name" 2>&1 | "${helper[@]}" archive
       "$root/repoagent" stop
