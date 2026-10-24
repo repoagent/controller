@@ -60,7 +60,7 @@ public sealed class GitHubOutboxDeliveryTests
     public async Task An_uncertain_receipt_is_settled_from_GitHub_before_it_is_written_again(bool appliedBeforeTheResponseFailed)
     {
         var ct = TestContext.Current.CancellationToken;
-        github.Fail(new(GitHubFailure.Transient, "GitHub returned HTTP 502", uncertain: true), appliedBeforeTheResponseFailed);
+        github.Fail(new(GitHubFailure.Transient, "HTTP 502", uncertain: true), appliedBeforeTheResponseFailed);
         await using (var outbox = Lifetime())
         {
             outbox.Receipt("D1", Url, hasEyesReceipt: false);
@@ -80,8 +80,9 @@ public sealed class GitHubOutboxDeliveryTests
     {
         var ct = TestContext.Current.CancellationToken;
         var time = new SteppedClock(Start);
-        github.Fail(new(GitHubFailure.Transient, "GitHub returned HTTP 503"));
-        github.Fail(new(GitHubFailure.Transient, "GitHub returned HTTP 503"));
+        // The one failure GitHub classifies as transient and certain: the installation token was refused, and renewal may recover it.
+        github.Fail(new(GitHubFailure.Transient, "HTTP 401: Bad credentials"));
+        github.Fail(new(GitHubFailure.Transient, "HTTP 401: Bad credentials"));
         await using var outbox = Lifetime(time);
         outbox.Start(ct);
 
@@ -95,8 +96,8 @@ public sealed class GitHubOutboxDeliveryTests
         // A failure GitHub did not apply is written again without first reading the reaction.
         Assert.Equal(["addReaction D1", "addReaction D1", "addReaction D1"], github.Calls);
         Assert.Equal([
-            ("receipt-error", $"{Url} subject=D1 attempt=1 Transient: GitHub returned HTTP 503; retained for retry at {Start.AddSeconds(15):O}"),
-            ("receipt-error", $"{Url} subject=D1 attempt=2 Transient: GitHub returned HTTP 503; retained for retry at {Start.AddSeconds(45):O}"),
+            ("receipt-error", $"{Url} subject=D1 attempt=1 Transient: HTTP 401: Bad credentials; retained for retry at {Start.AddSeconds(15):O}"),
+            ("receipt-error", $"{Url} subject=D1 attempt=2 Transient: HTTP 401: Bad credentials; retained for retry at {Start.AddSeconds(45):O}"),
             ("receipt", Url)], log.Entries);
     }
 
