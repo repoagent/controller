@@ -245,12 +245,8 @@ public sealed class GitHubOutboxTests
         public void Answer(string? comment) => Update(state =>
             state["discussion"]!["answer"] = comment is null ? null : new JsonObject { ["id"] = comment });
 
-        void Update(Action<JsonObject> change)
-        {
-            var state = JsonNode.Parse(File.ReadAllText(world))!.AsObject();
-            change(state);
-            File.WriteAllText(world, state.ToJsonString());
-        }
+        // Under the controlled gh's own lock, which it holds while it reads or rewrites the world.
+        void Update(Action<JsonObject> change) => ControllerHarness.LockedJson(world, state => { change(state); return state; }, write: true);
 
         public Task<int> RunOnce() => BridgeCommand.Run([.. Arguments, "--once"], fixture.Http, fixture.Gh, fixture.Clock,
             TestContext.Current.CancellationToken);
@@ -285,7 +281,7 @@ public sealed class GitHubOutboxTests
         const string Skill = "$github-discussion\n";
 
         public int Writes(string subject) => Lines(requests).Count(line => line["kind"]!.GetValue<string>() == "addReaction" && line["subject"]?.GetValue<string>() == subject);
-        public bool HasEyes(string subject) => JsonNode.Parse(File.ReadAllText(world))!["eyes"]!.AsArray().Any(id => id!.GetValue<string>() == subject);
+        public bool HasEyes(string subject) => ControllerHarness.LockedJson(world, state => state["eyes"]!.AsArray().Any(id => id!.GetValue<string>() == subject));
 
         static IEnumerable<JsonNode> Lines(string file) => File.Exists(file)
             ? File.ReadAllLines(file).Where(line => line.Length != 0).Select(line => JsonNode.Parse(line)!) : [];

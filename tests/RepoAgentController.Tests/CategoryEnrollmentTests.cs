@@ -253,16 +253,18 @@ public sealed class CategoryEnrollmentTests
             Save();
         }
 
-        // Atomic replacement; the controlled gh reads under its own lock and never sees a partial file.
+        // Under the controlled gh's own lock, which it holds while it reads the model or records a receipt in it.
         public void Save()
         {
-            var current = File.Exists(model) ? JsonNode.Parse(File.ReadAllText(model))!.AsObject() : new JsonObject { ["eyes"] = new JsonArray() };
-            current["variables"] = new JsonObject(Variables.Select(pair => new KeyValuePair<string, JsonNode?>(pair.Key, pair.Value)));
-            current["statuses"] = new JsonObject(Statuses.Select(pair => new KeyValuePair<string, JsonNode?>(pair.Key, pair.Value)));
-            current["discussions"] = discussions.DeepClone();
-            current["comments"] = comments.DeepClone();
-            File.WriteAllText(model + ".tmp", current.ToJsonString());
-            File.Move(model + ".tmp", model, true);
+            if (!File.Exists(model)) File.WriteAllText(model, new JsonObject { ["eyes"] = new JsonArray() }.ToJsonString()); // Before any gh runs.
+            ControllerHarness.LockedJson(model, current =>
+            {
+                current["variables"] = new JsonObject(Variables.Select(pair => new KeyValuePair<string, JsonNode?>(pair.Key, pair.Value)));
+                current["statuses"] = new JsonObject(Statuses.Select(pair => new KeyValuePair<string, JsonNode?>(pair.Key, pair.Value)));
+                current["discussions"] = discussions.DeepClone();
+                current["comments"] = comments.DeepClone();
+                return current;
+            }, write: true);
         }
 
         string[] Arguments(params string[] options) => ["--repo", "owner/repository", "--app-id", "123", "--private-key", privateKey,
@@ -321,7 +323,7 @@ public sealed class CategoryEnrollmentTests
                 .Where(entry => entry.Value!["sessionId"]?.GetValue<string>() is { Length: > 0 }).Select(entry => entry.Key).Order().ToList()
             : [];
 
-        public IReadOnlyList<string> Eyes() => JsonNode.Parse(File.ReadAllText(model))!["eyes"]!.AsArray().Select(id => id!.GetValue<string>()).Order().ToList();
+        public IReadOnlyList<string> Eyes() => ControllerHarness.LockedJson(model, current => current["eyes"]!.AsArray().Select(id => id!.GetValue<string>()).Order().ToList());
 
         public IReadOnlyList<string> Log()
         {
