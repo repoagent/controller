@@ -1307,8 +1307,8 @@ class CheckoutRefreshTests(unittest.TestCase):
                     time.sleep(.1)
             f.environment['CONTROLLER_TEST_QUEUE_ENDPOINT'] = 'http://' + address + '/devstoreaccount1/controller-work'
             command = ['dotnet', str(host / 'bin/Release/net11.0/QueueHost.dll')]
-            def queue_operation(operation):
-                result = subprocess.run(command + ['queue', operation], env=f.environment,
+            def queue_operation(operation, *arguments):
+                result = subprocess.run(command + ['queue', operation, *arguments], env=f.environment,
                     capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 return int(result.stdout.strip()) if operation in ('count', 'peek') else None
@@ -1485,6 +1485,149 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual(f.process.wait(timeout=10), 1, 'An ambiguous enqueue left native work running')
                 self.assertTrue(json.loads(f.journal.read_text())['active'])
                 self.assertEqual(f.state.read_bytes(), saved)
+
+    def discussion_event(self, number, action='edited'):
+        return dict(repository=dict(full_name='owner/project', id=345), action=action,
+                    discussion=dict(number=number), sender=dict(login='participant', type='User'))
+
+    def drained(self, queue_operation):
+        deadline = time.monotonic() + 20
+        while queue_operation('count'):
+            if time.monotonic() >= deadline: self.fail('Durable work was not completed')
+            time.sleep(.1)
+
+    def start_sessions(self, f, *numbers):
+        for number in numbers:
+            request = self.rpc(f, 'thread/start')
+            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S' + str(number), cwd=str(f.checkout))))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T' + str(number))))
+        f.wait('durable-webhook-observed hint=reconcile')
+        for number in numbers: self.terminal(f, 'S' + str(number), 'T' + str(number))
+
+    def test_deleted_discussion_is_forgotten_without_stopping_live_durable_work(self):
+        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
+            f.provider.discussions = [self.discussion(1), self.discussion(2)]
+            with self.controller(f, 'mode=webhook-fixed'):
+                self.start_sessions(f, 1, 2)
+                self.drained(queue_operation)
+            saved = json.loads(f.state.read_text())['discussions']
+            self.assertEqual(saved['D1']['sessionId'], 'S1')
+            # Deployed incident: #1 is deleted while its state and retained hint survive, with live work queued behind it.
+            del f.provider.discussions[0]
+            queue_operation('hint', '1'); queue_operation('hint', '2')
+            with self.controller(f, 'mode=webhook-fixed'):
+                self.assertIn('session=S1', f.wait('discussion-forgotten'))
+                f.wait('durable-webhook-observed hint=discussion:1')
+                f.wait('durable-webhook-observed hint=discussion:2')
+                discussions = json.loads(f.state.read_text())['discussions']
+                self.assertNotIn('D1', discussions, 'Confirmed deletion must forget the Discussion state')
+                self.assertEqual(discussions['D2'], saved['D2'], 'Unrelated session and checkpoints must survive')
+                # A duplicate deletion notification ahead of new live input is harmless.
+                f.provider.discussions[0]['body'] += ' behind a stale hint'
+                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(1, 'deleted'), event='discussion'), 202)
+                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(2), event='discussion'), 202)
+                request = self.rpc(f, 'thread/resume'); self.assertEqual(request['params']['threadId'], 'S2')
+                self.reply(f, request, dict(thread=dict(id='S2', cwd=str(f.checkout)), cwd=str(f.checkout)))
+                request = self.rpc(f, 'turn/start'); self.assertEqual(request['params']['threadId'], 'S2')
+                self.reply(f, request, dict(turn=dict(id='T3')))
+                f.wait('durable-webhook-observed hint=discussion:1')
+                f.wait('durable-webhook-observed hint=discussion:2')
+                continued = json.loads(f.state.read_text())['discussions']
+                self.assertEqual(sorted(continued), ['D2'])
+                self.assertEqual(continued['D2']['sessionId'], 'S2')
+                self.assertEqual(continued['D2']['sources']['D2']['content']['body'], f.provider.discussions[0]['body'])
+                self.terminal(f, 'S2', 'T3')
+                self.drained(queue_operation)
+                self.assertIsNone(f.process.poll(), 'Stale work stopped the shared worker')
+            lookups = len(f.provider.lookups)
+            with self.controller(f, 'mode=webhook-fixed'):
+                f.wait('durable-webhook-observed hint=reconcile')
+                self.drained(queue_operation)
+                self.assertIsNone(f.process.poll())
+            self.assertEqual(len(f.provider.lookups), lookups, 'Obsolete work was retried after restart')
+            self.assertEqual(sorted(json.loads(f.state.read_text())['discussions']), ['D2'])
+            self.assertFalse(select.select([f.responses], [], [], 0)[0], 'A deleted Discussion received native input')
+
+    def test_unconfirmed_discussion_lookup_failures_retain_work_and_back_off_behind_live_work(self):
+        missing = 'Could not resolve to a Discussion with the number of 1.'
+        failures = [  # One lookup each; none is GitHub's typed deletion of this Discussion.
+            (200, {'data': {'repository': None}, 'errors': [{'type': 'NOT_FOUND', 'path': ['repository'],
+                   'message': "Could not resolve to a Repository with the name 'owner/project'."}]}),
+            (200, {'data': {'repository': {'discussion': None}}, 'errors': [{'type': 'FORBIDDEN',
+                   'path': ['repository', 'discussion'], 'message': 'Resource not accessible by integration'}]}),
+            (200, {'errors': [{'type': 'RATE_LIMITED', 'message': 'API rate limit exceeded for installation.'}]}),
+            (200, {'data': {'repository': {'discussion': None}}, 'errors': [{'path': ['repository', 'discussion'], 'message': missing}]}),
+            (200, {'data': {'repository': {'discussion': None}}}),
+            (502, {'message': 'Server Error'}),
+        ]
+        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
+            f.provider.discussions = [self.discussion(1), self.discussion(2)]
+            with self.controller(f, 'mode=webhook-fixed'):
+                self.start_sessions(f, 1, 2)
+                self.drained(queue_operation)
+                retained = json.loads(f.state.read_text())['discussions']['D1']
+                f.provider.lookup_faults = {1: list(failures)}
+                for _ in failures:
+                    self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(1), event='discussion'), 202)
+                f.provider.discussions[1]['body'] += ' behind failing work'
+                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(2), event='discussion'), 202)
+                request = self.rpc(f, 'turn/start'); self.assertEqual(request['params']['threadId'], 'S2')
+                self.reply(f, request, dict(turn=dict(id='T3')))
+                f.wait('durable-webhook-observed hint=discussion:2')
+                self.assertIsNone(f.process.poll(), 'A failed observation stopped the shared worker')
+                self.assertEqual(f.provider.lookup_faults[1], [], 'Every failure class must be observed before live work')
+                self.assertEqual(json.loads(f.state.read_text())['discussions']['D1'], retained,
+                                 'An unconfirmed failure was mistaken for deletion')
+                self.assertGreater(queue_operation('count'), 0, 'Failed work must remain durable')
+                self.terminal(f, 'S2', 'T3')
+                for _ in failures: f.wait('durable-webhook-observed hint=discussion:1', timeout=30)
+                self.drained(queue_operation)
+                self.assertIsNone(f.process.poll())
+            lookups = [(at, failed) for number, at, failed in f.provider.lookups if number == 1]
+            self.assertEqual([failed for _, failed in lookups], [True] * len(failures) + [False] * len(failures))
+            first_failure, first_retry = lookups[0][0], lookups[len(failures)][0]
+            print('LOOKUP_BACKOFF first-retry-after=%.1fs' % (first_retry - first_failure), flush=True)
+            self.assertGreaterEqual(first_retry - first_failure, 4, 'Failed work was retried without backoff')
+            self.assertEqual(json.loads(f.state.read_text())['discussions']['D1'], retained)
+            self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Retried unchanged work repeated native input')
+
+    def test_deleted_discussion_with_waiting_input_and_a_running_turn_never_dispatches_and_its_work_completes(self):
+        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
+            f.provider.discussions = [self.discussion(1), self.discussion(2)]
+            with self.controller(f, 'mode=webhook-fixed'):
+                for number in (1, 2):
+                    request = self.rpc(f, 'thread/start')
+                    self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S' + str(number), cwd=str(f.checkout))))
+                    request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T' + str(number))))
+                f.wait('durable-webhook-observed hint=reconcile')
+                self.terminal(f, 'S2', 'T2')
+                # T1 keeps D1's active slot; a D1 edit waits in the controller behind it.
+                f.provider.discussions[0]['body'] += ' while T1 runs'
+                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(1), event='discussion'), 202)
+                f.wait('input-waiting'); f.wait('durable-webhook-observed hint=discussion:1')
+                saved = json.loads(f.state.read_text())['discussions']
+                self.assertEqual(saved['D1']['running']['turn'], 'T1')
+                self.assertEqual(len(saved['D1']['waiting']['inputs']), 1)
+                del f.provider.discussions[0]
+                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(1, 'deleted'), event='discussion'), 202)
+                self.assertIn('session=S1', f.wait('discussion-forgotten'))
+                f.wait('durable-webhook-observed hint=discussion:1')
+                discussions = json.loads(f.state.read_text())['discussions']
+                self.assertEqual(sorted(discussions), ['D2'], 'Waiting input, running and checkpoint state of D1 must be forgotten')
+                self.assertEqual(discussions['D2'], saved['D2'], 'Unrelated session and checkpoints must survive')
+                self.assertGreater(queue_operation('count'), 0, 'Work was completed while the native turn still ran')
+                # The native ends the turn: its slot frees, the forgotten input is never sent and retained work completes.
+                self.terminal(f, 'S1', 'T1')
+                self.drained(queue_operation)
+                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Forgotten input reached the native')
+                f.provider.discussions[0]['body'] += ' after the deletion'
+                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(2), event='discussion'), 202)
+                request = self.rpc(f, 'turn/start'); self.assertEqual(request['params']['threadId'], 'S2')
+                self.reply(f, request, dict(turn=dict(id='T3')))
+                f.wait('durable-webhook-observed hint=discussion:2')
+                self.terminal(f, 'S2', 'T3')
+                self.drained(queue_operation)
+                self.assertIsNone(f.process.poll(), 'Forgetting stopped the shared worker')
 
 
 if __name__ == '__main__':

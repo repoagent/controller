@@ -71,7 +71,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         {
             var discussion = await github.Discussion(number, ct);
             if (discussion is not null) return await Observe([discussion], ct);
-            Log.Write("discussion-unavailable", $"{github.Repository} discussion={number}");
+            await Forget(number, ct);
             return true;
         }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -557,6 +557,32 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         if (count < inputs.Count) Log.Write("batch-split", $"{record.Text("url")} dispatching={count} remaining={inputs.Count - count}");
         if (length > MaximumBatchCharacters) Log.Write("batch-oversized", $"{record.Text("url")} characters={length}");
         return count;
+    }
+
+    // GitHub confirmed deletion: end its whole controller record, so its waiting input, delivery retry, pending marker, running
+    // turn, model labels and checkpoints are gone and nothing of it is dispatched. A turn the native still runs keeps its slot
+    // until the native ends it. Native conversation history is retained separately.
+    async Task Forget(int number, CancellationToken ct)
+    {
+        var url = $"https://github.com/{github.Repository}/discussions/{number}";
+        await gate.WaitAsync(ct);
+        try
+        {
+            var forgotten = store.Discussions.Where(entry => string.Equals(entry.Value?.Text("url"), url, StringComparison.OrdinalIgnoreCase)).ToArray();
+            foreach (var (id, record) in forgotten)
+            {
+                store.Discussions.Remove(id);
+                if (record!["running"]?.Text("turn") is { Length: > 0 } turn) running.Remove(turn);
+                var stored = record.Text("url");
+                held.Remove(stored);
+                foreach (var key in reported.Keys.Where(key => key.Url == stored).ToArray()) reported.Remove(key);
+            }
+            // Its waiting input no longer retains durable work.
+            inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
+            if (forgotten.Length != 0) store.Save();
+            Log.Write("discussion-forgotten", $"{url} reason=not-found session={string.Join(',', forgotten.Select(entry => entry.Value!.Text("sessionId")))}");
+        }
+        finally { gate.Release(); }
     }
 
     bool Own(JsonNode? actor) => github.IsAgentActor(actor);

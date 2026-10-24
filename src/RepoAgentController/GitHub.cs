@@ -156,12 +156,17 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return discussions;
     }
 
+    /// <summary>Returns null only when GitHub confirms that the configured repository has no Discussion with this number.</summary>
     public async Task<JsonNode?> Discussion(int number, CancellationToken ct)
     {
         var parts = Repository.Split('/');
-        var data = await Query("query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { discussion(number:$number) { " + DiscussionFields + " } } }",
+        var response = await Post("query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { discussion(number:$number) { " + DiscussionFields + " } } }",
             Json.Object(("owner", parts[0]), ("name", parts[1]), ("number", number)), ct);
-        return data["repository"]?["discussion"]?.Copy();
+        // Only the typed NOT_FOUND for this field inside the resolved repository confirms deletion. Message text,
+        // repository access loss, other error types and incomplete data stay classified failures.
+        if (GitHubRequestException.ConfirmsAbsent(response, "repository", "discussion")) return null;
+        return GitHubRequestException.Classify(response)["repository"]?["discussion"]?.Copy()
+            ?? throw new GitHubRequestException(GitHubFailure.Transient, "incomplete Discussion response");
     }
 
     public async Task<List<JsonNode>> Sources(JsonNode discussion, CancellationToken ct)
@@ -266,16 +271,17 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     }
 
     // Controller-owned requests: classify by HTTP status, rate-limit headers and GraphQL error type.
-    async Task<JsonNode> Send(string query, JsonObject variables, CancellationToken ct)
+    async Task<JsonNode> Send(string query, JsonObject variables, CancellationToken ct) => GitHubRequestException.Classify(await Post(query, variables, ct));
+
+    // The gh --include output of one GraphQL request, for classification.
+    async Task<string> Post(string query, JsonObject variables, CancellationToken ct)
     {
-        string response;
-        try { response = await Api("POST", "graphql", Json.Object(("query", query), ("variables", variables)), ct, include: true); }
+        try { return await Api("POST", "graphql", Json.Object(("query", query), ("variables", variables)), ct, include: true); }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             // No HTTP response was observed, so the request may still have been applied.
             throw new GitHubRequestException(GitHubFailure.Transient, error.Message, uncertain: true);
         }
-        return GitHubRequestException.Classify(response);
     }
 }
 
@@ -306,6 +312,22 @@ sealed class GitHubRequestException(GitHubFailure kind, string message, bool unc
     {
         var after = retryAfter is { } delay ? now + delay : (DateTimeOffset?)null;
         return after is null ? resetAt : resetAt is null || after > resetAt ? after : resetAt;
+    }
+
+    /// <summary>
+    /// True only when gh --include output is GitHub's typed NOT_FOUND for exactly the field at <paramref name="path"/>, inside
+    /// a parent that resolved: that object is confirmed absent. Every other response is left to <see cref="Classify"/>.
+    /// </summary>
+    public static bool ConfirmsAbsent(string response, params string[] path)
+    {
+        if (GitHub.Included(response) is not (200, _, var text)) return false;
+        JsonNode? body;
+        try { body = JsonNode.Parse(text); } catch (System.Text.Json.JsonException) { return false; }
+        if (body?["errors"] is not JsonArray { Count: 1 } errors || errors[0] is not JsonObject error || error["type"].OptionalText() != "NOT_FOUND" ||
+            error["path"] is not JsonArray located || !located.Select(segment => segment.OptionalText()).SequenceEqual(path)) return false;
+        var parent = body["data"];
+        foreach (var field in path[..^1]) parent = parent?[field];
+        return parent is JsonObject resolved && resolved.TryGetPropertyValue(path[^1], out var value) && value is null;
     }
 
     /// <summary>Returns GraphQL data from gh --include output, or throws the classified failure.</summary>

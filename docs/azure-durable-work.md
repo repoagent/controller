@@ -57,10 +57,24 @@ Safe deferred refreshes retry the retained generation at idle with a five-second
 backoff. Temporary lookup failures need no new delivery; uncertain updates still
 require manual recovery and retain their work.
 
-Lease loss, failed observation, unknown native activity and failed checkpoint
-or queue completion stop the runtime while retaining recovery evidence.
-Within a running lifetime, failed or unacknowledged native input is retried and redelivered with a marker; native work left uncertain when a runtime stops is not automatically replayed. Backlog or manual
-recovery can therefore keep compute active; that condition is not idle.
+Lease loss, lost broker credentials, unknown native activity, failed checkpoint
+and failed queue send, receive, retry or completion stop the runtime while
+retaining recovery evidence. A failed observation does not: its hint returns to
+the queue, invisible for 5 seconds doubling per delivery up to 10 minutes,
+while later hints continue (`durable-work-retry`). A native delivery that fails
+after its input was observed is not retried through the queue: the controller
+retries it itself (`delivery-retry`), and the observed hint stays held until
+the input is dispatched. Only GitHub's typed `NOT_FOUND` for the Discussion
+itself in the resolved configured repository confirms deletion. The controller
+then forgets that Discussion's state, including its session mapping,
+checkpoints, waiting input, delivery retry and pending markers, and completes
+its work (`discussion-forgotten`); a turn it already runs continues until the
+native ends it, and native conversation history is retained. Timeouts,
+incomplete reads, access loss, rate limits and provider errors are never
+treated as deletion. Within a running lifetime, failed or unacknowledged native
+input is retried and redelivered with a marker; native work left uncertain when
+a runtime stops is not automatically replayed. Backlog, retried failures or
+manual recovery can therefore keep compute active; that condition is not idle.
 
 ## Scaling and stopping
 

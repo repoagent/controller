@@ -95,7 +95,12 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             else
             {
                 var succeeded = lease.Hint is DurableWorkHint.Discussion discussion ? await bridge.Observe(discussion.Number, ct) : await bridge.Poll(ct);
-                if (!succeeded) throw new IOException("Durable webhook observation failed; queued work is retained for recovery");
+                if (!succeeded)
+                {
+                    // One failed observation keeps its work but must not stop the shared worker or later hints.
+                    await durable.Retry(lease, ct);
+                    continue;
+                }
                 Log.Write("durable-webhook-observed", $"hint={lease.Hint}");
             }
             durable.Observed(lease);
