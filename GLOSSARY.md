@@ -66,6 +66,10 @@ _Avoid_: repository-settings family, settings enrollment, settings upgrade, wide
 The coding agent a controller runs on behalf of enrolled Discussions, currently Codex.
 _Avoid_: native agent, native
 
+**Agent runtime**:
+The process a controller starts to host agent sessions and run agent turns, currently `codex app-server`.
+_Avoid_: app-server, native runtime
+
 **Agent session**:
 The agent's one persistent conversation for an enrolled Discussion.
 _Avoid_: native session, native thread, Codex thread
