@@ -23,4 +23,7 @@
     <Content Include="../../.agents/skills/repoagent-orientation/SKILL.md" Link="repoagent-orientation/SKILL.md" CopyToOutputDirectory="PreserveNewest" />
     <InternalsVisibleTo Include="RepoAgentController.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RepoAgentController.Core/RepoAgentController.Core.csproj" />
+  </ItemGroup>
 </Project>

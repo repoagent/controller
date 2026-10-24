@@ -31,6 +31,9 @@ src/RepoAgentController/RepoAgentController.csproj
 src/RepoAgentController/RetainedLog.cs
 src/RepoAgentController/RuntimeProfile.cs
 src/RepoAgentController/StateStore.cs
+src/RepoAgentController.Core/RepoAgentController.Core.csproj
+src/RepoAgentController.Core/BannedSymbols.txt
+src/RepoAgentController.Core/IControllerLog.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs
 tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj

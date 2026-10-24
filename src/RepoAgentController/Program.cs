@@ -45,6 +45,13 @@ namespace RepoAgentController
             public void Dispose() => restore();
         }
     }
+
+    /// <summary>The <see cref="IControllerLog"/> adapter: writes through <see cref="Log.Write"/>, so kinds, messages, redaction
+    /// and observers are unchanged.</summary>
+    sealed class ControllerLog : IControllerLog
+    {
+        public void Write(string kind, string message) => Log.Write(kind, message);
+    }
     static class RetryDelay
     {
         /// <summary>Doubles from <paramref name="first"/> with each 1-based attempt, up to <paramref name="longest"/>.</summary>
