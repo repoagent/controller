@@ -15,7 +15,7 @@ export REPOAGENT_INSTANCE=acceptance
 REPOAGENT_LIVE=1 ./repoagent live-test
 ```
 
-For C06/C07 install the skill at `tests/fixtures/acceptance-marker` from this repository, pinned to a full commit SHA containing that fixture. Public source credentials are unnecessary; a private source requires the explicitly authorized source-read token. The fixture computes a correlated result using its own script and supports a bounded gate for observing input while native work is active. C07 checks its unexpired active lease while the additional input waits unaccepted; the skill removes the lease on completion or timeout.
+For C06/C07 install the skill at `tests/fixtures/acceptance-marker` from this repository, pinned to a full commit SHA containing that fixture. Public source credentials are unnecessary; a private source requires the explicitly authorized source-read token. The fixture computes a correlated result using its own script and supports a bounded gate for observing input while agent work is active. C07 checks its unexpired active lease while the additional input waits unaccepted; the skill removes the lease on completion or timeout.
 
 The main journey uses explicit `--tool-updates pinned` for reproducibility. Normal agent setup also defaults to the image's pinned tools. Record separate opt-in startup-update evidence using `--tool-updates latest`, including actual before/after versions and a container restart.
 
@@ -37,8 +37,8 @@ Automated cases live in [DiscussionJourney.cs](../tests/RepoAgent.LiveTests/Disc
 
 | ID | Mode | Action and observable expected outcome |
 | --- | --- | --- |
-| C01 | Automated | Create a uniquely named canonical-App-mention Discussion; observe App reply, source EYES and native session ID. |
-| C02 | Automated | Create a second unmentioned Discussion, explicitly enroll its URL through the operator CLI and replace the container; observe a distinct native session and App reply/receipt. |
+| C01 | Automated | Create a uniquely named canonical-App-mention Discussion; observe App reply, source EYES and agent session ID. |
+| C02 | Automated | Create a second unmentioned Discussion, explicitly enroll its URL through the operator CLI and replace the container; observe a distinct agent session and App reply/receipt. |
 | C03 | Automated | Post to two comment threads and a nested reply; responses remain in the corresponding roots and EYES acknowledges the nested source. |
 | C04 | Automated | Edit a previously acknowledged human comment; observe a response to the edit with one existing App EYES, preserving source-specific receipt semantics. |
 | C05 | Automated | Add/remove a human reaction on App-authored content; each change is accepted in native operational events, with EYES on its actual subject. |
@@ -46,17 +46,17 @@ Automated cases live in [DiscussionJourney.cs](../tests/RepoAgent.LiveTests/Disc
 | C07 | Automated | Hold a native skill action on a bounded release gate, post more input, observe it waiting without native acceptance or EYES before release, then its acceptance as a new turn and responses in both source threads. |
 | C08 | Automated | After turns complete, observe at least two fully completed polling cycles with no forwarded inputs from unchanged content or App output/receipts. |
 | C09 | Automated | Replace the agent container using the same volumes; subsequent real reply retains the original session and remembered context. |
-| C10 | Automated | Stop, back up and deliberately invalidate one native session ID; a new source produces native rejection, `delivery-retry` with backoff and no EYES. Observe no accepted input, then explicitly restore the session and observe the retried source answered without editing delivery state. |
+| C10 | Automated | Stop, back up and deliberately invalidate one agent session ID; a new source produces native rejection, `delivery-retry` with backoff and no EYES. Observe no accepted input, then explicitly restore the session and observe the retried source answered without editing delivery state. |
 | C11 | Automated | Mark an App comment as the accepted answer, then continue; observe a subsequent App response in the same session. |
-| C12 | Automated | Revoke the controller's live installation token at GitHub with the `revoke-credential` fixture, then post input. GitHub rejects the controller's polls (`poll-error` with HTTP 401); observe no accepted input and no receipt. Replace the container; the new lifetime acquires a fresh token. Observe one App reply and one EYES receipt for the input, and two fully completed unchanged polling cycles that do not resend it. |
-| C13 | Manual | Fresh interactive setup in a terminal/tmux: browser approvals work, repeated setup reuses valid configuration and sign-in, and invalid App/key/permissions stop before native work. Record exact tool/configuration versions. |
+| C12 | Automated | Revoke the controller's live GitHub token at GitHub with the `revoke-credential` fixture, then post input. GitHub rejects the controller's polls (`poll-error` with HTTP 401); observe no accepted input and no receipt. Replace the container; the new lifetime acquires a fresh token. Observe one App reply and one EYES receipt for the input, and two fully completed unchanged polling cycles that do not resend it. |
+| C13 | Manual | Fresh interactive setup in a terminal/tmux: browser approvals work, repeated setup reuses valid configuration and sign-in, and invalid App/key/permissions stop before agent work. Record exact tool/configuration versions. |
 | C14 | Automated smoke | `./repoagent versions` and `check` show the pinned tools, UID 1000, real App viewer/installation and valid Codex sign-in in the built image. Record volume persistence and configured skill revisions. |
 
 C12 runs `control.py revoke-credential` as the agent user in the running container. It calls the controller's own App `gh` wrapper (`gh api --method DELETE installation/token`), which reaches the live token through the credential handoff, as the agent's `gh` does. The token never reaches the fixture, a file, a log or an argument. The controller keeps the rejected token until a new lifetime starts; only the managed Git credential helper reports a rejected token and triggers an earlier renewal, so this case uses a non-clone instance.
 
 Before tokens became memory-only (#183), C12 put a genuine read-only App token in the persisted credential cache, so GitHub rejected only the EYES receipt after native acceptance. Tokens are no longer persisted, and by design the controller accepts no injected token, so that fault cannot be produced against a live controller. A permanent receipt rejection after acceptance (GitHub's `FORBIDDEN` "Resource not accessible by integration"), with no replay of the accepted input, is covered deterministically by `GitHubOutboxTests.Permanent_receipt_failure_leaves_active_delivery_with_an_actionable_nonsecret_log`. The fixture's command path is tested against the real credential manager in `tests/installers/test_live_fault_fixture.py`.
 
-C10 uses stopped-process state edits solely to invalidate and restore the native session ID. Normal cases observe GitHub and native operational output. C08, C10 and C12 observe `poll-completed` operational events, allowing for one in-flight cycle before requiring two full unchanged cycles. These checks have a twelve-minute bound; other waits stop on correlated conditions rather than sleeping for a guessed model duration. No whole-test retries are performed.
+C10 uses stopped-process state edits solely to invalidate and restore the agent session ID. Normal cases observe GitHub and native operational output. C08, C10 and C12 observe `poll-completed` operational events, allowing for one in-flight cycle before requiring two full unchanged cycles. These checks have a twelve-minute bound; other waits stop on correlated conditions rather than sleeping for a guessed model duration. No whole-test retries are performed.
 
 ## Evidence and cleanup
 
@@ -72,4 +72,4 @@ Retain failed Discussions and evidence until diagnosis is complete. Then delete 
 
 ## Completion record
 
-Record the tested image ID/platform, tool versions, configured source revisions, case outcomes, Discussion/source/reply URLs, original/resumed native session IDs, relevant redacted logs and any unexercised manual cases in issue #5. A successful image build or xUnit discovery alone is not live acceptance evidence.
+Record the tested image ID/platform, tool versions, configured source revisions, case outcomes, Discussion/source/reply URLs, original/resumed agent session IDs, relevant redacted logs and any unexercised manual cases in issue #5. A successful image build or xUnit discovery alone is not live acceptance evidence.

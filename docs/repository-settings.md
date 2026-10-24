@@ -1,6 +1,6 @@
 # Repository settings
 
-Nonsecret controller settings live in direct repository **Actions variables** named `REPOAGENT_*`. Operators change them after installation, without reinstalling. The operator's host GitHub authority writes them; the controller's runtime credential can only read them.
+Nonsecret controller settings live in direct repository **Actions variables** named `REPOAGENT_*`. Operators change them after installation, without reinstalling. The operator's admin authority writes them; the controller's GitHub token can only read them.
 
 > [!WARNING]
 > Repository Actions variables must never hold secrets. A controller that reads repository settings, and so the agent it runs, can read every direct repository Actions variable, not only `REPOAGENT_*` settings: the agent's `gh` uses the controller's runtime token ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md)).
@@ -40,7 +40,7 @@ The existing broker profiles (`polling`, `webhook`, `polling-clone`, `webhook-cl
 To read settings through the broker, choose a repository-settings profile at enrollment ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md)). These profiles are `polling-settings`, `webhook-settings`, `polling-clone-settings` and `webhook-clone-settings`. Each grants exactly its frozen counterpart's permissions plus `actions_variables: read`, under the policy `repository-actions-settings-approval-v3`. They require Actions-variable approval (setup v3); legacy Agent-variable approval is refused before any work. The enrollment file, leases and runtime routes are protocol v3, and the controller consumes a v3 file only with `--repository-settings`. See [the consumer contract](broker-protocol.md#explicit-repository-settings-consumer-v3).
 
 - **Guided installer.** Add `-RepositorySettings` to `./install.ps1` for a fresh instance. The installer selects the matching `*-settings` profile for the chosen mode and clone choice, and it configures the runtime with `--repository-settings`.
-- **Host enrollment.** Pass `-EnrollmentProfile polling-settings` (or another settings profile) to `scripts/enroll-controller.ps1`, then start the controller or `repoagent configure` with `--repository-settings`. A container instance keeps this choice for its lifetime (`REPOAGENT_REPOSITORY_SETTINGS=true` for externally supplied enrollments).
+- **Controller enrollment.** Pass `-EnrollmentProfile polling-settings` (or another settings profile) to `scripts/enroll-controller.ps1`, then start the controller or `repoagent configure` with `--repository-settings`. A container instance keeps this choice for its lifetime (`REPOAGENT_REPOSITORY_SETTINGS=true` for externally supplied enrollments).
 
 An existing broker-enrolled controller is never upgraded in place. To move it to a settings profile:
 
@@ -77,7 +77,7 @@ At the limit, newly observed input waits in the controller, as it does for a bus
 
 ## Category enrollment
 
-`REPOAGENT_ENROLLMENT_CATEGORIES` selects Discussion categories whose new Discussions start their native session without a mention. Mentions and `--enroll` URLs keep working in every category. Each Discussion still has one native session; labels never enroll a Discussion.
+`REPOAGENT_ENROLLMENT_CATEGORIES` selects Discussion categories whose new Discussions start their agent session without a mention. Mentions and `--enroll` URLs keep working in every category. Each Discussion still has one agent session; labels never enroll a Discussion.
 
 **Value format.** List 1 to 25 category names, separated by commas, as they appear in the repository's Discussion categories. Matching ignores letter case and the spaces around each name. A name has at most 100 characters, no control characters, and appears once. A category whose name contains a comma cannot be selected. The controller and the settings command use the normalized form, for example `Agents, Q&A`. In PowerShell, quote the whole argument, because an unquoted comma makes an array:
 
@@ -100,7 +100,7 @@ Category enrollment needs no permission beyond Discussions read and the Variable
 
 ## Model and reasoning selection
 
-Every native turn carries an explicit model and reasoning effort. Pinned Codex keeps a `turn/start` model or effort for later turns of the same thread, so the defaults are sent explicitly too; that is how removing a label restores them.
+Every agent turn carries an explicit model and reasoning effort. Pinned Codex keeps a `turn/start` model or effort for later turns of the same thread, so the defaults are sent explicitly too; that is how removing a label restores them.
 
 For each turn, the controller uses the Discussion's model label if it has one. Otherwise each part falls back separately: the repository default (`REPOAGENT_MODEL`, `REPOAGENT_REASONING`), then the native Codex configuration for the workspace (`model`, `model_reasoning_effort`, read through `config/read`), then the catalogue's default model and that model's default effort.
 

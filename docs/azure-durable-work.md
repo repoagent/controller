@@ -1,7 +1,7 @@
 # Durable webhook work for an idle Azure controller
 
 The native controller supports an opt-in `--azure-work-queue` mode. It retains
-work after the webhook HTTP response ends and releases it after native turns,
+work after the webhook HTTP response ends and releases it after agent turns,
 observed-input checkpoints and requested checkout refreshes finish. Existing
 polling and ordinary webhook mode keep their behavior.
 
@@ -42,7 +42,7 @@ number; Discussion bodies and credentials are not stored in the queue.
 
 The receiver holds at most 32 leases, renews their 90-second visibility every
 15 seconds using the latest pop receipt, and continues observing new inputs
-while an earlier native turn runs. Native acknowledgment does not complete
+while an earlier agent turn runs. Native acknowledgment does not complete
 work. The existing checkout admission/turn journal coordinates the idle
 boundary; only known completed work with saved checkpoints and completed
 refresh can be acknowledged. Discussion input still waiting in the controller
@@ -72,7 +72,7 @@ its work (`discussion-forgotten`); a turn it already runs continues until the
 native ends it, and native conversation history is retained. Timeouts,
 incomplete reads, access loss, rate limits and provider errors are never
 treated as deletion. Within a running lifetime, failed or unacknowledged native
-input is retried and redelivered with a marker; native work left uncertain when
+input is retried and redelivered with a marker; agent work left uncertain when
 a runtime stops is not automatically replayed. Backlog, retried failures or
 manual recovery can therefore keep compute active; that condition is not idle.
 

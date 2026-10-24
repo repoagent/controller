@@ -15,7 +15,7 @@ The selected resources in `rg-storybeam-repoagent-controller` are the
 system-identity grant are children of those resources. No private ACR is needed.
 
 The app has minimum 0/maximum 1 replicas, a 15-second queue poll and 60-second
-cooldown. Actual cold conversation recall, a 120-second native turn staying alive
+cooldown. Actual cold conversation recall, a 120-second agent turn staying alive
 beyond cooldown, and return to zero have passed. Storage and request charges
 continue at zero replicas. The separately retained original NFS account
 `raccvldjd5jofski` also has provisioned charges; it is not required by the lean app.
