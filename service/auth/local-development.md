@@ -23,7 +23,7 @@ The default generated signing key supports local cryptographic/storage debugging
 
 A maintainer who needs the real GitHub path can explicitly set `SigningKeyPemPath` in the AppHost's user secrets to a private local file holding that App's key. Initialization imports it into the local emulator. Never commit the file or put its contents in command arguments, logs, controller enrollment files or controller images. The AppHost user-secrets ID is `repoagent-auth-apphost`; the default stack does not discover or copy any private key.
 
-Controller developers can instead use the hosted broker, `https://repoagent-auth.livelydune-309701b4.swedencentral.azurecontainerapps.io`, without receiving an App key. Host enrollment runs natively through `scripts/enroll-controller.ps1`; an enrolled controller runs directly with `dotnet run --project src/RepoAgentController -- ... --enrollment-file <private-file> --check-auth` from the repository root. `--check-auth` checks broker/GitHub access without starting Codex. An expired or unacknowledged enrollment is not usable; owner handover remains tracked in #34.
+Controller developers can instead use the hosted broker, `https://repoagent-auth.livelydune-309701b4.swedencentral.azurecontainerapps.io`, without receiving an App key. Controller enrollment runs natively through `scripts/enroll-controller.ps1`; an enrolled controller runs directly with `dotnet run --project src/RepoAgentController -- ... --enrollment-file <private-file> --check-auth` from the repository root. `--check-auth` checks broker/GitHub access without starting Codex. An expired or unacknowledged enrollment is not usable; owner handover remains tracked in #34.
 
 ## Debug the API outside the AppHost
 

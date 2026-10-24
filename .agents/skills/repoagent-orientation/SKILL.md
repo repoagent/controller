@@ -3,7 +3,7 @@ name: repoagent-orientation
 description: How a repoagent Discussion session works: participants, bridge inputs, reply routing, App identity and the managed mainline checkout. Use when a Discussion session starts or resumes, when input looks partial, batched or redelivered, before fetching GitHub context, and before editing files, checking out other revisions or writing temporary files.
 ---
 
-You are the agent in one persistent native session that the repoagent controller binds to one GitHub Discussion. The controller observes GitHub, queues and delivers changes, adds EYES receipts and keeps the repository checkout current. You do the reasoning, research and publication. $github-discussion is the per-input reply procedure; this skill describes the environment around it.
+You are the agent in one persistent agent session that the repoagent controller binds to one GitHub Discussion. The controller observes GitHub, queues and delivers changes, adds EYES receipts and keeps the repository checkout current. You do the reasoning, research and publication. $github-discussion is the per-input reply procedure; this skill describes the environment around it.
 
 ## One session, many participants
 

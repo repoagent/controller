@@ -6,12 +6,12 @@ Build/run inside a Linux container, inspect `--help`, and start the long-running
 
 | Check | Evidence to record |
 | --- | --- |
-| Mention the agent in a human post/comment | Discussion URL, source URL, native session ID, `native-accepted` then `receipt` log, agent reply URL |
-| Explicitly enroll a second Discussion | Second URL and distinct native session ID |
+| Mention the agent in a human post/comment | Discussion URL, source URL, agent session ID, `native-accepted` then `receipt` log, agent reply URL |
+| Explicitly enroll a second Discussion | Second URL and distinct agent session ID |
 | Reply in two threads of one Discussion | Both source/reply URLs and same session ID; replies target their own thread roots |
 | Edit a message; add and remove a reaction | Source URL, attributed deltas and agent responses when useful, no replay of the reaction subject as a request |
-| React/reply to agent-authored content | Human activity reaches the same native session |
-| Send while the native agent is working | `input-waiting` and no EYES for the new input while the first turn is active; after that turn's idle report, `native-accepted` for a new turn, then `receipt`; subsequent response reflects it |
+| React/reply to agent-authored content | Human activity reaches the same agent session |
+| Send while the agent is working | `input-waiting` and no EYES for the new input while the first turn is active; after that turn's idle report, `native-accepted` for a new turn, then `receipt`; subsequent response reflects it |
 | Model label and defaults | With `repoagent:<model>:<reasoning>` applied, the next human post logs `native-accepted … model=… effort=… selection=label`. Changing or removing the label starts no turn. The following post uses the new label, or the defaults (`selection=default`). A second model label, or a model or effort the account does not offer, logs `selection-error` and its input waits. |
 | Exercise an installed skill | Requested skill and visible result in GitHub |
 | Source-specific EYES | Discussion body, comment and reply each get the agent's EYES on the actual source, including reaction subjects |
@@ -19,7 +19,7 @@ Build/run inside a Linux container, inspect `--help`, and start the long-running
 | Quiet polls and own output | At least two unchanged polls; own comment/reaction causes no forwarding/response loop |
 | Normal restart | Same state and session ID; a new participant message resumes native history and replies in GitHub |
 | Failed input | With disposable state, make a recorded session ID invalid, post a new source without EYES, confirm native rejection logs `delivery-retry` with growing backoff and no acceptance or new EYES; restore the session ID while stopped and confirm the retry delivers and answers it |
-| Receipt failure | With accepted native input, provoke a real receipt permission failure; log error and verify next unchanged poll does not resend input |
+| Receipt failure | With accepted agent input, provoke a real receipt permission failure; log error and verify next unchanged poll does not resend input |
 
 For every failure record whether GitHub observation, native acceptance, checkpoint persistence, receipt, or agent publication failed. Avoid declaring full acceptance from a build or transport-only probe. Input acceptance and successful GitHub publication are separate observations.
 

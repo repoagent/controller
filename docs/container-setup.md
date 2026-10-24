@@ -110,7 +110,7 @@ Existing instances keep their saved choice; rerunning setup or `configure` witho
 
 The default toolbox has Bash, Git, `gh`, Codex and its code-mode companion, Python, `ripgrep`, `curl`, `jq`, file/patch/diff tools, SSH client and archive utilities. It does not choose a project language or framework. Add project-specific tools in an image derived from `repoagent:local`, restore `USER agent` after installing them, and select it with `REPOAGENT_IMAGE=your-image ./repoagent start`. A `dotnet-development` build target is available for work on this bridge itself, selected explicitly with `REPOAGENT_TARGET=dotnet-development ./repoagent build`.
 
-Codex uses live web search by default, configurable with `configure --web-search live|cached|disabled`. This follows the [Codex web-search configuration](https://learn.chatgpt.com/docs/config-file/config-reference). Networked tools such as `curl` and `gh` also run inside the container. Repository content/write permissions remain those explicitly authorized for the App; packaging tools does not grant GitHub permissions beyond the configured installation token.
+Codex uses live web search by default, configurable with `configure --web-search live|cached|disabled`. This follows the [Codex web-search configuration](https://learn.chatgpt.com/docs/config-file/config-reference). Networked tools such as `curl` and `gh` also run inside the container. Repository content/write permissions remain those explicitly authorized for the App; packaging tools does not grant GitHub permissions beyond the configured GitHub token.
 
 For repeatable noninteractive configuration:
 
@@ -174,7 +174,7 @@ For a private source, set `"private": true` and explicitly supply a token file:
 ./repoagent skills install /absolute/path/skills.json /absolute/path/source-read-token
 ```
 
-The supplied credential must be authorized to read that exact source repository/revision; an App credential also requires the installation and Contents permission for the source repository. The bridge's normal Discussions-only token is not sufficient to download private skill code. The token file is mounted read-only in the setup container only and is not persisted or passed to the native agent. Authentication/source failures report the source and HTTP status without printing token contents. No host skills directory or plugin installation is required.
+The supplied credential must be authorized to read that exact source repository/revision; an App credential also requires the installation and Contents permission for the source repository. The bridge's normal Discussions-only token is not sufficient to download private skill code. The token file is mounted read-only in the setup container only and is not persisted or passed to the agent. Authentication/source failures report the source and HTTP status without printing token contents. No host skills directory or plugin installation is required.
 
 ## Storage and lifecycle
 
@@ -192,7 +192,7 @@ The supplied credential must be authorized to read that exact source repository/
 
 Run configuration, skill installation and lifecycle commands sequentially for each instance; concurrent operator commands are not supported. The CLI rejects setup changes when it observes the agent running.
 
-The runtime user is UID 1000. The explicitly selected PEM must be readable by that UID; setup does not change its host permissions. The key is mounted read-only separately from the agent workspace. Container replacement and image rebuild retain the volumes; `restart` replaces the container, updates tools when enabled, and checks authentication before native work.
+The runtime user is UID 1000. The explicitly selected PEM must be readable by that UID; setup does not change its host permissions. The key is mounted read-only separately from the agent workspace. Container replacement and image rebuild retain the volumes; `restart` replaces the container, updates tools when enabled, and checks authentication before agent work.
 
 Polling mode publishes no ports. Explicit [fixed-URL webhook mode](webhooks.md) adds an HTTP listener and a loopback-only local port mapping for external HTTPS ingress. Neither mode receives a Docker socket, privileged mode, host networking or host home directory. Normal tool permissions apply inside the container (`approval_policy=never`, full container filesystem/network access), because this bridge has no interactive approval channel. Skills and participant instructions run with that container user's authority.
 
@@ -223,7 +223,7 @@ Supply these container environment variables. They are not repository Actions va
 
 | Variable | Contents |
 | --- | --- |
-| `REPOAGENT_ENROLLMENT` | **Secret.** The complete private `enrollment.json` from [host enrollment](host-enrollment.md), unchanged |
+| `REPOAGENT_ENROLLMENT` | **Secret.** The complete private `enrollment.json` from [controller enrollment](host-enrollment.md), unchanged |
 | `REPOAGENT_REPOSITORY`, `REPOAGENT_APP_ID`, `REPOAGENT_BROKER_URL` | Required binding: `OWNER/REPO`, numeric App ID and the broker's HTTPS origin |
 | `REPOAGENT_CLONE` | `true` for clone enrollments; omitted or `false` otherwise |
 | `REPOAGENT_REPOSITORY_SETTINGS` | `true` for an enrollment with a [repository-settings profile](repository-settings.md#broker-enrollments) (runtime v3); omitted or `false` otherwise |
@@ -234,7 +234,7 @@ Each configuration variable stands for the `configure` option of the same name, 
 
 The entrypoint passes `REPOAGENT_ENROLLMENT` only to the controller process; tool updates, the Codex sign-in check and the tunnel never receive it. The controller reads the variable once and removes it from its environment before it starts `gh`, Git or Codex. It then validates the document exactly as it validates an enrollment file: format, the repository/App/installation/broker binding, profile and permissions. Missing, empty or mismatched input stops startup before any broker contact. A refused secret stops startup before any GitHub work. Diagnostics name the variable, never its value. Nothing falls back to an enrollment volume, a PEM, a personal `gh` sign-in or an ambient `GH_TOKEN`.
 
-Keep the credentials, workspace, history, state and tools volumes. Native sessions, history, the checkpoint, Codex sign-in and installed tools persist as before: injecting credentials does not make the agent stateless. Mount a config volume only for optional skills, and only if it holds no saved settings.
+Keep the credentials, workspace, history, state and tools volumes. Agent sessions, history, the checkpoint, Codex sign-in and installed tools persist as before: injecting credentials does not make the agent stateless. Mount a config volume only for optional skills, and only if it holds no saved settings.
 
 Put the nonsecret variables in an env file, for example `repoagent.env`:
 
@@ -272,7 +272,7 @@ Here `@mounts` holds the same five `--mount` arguments. Sign Codex in once into 
 
 To restart, stop and remove the container, then run it again with the same volumes and the injected value. Docker keeps an injected value in the container's configuration until the container is removed, so `docker restart` reuses it. Anyone with access to the Docker daemon can read it with `docker inspect`, and processes running as the container user can read the controller's initial environment, just as they could read the former 0600 enrollment file. Remove stopped containers, and replace the container to rotate or withdraw the value.
 
-Your host enrollment state directory stays the authoritative secret and recovery source. Only `enrollment.json` is injected; `approval.json` and `recovery.json` never enter the container. Revoke and broker self-revoke continue to use that host state, as described in [host enrollment](host-enrollment.md#revoke-and-prototype-compatibility).
+Your controller enrollment state directory stays the authoritative secret and recovery source. Only `enrollment.json` is injected; `approval.json` and `recovery.json` never enter the container. Revoke and broker self-revoke continue to use that host state, as described in [controller enrollment](host-enrollment.md#revoke-and-prototype-compatibility).
 
 Instances managed by `repoagent.ps1` or `install.ps1 -Action Install` keep their enrollment volume. That volume also holds the disable marker and launch state used by Update, Rollback and Uninstall. Do not mix the two paths on one instance.
 
