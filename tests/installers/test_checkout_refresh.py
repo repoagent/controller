@@ -1283,273 +1283,73 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Faulted journal admitted native input')
                     self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
 
-    @contextmanager
-    def durable_queue(self, f):
-        host = ROOT / 'tests/installers/QueueHost'
-        subprocess.run(['dotnet', 'build', str(host), '-c', 'Release', '--nologo', '-v', 'quiet'],
-                       check=True, capture_output=True, text=True, timeout=120)
-        image = 'mcr.microsoft.com/azure-storage/azurite@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5'
-        container = subprocess.check_output(['docker', 'run', '--detach', '--publish', '127.0.0.1::10001', image,
-            'azurite-queue', '--queueHost', '0.0.0.0', '--skipApiVersionCheck', '--location', '/data'], text=True).strip()
-        try:
-            address = subprocess.check_output(['docker', 'port', container, '10001/tcp'], text=True).strip()
-            hostname, port = address.rsplit(':', 1)
-            deadline = time.monotonic() + 30
-            while True:
-                try:
-                    # Docker's published TCP port can accept before the emulator has bound its socket.
-                    logs = subprocess.check_output(['docker', 'logs', container], text=True, stderr=subprocess.STDOUT)
-                    if 'Azurite Queue service successfully listens' in logs: break
-                    if time.monotonic() >= deadline: self.fail('Owned Azurite queue did not become ready: ' + logs)
-                    time.sleep(.1)
-                except OSError:
-                    if time.monotonic() >= deadline: self.fail('Owned Azurite queue did not listen')
-                    time.sleep(.1)
-            f.environment['CONTROLLER_TEST_QUEUE_ENDPOINT'] = 'http://' + address + '/devstoreaccount1/controller-work'
-            command = ['dotnet', str(host / 'bin/Release/net11.0/QueueHost.dll')]
-            def queue_operation(operation, *arguments):
-                result = subprocess.run(command + ['queue', operation, *arguments], env=f.environment,
-                    capture_output=True, text=True, timeout=10)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                return int(result.stdout.strip()) if operation in ('count', 'peek') else None
-            queue_operation('create')
-            f.command = command + f.command[len(self.controller_command):] + ['--installation-id', '234', '--repository-id', '345',
-                '--azure-work-queue', 'https://fixturequeue.queue.core.windows.net/controller-work']
-            with socket.socket() as listener:
-                listener.bind(('127.0.0.1', 0)); f.webhook_port = listener.getsockname()[1]
-            f.command += ['--webhook-url', 'https://fixture.invalid', '--listen-port', str(f.webhook_port)]
-            yield queue_operation
-        finally:
-            subprocess.run(['docker', 'rm', '--force', container], check=True, capture_output=True, text=True, timeout=15)
+    def webhooks(self, f):
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0)); f.webhook_port = listener.getsockname()[1]
+        f.command += ['--webhook-url', 'https://fixture.invalid', '--listen-port', str(f.webhook_port), '--reconcile-interval', '3600']
 
-    def durable_delivery(self, f, signature=True, repository_id=345, own=False, payload=None, event='discussion_comment'):
+    def delivery(self, f, payload, event='discussion'):
         settings = json.loads(Path(str(f.state) + '.webhook/hook.json').read_text())
-        body = json.dumps(payload if payload is not None else dict(repository=dict(full_name='owner/project', id=repository_id),
-            action='edited', discussion=dict(number=1), sender=dict(login='test-app[bot]' if own else 'participant', type='Bot' if own else 'User'))).encode()
+        body = json.dumps(payload).encode()
         digest = hmac.new(settings['secret'].encode(), body, hashlib.sha256).hexdigest()
         with closing(http.client.HTTPConnection('127.0.0.1', f.webhook_port, timeout=10)) as connection:
             connection.request('POST', '/github/webhook', body, {'X-GitHub-Event': event,
-                'X-GitHub-Delivery': '00000000-0000-4000-8000-000000000001',
-                'X-Hub-Signature-256': 'sha256=' + (digest if signature else '0' * 64)})
+                'X-GitHub-Delivery': '00000000-0000-4000-8000-000000000001', 'X-Hub-Signature-256': 'sha256=' + digest})
             response = connection.getresponse(); response.read(); return response.status
-
-    def test_invalid_durable_installation_leaves_no_startup_work(self):
-        with self.fixture(webhooks=True) as f, self.durable_queue(f) as queue_operation:
-            f.command[f.command.index('--installation-id') + 1] = '999'
-            result = subprocess.run(f.command, env=f.environment, capture_output=True, text=True, timeout=15)
-            self.assertEqual(result.returncode, 1)
-            self.assertIn('CLI installation differs from enrollment', result.stdout + result.stderr)
-            self.assertEqual(queue_operation('count'), 0, 'Invalid installation persisted foreign nonexpiring startup work')
-            self.assertEqual(f.provider.requests, [], 'Local binding refusal must precede broker or GitHub contact')
-
-    def test_durable_pending_refresh_recovers_without_another_delivery(self):
-        with self.fixture(webhooks=True) as f, self.durable_queue(f) as queue_operation:
-            with self.controller(f, 'mode=webhook-fixed'):
-                f.wait('durable-webhook-observed hint=reconcile')
-                deadline = time.monotonic() + 15
-                while queue_operation('count'):
-                    if time.monotonic() >= deadline: self.fail('Initial reconciliation did not release its queue hold')
-                    time.sleep(.1)
-                f.provider.ref_status = 503
-                target = self.publish(f)
-                payload = dict(repository=dict(full_name='owner/project', id=345), ref='refs/heads/main', after=target)
-                self.assertEqual(self.durable_delivery(f, payload=payload, event='push'), 202)
-                f.wait('refresh-pending')
-                pending = json.loads(f.journal.read_text())
-                self.assertGreater(pending['requested'], pending['completed'])
-                self.assertFalse(pending['blocked'])
-                self.assertNotIn('applying', pending)
-                self.assertGreater(queue_operation('count'), 0)
-                f.provider.ref_status = None
-                deadline = time.monotonic() + 20
-                while json.loads(f.owner.read_text())['commit'] != target:
-                    if time.monotonic() >= deadline:
-                        self.assertEqual(json.loads(f.owner.read_text())['commit'], target,
-                                         'Recovered provider did not refresh retained work without another delivery')
-                    time.sleep(.1)
-                deadline = time.monotonic() + 15
-                while queue_operation('count'):
-                    if time.monotonic() >= deadline: self.fail('Recovered refresh did not release its retained work')
-                    time.sleep(.1)
-                completed = json.loads(f.journal.read_text())
-                self.assertEqual(completed['requested'], pending['requested'], 'Retry created an autonomous refresh request')
-                self.assertEqual(completed['completed'], completed['requested'])
-                self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
-
-    def test_durable_webhooks_retain_unfinished_native_work_and_hold_additional_input_until_idle(self):
-        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
-            with self.controller(f, 'mode=webhook-fixed'):
-                f.wait('durable-webhook-observed hint=reconcile')
-                def eventually_count(expected):
-                    deadline = time.monotonic() + 15
-                    while True:
-                        actual = queue_operation('count')
-                        if actual == expected: return
-                        if time.monotonic() >= deadline: self.fail(f'Queue count {actual}, expected {expected}')
-                        time.sleep(.1)
-                eventually_count(0)
-                def deliver(**settings): return self.durable_delivery(f, **settings)
-                self.assertEqual(deliver(signature=False), 401)
-                self.assertEqual(deliver(repository_id=999), 403)
-                self.assertEqual(deliver(own=True), 204)
-                self.assertEqual(queue_operation('count'), 0)
-                f.provider.discussions = [self.discussion(1)]
-                self.assertEqual(deliver(), 202)
-                self.assertGreater(queue_operation('count'), 0, 'HTTP202 must have durable work before native acknowledgment')
-                request = self.rpc(f, 'thread/start')
-                self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
-                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-                f.wait('durable-webhook-observed hint=discussion:1')
-                self.assertGreater(queue_operation('count'), 0, 'Native acknowledgment cannot release unfinished work')
-                self.assertEqual(queue_operation('peek'), 0, 'Invisible received work must remain retained')
-                f.provider.discussions[0]['body'] += ' additional input'
-                self.assertEqual(deliver(), 202)
-                self.assertIsNotNone(f.wait_or_native('durable-webhook-observed hint=discussion:1'), 'Additional input reached the active turn')
-                self.assertGreater(queue_operation('count'), 0, 'Waiting input must retain its durable work')
-                self.assertEqual(deliver(), 202)  # Unchanged content must not repeat waiting input.
-                f.wait('durable-webhook-observed hint=discussion:1')
-                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Duplicate delivery repeated native input')
-                self.terminal(f, 'S1', 'T1')
-                request = self.rpc(f, 'turn/start')
-                self.assertIn('additional input', self.dispatched(request)['changes'][0]['subject']['body'])
-                self.reply(f, request, dict(turn=dict(id='T2')))
-                f.wait('forwarded')
-                self.assertGreater(queue_operation('count'), 0, 'Dispatched input retains durable work until its turn completes')
-                self.terminal(f, 'S1', 'T2')
-                eventually_count(0)
-                self.assertEqual(json.loads(f.journal.read_text())['active'], {})
-                self.assertFalse(json.loads(f.journal.read_text())['blocked'])
-            self.assertFalse(any(hook.get('active') is False for hook in f.provider.hooks),
-                             'Ordinary replica shutdown must preserve the signed wake hook')
-            option = f.command.index('--azure-work-queue')
-            del f.command[option:option + 2]
-            f.run(f.command + ['--disable-webhook'])
-            self.assertIs(f.provider.hooks[-1]['active'], False, 'Explicit stopped-instance disable must confirm hook removal')
-
-    def test_lost_durable_work_lease_stops_native_children_and_preserves_unknown_turn(self):
-        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
-            f.provider.discussions = [self.discussion(1)]
-            pids = f.directory / 'native-pids.json'
-            f.environment['MATRIX_PIDS'] = str(pids)
-            with self.controller(f, 'mode=webhook-fixed'):
-                request = self.rpc(f, 'thread/start')
-                self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
-                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-                f.wait('durable-webhook-observed hint=reconcile')
-                proof = json.loads(pids.read_text())
-                def running(pid):
-                    try: return Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1][0] != 'Z'
-                    except FileNotFoundError: return False
-                self.assertTrue(all(running(pid) for pid in proof.values()))
-                self.assertGreater(queue_operation('count'), 0)
-                saved = f.state.read_bytes()
-                queue_operation('clear')  # Real service removes the receipt; the next renewal must fail.
-                self.assertEqual(f.process.wait(timeout=25), 1)
-                self.assertTrue(json.loads(f.journal.read_text())['active'])
-                self.assertTrue(all(not running(pid) for pid in proof.values()), 'A failed queue lease left native children running')
-                self.assertEqual(f.state.read_bytes(), saved)
-            resumed = subprocess.run(f.command, env=f.environment, capture_output=True, text=True, timeout=20)
-            self.assertEqual(resumed.returncode, 1, resumed.stdout + resumed.stderr)
-            self.assertIn('uncertain', resumed.stdout)
-            self.assertEqual(f.state.read_bytes(), saved)
-            self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Restart replayed an outcome-unknown native input')
-
-    def test_foreign_durable_work_is_preserved_without_native_adoption(self):
-        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
-            queue_operation('foreign')
-            with self.controller(f, 'mode=webhook-fixed'):
-                self.assertEqual(f.process.wait(timeout=20), 1)
-                self.assertGreater(queue_operation('count'), 0, 'A foreign binding must remain available for manual inspection')
-                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Foreign queued work admitted native input')
-
-    def test_push_at_durable_idle_commit_retains_its_hold_before_refresh(self):
-        with self.fixture(webhooks=True) as f, self.durable_queue(f) as queue_operation:
-            queue_operation('idle-race')
-
-    def test_uncertain_durable_send_stops_an_active_turn_after_the_service_committed(self):
-        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
-            f.provider.discussions = [self.discussion(1)]
-            marker = f.directory / 'drop-next-queue-send'
-            f.environment['CONTROLLER_TEST_DROP_QUEUE_SEND'] = str(marker)
-            with self.controller(f, 'mode=webhook-fixed'):
-                request = self.rpc(f, 'thread/start')
-                self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
-                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-                f.wait('durable-webhook-observed hint=reconcile')
-                saved = f.state.read_bytes()
-                marker.touch()
-                try: self.assertNotEqual(self.durable_delivery(f), 202)
-                except (http.client.RemoteDisconnected, ConnectionResetError): pass  # Runtime closed during fail-stop.
-                self.assertFalse(marker.exists(), 'The fixture never forwarded and lost the committed send response')
-                self.assertGreaterEqual(queue_operation('count'), 2, 'Azurite must contain the accepted hint and unfinished startup work')
-                self.assertEqual(f.process.wait(timeout=10), 1, 'An ambiguous enqueue left native work running')
-                self.assertTrue(json.loads(f.journal.read_text())['active'])
-                self.assertEqual(f.state.read_bytes(), saved)
 
     def discussion_event(self, number, action='edited'):
         return dict(repository=dict(full_name='owner/project', id=345), action=action,
                     discussion=dict(number=number), sender=dict(login='participant', type='User'))
-
-    def drained(self, queue_operation):
-        deadline = time.monotonic() + 20
-        while queue_operation('count'):
-            if time.monotonic() >= deadline: self.fail('Durable work was not completed')
-            time.sleep(.1)
 
     def start_sessions(self, f, *numbers):
         for number in numbers:
             request = self.rpc(f, 'thread/start')
             self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S' + str(number), cwd=str(f.checkout))))
             request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T' + str(number))))
-        f.wait('durable-webhook-observed hint=reconcile')
+        f.wait('reconciliation-completed discussion=all success=True')
         for number in numbers: self.terminal(f, 'S' + str(number), 'T' + str(number))
+        for _ in numbers: f.wait('turn-ended')  # Settled: no running turn remains in the saved state.
 
-    def test_deleted_discussion_is_forgotten_without_stopping_live_durable_work(self):
-        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
+    def test_deleted_discussion_is_forgotten_without_stopping_live_webhook_work(self):
+        with self.fixture(protocol=True, webhooks=True) as f:
+            self.webhooks(f)
             f.provider.discussions = [self.discussion(1), self.discussion(2)]
             with self.controller(f, 'mode=webhook-fixed'):
                 self.start_sessions(f, 1, 2)
-                self.drained(queue_operation)
             saved = json.loads(f.state.read_text())['discussions']
             self.assertEqual(saved['D1']['sessionId'], 'S1')
-            # Deployed incident: #1 is deleted while its state and retained hint survive, with live work queued behind it.
+            # Deployed incident: #1 is deleted while its state survives, with live work behind it.
             del f.provider.discussions[0]
-            queue_operation('hint', '1'); queue_operation('hint', '2')
             with self.controller(f, 'mode=webhook-fixed'):
+                f.wait('reconciliation-completed discussion=all success=True')
+                self.assertEqual(self.delivery(f, self.discussion_event(1, 'deleted')), 202)
                 self.assertIn('session=S1', f.wait('discussion-forgotten'))
-                f.wait('durable-webhook-observed hint=discussion:1')
-                f.wait('durable-webhook-observed hint=discussion:2')
+                f.wait('webhook-observed discussion=1 success=True')
                 discussions = json.loads(f.state.read_text())['discussions']
                 self.assertNotIn('D1', discussions, 'Confirmed deletion must forget the Discussion state')
                 self.assertEqual(discussions['D2'], saved['D2'], 'Unrelated session and checkpoints must survive')
                 # A duplicate deletion notification ahead of new live input is harmless.
-                f.provider.discussions[0]['body'] += ' behind a stale hint'
-                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(1, 'deleted'), event='discussion'), 202)
-                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(2), event='discussion'), 202)
+                f.provider.discussions[0]['body'] += ' behind a stale notification'
+                self.assertEqual(self.delivery(f, self.discussion_event(1, 'deleted')), 202)
+                self.assertEqual(self.delivery(f, self.discussion_event(2)), 202)
                 request = self.rpc(f, 'thread/resume'); self.assertEqual(request['params']['threadId'], 'S2')
                 self.reply(f, request, dict(thread=dict(id='S2', cwd=str(f.checkout)), cwd=str(f.checkout)))
                 request = self.rpc(f, 'turn/start'); self.assertEqual(request['params']['threadId'], 'S2')
                 self.reply(f, request, dict(turn=dict(id='T3')))
-                f.wait('durable-webhook-observed hint=discussion:1')
-                f.wait('durable-webhook-observed hint=discussion:2')
+                f.wait('webhook-observed discussion=1 success=True')
+                f.wait('webhook-observed discussion=2 success=True')
                 continued = json.loads(f.state.read_text())['discussions']
                 self.assertEqual(sorted(continued), ['D2'])
                 self.assertEqual(continued['D2']['sessionId'], 'S2')
                 self.assertEqual(continued['D2']['sources']['D2']['content']['body'], f.provider.discussions[0]['body'])
                 self.assertEqual(sum('discussion-forgotten' in line for line in f.lines), 1, 'Nothing was left to forget')
                 self.terminal(f, 'S2', 'T3')
-                self.drained(queue_operation)
+                f.wait('turn-ended https://github.com/owner/project/discussions/2 session=S2 turn=T3')
                 self.assertIsNone(f.process.poll(), 'Stale work stopped the shared worker')
-            lookups = len(f.provider.lookups)
-            with self.controller(f, 'mode=webhook-fixed'):
-                f.wait('durable-webhook-observed hint=reconcile')
-                self.drained(queue_operation)
-                self.assertIsNone(f.process.poll())
-            self.assertEqual(len(f.provider.lookups), lookups, 'Obsolete work was retried after restart')
             self.assertEqual(sorted(json.loads(f.state.read_text())['discussions']), ['D2'])
             self.assertFalse(select.select([f.responses], [], [], 0)[0], 'A deleted Discussion received native input')
 
-    def test_unconfirmed_discussion_lookup_failures_retain_work_and_back_off_behind_live_work(self):
+    def test_unconfirmed_discussion_lookup_failures_retain_state_behind_live_webhook_work(self):
         missing = 'Could not resolve to a Discussion with the number of 1.'
         failures = [  # One lookup each; none is GitHub's typed deletion of this Discussion.
             (200, {'data': {'repository': None}, 'errors': [{'type': 'NOT_FOUND', 'path': ['repository'],
@@ -1561,75 +1361,72 @@ class CheckoutRefreshTests(unittest.TestCase):
             (200, {'data': {'repository': {'discussion': None}}}),
             (502, {'message': 'Server Error'}),
         ]
-        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
+        with self.fixture(protocol=True, webhooks=True) as f:
+            self.webhooks(f)
             f.provider.discussions = [self.discussion(1), self.discussion(2)]
             with self.controller(f, 'mode=webhook-fixed'):
                 self.start_sessions(f, 1, 2)
-                self.drained(queue_operation)
                 retained = json.loads(f.state.read_text())['discussions']['D1']
                 f.provider.lookup_faults = {1: list(failures)}
                 for _ in failures:
-                    self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(1), event='discussion'), 202)
-                f.provider.discussions[1]['body'] += ' behind failing work'
-                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(2), event='discussion'), 202)
-                request = self.rpc(f, 'turn/start'); self.assertEqual(request['params']['threadId'], 'S2')
-                self.reply(f, request, dict(turn=dict(id='T3')))
-                f.wait('durable-webhook-observed hint=discussion:2')
-                self.assertIsNone(f.process.poll(), 'A failed observation stopped the shared worker')
-                self.assertEqual(f.provider.lookup_faults[1], [], 'Every failure class must be observed before live work')
+                    # One delivery at a time: queued deliveries for one Discussion coalesce into one observation.
+                    self.assertEqual(self.delivery(f, self.discussion_event(1)), 202)
+                    f.wait('webhook-observed discussion=1 success=False')
+                self.assertEqual(f.provider.lookup_faults[1], [], 'Every failure class must be observed')
                 self.assertEqual(json.loads(f.state.read_text())['discussions']['D1'], retained,
                                  'An unconfirmed failure was mistaken for deletion')
-                self.assertGreater(queue_operation('count'), 0, 'Failed work must remain durable')
+                f.provider.discussions[1]['body'] += ' behind failing work'
+                self.assertEqual(self.delivery(f, self.discussion_event(2)), 202)
+                request = self.rpc(f, 'turn/start'); self.assertEqual(request['params']['threadId'], 'S2')
+                self.reply(f, request, dict(turn=dict(id='T3')))
+                f.wait('webhook-observed discussion=2 success=True')
+                self.assertIsNone(f.process.poll(), 'A failed observation stopped the shared worker')
                 self.terminal(f, 'S2', 'T3')
-                for _ in failures: f.wait('durable-webhook-observed hint=discussion:1', timeout=30)
-                self.drained(queue_operation)
+                self.assertEqual(self.delivery(f, self.discussion_event(1)), 202)
+                f.wait('webhook-observed discussion=1 success=True')
                 self.assertIsNone(f.process.poll())
-            lookups = [(at, failed) for number, at, failed in f.provider.lookups if number == 1]
-            self.assertEqual([failed for _, failed in lookups], [True] * len(failures) + [False] * len(failures))
-            first_failure, first_retry = lookups[0][0], lookups[len(failures)][0]
-            print('LOOKUP_BACKOFF first-retry-after=%.1fs' % (first_retry - first_failure), flush=True)
-            self.assertGreaterEqual(first_retry - first_failure, 4, 'Failed work was retried without backoff')
+            lookups = [failed for number, _, failed in f.provider.lookups if number == 1]
+            self.assertEqual(lookups, [True] * len(failures) + [False])
             self.assertEqual(json.loads(f.state.read_text())['discussions']['D1'], retained)
-            self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Retried unchanged work repeated native input')
+            self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Unchanged work repeated native input')
 
-    def test_deleted_discussion_with_waiting_input_and_a_running_turn_never_dispatches_and_its_work_completes(self):
-        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
+    def test_deleted_discussion_with_waiting_input_and_a_running_turn_never_dispatches(self):
+        with self.fixture(protocol=True, webhooks=True) as f:
+            self.webhooks(f)
             f.provider.discussions = [self.discussion(1), self.discussion(2)]
             with self.controller(f, 'mode=webhook-fixed'):
                 for number in (1, 2):
                     request = self.rpc(f, 'thread/start')
                     self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S' + str(number), cwd=str(f.checkout))))
                     request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T' + str(number))))
-                f.wait('durable-webhook-observed hint=reconcile')
+                f.wait('reconciliation-completed discussion=all success=True')
                 self.terminal(f, 'S2', 'T2')
                 # T1 keeps D1's active slot; a D1 edit waits in the controller behind it.
                 f.provider.discussions[0]['body'] += ' while T1 runs'
-                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(1), event='discussion'), 202)
-                f.wait('input-waiting'); f.wait('durable-webhook-observed hint=discussion:1')
+                self.assertEqual(self.delivery(f, self.discussion_event(1)), 202)
+                f.wait('input-waiting'); f.wait('webhook-observed discussion=1 success=True')
                 saved = json.loads(f.state.read_text())['discussions']
                 self.assertEqual(saved['D1']['running']['turn'], 'T1')
                 self.assertEqual(len(saved['D1']['waiting']['inputs']), 1)
                 del f.provider.discussions[0]
-                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(1, 'deleted'), event='discussion'), 202)
+                self.assertEqual(self.delivery(f, self.discussion_event(1, 'deleted')), 202)
                 self.assertIn('session=S1', f.wait('discussion-forgotten'))
-                f.wait('durable-webhook-observed hint=discussion:1')
+                f.wait('webhook-observed discussion=1 success=True')
                 discussions = json.loads(f.state.read_text())['discussions']
                 self.assertEqual(sorted(discussions), ['D2'], 'Waiting input, running and checkpoint state of D1 must be forgotten')
                 self.assertEqual(discussions['D2'], saved['D2'], 'Unrelated session and checkpoints must survive')
-                self.assertGreater(queue_operation('count'), 0, 'Work was completed while the native turn still ran')
-                # The native ends the turn: its slot frees, the forgotten input is never sent and retained work completes.
+                # The native ends the turn: its slot frees and the forgotten input is never sent.
                 self.terminal(f, 'S1', 'T1')
-                self.drained(queue_operation)
-                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Forgotten input reached the native')
+                f.wait('native-event method=turn/completed thread=S1 turn=T1')
                 f.provider.discussions[0]['body'] += ' after the deletion'
-                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(2), event='discussion'), 202)
+                self.assertEqual(self.delivery(f, self.discussion_event(2)), 202)
                 request = self.rpc(f, 'turn/start'); self.assertEqual(request['params']['threadId'], 'S2')
                 self.reply(f, request, dict(turn=dict(id='T3')))
-                f.wait('durable-webhook-observed hint=discussion:2')
+                f.wait('webhook-observed discussion=2 success=True')
                 self.terminal(f, 'S2', 'T3')
-                self.drained(queue_operation)
+                f.wait('turn-ended https://github.com/owner/project/discussions/2 session=S2 turn=T3')
+                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Forgotten input reached the native')
                 self.assertIsNone(f.process.poll(), 'Forgetting stopped the shared worker')
-
 
 if __name__ == '__main__':
     unittest.main()

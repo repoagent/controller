@@ -89,8 +89,6 @@ def bridge_args(config, *, check_auth=False, injected=False):
                  '--reconcile-interval', str(config.get('reconcileInterval', 300))]
         if config['mode'] == 'fixed-url':
             args += ['--webhook-url', config['publicUrl']]
-    if config.get('azureWorkQueue') and not check_auth:
-        args += ['--azure-work-queue', config['azureWorkQueue']]
     if config.get('dashboardCategory') and not check_auth:
         # The dashboard compares this image with published baseline releases; startup tool updates make that uncertain.
         args += ['--dashboard-category', config['dashboardCategory'], '--image-inventory', INVENTORY]
@@ -198,17 +196,6 @@ def configure(args, *, persist=True):
         if config.get('repositoryId') is not None and config['repositoryId'] != repository_id:
             raise ValueError('Changing expected repository identity requires a fresh instance and enrollment.')
         config['repositoryId'] = repository_id
-    queue = getattr(args, 'azure_work_queue', None)
-    if queue is None:
-        queue = config.get('azureWorkQueue')
-    if queue is not None:
-        if not re.fullmatch(r'https://[a-z0-9]{3,24}\.queue\.core\.windows\.net/[a-z0-9](?:[a-z0-9]|-(?!-)){1,61}[a-z0-9]', queue):
-            raise ValueError('Azure work queue must be a public Azure HTTPS queue endpoint without credentials, query or fragment.')
-        if not broker or not clone or args.mode != 'fixed-url' or repository_id is None or args.installation_id is None:
-            raise ValueError('Azure work queue requires fixed-url broker clone mode with repository and installation IDs.')
-        if config.get('azureWorkQueue') is not None and config['azureWorkQueue'] != queue:
-            raise ValueError('Changing work queue requires a fresh instance after queued work is settled.')
-        config['azureWorkQueue'] = queue
     dashboard = getattr(args, 'dashboard_category', None)
     if dashboard is not None:
         if dashboard and (not dashboard.strip() or len(dashboard) > 100 or any(not c.isprintable() for c in dashboard)):
@@ -392,7 +379,6 @@ def configure_arguments(configure_parser):
     configure_parser.add_argument('--public-url', default='')
     configure_parser.add_argument('--listen-port', type=int, default=8080)
     configure_parser.add_argument('--reconcile-interval', type=int, default=300)
-    configure_parser.add_argument('--azure-work-queue')
     configure_parser.add_argument('--dashboard-category')
     return configure_parser
 
