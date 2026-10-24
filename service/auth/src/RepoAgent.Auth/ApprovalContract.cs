@@ -8,32 +8,12 @@ internal static class ApprovalContractRows
 {
     extension(ApprovalContract)
     {
-        public static ApprovalContract Read(TableEntity entity)
-        {
-            if (!entity.ContainsKey("ApprovalKind") && !entity.ContainsKey("SetupVersion"))
-            {
-                // Historical v1 rows predate these fields. Their complete legacy binding is
-                // still required by the pending/device/attempt reader; this never selects v2.
-                if (entity.ContainsKey("PolicyVersion") && Text(entity, "PolicyVersion") != IssuancePolicy.Version) throw new IssuanceDenied();
-                return ApprovalContract.Legacy;
-            }
-            var contract = Text(entity, "ApprovalKind") switch
-            {
-                "environment-variable" => ApprovalContract.Legacy,
-                "repository-agent-variable" => Text(entity, "PolicyVersion") == ApprovalContract.AgentClone.Policy ? ApprovalContract.AgentClone : ApprovalContract.Agent,
-                "repository-actions-variable" => Text(entity, "PolicyVersion") switch
-                {
-                    var policy when policy == ApprovalContract.ActionsClone.Policy => ApprovalContract.ActionsClone,
-                    var policy when policy == ApprovalContract.ActionsSettings.Policy => ApprovalContract.ActionsSettings,
-                    _ => ApprovalContract.Actions
-                },
-                _ => throw new IssuanceDenied()
-            };
-            if (Number(entity, "SetupVersion") != contract.SetupVersion || Text(entity, "PolicyVersion") != contract.Policy)
-                throw new IssuanceDenied();
-            if (contract.IsRepositoryVariable && (entity.ContainsKey("Environment") || entity.ContainsKey("EnvironmentId"))) throw new IssuanceDenied();
-            return contract;
-        }
+        // A present field must be a valid value of its type; the core decides which contract the fields name.
+        public static ApprovalContract Read(TableEntity entity) => ApprovalContract.Stored(
+            entity.ContainsKey("ApprovalKind") ? Text(entity, "ApprovalKind") : null,
+            entity.ContainsKey("SetupVersion") ? Number(entity, "SetupVersion") : null,
+            entity.ContainsKey("PolicyVersion") ? Text(entity, "PolicyVersion") : null,
+            entity.ContainsKey("Environment") || entity.ContainsKey("EnvironmentId"));
     }
 
     extension(ApprovalContract contract)

@@ -31,6 +31,24 @@ public sealed record ApprovalContract(string Kind, long SetupVersion, string Pol
     public bool AcceptsVariable(string variable) => !IsActions || !variable.StartsWith("REPOAGENT_", StringComparison.OrdinalIgnoreCase)
         || string.Equals(variable, "REPOAGENT_APPROVAL", StringComparison.OrdinalIgnoreCase);
 
+    // The contract a stored record names. Historical v1 rows predate the kind and setup version; their complete legacy
+    // binding is still required by each reader, and they never select another contract.
+    public static ApprovalContract Stored(string? kind, long? setupVersion, string? policy, bool hasEnvironment)
+    {
+        if (kind is null && setupVersion is null)
+            return policy is null || policy == IssuancePolicy.Version ? Legacy : throw new IssuanceDenied();
+        var contract = kind switch
+        {
+            "environment-variable" => Legacy,
+            "repository-agent-variable" => policy == AgentClone.Policy ? AgentClone : Agent,
+            "repository-actions-variable" => policy == ActionsClone.Policy ? ActionsClone : policy == ActionsSettings.Policy ? ActionsSettings : Actions,
+            _ => throw new IssuanceDenied()
+        };
+        if (setupVersion != contract.SetupVersion || policy != contract.Policy) throw new IssuanceDenied();
+        if (contract.IsRepositoryVariable && hasEnvironment) throw new IssuanceDenied();
+        return contract;
+    }
+
     public static ApprovalContract ForSetup(int setupVersion, string profile)
     {
         var settings = profile.EndsWith("-settings", StringComparison.Ordinal);
