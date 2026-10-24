@@ -235,6 +235,85 @@ public sealed class IssuanceFaultTests
         Assert.Equal(slots + 1, f.GlobalQuota.Slots);
     }
 
+    // A revocation that conflicts the verifier's admission is seen by the reevaluation, which never inherits the
+    // authority it first read: no verifier is reserved or minted for the closed grant.
+    [Fact]
+    public async Task Revocation_during_verifier_admission_retry_denies_before_mint()
+    {
+        var f = IssuanceFixture.Create();
+        var batches = 0;
+        var revoked = false;
+        f.State.BeforeCommit = async _ =>
+        {
+            // The verifier's global charge is the first transaction and its repository admission the second.
+            if (revoked || ++batches != 2) return;
+            revoked = true;
+            Assert.Equal(204, await f.Revocation().RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
+        };
+        Assert.Equal(503, (await f.IssueAsync(Token)).Status);
+        Assert.True(revoked);
+        Assert.Equal(1, f.State.Conflicts);
+        Assert.Equal(0, f.GitHub.Authorizations);
+        Assert.Equal(0, f.GitHub.Mints);
+        Assert.Empty(f.Attempts());
+        Assert.Null(f.Gate.VerifierAttempt);
+    }
+
+    // Issuance charges global capacity only under the retention schema both quotas carry, with counts inside their
+    // ceilings. Anything else is state issuance cannot account for: 503, and nothing is charged.
+    [Theory]
+    [InlineData("issuance-schema")]
+    [InlineData("enrollment-schema")]
+    [InlineData("slots-above-retained")]
+    public async Task Global_capacity_issuance_cannot_account_for_is_unavailable_before_a_charge(string scenario)
+    {
+        var f = IssuanceFixture.Create();
+        switch (scenario)
+        {
+            case "issuance-schema": f.State.Change(IssuanceQuota.Key, row => row["RetentionSchemaVersion"] = 2L); break;
+            case "enrollment-schema": f.State.Change(EnrollmentQuota.Key, row => row["RetentionSchemaVersion"] = 2L); break;
+            case "slots-above-retained": f.State.Change(IssuanceQuota.Key, row => row["Slots"] = 2L); break;
+        }
+        var commits = f.State.Commits;
+        Assert.Equal(503, (await f.IssueAsync(Token)).Status);
+        Assert.Equal(commits, f.State.Commits);
+        Assert.Equal(0, f.GitHub.Authorizations);
+    }
+
+    // The occupancy count, not the slot scan, enforces the global attempt limit: after the limit is lowered, slots
+    // occupied above it still count, and the free slots below it are not handed out.
+    [Fact]
+    public async Task A_lowered_global_attempt_limit_still_counts_slots_occupied_above_it()
+    {
+        var f = IssuanceFixture.Create();
+        var limits = new IssuanceLimits(GlobalAttempts: 4);
+        var occupied = f.State.Get(IssuanceSlot.Key(0))!;
+        foreach (var index in new long[] { 100, 101, 102 })
+            f.State.Seed(IssuanceSlot.Key(index), new()
+            {
+                OperationId = occupied.OperationId, Generation = occupied.Generation, RepositoryId = occupied.RepositoryId,
+                Purpose = occupied.Purpose, Epoch = occupied.Epoch, ReservedAt = occupied.ReservedAt,
+                PayloadPurgeAt = occupied.PayloadPurgeAt, GlobalSlot = index, ApprovalKind = occupied.ApprovalKind,
+                SetupVersion = occupied.SetupVersion, PolicyVersion = occupied.PolicyVersion
+            });
+        f.State.Change(IssuanceQuota.Key, row => (row["Slots"], row["RetainedIssuanceCount"]) = (4L, 4L));
+        var commits = f.State.Commits;
+        Assert.Equal(429, (await f.IssueAsync(Token, limits)).Status);
+        Assert.Equal(commits, f.State.Commits);
+        Assert.Equal(0, f.GitHub.Authorizations);
+    }
+
+    [Fact]
+    public async Task Retained_issuance_ceiling_is_429_before_a_charge()
+    {
+        var f = IssuanceFixture.Create();
+        f.State.Change(IssuanceQuota.Key, row => row["RetainedIssuanceCount"] = 4096L);
+        var commits = f.State.Commits;
+        Assert.Equal(429, (await f.IssueAsync(Token)).Status);
+        Assert.Equal(commits, f.State.Commits);
+        Assert.Equal(0, f.GitHub.Authorizations);
+    }
+
     // A Replace writes the whole row, so issuance must never act on, or rewrite, a row with a property no record maps.
     // Rows read before the first commit leave nothing written; the repository quota is read after the global charge,
     // which is never compensated.

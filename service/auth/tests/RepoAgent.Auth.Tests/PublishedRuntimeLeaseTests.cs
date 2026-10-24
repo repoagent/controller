@@ -18,6 +18,9 @@ public sealed class PublishedRuntimeLeaseTests
             var result = await f.IssueAsync(Token);
             Assert.Equal(200, result.Status);
             leases.Add(JsonSerializer.SerializeToElement(result.Body));
+            // Each reuse is activity: it renews the enrollment as a release does.
+            Assert.Equal(f.Clock.GetUtcNow(), f.Enrollment.LastActivityAt);
+            Assert.Equal(f.Clock.GetUtcNow().AddDays(90), f.Enrollment.ExpiresAt);
             f.Clock.Advance(TimeSpan.FromMinutes(1));
         }
 
@@ -205,6 +208,9 @@ public sealed class PublishedRuntimeLeaseTests
     [InlineData("State", "sending")]
     [InlineData("ScopeValid", false)]
     [InlineData("DeviceId", "different-device")]
+    [InlineData("ApprovalKind", "repository-agent-variable")]
+    [InlineData("PayloadRedacted", true)]
+    [InlineData("CapacityReleased", true)]
     public async Task Invalid_published_authority_fails_closed_without_a_replacement_mint(string field, object value)
     {
         var f = IssuanceFixture.Create();
@@ -219,6 +225,74 @@ public sealed class PublishedRuntimeLeaseTests
         Assert.Null(result.Body);
         Assert.Equal(2, f.GitHub.Mints);
         Assert.Equal(2, f.GitHub.Authorizations);
+    }
+
+    // The grant still accounts for the published token: the enrollment counts it, and the gate counts the verifier too.
+    [Theory]
+    [InlineData("enrollment", 0L)]
+    [InlineData("gate", 2L)]
+    public async Task Published_lease_the_grant_no_longer_accounts_for_fails_closed(string record, long outstanding)
+    {
+        var f = IssuanceFixture.Create();
+        Assert.Equal(200, (await f.IssueAsync(Token)).Status);
+        f.State.Change(record == "gate" ? IssuanceFixture.GateKey : f.EnrollmentKey, row => row["OutstandingTokenCount"] = outstanding);
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var commits = f.State.Commits;
+
+        Assert.Equal(503, (await f.IssueAsync(Token)).Status);
+        Assert.Equal(commits, f.State.Commits);
+        Assert.Equal(2, f.GitHub.Mints);
+    }
+
+    // A published lease is reusable only while its global ledger and slot still charge exactly that attempt.
+    [Theory]
+    [InlineData("ledger", "RetirementState", "retiring")]
+    [InlineData("ledger", "CapacityState", "released")]
+    [InlineData("slot", "Generation", "0123456789abcdef0123456789abcdef")]
+    [InlineData("slot", "GlobalSlot", 99L)]
+    public async Task Published_lease_whose_capacity_no_longer_binds_it_fails_closed(string record, string field, object value)
+    {
+        var f = IssuanceFixture.Create();
+        Assert.Equal(200, (await f.IssueAsync(Token)).Status);
+        var runtime = f.Attempt("runtime");
+        f.State.Change(record == "ledger" ? IssuanceLedger.Key(runtime.OperationId!) : IssuanceSlot.Key(runtime.GlobalSlot!.Value),
+            row => row[field] = value);
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var commits = f.State.Commits;
+
+        Assert.Equal(503, (await f.IssueAsync(Token)).Status);
+        Assert.Equal(commits, f.State.Commits);
+        Assert.Equal(2, f.GitHub.Mints);
+        Assert.Equal(2, f.GitHub.Authorizations);
+    }
+
+    // A release whose response was lost may still land. Before the token is revoked, a conditional rewrite of the attempt
+    // fences that release, so a token being revoked is never published.
+    [Fact]
+    public async Task Release_landing_late_during_revocation_is_fenced_and_never_publishes_the_revoked_token()
+    {
+        var f = IssuanceFixture.Create();
+        var batches = 0;
+        StateTransaction? release = null;
+        f.State.BeforeCommit = transaction =>
+        {
+            // The first verifier uses four transactions; runtime release is the ninth.
+            if (++batches != 9) return Task.CompletedTask;
+            release = transaction;
+            throw new BrokerStateUnavailable("Release in flight");
+        };
+        Exception? late = null;
+        f.GitHub.BeforeRevoke = async _ =>
+        {
+            f.State.BeforeCommit = null;
+            late = await Record.ExceptionAsync(() => f.State.CommitAsync(release!, Token));
+        };
+
+        Assert.Equal(503, (await f.IssueAsync(Token)).Status);
+        Assert.IsType<StateConflict>(late);
+        Assert.Equal(1, f.GitHub.Revokes);
+        Assert.Null(f.Enrollment.RuntimeAttempt);
+        Assert.Equal("settled", f.Attempt("runtime").State);
     }
 
     [Theory]

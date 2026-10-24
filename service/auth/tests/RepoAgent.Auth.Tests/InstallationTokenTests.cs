@@ -31,7 +31,85 @@ public sealed class InstallationTokenTests
         Assert.Equal(8, f.GitHub.Reads);
         Assert.Equal(2, f.GitHub.Authorizations);
         Assert.Equal(3, f.Gate.OutstandingTokenCount);
+        Assert.Equal(2, f.Enrollment.OutstandingTokenCount);
+        // Every repository transaction advances the gate: three for the verifier, four for the runtime token.
+        Assert.Equal(14, f.Gate.Sequence);
         Assert.Equal(f.Clock.GetUtcNow().AddDays(90), f.Enrollment.ExpiresAt);
+    }
+
+    // Who may receive a GitHub token is decided before any GitHub work or write. A row that contradicts the deployment,
+    // the key it was read under or its approval contract is corrupt (503); anything else that is not this controller's
+    // active grant is 401.
+    [Theory]
+    [InlineData("enrollment-id", 401)]
+    [InlineData("secret", 401)]
+    [InlineData("locator-enrollment", 401)]
+    [InlineData("retained-owner", 401)]
+    [InlineData("runtime-version", 401)]
+    [InlineData("unacknowledged", 401)]
+    [InlineData("expired", 401)]
+    [InlineData("redacted", 503)]
+    [InlineData("other-deployment", 503)]
+    [InlineData("gate-repository", 503)]
+    [InlineData("grant-repository", 503)]
+    [InlineData("agent-with-environment", 503)]
+    public async Task Invalid_authority_is_denied_before_GitHub_work_or_a_write(string scenario, int status)
+    {
+        var f = IssuanceFixture.Create();
+        var (enrollmentId, secret, runtimeVersion) = (f.Device.DeviceId, f.Device.Secret, 1);
+        var other = Guid.NewGuid().ToString("N");
+        string Marker(ApprovalContract approval, string repositoryId, string epoch, bool environment) => ApprovalMarker.Create(approval,
+            repositoryId, "owner/project", 789, enrollmentId, new string('a', 43), "polling", epoch, "APPROVAL",
+            environment ? "approval/environment" : null, environment ? 987 : null);
+        switch (scenario)
+        {
+            case "enrollment-id": enrollmentId += "."; break;
+            case "secret": secret = new string('s', 43); break;
+            case "locator-enrollment": f.State.Change(EnrollmentLocator.Key(enrollmentId), row => row["DeviceId"] = other); break;
+            case "retained-owner": f.State.Change(IssuanceFixture.GateKey, row => row["OwnerDeviceId"] = other); break;
+            case "runtime-version": runtimeVersion = 2; break;
+            case "unacknowledged": f.State.Change(f.EnrollmentKey, row => row["Acknowledged"] = false); break;
+            case "expired": f.State.Change(f.EnrollmentKey, row => row["ExpiresAt"] = f.Clock.GetUtcNow()); break;
+            case "redacted": f.State.Change(f.EnrollmentKey, row => row["PayloadRedacted"] = true); break;
+            case "gate-repository": f.State.Change(IssuanceFixture.GateKey, row => row["RepositoryId"] = "654321"); break;
+            case "other-deployment":
+                // A consistent grant of another deployment, its marker included.
+                f.State.Change(IssuanceFixture.GateKey, row => row["Epoch"] = "old-epoch");
+                f.State.Change(f.EnrollmentKey, row =>
+                {
+                    row["Epoch"] = "old-epoch";
+                    row["Marker"] = Marker(ApprovalContract.Legacy, IssuanceFixture.RepositoryId, "old-epoch", true);
+                });
+                break;
+            case "grant-repository":
+                // A consistent grant of another repository, its marker included, under this repository's keys.
+                f.State.Change(IssuanceFixture.GateKey, row => row["RepositoryId"] = "654321");
+                f.State.Change(f.EnrollmentKey, row =>
+                {
+                    row["RepositoryId"] = "654321";
+                    row["Marker"] = Marker(ApprovalContract.Legacy, "654321", IssuanceFixture.Epoch, true);
+                });
+                break;
+            case "agent-with-environment":
+                // A repository-variable enrollment never names an approval environment.
+                f.State.Change(f.EnrollmentKey, row =>
+                {
+                    row["ApprovalKind"] = ApprovalContract.Agent.Kind;
+                    row["SetupVersion"] = ApprovalContract.Agent.SetupVersion;
+                    row["PolicyVersion"] = ApprovalContract.Agent.Policy;
+                    row["Marker"] = Marker(ApprovalContract.Agent, IssuanceFixture.RepositoryId, IssuanceFixture.Epoch, false);
+                });
+                break;
+        }
+        var (reads, commits) = (f.State.Reads, f.State.Commits);
+
+        var result = await f.Issuer().IssueAsync(enrollmentId, secret, Token, runtimeVersion);
+
+        Assert.Equal(status, result.Status);
+        Assert.Null(result.Body);
+        Assert.Equal(commits, f.State.Commits);
+        Assert.Equal(0, f.GitHub.Authorizations);
+        if (scenario == "enrollment-id") Assert.Equal(reads, f.State.Reads);
     }
 
     [Fact]
@@ -74,6 +152,8 @@ public sealed class InstallationTokenTests
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         Assert.NotEqual(200, (await f.IssueAsync(Token)).Status);
         Assert.Equal(1, f.GitHub.Mints);
+        // Closing left the revocation receipt, so the controller's own revocation of the closed grant still succeeds.
+        Assert.Equal(204, await f.Revocation().RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
     }
 
     // Which answers are unverifiable is the core's rule (ApprovalObserverTests); this is the issuer's outcome.
@@ -101,6 +181,7 @@ public sealed class InstallationTokenTests
         Assert.Null(f.Enrollment.LastActivityAt);
         Assert.Equal(1, f.GitHub.Revokes);
         Assert.Equal("settled", f.Attempt("runtime").State);
+        Assert.Null(f.Attempt("runtime").ProtectedToken);
     }
 
     [Fact]
@@ -178,6 +259,91 @@ public sealed class InstallationTokenTests
         } : token);
         Assert.Equal(503, (await f.IssueAsync(Token)).Status);
         Assert.Equal(1, f.GitHub.Revokes);
+        var runtime = f.Attempt("runtime");
+        Assert.Equal("settled", runtime.State);
+        Assert.False(runtime.ScopeValid);
+        // Only the admission observation read GitHub; an out-of-scope token is never observed for release.
+        Assert.Equal(4, f.GitHub.Reads);
+    }
+
+    [Fact]
+    public async Task Excess_verifier_scope_is_revoked_and_settled_before_any_runtime_work()
+    {
+        var f = IssuanceFixture.Create();
+        f.GitHub.MintAnswer = (mint, token) => GitHubRead.Found(mint.Verifier ? token with
+        {
+            Permissions = new Dictionary<string, string?>(token.Permissions!) { ["contents"] = "write" }
+        } : token);
+        Assert.Equal(503, (await f.IssueAsync(Token)).Status);
+        Assert.Equal(1, f.GitHub.Revokes);
+        var verifier = f.Attempt("verification");
+        Assert.Equal("settled", verifier.State);
+        Assert.False(verifier.ScopeValid);
+        Assert.Equal(1, f.GitHub.Mints);
+    }
+
+    // Only a known verifier with exactly its scope may observe approval. Anything else is unresolved and denies before
+    // any charge.
+    [Theory]
+    [InlineData("State", "sending")]
+    [InlineData("ScopeValid", false)]
+    public async Task Unusable_verifier_denies_before_any_charge(string field, object value)
+    {
+        var f = IssuanceFixture.Create();
+        Assert.Equal(200, (await f.IssueAsync(Token)).Status);
+        f.State.Change(IssuanceAttempt.Key(IssuanceFixture.RepositoryId, f.Gate.VerifierAttempt!), row => row[field] = value);
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var commits = f.State.Commits;
+        Assert.Equal(503, (await f.IssueAsync(Token)).Status);
+        Assert.Equal(commits, f.State.Commits);
+        Assert.Equal(2, f.GitHub.Mints);
+    }
+
+    [Fact]
+    public async Task Recovered_verifier_that_is_not_a_bearer_value_is_never_sent_to_GitHub()
+    {
+        var f = IssuanceFixture.Create();
+        Assert.Equal(200, (await f.IssueAsync(Token)).Status);
+        var operation = f.Gate.VerifierAttempt!;
+        var purpose = ApprovalContract.Legacy.TokenPurpose(IssuanceFixture.RepositoryId, IssuanceFixture.Epoch, operation, "verification");
+        f.State.Change(IssuanceAttempt.Key(IssuanceFixture.RepositoryId, operation),
+            row => row["ProtectedToken"] = f.Secrets.Protect(purpose, "verifier token"));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.Equal(503, (await f.IssueAsync(Token)).Status);
+        Assert.Equal(8, f.GitHub.Reads);
+    }
+
+    [Fact]
+    public async Task Enrollment_expiring_before_the_send_claim_is_never_sent()
+    {
+        var f = IssuanceFixture.Create();
+        f.State.Change(f.EnrollmentKey, row => row["ExpiresAt"] = f.Clock.GetUtcNow().AddSeconds(5));
+        f.GitHub.BeforeAuthorize = () =>
+        {
+            // The runtime admission is decided; the enrollment expires while its App JWT is signed.
+            if (f.GitHub.Authorizations == 2) f.Clock.Advance(TimeSpan.FromSeconds(6));
+            return Task.CompletedTask;
+        };
+        Assert.Equal(401, (await f.IssueAsync(Token)).Status);
+        Assert.Equal(1, f.GitHub.Mints);
+        Assert.Equal("reserved", f.Attempt("runtime").State);
+    }
+
+    // The mint accepted a token just outside the five-minute renewal margin; it crosses the margin while the release
+    // observation reads GitHub, so it is revoked rather than published.
+    [Fact]
+    public async Task Runtime_token_crossing_the_renewal_margin_before_release_is_revoked_instead_of_released()
+    {
+        var f = IssuanceFixture.Create(runtimeLifetime: TimeSpan.FromMinutes(5).Add(TimeSpan.FromSeconds(3)));
+        f.GitHub.BeforeRead = _ =>
+        {
+            if (f.GitHub.Reads == 5) f.Clock.Advance(TimeSpan.FromSeconds(4));
+            return Task.CompletedTask;
+        };
+        Assert.Equal(503, (await f.IssueAsync(Token)).Status);
+        Assert.Equal(2, f.GitHub.Mints);
+        Assert.Equal(1, f.GitHub.Revokes);
         Assert.Equal("settled", f.Attempt("runtime").State);
+        Assert.Null(f.Enrollment.RuntimeAttempt);
     }
 }
