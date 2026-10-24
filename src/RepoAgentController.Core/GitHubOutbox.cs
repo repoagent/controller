@@ -1,7 +1,3 @@
-using System.Globalization;
-using System.Text.Json;
-using System.Text.Json.Nodes;
-
 namespace RepoAgentController;
 
 /// <summary>
@@ -9,61 +5,48 @@ namespace RepoAgentController;
 /// fails permanently. Delivery is independent of native input acceptance: nothing here resends agent input, and
 /// agent-authored replies stay on the agent's direct gh.
 /// </summary>
-sealed class GitHubOutbox : IAsyncDisposable
+public sealed class GitHubOutbox : IAsyncDisposable
 {
     static readonly TimeSpan FirstRetry = TimeSpan.FromSeconds(15), LongestRetry = TimeSpan.FromMinutes(15),
         UnsignalledRateLimit = TimeSpan.FromMinutes(1);
-    readonly string path;
-    readonly GitHub github;
+    readonly IDiscussions discussions;
+    readonly IControllerState store;
     readonly TimeProvider clock;
+    readonly IControllerLog log;
     readonly object sync = new();
-    readonly JsonObject state;
+    readonly string repository;
+    readonly List<OutboxOperation> operations;
+    DateTimeOffset? pausedUntil;
     readonly CancellationTokenSource stop = new();
     readonly WakeLoop loop;
     Task running = Task.CompletedTask;
     // The owned dashboard found or created during this lifetime; only the delivering attempt touches these.
-    (string Id, string Url)? dashboard;
+    DashboardDiscussion? dashboard;
     string? dashboardCategory;
     bool dashboardRejected;
 
-    public GitHubOutbox(string path, GitHub github, TimeProvider clock)
+    /// <summary>Resumes the operations an earlier lifetime retained for <paramref name="repository"/>.</summary>
+    public GitHubOutbox(string repository, IDiscussions discussions, IControllerState store, TimeProvider clock, IControllerLog log)
     {
         loop = new(clock);
-        this.path = path;
-        this.github = github;
-        this.clock = clock;
-        state = File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path))!.AsObject() : new JsonObject
-        {
-            ["version"] = 1, ["repository"] = github.Repository, ["pausedUntil"] = null, ["operations"] = new JsonArray()
-        };
-        if (state["version"]?.GetValue<int>() != 1 || !string.Equals(state.Text("repository"), github.Repository, StringComparison.OrdinalIgnoreCase) ||
-            state["operations"] is not JsonArray)
+        (this.discussions, this.store, this.clock, this.log) = (discussions, store, clock, log);
+        var retained = store.ReadOutbox();
+        if (retained is not null && !string.Equals(retained.Repository, repository, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("GitHub outbox belongs to a different repository or unsupported version; preserve it for manual inspection");
-        try
-        {
-            // Read every retained field once, as delivery will, so a damaged file stops startup instead of the loop.
-            _ = Time(state["pausedUntil"]);
-            foreach (var operation in Operations.Select(item => item!.AsObject()))
-                _ = (operation.Text("key")[0], operation.Text("kind"), operation.Text("subjectId"), operation.Text("url"),
-                    operation.Text("category"), operation.Text("title"), operation.Text("body"), operation["attempts"]!.GetValue<int>(), operation["uncertain"]!.GetValue<bool>(), Time(operation["dueAt"]));
-        }
-        catch (Exception error) { throw new InvalidOperationException("GitHub outbox contains an unreadable operation; preserve it for manual inspection", error); }
+        this.repository = retained?.Repository ?? repository;
+        pausedUntil = retained?.PausedUntil;
+        operations = [.. retained?.Operations ?? []];
     }
 
-    JsonArray Operations => state["operations"]!.AsArray();
-
     /// <summary>Retains an EYES receipt for accepted input unless the App already reacted to that source.</summary>
-    public void Receipt(JsonNode source)
+    public void Receipt(string subjectId, string url, bool hasEyesReceipt)
     {
-        if (GitHub.HasViewerReceipt(source))
+        if (hasEyesReceipt)
         {
-            Log.Write("receipt-reused", source.Text("url"));
+            log.Write("receipt-reused", url);
             return;
         }
-        Enqueue(new JsonObject
-        {
-            ["key"] = "receipt:" + source.Text("id"), ["kind"] = "receipt", ["subjectId"] = source.Text("id"), ["url"] = source.Text("url")
-        });
+        Enqueue(new("receipt:" + subjectId, "receipt", subjectId, url, null, null, null, 0, default, false, null));
     }
 
     /// <summary>
@@ -73,27 +56,26 @@ sealed class GitHubOutbox : IAsyncDisposable
     public void Dashboard(string category, string title, string body)
     {
         lock (sync) if (dashboardRejected) return;
-        Enqueue(new JsonObject
-        {
-            ["key"] = "dashboard", ["kind"] = "dashboard", ["subjectId"] = "", ["url"] = "", ["category"] = category, ["title"] = title, ["body"] = body
-        });
+        Enqueue(new("dashboard", "dashboard", "", "", category, title, body, 0, default, false, null));
     }
 
     /// <summary>
     /// Retains an operation. A pending operation with the same key is superseded in place and keeps its retry
     /// schedule, so later status updates can replace stale ones; operations with other keys are never affected.
     /// </summary>
-    void Enqueue(JsonObject operation)
+    void Enqueue(OutboxOperation operation)
     {
         lock (sync)
         {
-            var existing = Find(operation.Text("key"));
-            foreach (var field in new[] { "attempts", "dueAt", "uncertain", "lastError" }) operation[field] = existing?[field]?.DeepClone();
-            operation["attempts"] ??= 0;
-            operation["dueAt"] ??= clock.GetUtcNow().ToString("O");
-            operation["uncertain"] ??= false;
-            if (existing is null) Operations.Add((JsonNode)operation);
-            else Operations[Operations.IndexOf(existing)] = operation;
+            var index = operations.FindIndex(retained => retained.Key == operation.Key);
+            var existing = index < 0 ? null : operations[index];
+            operation = operation with
+            {
+                Attempts = existing?.Attempts ?? 0, DueAt = existing?.DueAt ?? clock.GetUtcNow(), Uncertain = existing?.Uncertain ?? false,
+                LastError = existing?.LastError
+            };
+            if (existing is null) operations.Add(operation);
+            else operations[index] = operation;
             Save();
             loop.Signal();
         }
@@ -106,7 +88,7 @@ sealed class GitHubOutbox : IAsyncDisposable
         catch (Exception error) when (error is not OperationCanceledException)
         {
             // A failed save leaves the in-memory schedule current; keep delivering and retry the save later.
-            Log.Write("outbox-error", $"{error.Message}; retained operations stay queued");
+            log.Write("outbox-error", $"{error.Message}; retained operations stay queued");
         }
         lock (sync) return (NextDue() is { } due ? TimeSpan.FromTicks(Math.Max(0, (due - clock.GetUtcNow()).Ticks)) : Timeout.InfiniteTimeSpan, true);
     });
@@ -115,7 +97,7 @@ sealed class GitHubOutbox : IAsyncDisposable
     public async Task<bool> Flush(CancellationToken ct)
     {
         var delivered = await Deliver(ct);
-        lock (sync) return delivered && Operations.Count == 0;
+        lock (sync) return delivered && operations.Count == 0;
     }
 
     /// <summary>Stops background delivery, then attempts each due operation once more within <paramref name="ct"/>.</summary>
@@ -131,39 +113,30 @@ sealed class GitHubOutbox : IAsyncDisposable
         var delivered = true;
         while (true)
         {
-            JsonObject? operation;
+            OutboxOperation? operation;
             lock (sync)
             {
                 var now = clock.GetUtcNow();
-                operation = Time(state["pausedUntil"]) > now ? null : Operations.OfType<JsonObject>().FirstOrDefault(o => Time(o["dueAt"]) <= now);
+                operation = pausedUntil > now ? null : operations.FirstOrDefault(retained => retained.DueAt <= now);
             }
             if (operation is null) return delivered;
             delivered &= await Attempt(operation, ct);
         }
     }
 
-    async Task<bool> Attempt(JsonObject operation, CancellationToken ct)
+    async Task<bool> Attempt(OutboxOperation operation, CancellationToken ct)
     {
-        string key, kind, subject, url;
-        bool uncertain;
-        int attempt;
-        JsonObject request;
-        lock (sync)
-        {
-            (key, kind, subject, url) = (operation.Text("key"), operation.Text("kind"), operation.Text("subjectId"), operation.Text("url"));
-            uncertain = operation["uncertain"]!.GetValue<bool>();
-            attempt = operation["attempts"]!.GetValue<int>() + 1;
-            request = operation.DeepClone().AsObject();
-        }
-        if (kind == "dashboard") url = dashboard?.Url ?? $"dashboard category '{request.Text("category")}'";
+        var (key, kind, subject, url) = (operation.Key, operation.Kind, operation.SubjectId, operation.Url);
+        var attempt = operation.Attempts + 1;
+        if (kind == "dashboard") url = dashboard?.Url ?? $"dashboard category '{operation.Category}'";
         (string Kind, string Url)? outcome;
-        try { outcome = await Execute(request, attempt, uncertain, ct); }
+        try { outcome = await Execute(operation, attempt, operation.Uncertain, ct); }
         catch (OperationCanceledException)
         {
             // An interrupted request may have reached GitHub: reconcile it before writing again.
             lock (sync)
             {
-                if (Find(key) is { } current) current["uncertain"] = true;
+                Update(key, current => current with { Uncertain = true });
                 try { Save(); } catch (IOException) { }
             }
             throw;
@@ -176,13 +149,13 @@ sealed class GitHubOutbox : IAsyncDisposable
             {
                 lock (sync)
                 {
-                    if (Find(key) == operation) Operations.Remove(operation);
+                    if (ReferenceEquals(Find(key), operation)) operations.Remove(operation);
                     // Configuration or permission must change first; republishing every heartbeat would never succeed.
-                    if (kind == "dashboard" && Find(key) is { } superseding) Operations.Remove(superseding);
+                    if (kind == "dashboard" && Find(key) is { } superseding) operations.Remove(superseding);
                     dashboardRejected |= kind == "dashboard";
                     Save();
                 }
-                Log.Write(kind + "-error", context + (kind == "dashboard"
+                log.Write(kind + "-error", context + (kind == "dashboard"
                     ? "; permanent failure removed from retry; dashboard updates stop until the controller restarts"
                     : "; permanent failure removed from retry; accepted input is not replayed"));
                 return false;
@@ -196,78 +169,71 @@ sealed class GitHubOutbox : IAsyncDisposable
                     // Rate limits apply to the installation: pause every retained operation, not only this one.
                     var signalled = failure.NotBefore(now) ?? now + UnsignalledRateLimit;
                     if (signalled > due) due = signalled;
-                    state["pausedUntil"] = due.ToString("O");
+                    pausedUntil = due;
                 }
-                if (Find(key) is { } current)
-                {
-                    current["attempts"] = attempt;
-                    current["dueAt"] = due.ToString("O");
-                    current["uncertain"] = uncertain || failure.Uncertain;
-                    current["lastError"] = failure.Message;
-                }
+                var uncertain = operation.Uncertain || failure.Uncertain;
+                Update(key, current => current with { Attempts = attempt, DueAt = due, Uncertain = uncertain, LastError = failure.Message });
                 Save();
             }
-            Log.Write(kind + "-error", context + $"; retained for retry at {due:O}");
+            log.Write(kind + "-error", context + $"; retained for retry at {due:O}");
             return false;
         }
         lock (sync)
         {
             // A superseding operation enqueued during this attempt still needs its own delivery.
-            if (Find(key) == operation) Operations.Remove(operation);
+            if (ReferenceEquals(Find(key), operation)) operations.Remove(operation);
             Save();
         }
-        if (outcome is { } logged) Log.Write(logged.Kind, logged.Url);
+        if (outcome is { } logged) log.Write(logged.Kind, logged.Url);
         return true;
     }
 
     // Each kind owns how an uncertain earlier attempt is reconciled before it writes again. Returns what to log, if anything.
-    async Task<(string Kind, string Url)?> Execute(JsonObject operation, int attempt, bool uncertain, CancellationToken ct)
+    async Task<(string Kind, string Url)?> Execute(OutboxOperation operation, int attempt, bool uncertain, CancellationToken ct)
     {
-        switch (operation.Text("kind"))
+        switch (operation.Kind)
         {
             case "receipt":
                 // A lost response is resolved by reading the App's actual reaction, not by request identifiers.
-                if (uncertain && await github.HasReceipt(operation.Text("subjectId"), ct)) return ("receipt-reconciled", operation.Text("url"));
-                await github.AddReceipt(operation.Text("subjectId"), ct);
-                return ("receipt", operation.Text("url"));
+                if (uncertain && await discussions.HasEyesReceipt(operation.SubjectId, ct)) return ("receipt-reconciled", operation.Url);
+                await discussions.AddEyesReceipt(operation.SubjectId, ct);
+                return ("receipt", operation.Url);
             case "dashboard":
-                var (category, title, body) = (operation.Text("category"), operation.Text("title"), operation.Text("body"));
+                var (category, title, body) = (operation.Category ?? "", operation.Title ?? "", operation.Body ?? "");
                 if (dashboard is { } known && dashboardCategory == category)
                 {
-                    await github.UpdateDashboard(known.Id, title, body, ct);
+                    await discussions.UpdateDashboard(known.Id, title, body, ct);
                     return attempt > 1 ? ("dashboard", known.Url) : null; // Routine heartbeats are not logged; a recovery is.
                 }
-                var target = await github.DashboardCategory(category, ct);
+                var target = await discussions.DashboardCategory(category, ct);
                 // Finding first also settles an uncertain earlier creation, so a lost response never adds a second dashboard.
-                var found = await github.FindDashboard(target.Category, ct);
-                if (found is { } existing) await github.UpdateDashboard(existing.Id, title, body, ct);
-                var owned = found ?? await github.CreateDashboard(target, title, body, ct);
+                var found = await discussions.FindDashboard(target, ct);
+                if (found is { } existing) await discussions.UpdateDashboard(existing.Id, title, body, ct);
+                var owned = found ?? await discussions.CreateDashboard(target, title, body, ct);
                 (dashboard, dashboardCategory) = (owned, category);
                 return (found is null ? "dashboard-created" : "dashboard", owned.Url);
             default:
-                throw new GitHubRequestException(GitHubFailure.Permanent, $"unsupported outbox operation kind '{operation.Text("kind")}'");
+                throw new GitHubRequestException(GitHubFailure.Permanent, $"unsupported outbox operation kind '{operation.Kind}'");
         }
     }
 
-    JsonObject? Find(string key) => Operations.OfType<JsonObject>().FirstOrDefault(o => o.Text("key") == key);
+    OutboxOperation? Find(string key) => operations.FirstOrDefault(retained => retained.Key == key);
+
+    // Applies a change to whichever operation holds the key now: the attempted one, or one that superseded it meanwhile.
+    void Update(string key, Func<OutboxOperation, OutboxOperation> change)
+    {
+        var index = operations.FindIndex(retained => retained.Key == key);
+        if (index >= 0) operations[index] = change(operations[index]);
+    }
 
     DateTimeOffset? NextDue()
     {
-        if (Operations.Count == 0) return null;
-        var due = Operations.Min(o => Time(o!["dueAt"]));
-        var paused = Time(state["pausedUntil"]);
-        return paused > due ? paused : due;
+        if (operations.Count == 0) return null;
+        var due = operations.Min(retained => retained.DueAt);
+        return pausedUntil > due ? pausedUntil : due;
     }
 
-    static DateTimeOffset Time(JsonNode? value) => value is null ? DateTimeOffset.MinValue
-        : DateTimeOffset.Parse(value.GetValue<string>(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
-
-    void Save()
-    {
-        var temporary = path + ".tmp";
-        File.WriteAllText(temporary, state.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-        File.Move(temporary, path, true);
-    }
+    void Save() => store.WriteOutbox(new(repository, pausedUntil, [.. operations]));
 
     public async ValueTask DisposeAsync()
     {

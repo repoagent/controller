@@ -16,7 +16,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     internal static Actor? ActorOf(JsonNode? actor) => actor is null ? null : new(actor.Text("login"), actor.Text("__typename"));
     const string MessageFields = "id url body bodyHTML createdAt updatedAt author { __typename login } reactionGroups { content viewerHasReacted }";
     const string DiscussionFields = MessageFields + " number title closed locked answer { id } category { id name }";
-    const string PageInfo = "pageInfo { hasNextPage endCursor }";
+    internal const string PageInfo = "pageInfo { hasNextPage endCursor }";
 
     public async Task<JsonNode> Query(string query, JsonObject variables, CancellationToken ct)
     {
@@ -189,72 +189,15 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return nodes;
     }
 
-    static string? Next(JsonNode connection) => connection["pageInfo"]!["hasNextPage"]!.GetValue<bool>() ? connection["pageInfo"]!.Text("endCursor") : null;
+    internal static string? Next(JsonNode connection) => connection["pageInfo"]!["hasNextPage"]!.GetValue<bool>() ? connection["pageInfo"]!.Text("endCursor") : null;
 
     public static bool HasViewerReceipt(JsonNode source) =>
         source["reactionGroups"]?.AsArray().Any(g => g!.Text("content") == "EYES" && g!["viewerHasReacted"]!.GetValue<bool>()) ?? false;
 
-    public async Task AddReceipt(string subjectId, CancellationToken ct)
-    {
-        var data = await Send("mutation($id:ID!) { addReaction(input:{subjectId:$id,content:EYES}) { reaction { id } } }", Json.Object(("id", subjectId)), ct);
-        if (data["addReaction"]?["reaction"]?["id"] is null)
-            throw new GitHubRequestException(GitHubFailure.Transient, "receipt mutation returned no reaction", uncertain: true);
-    }
-
-    /// <summary>Reads whether the App's EYES receipt exists, to reconcile an uncertain earlier write.</summary>
-    public async Task<bool> HasReceipt(string subjectId, CancellationToken ct)
-    {
-        var node = (await Send("query($id:ID!) { node(id:$id) { ... on Reactable { reactionGroups { content viewerHasReacted } } } }", Json.Object(("id", subjectId)), ct))["node"];
-        return node is null ? throw new GitHubRequestException(GitHubFailure.Permanent, "receipt subject no longer exists") : HasViewerReceipt(node);
-    }
-
     public bool IsDashboard(JsonNode discussion) => Identity.IsDashboard(ActorOf(discussion["author"]), discussion.Text("body"));
 
-    /// <summary>Resolves the repository and named Discussion category that hold the dashboard.</summary>
-    public async Task<(string Repository, string Category)> DashboardCategory(string name, CancellationToken ct)
-    {
-        var parts = Repository.Split('/');
-        var repository = (await Send("query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { id discussionCategories(first:100) { nodes { id name } } } }",
-            Json.Object(("owner", parts[0]), ("name", parts[1])), ct))["repository"] ?? throw new GitHubRequestException(GitHubFailure.Permanent, "repository not found");
-        var category = repository["discussionCategories"]?["nodes"]?.AsArray().FirstOrDefault(node => string.Equals(node!.Text("name"), name, StringComparison.OrdinalIgnoreCase))
-            ?? throw new GitHubRequestException(GitHubFailure.Permanent, $"dashboard Discussion category '{name}' does not exist");
-        return (repository.Text("id"), category.Text("id"));
-    }
-
-    /// <summary>Finds the oldest owned dashboard in the category, which also settles an uncertain earlier creation.</summary>
-    public async Task<(string Id, string Url)?> FindDashboard(string category, CancellationToken ct)
-    {
-        var parts = Repository.Split('/');
-        string? cursor = null;
-        do
-        {
-            var connection = (await Send("query($owner:String!,$name:String!,$category:ID!,$cursor:String) { repository(owner:$owner,name:$name) { discussions(first:50,after:$cursor,categoryId:$category,orderBy:{field:CREATED_AT,direction:ASC}) { nodes { id url body author { __typename login } } " + PageInfo + " } } }",
-                Json.Object(("owner", parts[0]), ("name", parts[1]), ("category", category), ("cursor", cursor)), ct))["repository"]?["discussions"]
-                ?? throw new GitHubRequestException(GitHubFailure.Permanent, "repository Discussions are not readable");
-            if (connection["nodes"]!.AsArray().FirstOrDefault(node => IsDashboard(node!)) is { } owned) return (owned.Text("id"), owned.Text("url"));
-            cursor = Next(connection);
-        } while (cursor is not null);
-        return null;
-    }
-
-    public async Task<(string Id, string Url)> CreateDashboard((string Repository, string Category) target, string title, string body, CancellationToken ct)
-    {
-        var created = (await Send("mutation($repository:ID!,$category:ID!,$title:String!,$body:String!) { createDiscussion(input:{repositoryId:$repository,categoryId:$category,title:$title,body:$body}) { discussion { id url } } }",
-            Json.Object(("repository", target.Repository), ("category", target.Category), ("title", title), ("body", body)), ct))["createDiscussion"]?["discussion"]
-            ?? throw new GitHubRequestException(GitHubFailure.Transient, "dashboard creation returned no Discussion", uncertain: true);
-        return (created.Text("id"), created.Text("url"));
-    }
-
-    public async Task UpdateDashboard(string id, string title, string body, CancellationToken ct)
-    {
-        // Replacing the whole title and body is idempotent, so an uncertain earlier update needs no reconciliation.
-        if ((await Send("mutation($id:ID!,$title:String!,$body:String!) { updateDiscussion(input:{discussionId:$id,title:$title,body:$body}) { discussion { id } } }",
-            Json.Object(("id", id), ("title", title), ("body", body)), ct))["updateDiscussion"]?["discussion"] is null)
-            throw new GitHubRequestException(GitHubFailure.Transient, "dashboard update returned no Discussion", uncertain: true);
-    }
-
     // Controller-owned requests: classify by HTTP status, rate-limit headers and GraphQL error type.
-    async Task<JsonNode> Send(string query, JsonObject variables, CancellationToken ct) => Classify(await Post(query, variables, ct));
+    internal async Task<JsonNode> Send(string query, JsonObject variables, CancellationToken ct) => Classify(await Post(query, variables, ct));
 
     // The gh --include output of one GraphQL request, for classification.
     async Task<string> Post(string query, JsonObject variables, CancellationToken ct)

@@ -13,7 +13,7 @@ src/RepoAgentController/DiscussionWebhooks.cs
 src/RepoAgentController/ExclusiveFileLease.cs
 src/RepoAgentController/GitHub.cs
 src/RepoAgentController/GitHubAppCredentials.cs
-src/RepoAgentController/GitHubOutbox.cs
+src/RepoAgentController/GitHubDiscussions.cs
 src/RepoAgentController/ManagedCheckout.cs
 src/RepoAgentController/CheckoutRefresh.cs
 src/RepoAgentController/CredentialHandoff.cs
@@ -48,6 +48,8 @@ src/RepoAgentController.Core/GitHubRequestException.cs
 src/RepoAgentController.Core/AppIdentity.cs
 src/RepoAgentController.Core/MentionUser.cs
 src/RepoAgentController.Core/WakeLoop.cs
+src/RepoAgentController.Core/IDiscussions.cs
+src/RepoAgentController.Core/GitHubOutbox.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs
 tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj

@@ -83,6 +83,17 @@ sealed class InMemoryControllerState : IControllerState
         SettingsWrites++;
         settings = new(new Dictionary<string, SettingValue>(recorded.Settings));
     }
+
+    /// <summary>The outbox's retained operations as last written, or as an earlier lifetime left them.</summary>
+    public OutboxState? Outbox { get; set; }
+
+    public OutboxState? ReadOutbox() => Outbox;
+
+    public void WriteOutbox(OutboxState outbox)
+    {
+        if (FailWrites) throw new IOException("No space left on device");
+        Outbox = outbox with { Operations = [.. outbox.Operations] };
+    }
 }
 
 /// <summary>The controller's log, as kind and message pairs in the order the core wrote them.</summary>
