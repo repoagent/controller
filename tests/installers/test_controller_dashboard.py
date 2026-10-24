@@ -20,7 +20,7 @@ import time
 import unittest
 import uuid
 
-from test_managed_git import CONTROLLER, ROOT, GitProvider
+from test_managed_git import CONTROLLER, ROOT, GitProvider, free_port
 
 CATEGORY = 'Controller status'
 HEARTBEAT = re.compile(r'Heartbeat\W+(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)')
@@ -67,7 +67,8 @@ class ControllerDashboardProcessTests(unittest.TestCase):
         environment.update(PATH=str(tools) + os.pathsep + environment['PATH'])
         command = self.command + ['--repo', 'owner/project', '--app-id', '123', '--broker-url', 'https://broker.fixture',
                                   '--enrollment-file', str(enrollment), '--state', str(directory / 'state.json'),
-                                  '--workspace', str(workspace), '--interval', '3600', '--dashboard-category', CATEGORY]
+                                  '--workspace', str(workspace), '--interval', '3600', '--dashboard-category', CATEGORY,
+                                  '--status-port', str(free_port())]
         return provider, github, command, environment
 
     def test_killed_controller_leaves_a_stale_heartbeat_and_a_handled_stop_is_reported(self):

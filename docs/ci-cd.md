@@ -6,7 +6,7 @@
 bash scripts/delivery/verify.sh /tmp/controller-verification
 ```
 
-Local prerequisites are the pinned SDK, Python 3, Docker, clang and zlib development headers.
+Local prerequisites are the pinned SDK, Python 3, clang and zlib development headers.
 
 The installer (`install.*`, `repoagent*`, `scripts/*.ps1`) and the container runtime (`container/`) have no automated tests ([ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)). They are tested manually against the local AppHost ([#204](https://github.com/repoagent/controller/issues/204), not built yet) when they change.
 

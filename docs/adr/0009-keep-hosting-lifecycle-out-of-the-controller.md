@@ -1,6 +1,6 @@
 # Keep hosting lifecycle out of the controller
 
-Accepted on 2026-10-24. Retires the opt-in `--azure-work-queue` durable webhook work described in [Durable webhook work for an idle Azure controller](../azure-durable-work.md).
+Accepted on 2026-10-24. Retires the opt-in `--azure-work-queue` durable webhook work that `docs/azure-durable-work.md` described; #201 removed both.
 
 The controller is a standalone component. It depends only on what it needs to do its job: the credential broker for its GitHub token, the agent runtime for agent sessions and turns, and the GitHub CLI and Git for repository work. It does not know where it runs or whether its host may stop it. Whether a hosting environment such as Azure Container Apps may scale to zero is that environment's concern.
 

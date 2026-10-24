@@ -43,7 +43,7 @@ Fill in the **Test kind** column. Suggested values:
 |---|---|---|---|
 | 1.7 | Polling finds new Discussions and comments since the last poll | | |
 | 1.8 | Webhook mode: accept a signed delivery, reject an unsigned or wrong one, and reconcile on an interval | | |
-| 1.9 | Durable webhook work through the Azure queue: enqueue a hint, lease it, retry, and keep it visible | | |
+| 1.9 | Status endpoint: `GET /status` reports busy during an agent turn and idle after it, in polling and webhook mode | | |
 | 1.10 | Discussion enrollment by App mention, mention user, or explicit URL | | |
 | 1.11 | Category enrollment: a new Discussion in a selected category enrolls, a preexisting one never does | | |
 | 1.12 | A deleted Discussion is forgotten without stopping other live work | | |

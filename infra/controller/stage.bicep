@@ -18,9 +18,6 @@ param setupMinReplicas int = 0
 @description('SMB retains controller conversations and uses local native SQLite; NFS retains the complete native filesystem.')
 @allowed(['NfsAzureFile', 'AzureFile'])
 param storageType string = 'NfsAzureFile'
-@description('Empty for the original setup profile; otherwise use this dedicated queue through system identity.')
-param workQueueAccountName string = ''
-param workQueueName string = 'controller-work'
 @description('First activation only, after supported old-owner settlement and private enrollment persistence.')
 param activate bool = false
 @secure()
@@ -59,7 +56,6 @@ var settings = {
   toolUpdates: 'pinned'
   listenPort: 8080
   reconcileInterval: 300
-  azureWorkQueue: 'https://${workQueueAccountName}.queue.${environment().suffixes.storage}/${workQueueName}'
 }
 
 resource appEnvironment 'Microsoft.App/managedEnvironments@2026-07-01' existing = {
@@ -72,7 +68,7 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
   location: location
   tags: union({ managedBy: 'repoagent-controller', repository: repository, purpose: activate ? 'controller-active' : 'controller-setup' },
     storageType == 'AzureFile' ? { nativePersistence: 'conversation-rollouts' } : {})
-  identity: { type: empty(workQueueAccountName) ? 'None' : 'SystemAssigned' }
+  identity: { type: 'None' }
   properties: {
     environmentId: appEnvironment.id
     workloadProfileName: 'Consumption'
@@ -118,24 +114,11 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
           timeoutSeconds: 2
         }]
       }]
-      scale: union({
+      scale: {
         minReplicas: setupMinReplicas
         maxReplicas: 1
-        rules: concat([{ name: empty(workQueueAccountName) ? 'setup-http' : 'controller-http', http: { metadata: { concurrentRequests: '10' } } }], empty(workQueueAccountName) ? [] : [{
-          name: 'controller-work'
-          custom: {
-            type: 'azure-queue'
-            identity: 'system'
-            metadata: {
-              accountName: workQueueAccountName
-              queueName: workQueueName
-              queueLength: '1'
-              activationQueueLength: '0'
-              queueLengthStrategy: 'all'
-            }
-          }
-        }])
-      }, empty(workQueueAccountName) ? {} : { cooldownPeriod: 60, pollingInterval: 15 })
+        rules: [{ name: 'setup-http', http: { metadata: { concurrentRequests: '10' } } }]
+      }
       volumes: concat([{
         name: 'controller-state'
         storageType: storageType
@@ -154,4 +137,3 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
 output appName string = app.name
 // App-level ingress, never CONTAINER_APP_HOSTNAME (a revision hostname).
 output publicOrigin string = 'https://${app.properties.configuration.ingress.fqdn}'
-output principalId string = app.identity.?principalId ?? ''

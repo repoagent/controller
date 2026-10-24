@@ -176,7 +176,7 @@ sealed class CheckoutRefresh : IAsyncDisposable
         catch { exclusion.Release(); throw; }
     }
 
-    public async Task<bool> CommitAtIdle(Func<CancellationToken, Task> commit, CancellationToken ct, Func<bool>? deferred = null)
+    public async Task<bool> CommitAtIdle(Func<CancellationToken, Task> commit, CancellationToken ct)
     {
         await exclusion.WaitAsync(ct);
         try
@@ -185,7 +185,7 @@ sealed class CheckoutRefresh : IAsyncDisposable
             lock (journalLock)
             {
                 CheckAdmission();
-                if (Busy || Generation("requested") != Generation("completed") || deferred?.Invoke() == true) return false;
+                if (Busy || Generation("requested") != Generation("completed")) return false;
             }
             await commit(ct);
             lock (journalLock) { CheckAdmission(); if (Busy) throw new IOException("Native activity changed during idle commit"); }

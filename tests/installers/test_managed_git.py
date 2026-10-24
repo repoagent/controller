@@ -83,6 +83,13 @@ class CredentialManager:
         self.process.stdout.close()
 
 
+def free_port():
+    """A loopback port that was free just now, for a controller listener such as --status-port."""
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
+
+
 def persisted(paths, *tokens):
     """Files under paths that contain any token: no lease may reach persistent state."""
     found = []

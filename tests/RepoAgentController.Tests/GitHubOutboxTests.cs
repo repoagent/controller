@@ -270,7 +270,8 @@ public sealed class GitHubOutboxTests
         [
             "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
             "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
-            "--workspace", fixture.Directory, "--interval", "3600", "--enroll", "https://github.com/owner/repository/discussions/1"
+            "--workspace", fixture.Directory, "--interval", "3600", "--enroll", "https://github.com/owner/repository/discussions/1",
+            "--status-port", ControllerHarness.FreePort().ToString()
         ];
 
         public int Turns => Lines(native).Count(line => line["method"]?.GetValue<string>() == "turn/start");

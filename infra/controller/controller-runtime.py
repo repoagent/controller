@@ -112,8 +112,6 @@ def prepare_runtime(settings, secret_path):
             ('reconcileInterval', '--reconcile-interval'),
         ):
             arguments.extend((option, str(settings[key])))
-        if settings.get('azureWorkQueue'):
-            arguments.extend(('--azure-work-queue', settings['azureWorkQueue']))
         try:
             subprocess.run(runtime + arguments, check=True)
         except subprocess.CalledProcessError:

@@ -31,10 +31,6 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
     readonly SemaphoreSlim gate = new(1, 1), wake = new(0, 1);
     // Caller holds the gate. The batch each running turn carries, by turn ID, until its outcome; this lifetime only.
     readonly Dictionary<string, JsonObject> running = [];
-    volatile bool inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
-
-    /// <summary>True while any observed Discussion input waits in the controller for idle dispatch.</summary>
-    public bool HasWaitingInput => inputWaiting;
 
     // Read at each admission decision, so a refreshed repository value applies to the next dispatch.
     int ActiveSessionLimit => settings[ActiveSessionSetting].Value is { } value
@@ -331,7 +327,6 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         record["waiting"] = waiting;
         record["sources"] = current;
         store.Save();
-        inputWaiting = true;
     }
 
     // Caller holds the gate. Returns whether a batch was accepted; its EYES receipts are then retained in the outbox.
@@ -431,7 +426,6 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         // Status reports the running turn in every mode until the native reports it completed.
         record["running"] = new JsonObject { ["turn"] = turn, ["since"] = clock.GetUtcNow().ToString("O") };
         store.Save();
-        inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
         admission?.Confirm();
         Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count} latest={envelope["changes"]!.AsArray()[^1]!["subject"]!.Text("url")}" + (redelivery ? " redelivery=true" : ""));
         foreach (var source in receipts) outbox.Receipt(source);
@@ -467,7 +461,6 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         if (events.Count == 0) return;
         // Saved first: status and dashboard compose work from the state file when these events are logged.
         store.Save();
-        inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
         foreach (var (kind, message) in events) Log.Write(kind, message);
     }
 
@@ -592,8 +585,6 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 held.Remove(stored);
                 foreach (var key in reported.Keys.Where(key => key.Url == stored).ToArray()) reported.Remove(key);
             }
-            // Its waiting input no longer retains durable work.
-            inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
             if (forgotten.Length == 0) return;
             Log.Write("discussion-forgotten", $"{url} reason=not-found session={string.Join(',', forgotten.Select(entry => entry.Value!.Text("sessionId")))}");
         }
