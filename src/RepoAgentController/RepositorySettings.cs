@@ -34,13 +34,6 @@ sealed record RepositorySetting(string Name, string Type, long Minimum, long Max
     }
 }
 
-/// <summary>The effective value after the latest observation; Value is null when nothing applies.</summary>
-sealed record SettingValue(string State, string? Value, string? Reason = null)
-{
-    /// <summary>When this controller first observed the current effective value; a retained value keeps its time.</summary>
-    public DateTimeOffset Since { get; init; }
-}
-
 /// <summary>Reads validated controller settings from direct repository Actions variables with bounded refresh.</summary>
 /// <remarks>Without a GitHub adapter the runtime has no explicit Variables: read permission; every setting stays disabled.
 /// Each refresh records the observed settings beside the controller state (<see cref="PathFor"/>) for status, and a later

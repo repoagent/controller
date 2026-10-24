@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The controller core (ADR 0010): decisions only, no I/O. Its only reference is the banned-API analyzer.
+       BannedSymbols.txt rejects the common file, network, process, environment and wall-clock APIs
+       and JsonNode; review catches the rest. Adapters live in RepoAgentController. -->
+  <PropertyGroup>
+    <AssemblyName>RepoAgentController.Core</AssemblyName>
+    <RootNamespace>RepoAgentController</RootNamespace>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsAotCompatible>true</IsAotCompatible>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Remove="System.Net.Http" />
+    <AdditionalFiles Include="BannedSymbols.txt" />
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="4.14.0" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

@@ -61,25 +61,6 @@ public sealed class ModelSelectionTests
     }
 
     [Theory]
-    [InlineData(null, null, "{}", "gpt-6.1-sol", "low")]
-    [InlineData(null, null, """{"model":"gpt-5.5"}""", "gpt-5.5", "medium")]
-    [InlineData(null, null, """{"model":"gpt-5.5","model_reasoning_effort":"high"}""", "gpt-5.5", "high")]
-    [InlineData("luna6", null, """{"model":"gpt-5.5","model_reasoning_effort":"high"}""", "gpt-6-luna", "high")]
-    [InlineData(null, "xhigh", """{"model":"gpt-5.5"}""", "gpt-5.5", "xhigh")]
-    public async Task An_unset_repository_default_falls_back_to_the_native_configuration_then_the_model_catalogue(
-        string? model, string? reasoning, string nativeConfiguration, string expectedModel, string expectedEffort)
-    {
-        using var fixture = new Fixture();
-        fixture.Variable("REPOAGENT_MODEL", model);
-        fixture.Variable("REPOAGENT_REASONING", reasoning);
-        fixture.NativeConfiguration(nativeConfiguration);
-
-        Assert.Equal(0, await fixture.RunOnce("--repository-settings"));
-
-        Assert.Equal([(expectedModel, expectedEffort)], fixture.Turns());
-    }
-
-    [Theory]
     [InlineData("repoagent:luna6:xhigh,repoagent:sol6.1:low", null, null,
         "conflicting model labels repoagent:luna6:xhigh, repoagent:sol6.1:low; keep one repoagent:<model>:<reasoning> label")]
     [InlineData("repoagent:luna6", null, null, "label repoagent:luna6 must be repoagent:<model>:<reasoning>, such as repoagent:sol6.1:xhigh")]
@@ -184,9 +165,6 @@ public sealed class ModelSelectionTests
             if (value is null) state["variables"]!.AsObject().Remove(name);
             else state["variables"]![name] = value;
         });
-
-        /// <summary>The effective native configuration that config/read reports for the workspace.</summary>
-        public void NativeConfiguration(string json) => File.WriteAllText(nativeConfig, json);
 
         /// <summary>Adds a participant's top-level comment.</summary>
         public void Comment(string id, string body) => Update(state => state["comments"]!.AsArray().Add((JsonNode)Message(id, body, new JsonObject

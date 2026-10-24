@@ -3,20 +3,20 @@ using System.Text.RegularExpressions;
 namespace RepoAgentController;
 
 /// <summary>The validated native model and reasoning effort for one Discussion's next turn.</summary>
-sealed record ModelChoice(string Model, string Effort, string Source);
+public sealed record ModelChoice(string Model, string Effort, string Source);
 
 /// <summary>One selectable entry of the native model/list catalogue for this Codex account.</summary>
-sealed record NativeModel(string Model, bool IsDefault, string DefaultEffort, IReadOnlyList<string> Efforts);
+public sealed record NativeModel(string Model, bool IsDefault, string DefaultEffort, IReadOnlyList<string> Efforts);
 
 /// <summary>A selection that cannot be used as requested; the message says what to change.</summary>
-sealed class ModelSelectionException(string message) : Exception(message);
+public sealed class ModelSelectionException(string message) : Exception(message);
 
 /// <summary>
 /// Resolves a Discussion's repoagent:&lt;model&gt;:&lt;reasoning&gt; label, or else the defaults, to a model and effort the
 /// account's native catalogue offers. Nothing is substituted: conflicting or malformed labels, an unavailable model and an
 /// effort the model does not support all fail with a message naming where the value came from.
 /// </summary>
-static class ModelSelection
+public static class ModelSelection
 {
     public const string LabelPrefix = "repoagent:";
     /// <summary>Repository settings holding the defaults for Discussions without a model label.</summary>
