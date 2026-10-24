@@ -2,6 +2,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0.402 AS build
 WORKDIR /source
 COPY global.json ./
+COPY src/RepoAgent.Auth.Core/RepoAgent.Auth.Core.csproj src/RepoAgent.Auth.Core/
 COPY src/RepoAgent.Auth/RepoAgent.Auth.csproj src/RepoAgent.Auth/
 RUN dotnet restore src/RepoAgent.Auth/RepoAgent.Auth.csproj
 COPY src/ src/

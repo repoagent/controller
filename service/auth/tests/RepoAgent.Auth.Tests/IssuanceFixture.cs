@@ -5,7 +5,6 @@ using Azure.Core.Pipeline;
 using Azure.Data.Tables;
 using Azure.Security.KeyVault.Keys;
 using Azure.Security.KeyVault.Keys.Cryptography;
-using Microsoft.AspNetCore.DataProtection;
 
 namespace RepoAgent.Auth.Tests;
 
@@ -17,10 +16,10 @@ internal sealed class IssuanceFixture : IAsyncDisposable
     public SigningTransport Signing { get; } = new();
     public GitHubTransport GitHub { get; }
     public IssuanceFixture() => GitHub = new(Clock);
-    private readonly DirectoryInfo keyDirectory = new(Path.Combine(Path.GetTempPath(), "issuer-keys-" + Guid.NewGuid().ToString("N")));
+    public InMemorySecretProtection Secrets { get; } = new();
     public BrokerOptions Options => new(new Uri("https://example.table.core.windows.net"), Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15);
     public IssuanceStore Store(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) => new(Storage.CreateClient(transport), Options,
-        DataProtectionProvider.Create(keyDirectory), Clock, limits);
+        Secrets, Clock, limits);
     public InstallationTokenIssuer Issuer(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) => new(Store(transport, limits),
         new GitHubIssuance(new HttpClient(GitHub), Clock), new AppJwtSigner(Signing, Clock), Clock);
 
@@ -61,11 +60,7 @@ internal sealed class IssuanceFixture : IAsyncDisposable
             if (row.RowKey != "attempt:one") rows.Add(row);
         return rows;
     }
-    public async ValueTask DisposeAsync()
-    {
-        await Storage.DisposeAsync();
-        if (keyDirectory.Exists) keyDirectory.Delete(true);
-    }
+    public async ValueTask DisposeAsync() => await Storage.DisposeAsync();
 }
 internal sealed class IssuanceClock : TimeProvider
 {

@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Azure.Data.Tables;
-using Microsoft.AspNetCore.DataProtection;
 using Xunit;
 
 namespace RepoAgent.Auth.Tests;
@@ -264,11 +263,10 @@ public sealed class AgentVariableConformanceTests
         var rowKey = "pending:" + pending.Split('_')[1];
         var row = (await f.Storage.Table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, rowKey, cancellationToken: Token)).Value;
         var original = row.GetString("ProtectedCompletion")!;
-        // Authentic legacy purpose with the same real key ring, repository, epoch,
+        // Authentic legacy purpose with the same secret protection, repository, epoch,
         // pending ID and plaintext. Only the approval protocol domain differs.
-        var legacy = f.Protection.CreateProtector("repoagent.enrollment.v1", RevocationFixture.RepositoryId,
-            RevocationFixture.Epoch, pending);
-        row["ProtectedCompletion"] = legacy.Protect(receipt.GetProperty("enrollment").GetRawText());
+        var legacy = ApprovalContract.Legacy.CompletionPurpose(RevocationFixture.RepositoryId, RevocationFixture.Epoch, pending);
+        row["ProtectedCompletion"] = f.Secrets.Protect(legacy, receipt.GetProperty("enrollment").GetRawText());
         await f.Storage.Table.UpdateEntityAsync(row, row.ETag, TableUpdateMode.Replace, Token);
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromMinutes(1));

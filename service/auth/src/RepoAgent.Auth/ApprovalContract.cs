@@ -1,5 +1,4 @@
 using Azure.Data.Tables;
-using Microsoft.AspNetCore.DataProtection;
 using static RepoAgent.Auth.IssuancePolicy;
 
 namespace RepoAgent.Auth;
@@ -88,13 +87,14 @@ internal sealed record ApprovalContract(string Kind, long SetupVersion, string P
         if (Read(entity) != this) throw new IssuanceDenied();
     }
 
-    public IDataProtector TokenProtector(IDataProtectionProvider protection, string repository, string epoch, string operation, string purpose) =>
+    // Persisted format: stored tokens and completions are readable only under these exact chains.
+    public SecretPurpose TokenPurpose(string repository, string epoch, string operation, string purpose) =>
         this == Legacy
-            ? protection.CreateProtector("repoagent.issuer.v1", repository, epoch, operation, purpose)
-            : protection.CreateProtector("repoagent.issuer.v2", Kind, Policy, repository, epoch, operation, purpose);
+            ? new("repoagent.issuer.v1", repository, epoch, operation, purpose)
+            : new("repoagent.issuer.v2", Kind, Policy, repository, epoch, operation, purpose);
 
-    public IDataProtector CompletionProtector(IDataProtectionProvider protection, string repository, string epoch, string pending) =>
+    public SecretPurpose CompletionPurpose(string repository, string epoch, string pending) =>
         this == Legacy
-            ? protection.CreateProtector("repoagent.enrollment.v1", repository, epoch, pending)
-            : protection.CreateProtector("repoagent.enrollment.v2", Kind, Policy, repository, epoch, pending);
+            ? new("repoagent.enrollment.v1", repository, epoch, pending)
+            : new("repoagent.enrollment.v2", Kind, Policy, repository, epoch, pending);
 }
