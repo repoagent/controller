@@ -1,0 +1,15 @@
+namespace RepoAgentController;
+
+/// <summary>The repository settings an operator holds in direct repository Actions variables named <c>REPOAGENT_*</c>.</summary>
+public interface IRepositorySettings
+{
+    /// <summary>Reads one setting's raw value; null only when GitHub confirms that the variable does not exist. Any other
+    /// outcome throws: <see cref="RepositorySettingRejectedException"/> when GitHub answered with another HTTP status.</summary>
+    Task<string?> Read(string name, CancellationToken ct);
+}
+
+/// <summary>GitHub answered a repository setting read with an HTTP status that gives neither its value nor a confirmed absence.</summary>
+public sealed class RepositorySettingRejectedException(int status) : IOException($"GitHub returned HTTP {status}")
+{
+    public int Status { get; } = status;
+}

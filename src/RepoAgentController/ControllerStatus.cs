@@ -123,7 +123,7 @@ sealed class ControllerStatus : IDisposable
         // Managed clone mode also records native turns in its refresh journal, for checkout refresh admission.
         var journal = ReadObject(statePath + ".refresh.json");
         var active = journal?["active"] as JsonObject;
-        var settings = RepositorySettings.Read(RepositorySettings.PathFor(statePath));
+        var settings = ControllerStateFiles.SettingsJson(statePath);
         var limit = settings?[Bridge.ActiveSessionSetting]?["value"].OptionalText() is { } text &&
             int.TryParse(text, System.Globalization.CultureInfo.InvariantCulture, out var number) ? number : Bridge.DefaultActiveSessions;
         // Turns end with their lifetime, so only a running controller can report one.

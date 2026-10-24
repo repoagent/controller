@@ -24,7 +24,9 @@ src/RepoAgentController/ControllerDashboard.cs
 src/RepoAgentController/BaselineReleases.cs
 src/RepoAgentController/MentionUser.cs
 src/RepoAgentController/Program.cs
-src/RepoAgentController/RepositorySettings.cs
+src/RepoAgentController/GitHubRepositorySettings.cs
+src/RepoAgentController/RepositorySettingsCatalogue.cs
+src/RepoAgentController/ControllerStateFiles.cs
 src/RepoAgentController/repository-settings.json
 src/RepoAgentController/RepoAgentController.csproj
 src/RepoAgentController/RetainedLog.cs
@@ -35,6 +37,9 @@ src/RepoAgentController.Core/BannedSymbols.txt
 src/RepoAgentController.Core/IControllerLog.cs
 src/RepoAgentController.Core/ModelSelection.cs
 src/RepoAgentController.Core/SettingValue.cs
+src/RepoAgentController.Core/IRepositorySettings.cs
+src/RepoAgentController.Core/IControllerState.cs
+src/RepoAgentController.Core/RepositorySettings.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs
 tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj
