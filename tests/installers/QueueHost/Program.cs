@@ -15,6 +15,13 @@ options.Retry.MaxRetries = 0;
 options.Retry.NetworkTimeout = TimeSpan.FromSeconds(3);
 var queue = new QueueClient(new Uri(Environment.GetEnvironmentVariable("CONTROLLER_TEST_QUEUE_ENDPOINT")!),
     new StorageSharedKeyCredential("devstoreaccount1", "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="), options);
+if (args is ["queue", "hint", var discussion])
+{
+    // Work retained from an earlier process, bound exactly like an accepted fixture delivery.
+    await using var work = new DurableWebhookWork(queue, "owner/project", 345, "123", 234, new Uri("https://broker.fixture"));
+    await work.Enqueue(new DurableWorkHint.Discussion(int.Parse(discussion)), CancellationToken.None);
+    return 0;
+}
 if (args is ["queue", var operation])
 {
     switch (operation)

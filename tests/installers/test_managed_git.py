@@ -16,6 +16,7 @@ import ssl
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from urllib.parse import urlsplit
 
@@ -498,7 +499,17 @@ class GitProvider:
                         return self.reply({}, 403)
                     query = json.loads(body).get('query', '')
                     if 'discussion(number:' in query:
-                        return self.reply({'data': {'repository': {'discussion': provider.discussions[0]}}})
+                        number = json.loads(body)['variables']['number']
+                        scripted = getattr(provider, 'lookup_faults', {}).get(number)
+                        fault = scripted.pop(0) if scripted else None
+                        provider.lookups = getattr(provider, 'lookups', []) + [(number, time.monotonic(), fault is not None)]
+                        if fault: return self.reply(fault[1], fault[0])
+                        found = [d for d in getattr(provider, 'discussions', []) if d['number'] == number]
+                        if found: return self.reply({'data': {'repository': {'discussion': found[0]}}})
+                        # GitHub's recorded response for a deleted Discussion in a resolved repository.
+                        return self.reply({'data': {'repository': {'discussion': None}}, 'errors': [{'type': 'NOT_FOUND',
+                            'path': ['repository', 'discussion'], 'locations': [{'line': 1, 'column': 60}],
+                            'message': 'Could not resolve to a Discussion with the number of ' + str(number) + '.'}]})
                     if 'discussions(' in query:
                         return self.reply({'data': {'repository': {'discussions': {'nodes': getattr(provider, 'discussions', []), 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}}})
                     if 'node(id:' in query:

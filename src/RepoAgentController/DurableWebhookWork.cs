@@ -95,13 +95,14 @@ sealed class DurableWebhookWork : IAsyncDisposable
         }
     }
 
-    public sealed class Lease(string id, string receipt, DurableWorkHint hint)
+    public sealed class Lease(string id, string receipt, DurableWorkHint hint, long attempt = 1)
     {
         public string Id { get; } = id;
         public string Receipt { get; set; } = receipt;
         public DurableWorkHint Hint { get; } = hint;
+        public long Attempt { get; } = attempt;
         public bool Observed { get; set; }
-        public bool Deleted { get; set; }
+        public bool Released { get; set; } // Deleted, or returned to the queue for retry; no longer renewed.
         public SemaphoreSlim Exclusion { get; } = new(1);
     }
 
@@ -122,7 +123,7 @@ sealed class DurableWebhookWork : IAsyncDisposable
                     if (body is null || body.Count != 3 || body["version"]?.GetValue<int>() != 1 || body.Text("binding") != binding ||
                         body["discussion"] is not JsonValue value || !value.TryGetValue<int>(out var number) || number < -1)
                         throw new IOException("Durable work binding or format differs; preserve the queue for manual inspection");
-                    var lease = new Lease(message.MessageId, message.PopReceipt, DurableWorkHint.FromWire(number));
+                    var lease = new Lease(message.MessageId, message.PopReceipt, DurableWorkHint.FromWire(number), message.DequeueCount);
                     lock (sync) held.Add(lease);
                     retained = true;
                     return lease;
@@ -135,6 +136,24 @@ sealed class DurableWebhookWork : IAsyncDisposable
     }
 
     public void Observed(Lease lease) { lock (sync) lease.Observed = true; }
+
+    /// <summary>Returns unobserved work to the queue, invisible for a capped exponential backoff; it is never acknowledged.</summary>
+    public async Task Retry(Lease lease, CancellationToken ct)
+    {
+        // The service's dequeue count makes the backoff survive restarts: 5 seconds doubling to 10 minutes.
+        var delay = TimeSpan.FromSeconds(Math.Min(600, 5L << (int)Math.Clamp(lease.Attempt - 1, 0, 7)));
+        await lease.Exclusion.WaitAsync(ct);
+        try
+        {
+            try { await queue.UpdateMessageAsync(lease.Id, lease.Receipt, visibilityTimeout: delay, cancellationToken: ct); }
+            catch (Exception error) when (error is not OperationCanceledException) { throw Failure("retry", error); }
+            lease.Released = true;
+            lock (sync) held.Remove(lease);
+            capacity.Release();
+        }
+        finally { lease.Exclusion.Release(); }
+        Log.Write("durable-work-retry", $"hint={lease.Hint} attempt={lease.Attempt} retry-seconds={delay.TotalSeconds:F0}");
+    }
 
     public Task<bool> CompleteAtIdle(NativeIdleCommit commitAtIdle, CancellationToken ct)
     {
@@ -149,7 +168,7 @@ sealed class DurableWebhookWork : IAsyncDisposable
                 try
                 {
                     await queue.DeleteMessageAsync(lease.Id, lease.Receipt, token);
-                    lease.Deleted = true;
+                    lease.Released = true;
                     lock (sync) held.Remove(lease);
                     capacity.Release();
                 }
@@ -173,7 +192,7 @@ sealed class DurableWebhookWork : IAsyncDisposable
                     await lease.Exclusion.WaitAsync(stop.Token);
                     try
                     {
-                        if (!lease.Deleted)
+                        if (!lease.Released)
                             lease.Receipt = (await queue.UpdateMessageAsync(lease.Id, lease.Receipt, visibilityTimeout: Visibility, cancellationToken: stop.Token)).Value.PopReceipt;
                     }
                     finally { lease.Exclusion.Release(); }
