@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-de
 COPY global.json ./
 COPY src/ ./src/
 COPY .agents/skills/github-discussion/ ./.agents/skills/github-discussion/
+COPY .agents/skills/repoagent-orientation/ ./.agents/skills/repoagent-orientation/
 RUN dotnet publish src/RepoAgentController -c Release -o /published --nologo -p:PublishAot=true -p:TreatWarningsAsErrors=true \
     && find /published -name '*.dbg' -delete
 COPY tests/NativeSmoke/ /source/tests/NativeSmoke/

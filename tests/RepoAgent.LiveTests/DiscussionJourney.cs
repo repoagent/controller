@@ -101,14 +101,18 @@ public sealed class DiscussionJourney
 
                 var hold = await Comment(a, $"Use $acceptance-marker's marker.py with arguments {run} --hold. It creates a ready file and waits up to 300 seconds for the test runner's release file. Run it now and publish its result once after release. If the skill is unavailable, report SKILL_UNAVAILABLE.");
                 await Until(() => Task.FromResult(File.Exists("/workspace/hold-ready-" + run)), "native skill action is active");
-                var during = await Comment(a, "While the previous tool is waiting, accept this additional input. After release reply once with ACTIVE_SECOND_" + run);
-                await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted during native work");
+                var during = await Comment(a, "This additional input arrives while the previous tool is waiting. When you receive it, reply once with ACTIVE_SECOND_" + run);
+                await Until(async () => Waiting(await Logs(), during["id"]!.ToString()), "second input waits during native work");
+                Assert.Equal(0, CountAcceptedSources(await Logs(), during["id"]!.ToString()));
+                Assert.Equal(0, Eyes(await Source(during["id"]!.ToString())));
                 var activeGate = JsonNode.Parse(await File.ReadAllTextAsync("/workspace/hold-ready-" + run))!;
-                Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "native skill gate remains active after the additional input was accepted");
+                Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "native skill gate remains active while the additional input waits");
                 Assert.False(File.Exists("/workspace/hold-release-" + run));
                 File.WriteAllText("/workspace/hold-release-" + run, "release");
-                await Reply(a, "ACTIVE_SECOND_" + run, during["id"]!.ToString());
+                await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted after native idle");
+                await Receipt(during["id"]!.ToString());
                 await Reply(a, expected, hold["id"]!.ToString());
+                await Reply(a, "ACTIVE_SECOND_" + run, during["id"]!.ToString());
                 Pass("C07", new { activeSource = hold["url"]!.ToString(), additionalSource = during["url"]!.ToString() });
 
                 await Until(async () => NativeTurnsFinished(await Logs()), "native turns completed before quiet observation");
@@ -129,10 +133,10 @@ public sealed class DiscussionJourney
             // The operator path stops the bridge, backs up state and substitutes an invalid native ID.
             await Control("invalidate-session", a["id"]!.ToString());
             var rejected = await Comment(a, "Rejected-input fixture: reply only if this input is accepted. Marker REJECTED_" + run);
-            await Until(async () => HasRecoveryForSource(await Logs(), a["url"]!.ToString(), rejected["id"]!.ToString()), "native rejection recorded for this source and the deliberately invalid session");
+            await Until(async () => HasRetryForSource(await Logs(), a["url"]!.ToString(), rejected["id"]!.ToString()), "native rejection retried for this source and the deliberately invalid session");
             Assert.Equal(0, Eyes(await Source(rejected["id"]!.ToString())));
             var rejectedCount = Forwarded(await Logs());
-            await StableAcrossPolls(log => Forwarded(log) == rejectedCount, "rejected input remains stopped without replay", requireSuccessfulPolls: false);
+            await StableAcrossPolls(log => Forwarded(log) == rejectedCount, "rejected input keeps retrying without acceptance", requireSuccessfulPolls: false);
             Assert.Equal(0, CountAcceptedSources(await Logs(), rejected["id"]!.ToString()));
             Assert.Equal(0, Eyes(await Source(rejected["id"]!.ToString())));
             await Control("restore-session", a["id"]!.ToString());
@@ -146,18 +150,21 @@ public sealed class DiscussionJourney
             Assert.Equal(originalSession, await Session(a));
             Pass("C11", new { session = originalSession });
 
-            await Until(async () => NativeTurnsFinished(await Logs()), "turn completion before the receipt fault fixture");
-            await Control("read-only-credential");
-            var receiptFailure = await Comment(a, "Receipt-failure fixture: this input should be accepted once. Attempt one reply with RECEIPT_FAULT_" + run + "; if publication is denied, report the operational failure and finish without retrying.");
-            try
-            {
-                await Until(async () => (await Logs()).Split('\n').Any(line => line.Contains(" receipt-error ") && line.Contains(receiptFailure["url"]!.ToString())), "real GitHub receipt permission failure after acceptance");
-                Assert.Equal(1, CountAcceptedSources(await Logs(), receiptFailure["id"]!.ToString()));
-                Assert.Equal(0, Eyes(await Source(receiptFailure["id"]!.ToString())));
-            }
-            finally { await Control("restore-credential"); }
-            await StableAcrossPolls(log => CountAcceptedSources(log, receiptFailure["id"]!.ToString()) == 1, "accepted input is not replayed after receipt failure");
-            Pass("C12", new { source = receiptFailure["url"]!.ToString(), mechanism = "real GitHub read-only App token rejects writes; original credential restored", acceptedOnce = true });
+            await Until(async () => NativeTurnsFinished(await Logs()), "turn completion before the credential fault fixture");
+            // The controller holds its App token only in memory: the fixture revokes that live token at GitHub
+            // through the controller's credential handoff, and only a new controller lifetime acquires another.
+            var beforeFault = (await Logs()).Split('\n').Length;
+            await Control("revoke-credential");
+            var outage = await Comment(a, "Credential-revocation fixture: reply once with CREDENTIAL_FAULT_" + run);
+            await Until(async () => (await Logs()).Split('\n').Skip(beforeFault).Any(line => IsEvent(line, "poll-error") && line.Contains("401")),
+                "real GitHub rejection of the revoked controller credential");
+            Assert.Equal(0, CountAcceptedSources(await Logs(), outage["id"]!.ToString()));
+            Assert.Equal(0, Eyes(await Source(outage["id"]!.ToString())));
+            await Control("replace");
+            await Reply(a, "CREDENTIAL_FAULT_" + run, outage["id"]!.ToString());
+            await Receipt(outage["id"]!.ToString());
+            await StableAcrossPolls(log => CountAcceptedSources(log, outage["id"]!.ToString()) == 1, "input from the credential outage is accepted exactly once");
+            Pass("C12", new { source = outage["url"]!.ToString(), mechanism = "real GitHub revoked the controller's in-memory App token; a replacement lifetime acquired a fresh token", acceptedOnce = true });
 
             foreach (var fixture in fixtures)
             {
@@ -279,39 +286,27 @@ public sealed class DiscussionJourney
         return session!;
     }
     [Fact]
-    public void Recovery_evidence_matches_the_source_in_a_multiline_pending_record()
+    public void Retry_evidence_matches_the_source_and_the_invalid_session()
     {
         const string log = """
-            2026-10-20T00:26:25.2314303+00:00 manual-recovery https://github.com/egil/repoagent/discussions/23 session=invalid-native-session pending={
-              "operation": "send",
-              "since": "2026-10-20T00:25:38.3014183+00:00",
-              "sourceIds": [
-                "DC_kwDOVQFj7c4BIsCK"
-              ]
+            2026-10-20T00:26:25.2314303+00:00 delivery-retry https://github.com/egil/repoagent/discussions/23 session=invalid-native-session attempt=1 redelivery=false inputs=2 sources=DC_kwDOVQFj7c4BIsCJ,DC_kwDOVQFj7c4BIsCK retry-at=2026-10-20T00:26:30.2314303+00:00: Native request failed: {
+              "code": -32600,
+              "message": "thread not found"
             }
-            2026-10-20T00:26:50.0000000+00:00 poll-completed success=False elapsed-ms=25000
+            2026-10-20T00:26:50.0000000+00:00 poll-completed success=True elapsed-ms=25000
             """;
         const string url = "https://github.com/egil/repoagent/discussions/23";
-        Assert.True(HasRecoveryForSource(log, url, "DC_kwDOVQFj7c4BIsCK"));
-        Assert.False(HasRecoveryForSource(log, url, "different-source"));
-        Assert.False(HasRecoveryForSource(log.Replace(" manual-recovery ", " observation-error quoted: manual-recovery "), url, "DC_kwDOVQFj7c4BIsCK"));
-        Assert.False(HasRecoveryForSource(log, url + "0", "DC_kwDOVQFj7c4BIsCK"));
-        Assert.False(HasRecoveryForSource(log[..log.IndexOf("sourceIds", StringComparison.Ordinal)], url, "DC_kwDOVQFj7c4BIsCK"));
+        Assert.True(HasRetryForSource(log, url, "DC_kwDOVQFj7c4BIsCK"));
+        Assert.True(HasRetryForSource(log, url, "DC_kwDOVQFj7c4BIsCJ"));
+        Assert.False(HasRetryForSource(log, url, "DC_kwDOVQFj7c4BIsC"));
+        Assert.False(HasRetryForSource(log.Replace(" delivery-retry ", " observation-error quoted: delivery-retry "), url, "DC_kwDOVQFj7c4BIsCK"));
+        Assert.False(HasRetryForSource(log, url + "0", "DC_kwDOVQFj7c4BIsCK"));
+        Assert.False(HasRetryForSource(log.Replace("session=invalid-native-session", "session=other"), url, "DC_kwDOVQFj7c4BIsCK"));
     }
 
-    static bool HasRecoveryForSource(string log, string url, string sourceId)
-    {
-        var events = Regex.Matches(log, @"^\S+ manual-recovery " + Regex.Escape(url) + " session=invalid-native-session pending=", RegexOptions.Multiline);
-        if (events.Count == 0) return false;
-        var entry = events[^1];
-        var reader = new Utf8JsonReader(Encoding.UTF8.GetBytes(log[(entry.Index + entry.Length)..]));
-        try
-        {
-            var pending = JsonNode.Parse(ref reader);
-            return pending?["sourceIds"] is JsonArray sources && sources.Any(source => source?.ToString() == sourceId);
-        }
-        catch (JsonException) { return false; } // A capture can end before a multiline event is complete.
-    }
+    static bool HasRetryForSource(string log, string url, string sourceId) => log.Split('\n').Any(line =>
+        IsEvent(line, "delivery-retry") && line.Contains(" delivery-retry " + url + " session=invalid-native-session ", StringComparison.Ordinal) &&
+        Regex.Match(line, @" sources=(\S*) ") is { Success: true } sources && sources.Groups[1].Value.Split(',').Contains(sourceId));
 
     static bool IsEvent(string line, string kind)
     {
@@ -320,6 +315,7 @@ public sealed class DiscussionJourney
     }
     static int CountAcceptedSources(string log, string id) => log.Split('\n').Count(x => IsEvent(x, "forwarded") && x.Contains(id));
     static int Forwarded(string log) => log.Split('\n').Count(x => IsEvent(x, "forwarded"));
+    static bool Waiting(string log, string id) => log.Split('\n').Any(x => IsEvent(x, "input-waiting") && x.Contains(id));
     static bool NativeTurnsFinished(string log)
     {
         var lines = log.Split('\n');
@@ -331,11 +327,9 @@ public sealed class DiscussionJourney
         {
             if (IsEvent(line, "native-accepted")) accepted.Add(line[(line.LastIndexOf("turn=", StringComparison.Ordinal) + 5)..].Trim());
             if (!IsEvent(line, "native-event")) continue;
-            var start = line.IndexOf('{');
-            if (start < 0) continue;
-            var message = JsonNode.Parse(line[start..])!;
-            if (message["method"]?.ToString() == "turn/completed" && message["params"]?["turn"]?["id"] is { } id)
-                completed.Add(id.ToString());
+            // The controller logs only redacted fields of native events, never the raw message.
+            var completion = Regex.Match(line, @" native-event method=turn/completed thread=\S* turn=(\S+) ");
+            if (completion.Success) completed.Add(completion.Groups[1].Value);
         }
         return accepted.IsSubsetOf(completed);
     }

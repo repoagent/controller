@@ -141,7 +141,7 @@ sealed class DurableWebhookWork : IAsyncDisposable
     public async Task Retry(Lease lease, CancellationToken ct)
     {
         // The service's dequeue count makes the backoff survive restarts: 5 seconds doubling to 10 minutes.
-        var delay = TimeSpan.FromSeconds(Math.Min(600, 5L << (int)Math.Clamp(lease.Attempt - 1, 0, 7)));
+        var delay = RetryDelay.Doubling(TimeSpan.FromSeconds(5), TimeSpan.FromMinutes(10), (int)Math.Clamp(lease.Attempt, 1, 17));
         await lease.Exclusion.WaitAsync(ct);
         try
         {

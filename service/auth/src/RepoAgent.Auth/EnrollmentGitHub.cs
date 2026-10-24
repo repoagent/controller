@@ -35,7 +35,7 @@ internal sealed class EnrollmentGitHub(GitHubIssuance github, TimeProvider clock
             throw new IssuanceDenied();
         }
         var canonical = observed.Name;
-        if (snapshot.Approval.IsAgent) return (canonical, null, null);
+        if (snapshot.Approval.IsRepositoryVariable) return (canonical, null, null);
         using var environment = await github.ReadAsync($"repos/{RepositoryPath(canonical)}/environments/{Uri.EscapeDataString(Text(p, "Environment"))}", token, work);
         var id = environment.RootElement.GetProperty("id").GetInt64();
         var name = environment.RootElement.GetProperty("name").GetString();
@@ -60,11 +60,11 @@ internal sealed class EnrollmentGitHub(GitHubIssuance github, TimeProvider clock
             throw;
         }
         var p = snapshot.Pending;
-        if (snapshot.Approval.IsAgent)
+        if (snapshot.Approval.IsRepositoryVariable)
         {
-            var agentApproved = await github.ObserveAgentVariableAsync(Text(p, "Repository"), Text(p, "Variable"), Text(p, "Marker"), token, work);
+            var variableApproved = await github.ObserveRepositoryVariableAsync(snapshot.Approval, Text(p, "Repository"),Text(p, "Variable"), Text(p, "Marker"), token, work);
             work.Fresh(started);
-            return (agentApproved, started);
+            return (variableApproved, started);
         }
         var path = $"repos/{RepositoryPath(Text(p, "Repository"))}/environments/{Uri.EscapeDataString(Text(p, "Environment"))}/variables";
         // Complete listing supplies positive absence evidence; a lone 404 never does.

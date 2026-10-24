@@ -58,7 +58,7 @@ public sealed class ManagedCheckoutTests
     [InlineData("index-symlink")]
     [InlineData("linked-git")]
     [InlineData("unsafe-config")]
-    public async Task Checkout_restart_preserves_local_state_and_blocks_unsafe_reuse(string scenario)
+    public async Task Checkout_restart_accepts_owned_local_state_and_blocks_unsafe_reuse(string scenario)
         => await Exercise(true, false, scenario);
 
     [Fact]
@@ -143,7 +143,7 @@ public sealed class ManagedCheckoutTests
               request=json.loads(line);method=request.get('method')
               if os.environ.get('CHECKOUT_TRANSPORT') and method in ('thread/start','thread/resume','turn/start'):
                with open(os.environ['CHECKOUT_TRANSPORT'],'a') as log:log.write(line)
-               result={'turn':{'id':'transport-turn'}} if method=='turn/start' else {'cwd':os.getcwd(),'thread':{'id':'transport-thread','cwd':os.getcwd()}}
+               result={'turn':{'id':'transport-turn'}} if method=='turn/start' else {'cwd':os.getcwd(),'thread':{'id':'transport-thread','cwd':os.getcwd(),'status':{'type':'idle'}}}
                if method=='turn/start':
                 print(json.dumps({'method':'turn/completed','params':{'threadId':'transport-thread','turn':{'id':'transport-turn','status':'completed'}}}),flush=True)
                print(json.dumps({'id':request['id'],'result':result}),flush=True);continue
@@ -182,7 +182,7 @@ public sealed class ManagedCheckoutTests
              if os.environ.get('CHECKOUT_DISCUSSION'):
               page={'nodes':[],'pageInfo':{'hasNextPage':False,'endCursor':None}}
               if 'discussions(' in q:data={'repository':{'discussions':dict(page,nodes=[json.load(open(os.environ['CHECKOUT_DISCUSSION']))])}}
-              elif 'node(id:' in q:data={'node':{'comments' if 'comments(' in q else 'reactions':page}}
+              elif 'node(id:' in q:data={'node':{'comments' if 'comments(' in q else 'labels' if 'labels(' in q else 'reactions':page}}
              print(json.dumps({'data':data}))
             elif a[:2]==['api','repos/owner/repository']:
              print(open(os.environ['CHECKOUT_METADATA']).read())
@@ -203,19 +203,22 @@ public sealed class ManagedCheckoutTests
             foreach (var pair in environment) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
             if (clone && !checkAuth)
             {
-                // Obtain the real lease and installed helpers through the no-native public entry.
+                // Install the real helpers through the no-native public entry; a live lifetime then holds the lease.
                 Assert.Equal(0, await fixture.Start());
                 Assert.False(File.Exists(capture));
-                // Exercise actual PrepareClone isolation, including its HTTPS-only parent policy.
+                // Exercise actual PrepareClone isolation through the agent's wrapper; the gh peer asserts the HTTPS-only parent policy.
                 var hostileGit = Path.Combine(bin, "git");
                 File.WriteAllText(hostileGit, "#!/bin/sh\nexit 97\n");
                 Executable(hostileGit);
                 var adapterRoot = Path.Combine(fixture.Directory, "adapter-control");
-                var isolatedClone = AppGitHubCommand.Create(fixture.Gh, fixture.TokenFile,
-                    ["repo", "clone", "https://github.com/owner/repository.git", adapterRoot]);
-                Assert.Equal("https", isolatedClone.Environment["GIT_ALLOW_PROTOCOL"]);
-                try { await Run(isolatedClone); }
-                finally { File.Delete(hostileGit); }
+                var isolatedClone = new ProcessStartInfo(Path.Combine(fixture.CredentialDirectory, "bin", "gh"))
+                    { ArgumentList = { "repo", "clone", "https://github.com/owner/repository.git", adapterRoot } };
+                using (var live = fixture.Credentials())
+                {
+                    await live.Initialize(null, TestContext.Current.CancellationToken);
+                    try { await Run(isolatedClone); }
+                    finally { File.Delete(hostileGit); }
+                }
                 Assert.Equal("approved repository\n", File.ReadAllText(Path.Combine(adapterRoot, "tracked-sentinel")));
                 Assert.Equal("https://github.com/owner/repository.git", await Git("-C", adapterRoot, "remote", "get-url", "origin"));
                 Assert.Equal(commit, await Git("-C", adapterRoot, "rev-parse", "HEAD"));
@@ -403,13 +406,17 @@ public sealed class ManagedCheckoutTests
                     break;
             }
             var snapshot = Snapshot(workspace);
-            var restartAllowed = scenario is "reuse" or "ignored" or "owner-executable-metadata";
+            // Local work inside the owned checkout is the idle refresh's to replace, never a reason to refuse restart.
+            // This fixture has no authoritative origin lookup, so the refresh stays pending and nothing is replaced.
+            var localState = scenario is "dirty" or "staged" or "untracked" or "branch" or "commit" or
+                "assume-unchanged" or "skip-worktree" or "operation/MERGE_HEAD";
+            var restartAllowed = localState || scenario is "reuse" or "ignored" or "owner-executable-metadata";
             Assert.Equal(restartAllowed ? 0 : 1, await Start());
             Assert.Equal(snapshot.ToArray(), Snapshot(workspace).ToArray());
             Assert.Equal(clones, File.ReadAllText(cloneLog));
             if (restartAllowed)
             {
-                Assert.Equal(commit, await Git("-C", expected, "rev-parse", "HEAD"));
+                if (!localState) Assert.Equal(commit, await Git("-C", expected, "rev-parse", "HEAD"));
                 Assert.All(File.ReadAllLines(capture), line => Assert.Equal(expected, JsonNode.Parse(line)!["cwd"]!.GetValue<string>()));
             }
             else Assert.False(File.Exists(capture));

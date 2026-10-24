@@ -40,8 +40,11 @@ class TunnelNotStarted(TunnelUnavailable):
     """The cloudflared executable could not be started."""
 
 
-def run(bridge, port):
-    """Discover a connected tunnel, launch the existing receiver with its origin and keep both available."""
+def run(bridge, port, environment=None):
+    """Discover a connected tunnel, launch the existing receiver with its origin and keep both available.
+
+    Only the receiver gets ``environment``; the tunnel inherits the ordinary process environment.
+    """
     stopping = threading.Event()
     previous = {}
     owned = {}
@@ -128,7 +131,7 @@ def run(bridge, port):
     def launch(origin):
         ready = threading.Event()
         agent = subprocess.Popen(bridge + ['--webhook-url', origin], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                 text=True, errors='replace', start_new_session=True)
+                                 text=True, errors='replace', start_new_session=True, env=environment)
         reader = threading.Thread(target=bridge_output, args=(agent, ready), daemon=True)
         reader.start()
         owned['bridge'] = (agent, reader)

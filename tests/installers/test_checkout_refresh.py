@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import runpy
 import select
 import signal
@@ -22,7 +23,16 @@ from types import SimpleNamespace
 import urllib.request
 import unittest
 
-from test_managed_git import CONTROLLER, ROOT, GitProvider
+from test_managed_git import CONTROLLER, ROOT, CredentialManager, GitProvider
+
+# Real native model turns against GitProvider's credential-free local Responses endpoint.
+FIXTURE_MODEL = 'model = "gpt-6.1-sol"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Credential-free local fixture"\nbase_url = "https://broker.fixture/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n'
+
+
+def native_event(line):
+    """Fields of the controller's redacted native-event log line; the raw native message is never logged."""
+    return re.search(r' native-event method=(?P<method>\S*) thread=(?P<thread>\S*) turn=(?P<turn>\S*) status=(?P<status>\S*)'
+                     r' will-retry=(?P<willRetry>\S*) error=(?P<error>.*)$', line.rstrip('\n')).groupdict()
 
 
 @unittest.skipIf(os.name == 'nt', 'Managed checkout uses the Linux shipping tools')
@@ -69,6 +79,7 @@ class CheckoutRefreshTests(unittest.TestCase):
         if build.returncode:
             raise RuntimeError(build.stdout + build.stderr)
         print('REFRESH_BUILD ' + build.stdout.strip(), flush=True)
+        CredentialManager.build()
         controller = os.environ.get('CHECKOUT_CONTROLLER')
         if controller and not Path(controller).is_absolute():
             raise RuntimeError('CHECKOUT_CONTROLLER must be an absolute executable path')
@@ -131,11 +142,16 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertNotEqual(before, after)
             self.assertEqual(git('--git-dir', directory / 'repositories/owner/project.git', 'rev-parse', 'HEAD'), after)
             # Prove existing authenticated helper/HTTPS Git transport can fetch B,
-            # without fetching into or updating the subject's owned checkout.
+            # without fetching into or updating the subject's owned checkout. The
+            # stopped controller kept no lease, so a live manager holds one meanwhile.
             helpers = Path(str(state) + '.github-app') / 'bin'
             control = directory / 'fetch-control'
-            run([str(helpers / 'gh'), 'repo', 'clone', 'https://github.com/owner/project.git', str(control)])
-            run([str(helpers / 'repoagent-git'), 'fetch', '--directory', str(control)])
+            manager = CredentialManager(enrollment, helpers.parent, environment)
+            try:
+                run([str(helpers / 'gh'), 'repo', 'clone', 'https://github.com/owner/project.git', str(control)])
+                run([str(helpers / 'repoagent-git'), 'fetch', '--directory', str(control)])
+            finally:
+                manager.stop()
             self.assertEqual(git('-C', control, 'rev-parse', 'FETCH_HEAD'), after)
             self.assertEqual(git('-C', checkout, 'rev-parse', 'HEAD'), before)
             output = run(command)
@@ -148,6 +164,19 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertEqual((checkout / 'README').read_text(), 'current default branch B\n')
             self.assertEqual(json.loads(owner.read_text())['commit'], after)
             self.assertEqual(json.loads(state.read_text())['discussions'], {})
+            # Local work left on another branch while origin was force-pushed is replaced at the startup idle boundary.
+            git('-C', checkout, 'checkout', '--quiet', '-b', 'agent-branch')
+            (checkout / 'README').write_text('stopped agent bytes\n')
+            git('-C', checkout, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test', 'commit', '--quiet', '-am', 'agent commit')
+            (checkout / 'agent-notes').write_text('stopped agent notes\n')
+            rewritten = self.force_push(SimpleNamespace(git=git, directory=directory))
+            output = run(command)
+            self.assertIn('poll-completed success=True', output)
+            self.assertEqual(git('-C', checkout, 'rev-parse', 'HEAD'), rewritten)
+            self.assertEqual(git('-C', checkout, 'symbolic-ref', 'HEAD'), 'refs/heads/main')
+            self.assertEqual(git('-C', checkout, 'status', '--porcelain', '--untracked-files=all'), '')
+            self.assertEqual((checkout / 'README').read_text(), 'rewritten history\n')
+            self.assertEqual(json.loads(owner.read_text())['commit'], rewritten)
 
 
     @contextmanager
@@ -237,10 +266,21 @@ class CheckoutRefreshTests(unittest.TestCase):
         def wait(fragment, timeout=20):
             deadline = time.monotonic() + timeout
             while True:
-                line = events.get(timeout=max(0.001, deadline-time.monotonic()))
+                try: line = events.get(timeout=max(0.001, deadline-time.monotonic()))
+                except queue.Empty: self.fail('Timed out before ' + fragment + '; refresh outcomes:\n' + ''.join(item for item in lines if ' refresh-' in item))
                 if line is None: self.fail('Controller closed before ' + fragment + '\n' + ''.join(lines))
                 if fragment in line: return line
-        f.process, f.wait = process, wait
+        def wait_or_native(fragment, timeout=20):
+            # Event barrier for the protocol relay: None means native input arrived before the controller line.
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if select.select([f.responses], [], [], 0.05)[0]: return None
+                try: line = events.get_nowait()
+                except queue.Empty: continue
+                if line is None: self.fail('Controller closed before ' + fragment + '\n' + ''.join(lines))
+                if fragment in line: return line
+            self.fail('Neither native input nor ' + fragment + ' was observed\n' + ''.join(lines))
+        f.process, f.wait, f.wait_or_native, f.lines = process, wait, wait_or_native, lines
         try:
             wait(ready)
             yield
@@ -249,7 +289,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             try: process.wait(timeout=10)
             except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
             reader.join(timeout=5); process.stdout.close()
-            print('MATRIX_CONTROLLER exit=' + str(process.returncode) + ' ' + ''.join(line for line in lines if any(s in line for s in ('checkout-refreshed', 'refresh-pending', 'refresh-blocked', 'manual-recovery'))), flush=True)
+            print('MATRIX_CONTROLLER exit=' + str(process.returncode) + ' ' + ''.join(line for line in lines if any(s in line for s in ('checkout-refreshed', 'refresh-pending', 'refresh-blocked', 'manual-recovery', 'delivery-retry'))), flush=True)
 
     def publish(self, f, name='README', content='remote B\n'):
         seed = f.directory / 'seed'
@@ -266,31 +306,128 @@ class CheckoutRefreshTests(unittest.TestCase):
         files += [root / '.git/MERGE_HEAD'] if (root / '.git/MERGE_HEAD').exists() else []
         return {str(p.relative_to(root)): p.read_bytes() for p in files if p.is_file()}
 
-    def test_periodic_refresh_preserves_local_work_and_refuses_unsafe_remote_changes(self):
-        for case in ('ignored', 'dirty', 'staged', 'untracked', 'commit', 'operation', 'ignored-file', 'ignored-directory', 'nonff', 'identity', 'moving-target'):
+    def force_push(self, f, content='rewritten history\n'):
+        seed = f.directory / 'seed'
+        f.git('-C', seed, 'checkout', '--quiet', '--orphan', 'replacement')
+        f.git('-C', seed, 'rm', '-rf', '--quiet', '.')
+        (seed / 'README').write_text(content)
+        f.git('-C', seed, 'add', '.')
+        f.git('-C', seed, 'commit', '-m', 'rewrite mainline')
+        f.git('-C', seed, 'push', f.directory / 'repositories/owner/project.git', '+HEAD:main')
+        return f.git('-C', seed, 'rev-parse', 'HEAD')
+
+    def diverge(self, f, case):
+        """Leave the owned checkout in one local or diverged state an agent could create."""
+        commit = ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test', 'commit', '--quiet']
+        if case.startswith('ignored'):
+            (f.checkout / '.git/info/exclude').write_text('local-cache\n')
+            if case == 'ignored-directory':
+                (f.checkout / 'local-cache').mkdir(); (f.checkout / 'local-cache/bytes').write_bytes(b'local bytes')
+            else: (f.checkout / 'local-cache').write_bytes(b'local bytes')
+        if case in ('dirty', 'staged', 'commit', 'branch', 'force-push'):
+            if case == 'branch': f.git('-C', f.checkout, 'checkout', '--quiet', '-b', 'agent-branch')
+            (f.checkout / 'README').write_text('user bytes\n')
+            if case != 'dirty': f.git('-C', f.checkout, 'add', '.')
+            if case in ('commit', 'branch', 'force-push'): f.git('-C', f.checkout, *commit, '-m', 'local commit')
+        if case == 'untracked':
+            (f.checkout / 'local-only').write_bytes(b'local bytes')
+            (f.checkout / 'scratch').mkdir(); (f.checkout / 'scratch/notes').write_bytes(b'local bytes')
+        if case in ('skip-worktree', 'assume-unchanged'):
+            f.git('-C', f.checkout, 'update-index', '--' + case, 'README')
+            (f.checkout / 'README').write_text('hidden user bytes\n')
+        if case == 'merge':
+            f.git('-C', f.checkout, 'checkout', '--quiet', '-b', 'agent-side')
+            (f.checkout / 'README').write_text('side bytes\n'); f.git('-C', f.checkout, *commit, '-am', 'side')
+            f.git('-C', f.checkout, 'checkout', '--quiet', 'main')
+            (f.checkout / 'README').write_text('main bytes\n'); f.git('-C', f.checkout, *commit, '-am', 'main')
+            conflict = subprocess.run(['git', '-C', str(f.checkout), '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test',
+                                       'merge', 'agent-side'], env=f.environment, capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(conflict.returncode, 0)
+            self.assertTrue((f.checkout / '.git/MERGE_HEAD').is_file(), 'Fixture did not leave an interrupted merge')
+
+    def local_state(self, f):
+        return [f.git('-C', f.checkout, *args) for args in (('symbolic-ref', 'HEAD'), ('rev-parse', 'HEAD'),
+                ('status', '--porcelain', '--untracked-files=all'), ('ls-files', '-v'))]
+
+    def test_idle_refresh_forces_local_and_diverged_checkout_to_origin_and_preserves_outside_work(self):
+        for case in ('ignored', 'dirty', 'staged', 'untracked', 'commit', 'branch', 'skip-worktree', 'assume-unchanged', 'merge',
+                     'ignored-file', 'ignored-directory', 'force-push'):
             with self.subTest(case=case), self.fixture() as f, self.controller(f):
                 initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
-                if case.startswith('ignored'):
-                    (f.checkout / '.git/info/exclude').write_text('local-cache\n')
-                    if case == 'ignored-directory':
-                        (f.checkout / 'local-cache').mkdir(); (f.checkout / 'local-cache/bytes').write_bytes(b'local bytes')
-                    else: (f.checkout / 'local-cache').write_bytes(b'local bytes')
-                if case in ('dirty', 'staged', 'commit'):
-                    (f.checkout / 'README').write_text('user bytes\n')
-                    if case != 'dirty': f.git('-C', f.checkout, 'add', '.')
-                    if case == 'commit': f.git('-C', f.checkout, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'user commit')
-                if case == 'untracked': (f.checkout / 'local-only').write_bytes(b'local bytes')
-                if case == 'operation': (f.checkout / '.git/MERGE_HEAD').write_text(initial + '\n')
+                # Historical/mutating worktrees and runtime artifacts live outside the owned checkout and are never reset.
+                history, artifacts = f.directory / 'history-worktree', f.directory / 'agent-artifacts'
+                f.git('-C', f.checkout, 'worktree', 'add', '--quiet', '-b', 'history', history, initial)
+                (history / 'README').write_text('historical mutation\n')
+                artifacts.mkdir(); (artifacts / 'result').write_bytes(b'retained artifact')
+                clean = self.local_state(f)
+                self.diverge(f, case)
+                if not case.startswith('ignored'): self.assertNotEqual(self.local_state(f), clean, 'Fixture left no local state')
+                agent_branch = f.git('-C', f.checkout, 'rev-parse', 'agent-branch') if case == 'branch' else None
+                if case == 'force-push': target, expected = self.force_push(f), 'rewritten history\n'
+                else:
+                    name = 'local-cache' if case in ('ignored-file', 'ignored-directory') else 'README'
+                    target, expected = self.publish(f, name), 'remote B\n'
+                f.wait('checkout-refreshed')
+                actual = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+                print('MATRIX_FORCE case=' + case + ' baseline=' + initial + ' origin=' + target + ' actual=' + actual, flush=True)
+                self.assertEqual(actual, target)
+                self.assertEqual(f.git('-C', f.checkout, 'symbolic-ref', 'HEAD'), 'refs/heads/main')
+                self.assertEqual(f.git('-C', f.checkout, 'status', '--porcelain', '--untracked-files=all'), '')
+                self.assertFalse(any(line[0] == 'S' or line[0].islower() for line in f.git('-C', f.checkout, 'ls-files', '-v').splitlines()))
+                self.assertFalse((f.checkout / '.git/MERGE_HEAD').exists())
+                self.assertEqual((f.checkout / ('local-cache' if case in ('ignored-file', 'ignored-directory') else 'README')).read_text(), expected)
+                self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
+                if case == 'ignored': self.assertEqual((f.checkout / 'local-cache').read_bytes(), b'local bytes')
+                if case == 'branch': self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'agent-branch'), agent_branch)
+                self.assertEqual((history / 'README').read_text(), 'historical mutation\n')
+                self.assertEqual(f.git('-C', history, 'rev-parse', 'HEAD'), initial)
+                self.assertEqual(f.git('-C', history, 'symbolic-ref', 'HEAD'), 'refs/heads/history')
+                self.assertEqual((artifacts / 'result').read_bytes(), b'retained artifact')
+                self.settled(f)
+
+    def test_idle_refresh_restores_local_and_diverged_checkout_while_origin_has_not_moved(self):
+        for case in ('dirty', 'untracked', 'commit', 'branch', 'skip-worktree', 'merge', 'ignored', 'rebase'):
+            with self.subTest(case=case), self.fixture() as f, self.controller(f):
+                initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+                history = f.directory / 'history-worktree'
+                f.git('-C', f.checkout, 'worktree', 'add', '--quiet', '-b', 'history', history, initial)
+                (history / 'README').write_text('historical mutation\n')
+                if case == 'rebase':
+                    # An interrupted operation defers the restore and leaves every local byte in place.
+                    self.diverge(f, 'dirty'); (f.checkout / '.git/rebase-merge').mkdir()
+                    before = self.snapshot(f.checkout)
+                    f.wait('refresh-pending')
+                    self.assertEqual(self.snapshot(f.checkout), before)
+                    continue
+                self.diverge(f, case)
+                agent_branch = f.git('-C', f.checkout, 'rev-parse', 'agent-branch') if case == 'branch' else None
+                if case == 'ignored':
+                    # Ignored caches alone leave the checkout settled: nothing is restored or removed.
+                    for _ in range(3): f.wait('poll-completed success=True')
+                    self.assertFalse(any('checkout-refreshed' in line for line in f.lines))
+                    self.assertEqual((f.checkout / 'local-cache').read_bytes(), b'local bytes')
+                    continue
+                f.wait('checkout-refreshed')
+                print('MATRIX_RESTORE case=' + case + ' origin=' + initial + ' actual=' + f.git('-C', f.checkout, 'rev-parse', 'HEAD'), flush=True)
+                self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
+                self.assertEqual(f.git('-C', f.checkout, 'symbolic-ref', 'HEAD'), 'refs/heads/main')
+                self.assertEqual(f.git('-C', f.checkout, 'status', '--porcelain', '--untracked-files=all'), '')
+                self.assertFalse(any(line[0] == 'S' or line[0].islower() for line in f.git('-C', f.checkout, 'ls-files', '-v').splitlines()))
+                self.assertFalse((f.checkout / '.git/MERGE_HEAD').exists())
+                self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
+                if case == 'branch': self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'agent-branch'), agent_branch)
+                self.assertEqual((history / 'README').read_text(), 'historical mutation\n')
+                self.assertEqual(f.git('-C', history, 'rev-parse', 'HEAD'), initial)
+                self.settled(f)
+
+    def test_periodic_refresh_defers_interrupted_operations_and_refuses_unsafe_remote_changes(self):
+        for case in ('rebase', 'identity', 'moving-target'):
+            with self.subTest(case=case), self.fixture() as f, self.controller(f):
+                initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+                if case == 'rebase': (f.checkout / '.git/rebase-merge').mkdir()
                 before = self.snapshot(f.checkout)
                 requests = len(f.provider.git_tokens)
-                if case == 'nonff':
-                    f.git('-C', f.directory / 'seed', 'checkout', '--orphan', 'replacement')
-                    f.git('-C', f.directory / 'seed', 'rm', '-rf', '.')
-                    (f.directory / 'seed/README').write_text('unrelated history')
-                    f.git('-C', f.directory / 'seed', 'add', '.')
-                    f.git('-C', f.directory / 'seed', 'commit', '-m', 'nonff')
-                    f.git('-C', f.directory / 'seed', 'push', f.directory / 'repositories/owner/project.git', '+HEAD:main')
-                else: target = self.publish(f, 'local-cache' if case in ('ignored-file', 'ignored-directory') else 'README')
+                self.publish(f)
                 if case == 'identity': f.provider.repository_id += 1
                 if case == 'moving-target':
                     captured, release = threading.Event(), threading.Event()
@@ -301,16 +438,10 @@ class CheckoutRefreshTests(unittest.TestCase):
                     try:
                         self.assertTrue(captured.wait(10)); self.publish(f, content='remote C\n')
                     finally: release.set()
-                if case == 'ignored':
-                    f.wait('checkout-refreshed')
-                    self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
-                    self.assertEqual((f.checkout / 'local-cache').read_bytes(), b'local bytes')
-                    self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
-                else:
-                    f.wait('refresh-blocked' if case in ('ignored-file', 'ignored-directory', 'identity') else 'refresh-pending')
-                    self.assertEqual(self.snapshot(f.checkout), before)
-                    self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
-                    if case in ('dirty', 'staged', 'untracked', 'commit', 'operation'): self.assertEqual(len(f.provider.git_tokens), requests)
+                f.wait('refresh-blocked' if case == 'identity' else 'refresh-pending')
+                self.assertEqual(self.snapshot(f.checkout), before)
+                self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
+                if case == 'rebase': self.assertEqual(len(f.provider.git_tokens), requests)
                 print('MATRIX_GIT case=' + case + ' baseline=' + initial + ' preserved=true', flush=True)
 
     def test_changed_identity_blocks_admission_when_branch_ref_is_unavailable(self):
@@ -369,17 +500,276 @@ class CheckoutRefreshTests(unittest.TestCase):
                     body='@test-app[bot] fixture ' + str(number), bodyHTML='fixture', title='fixture',
                     author=dict(__typename='User', login='participant'), reactionGroups=[dict(content='EYES', viewerHasReacted=True)])
 
+    def comment(self, number, author, body):
+        return dict(id='C' + str(number), url='https://github.com/owner/project/discussions/1#discussioncomment-' + str(number),
+                    body=body, bodyHTML=body, createdAt='2026-10-23T00:00:00Z', updatedAt='2026-10-23T00:00:00Z',
+                    author=dict(__typename='User', login=author), reactionGroups=[], replyTo=None)
+
+    def dispatched(self, request):
+        text = request['params']['input'][0]['text']
+        self.assertTrue(text.startswith('$github-discussion\n'), text[:80])
+        return json.loads(text.split('\n', 1)[1])
+
+    def subjects(self, envelope):
+        return [(change['subject']['id'], change['subject']['author']['login'], change['subject']['body']) for change in envelope['changes']]
+
+    def eyes(self, f, expected, timeout=20):
+        # The outbox adds EYES in the background after acceptance, in queue order.
+        deadline = time.monotonic() + timeout
+        while f.provider.reactions != expected and time.monotonic() < deadline: time.sleep(0.05)
+        self.assertEqual(f.provider.reactions, expected)
+
+    def test_input_during_an_active_turn_waits_for_idle_before_dispatch_and_eyes(self):
+        with self.fixture(protocol=True) as f, self.controller(f):
+            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+            request = self.rpc(f, 'thread/start')
+            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+            f.wait('poll-completed success=True')
+            self.eyes(f, ['D1'])
+            # T1 remains active: the native has reported no idle transition.
+            f.provider.comments = {'D1': [self.comment(1, 'alice', 'first while active'), self.comment(2, 'bob', 'second while active')]}
+            for _ in range(2):  # Two complete observations, not elapsed time, establish that the input waits.
+                self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Input reached native during the active turn')
+            self.assertEqual(f.provider.reactions, ['D1'], 'Waiting input received EYES before dispatch')
+            self.terminal(f, 'S1', 'T1')
+            request = self.rpc(f, 'turn/start')
+            self.assertEqual(f.provider.reactions, ['D1'], 'EYES preceded native acceptance of the dispatched batch')
+            self.assertEqual(self.subjects(self.dispatched(request)),
+                             [('C1', 'alice', 'first while active'), ('C2', 'bob', 'second while active')])
+            self.reply(f, request, dict(turn=dict(id='T2')))
+            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-2')
+            self.assertEqual(f.provider.reactions, ['D1', 'C1', 'C2'])
+            self.assertNotIn('waiting', json.loads(f.state.read_text())['discussions']['D1'])
+            print('IDLE_DISPATCH waiting-polls=2 premature-eyes=none batch=C1,C2 eyes-after-acceptance=true', flush=True)
+
+    def test_failed_turn_session_takes_the_next_input_without_a_restart(self):
+        with self.fixture(protocol=True) as f, self.controller(f):
+            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+            request = self.rpc(f, 'thread/start')
+            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+            f.wait('poll-completed success=True')
+            # Pinned native leaves a failed turn's thread in systemError until its next turn, and accepts that turn.
+            self.terminal(f, 'S1', 'T1', status='systemError', outcome='failed'); f.wait('native-event')
+            f.provider.comments = {'D1': [self.comment(1, 'alice', 'first after error'), self.comment(2, 'bob', 'second after error')]}
+            request = self.rpc(f, 'turn/start')
+            self.assertEqual(request['params']['threadId'], 'S1')
+            envelope = self.dispatched(request)
+            self.assertEqual(envelope['_bridge']['mode'], 'continue')
+            self.assertEqual(self.subjects(envelope), [('C1', 'alice', 'first after error'), ('C2', 'bob', 'second after error')])
+            self.reply(f, request, dict(turn=dict(id='T2')))
+            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-2')
+            self.assertEqual(f.provider.reactions, ['D1', 'C1', 'C2'])
+            self.terminal(f, 'S1', 'T2'); f.wait('native-event')
+            print('IDLE_STATUS failed-turn=next-input-dispatched restart=none order=C1,C2', flush=True)
+
+    def test_unknown_and_active_status_hold_input_in_order_across_restart(self):
+        for resumed in ('active', 'unrecognized'):
+            with self.subTest(resumed=resumed), self.fixture(protocol=True) as f:
+                with self.controller(f):
+                    f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+                    request = self.rpc(f, 'thread/start')
+                    self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+                    request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+                    f.wait('poll-completed success=True')
+                    self.terminal(f, 'S1', 'T1', status='fixtureFutureStatus'); f.wait('native-event')
+                    f.provider.comments = {'D1': [self.comment(1, 'alice', 'first after error'), self.comment(2, 'bob', 'second after error')]}
+                    line = f.wait_or_native('input-waiting')
+                    self.assertIsNotNone(line, 'Input reached a session whose native status is unrecognized')
+                    self.assertIn('status=Unknown', line)
+                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Input reached a session not reported idle')
+                    self.eyes(f, ['D1'])
+                saved = json.loads(f.state.read_text())['discussions']['D1']
+                self.assertNotIn('pending', saved)
+                self.assertEqual([item['change']['subject']['id'] for item in saved['waiting']['inputs']], ['C1', 'C2'])
+                status = json.loads(f.run(self.controller_command + ['status', '--state', f.state]))
+                self.assertEqual((status['work']['waiting'], status['sessions'][0]['waiting']), (2, 2))
+                # A restarted native has not loaded S1: the controller loads it and uses only the reported status.
+                with self.controller(f, 'mode=polling'):
+                    request = self.rpc(f, 'thread/resume')
+                    self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))),
+                               status='active' if resumed == 'active' else 'fixtureFutureStatus')
+                    for _ in range(2):
+                        self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Input reached a session not reported idle')
+                    self.assertEqual(f.provider.reactions, ['D1'])
+                    self.assertEqual(json.loads(f.journal.read_text())['active'], {}, 'Unused load admission was retained')
+                    self.notify(f, 'thread/status/changed', threadId='S1', status=dict(type='idle'))
+                    request = self.rpc(f, 'turn/start')
+                    envelope = self.dispatched(request)
+                    self.assertEqual(envelope['_bridge']['mode'], 'continue')
+                    self.assertEqual(self.subjects(envelope), [('C1', 'alice', 'first after error'), ('C2', 'bob', 'second after error')])
+                    self.assertEqual(f.provider.reactions, ['D1'], 'EYES preceded acceptance after restart')
+                    self.reply(f, request, dict(turn=dict(id='T2')))
+                    f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-2')
+                    self.assertEqual(f.provider.reactions, ['D1', 'C1', 'C2'])
+                    self.terminal(f, 'S1', 'T2'); f.wait('native-event')
+                print('IDLE_STATUS unknown=held restart-resume=' + resumed + ' held-until-idle=true order=C1,C2', flush=True)
+
+    def test_oversized_waiting_input_splits_into_ordered_batches_without_loss(self):
+        with self.fixture(protocol=True) as f, self.controller(f):
+            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+            request = self.rpc(f, 'thread/start')
+            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+            f.wait('poll-completed success=True')
+            # Five maximum-size GitHub comment bodies exceed one controller batch.
+            bodies = [str(number) + ':' + 'x' * 65534 for number in range(1, 6)]
+            f.provider.comments = {'D1': [self.comment(number, 'author' + str(number), body) for number, body in enumerate(bodies, 1)]}
+            for _ in range(2):
+                self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Input reached native during the active turn')
+            delivered, turn = [], 1
+            while len(delivered) < len(bodies):
+                self.terminal(f, 'S1', 'T' + str(turn)); turn += 1
+                request = self.rpc(f, 'turn/start')
+                text = request['params']['input'][0]['text']
+                self.assertLessEqual(len(text.split('\n', 1)[1]), 256 * 1024)
+                batch = self.subjects(self.dispatched(request))
+                self.assertTrue(batch, 'Empty batch dispatched')
+                self.reply(f, request, dict(turn=dict(id='T' + str(turn))))
+                f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-' + batch[-1][0][1:])
+                delivered += batch
+                self.assertEqual(f.provider.reactions, ['D1'] + [subject for subject, _, _ in delivered])
+                if len(delivered) < len(bodies):  # The remainder waits for the next native idle report.
+                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Remainder reached the active turn')
+            self.assertEqual(delivered, [('C' + str(number), 'author' + str(number), body) for number, body in enumerate(bodies, 1)])
+            self.assertGreaterEqual(turn - 1, 2, 'Fixture did not exceed one batch')
+            self.assertNotIn('waiting', json.loads(f.state.read_text())['discussions']['D1'])
+            print('IDLE_SPLIT batches=' + str(turn - 1) + ' changes=' + str(len(delivered)) + ' order=preserved', flush=True)
+
+    def test_rejected_native_input_is_retried_after_backoff_as_a_marked_redelivery(self):
+        with self.fixture(protocol=True) as f, self.controller(f):
+            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+            request = self.rpc(f, 'thread/start')
+            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+            self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+            self.eyes(f, ['D1'])
+            f.provider.comments = {'D1': [self.comment(1, 'alice', 'please answer')]}
+            request = self.rpc(f, 'turn/start')
+            first = self.dispatched(request)
+            self.assertNotIn('redelivery', first['_bridge'])
+            self.reject(f, request)
+            for _ in range(2):  # Neither a blocked Discussion nor a retry on every poll.
+                self.assertIsNotNone(f.wait_or_native('poll-completed'), 'Rejected input was retried without backoff')
+            request = self.rpc(f, 'turn/start')
+            retried = self.dispatched(request)
+            self.assertIs(retried['_bridge'].get('redelivery'), True)
+            self.assertEqual(self.subjects(retried), [('C1', 'alice', 'please answer')])
+            self.assertEqual(f.provider.reactions, ['D1'], 'EYES preceded acceptance of the redelivery')
+            self.reply(f, request, dict(turn=dict(id='T2')))
+            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-1')
+            self.assertEqual(f.provider.reactions, ['D1', 'C1'])
+            self.terminal(f, 'S1', 'T2'); f.wait('native-event')
+            # Input observed after the accepted redelivery is ordinary again.
+            f.provider.comments['D1'].append(self.comment(2, 'bob', 'follow-up'))
+            request = self.rpc(f, 'turn/start')
+            envelope = self.dispatched(request)
+            self.assertNotIn('redelivery', envelope['_bridge'])
+            self.assertEqual(self.subjects(envelope), [('C2', 'bob', 'follow-up')])
+            self.reply(f, request, dict(turn=dict(id='T3')))
+            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-2')
+            saved = json.loads(f.state.read_text())['discussions']['D1']
+            self.assertNotIn('pending', saved); self.assertNotIn('waiting', saved)
+            self.assertFalse(json.loads(f.journal.read_text())['blocked'])
+            self.terminal(f, 'S1', 'T3'); f.wait('native-event')
+            print('REDELIVERY rejected=retried marker=_bridge.redelivery eyes-after-acceptance=true', flush=True)
+
+    def test_unacknowledged_native_input_is_redelivered_once_idle_while_the_checkout_stays_excluded(self):
+        with self.fixture(protocol=True) as f, self.controller(f):
+            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+            request = self.rpc(f, 'thread/start')
+            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+            self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+            initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
+            f.provider.comments = {'D1': [self.comment(1, 'alice', 'please answer')]}
+            request = self.rpc(f, 'turn/start')
+            self.assertEqual(self.subjects(self.dispatched(request)), [('C1', 'alice', 'please answer')])
+            target = self.publish(f)
+            f.wait('delivery-retry', timeout=90)  # The acknowledgement is lost: the controller's native request deadline passes.
+            self.pending(f)
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial, 'Checkout refreshed while delivery was uncertain')
+            # The native accepted the input after all; its late turn runs past the retry backoff.
+            self.notify(f, 'thread/status/changed', threadId='S1', status=dict(type='active'))
+            self.notify(f, 'turn/started', threadId='S1', turn=dict(id='T2', status='inProgress'))
+            deadline = time.monotonic() + 7
+            while time.monotonic() < deadline:
+                self.assertIsNotNone(f.wait_or_native('poll-completed'), 'Redelivery reached a session that was not idle')
+            journal = json.loads(f.journal.read_text())
+            self.assertFalse(journal['blocked'], journal.get('reason'))
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial, 'Checkout refreshed under the late native turn')
+            self.terminal(f, 'S1', 'T2')
+            request = self.rpc(f, 'turn/start')
+            redelivered = self.dispatched(request)
+            self.assertIs(redelivered['_bridge'].get('redelivery'), True)
+            self.assertEqual(self.subjects(redelivered), [('C1', 'alice', 'please answer')])
+            self.assertEqual(f.provider.reactions, ['D1'], 'EYES preceded acknowledged acceptance')
+            self.reply(f, request, dict(turn=dict(id='T3')))
+            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-1')
+            self.assertEqual(f.provider.reactions, ['D1', 'C1'])
+            self.terminal(f, 'S1', 'T3')
+            # The acknowledged redelivery completed, so no native turn can still hold the input: refresh resumes.
+            f.wait('checkout-refreshed'); self.settled(f)
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+            self.assertEqual(json.loads(f.journal.read_text())['active'], {})
+            self.assertNotIn('waiting', json.loads(f.state.read_text())['discussions']['D1'])
+            print('REDELIVERY lost-ack=redelivered late-native-turn=held-until-idle checkout=excluded-until-resolved', flush=True)
+
+    def test_delivery_interrupted_by_restart_is_redelivered_and_a_failed_receipt_never_resends_it(self):
+        with self.fixture(protocol=True, clone=False) as f:
+            with self.controller(f):
+                f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+                request = self.rpc(f, 'thread/start'); self.reply(f, request, dict(thread=dict(id='S1')))
+                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+                self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+                self.eyes(f, ['D1'])
+                f.provider.comments = {'D1': [self.comment(1, 'alice', 'please answer')]}
+                request = self.rpc(f, 'turn/start')  # The controller stops before any acknowledgement arrives.
+                self.assertNotIn('redelivery', self.dispatched(request)['_bridge'])
+            f.provider.reaction_status = 403  # GitHub will refuse EYES for the accepted redelivery.
+            with self.controller(f, 'mode=polling'):
+                request = self.rpc(f, 'thread/resume'); self.reply(f, request, dict(thread=dict(id='S1')))
+                request = self.rpc(f, 'turn/start')
+                redelivered = self.dispatched(request)
+                self.assertIs(redelivered['_bridge'].get('redelivery'), True)
+                self.assertEqual(self.subjects(redelivered), [('C1', 'alice', 'please answer')])
+                self.reply(f, request, dict(turn=dict(id='T2')))
+                f.wait('receipt-error https://github.com/owner/project/discussions/1#discussioncomment-1')
+                self.terminal(f, 'S1', 'T2'); f.wait('native-event')
+                for _ in range(2):
+                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Accepted input was resent after its receipt failed')
+            with self.controller(f, 'mode=polling'):
+                for _ in range(2):
+                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Accepted input was resent after a restart')
+                self.assertNotIn(f.provider.token, ''.join(f.lines))
+            self.assertEqual(f.provider.reactions, ['D1'])
+            saved = json.loads(f.state.read_text())['discussions']['D1']
+            self.assertNotIn('pending', saved); self.assertNotIn('waiting', saved)
+            print('REDELIVERY restart=redelivered receipt-failure=no-resend', flush=True)
+
     def rpc(self, f, method):
         self.assertTrue(select.select([f.responses], [], [], 20)[0], 'Missing native request ' + method)
         message = json.loads(f.responses.readline())
         self.assertEqual(message['method'], method)
         return message
 
-    def reply(self, f, request, result):
+    def reply(self, f, request, result, status='idle'):
+        # Pinned native thread/start and thread/resume results report the loaded thread's runtime status.
+        if request['method'] in ('thread/start', 'thread/resume') and 'thread' in result:
+            result['thread'].setdefault('status', dict(type=status))
         f.commands.write(json.dumps(dict(id=request['id'], result=result)) + '\n'); f.commands.flush()
 
-    def terminal(self, f, thread, turn):
-        f.commands.write(json.dumps(dict(method='turn/completed', params=dict(threadId=thread, turn=dict(id=turn, status='completed')))) + '\n'); f.commands.flush()
+    def reject(self, f, request, message='fixture rejection'):
+        f.commands.write(json.dumps(dict(id=request['id'], error=dict(code=-32600, message=message))) + '\n'); f.commands.flush()
+
+    def notify(self, f, method, **params):
+        f.commands.write(json.dumps(dict(method=method, params=params)) + '\n'); f.commands.flush()
+
+    def terminal(self, f, thread, turn, status='idle', outcome='completed'):
+        # Pinned native order: the thread status changes before turn/completed.
+        self.notify(f, 'thread/status/changed', threadId=thread, status=dict(type=status))
+        self.notify(f, 'turn/completed', threadId=thread, turn=dict(id=turn, status=outcome))
 
     def pending(self, f):
         for _ in range(5):
@@ -442,7 +832,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 return
         self.fail('Native reload did not complete its durable checkpoint')
 
-    def test_shared_turn_early_completion_waits_for_the_new_admission_acknowledgement(self):
+    def test_refresh_precedes_waiting_input_and_early_completion_waits_for_acknowledgement(self):
         with self.fixture(protocol=True) as f, self.controller(f):
             f.provider.discussions = [self.discussion(1)]
             request = self.rpc(f, 'thread/start')
@@ -453,19 +843,26 @@ class CheckoutRefreshTests(unittest.TestCase):
             requests = len(f.provider.git_tokens)
             target = self.publish(f); self.pending(f)
             f.provider.discussions[0]['body'] += ' changed'
-            request = self.rpc(f, 'turn/start')
+            self.assertIsNotNone(f.wait_or_native('input-waiting'), 'Input reached native during the active turn')
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
+            self.assertEqual(len(f.provider.git_tokens), requests)
             self.terminal(f, 'S1', 'T1')
+            # The eligible refresh takes the idle boundary before the waiting input reaches the reloaded native.
+            f.wait('checkout-refreshed')
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+            request = self.rpc(f, 'thread/resume')
+            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+            request = self.rpc(f, 'turn/start')
+            self.assertIn(' changed', self.dispatched(request)['changes'][0]['subject']['body'])
+            self.terminal(f, 'S1', 'T2')  # The native can complete a turn before its acknowledgement arrives.
             f.wait('native-event')
             journal = json.loads(f.journal.read_text())
             self.assertEqual(len(journal['active']), 1, 'Early terminal cleared admission before acknowledgement')
             self.assertFalse(next(iter(journal['active'].values()))['confirmed'])
-            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
-            self.assertEqual(len(f.provider.git_tokens), requests)
-            self.reply(f, request, dict(turn=dict(id='T1')))
-            f.wait('checkout-refreshed'); self.settled(f)
-            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+            self.reply(f, request, dict(turn=dict(id='T2')))
+            f.wait('forwarded'); self.settled(f)
             self.assertEqual(json.loads(f.journal.read_text())['active'], {})
-            print('MATRIX_EARLY shared-turn-ack-and-save-required=true', flush=True)
+            print('MATRIX_EARLY refresh-before-waiting-input=true ack-and-save-required=true', flush=True)
 
     def test_unknown_terminal_and_failed_journal_write_never_publish_idle(self):
         for case in ('unknown-terminal', 'journal-write'):
@@ -486,7 +883,8 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.assertTrue(journal['active'])
                     if case == 'unknown-terminal': self.assertTrue(journal['blocked'])
                     f.provider.discussions[0]['body'] += ' changed after fault'
-                    f.wait('observation-error')
+                    # An unmatched terminal leaves S1's accepted turn outstanding, so input waits before admission.
+                    f.wait('input-waiting' if case == 'unknown-terminal' else 'observation-error')
                     self.assertFalse(select.select([f.responses], [], [], 0)[0])
                     self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
                     self.assertEqual(len(f.provider.git_tokens), requests)
@@ -497,7 +895,7 @@ class CheckoutRefreshTests(unittest.TestCase):
 
 
 
-    def test_safe_dirty_work_defers_refresh_but_allows_existing_discussion_assistance(self):
+    def test_active_turn_delays_forced_refresh_and_next_turn_starts_on_origin(self):
         with self.fixture(protocol=True) as f, self.controller(f):
             f.provider.discussions = [self.discussion(1)]
             request = self.rpc(f, 'thread/start')
@@ -505,22 +903,30 @@ class CheckoutRefreshTests(unittest.TestCase):
             request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
             f.wait('poll-completed success=True')
             initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
-            (f.checkout / 'README').write_text('preserve user bytes\n')
-            before = self.snapshot(f.checkout)
+            # The active turn edits and commits inside the owned checkout while origin is force-pushed.
+            (f.checkout / 'README').write_text('active agent bytes\n')
+            f.git('-C', f.checkout, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.test', 'commit', '--quiet', '-am', 'agent commit')
+            (f.checkout / 'agent-notes').write_text('active agent notes\n')
+            during = self.snapshot(f.checkout)
             requests = len(f.provider.git_tokens)
-            self.publish(f); self.pending(f)
-            self.terminal(f, 'S1', 'T1'); f.wait('refresh-pending')
-            f.provider.discussions[0]['body'] += ' assistance with dirty checkout'
-            request = self.rpc(f, 'turn/start')
-            self.reply(f, request, dict(turn=dict(id='T2')))
+            target = self.force_push(f); self.pending(f)
+            self.assertEqual(self.snapshot(f.checkout), during, 'Refresh changed the checkout under an active turn')
+            self.assertEqual(len(f.provider.git_tokens), requests, 'Refresh fetched while native work was active')
+            self.terminal(f, 'S1', 'T1')
+            f.wait('checkout-refreshed'); self.settled(f)
+            f.provider.discussions[0]['body'] += ' next input'
+            request = self.rpc(f, 'thread/resume')
+            # Native has not started the next turn yet; it must already see origin's content.
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+            self.assertEqual((f.checkout / 'README').read_text(), 'rewritten history\n')
+            self.assertFalse((f.checkout / 'agent-notes').exists())
+            self.assertEqual(f.git('-C', f.checkout, 'status', '--porcelain', '--untracked-files=all'), '')
+            self.reply(f, request, dict(thread=dict(id='S1', cwd=str(f.checkout)), cwd=str(f.checkout)))
+            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T2')))
             f.wait('poll-completed success=True')
-            self.assertEqual(self.snapshot(f.checkout), before)
-            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
-            self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
-            self.assertEqual(len(f.provider.git_tokens), requests)
-            self.assertFalse(json.loads(f.journal.read_text())['blocked'])
+            self.assertNotEqual(initial, target)
+            self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
             self.terminal(f, 'S1', 'T2'); f.wait('native-event')
-            print('MATRIX_DIRTY assistance=accepted user-content-index-refs=preserved nofetch=true', flush=True)
 
 
 
@@ -589,11 +995,21 @@ class CheckoutRefreshTests(unittest.TestCase):
                     if case == 'save-failure': Path(str(f.state) + '.tmp').mkdir()
                     self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
                     if case == 'save-failure':
-                        f.wait('manual-recovery')
-                        self.assertTrue(json.loads(f.journal.read_text())['blocked'])
-                        self.assertTrue(json.loads(f.state.read_text())['discussions']['D1']['pending'])
-                        self.assertFalse(select.select([f.responses], [], [], 0)[0])
-                        self.assertEqual(len(f.provider.git_tokens), requests)
+                        # Nothing was sent, so the idle refresh may proceed while the batch waits to retry.
+                        f.wait('checkout-refreshed')
+                        self.assertTrue(any(' delivery-retry ' in line for line in f.lines))
+                        self.assertFalse(json.loads(f.journal.read_text())['blocked'])
+                        self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+                        self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Input was sent without a durable checkpoint')
+                        Path(str(f.state) + '.tmp').rmdir()  # Release only the fixture write fault.
+                        request = self.rpc(f, 'thread/resume')  # The refresh reloaded the native.
+                        self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+                        request = self.rpc(f, 'turn/start')
+                        envelope = self.dispatched(request)
+                        self.assertEqual(envelope['_bridge']['mode'], 'bootstrap')
+                        self.assertNotIn('redelivery', envelope['_bridge'], 'No earlier turn/start carried this input')
+                        self.reply(f, request, dict(turn=dict(id='T1')))
+                        self.terminal(f, 'S1', 'T1'); f.wait('native-event')
                     else:
                         request = self.rpc(f, 'turn/start')
                         turn = 'T2' if case == 'resume' else 'T1'
@@ -601,10 +1017,6 @@ class CheckoutRefreshTests(unittest.TestCase):
                         self.terminal(f, 'S1', turn)
                         f.wait('checkout-refreshed'); self.settled(f)
                         self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
-                if case == 'save-failure':
-                    Path(str(f.state) + '.tmp').rmdir()  # Release only the fixture write fault.
-                    result = subprocess.run(f.command + ['--once'], env=f.environment, capture_output=True, text=True, timeout=20)
-                    self.assertEqual(result.returncode, 1); self.assertIn('uncertain', result.stdout)
                 print('GAP case=' + case + ' reservation-and-first-send=protected', flush=True)
 
 
@@ -635,7 +1047,7 @@ class CheckoutRefreshTests(unittest.TestCase):
         with self.fixture(responses=True) as f:
             home, seed = f.directory / 'home', f.directory / 'seed'
             config = home / 'config.toml'
-            config.write_text(config.read_text() + 'model = "gpt-6.1-sol"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Credential-free local fixture"\nbase_url = "https://broker.fixture/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n')
+            config.write_text(config.read_text() + FIXTURE_MODEL)
             skill = seed / '.agents/skills/repo-refresh'
             skill.mkdir(parents=True); (seed / '.codex').mkdir()
             def context(version, effort):
@@ -646,13 +1058,13 @@ class CheckoutRefreshTests(unittest.TestCase):
             with self.controller(f):
                 f.provider.discussions = [self.discussion(1)]
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_FIRST'
-                first = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                first = native_event(f.wait('native-event'))
                 self.assertEqual(first['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(first), flush=True)
                 self.settled(f)
-                self.assertEqual(first['params']['turn']['status'], 'completed')
+                self.assertEqual(first['status'], 'completed')
                 self.assertEqual(len(f.provider.model_requests), 1)
                 session = json.loads(f.state.read_text())['discussions']['D1']['sessionId']
-                self.assertEqual(first['params']['threadId'], session)
+                self.assertEqual(first['thread'], session)
                 rollout, = home.rglob('rollout-*.jsonl')
                 prefix = rollout.read_bytes()
                 self.assertIn(b'NATIVE_USER_FIRST', prefix)
@@ -660,7 +1072,13 @@ class CheckoutRefreshTests(unittest.TestCase):
                 request_a = json.dumps(f.provider.model_requests[0]['body'])
                 self.assertIn('NATIVE_AGENTS_A', request_a)
                 self.assertIn('NATIVE_SKILL_BODY_A', request_a)
-                context('B', 'high'); target = self.publish(f)
+                # Local instruction/skill edits and a rewritten origin mainline: origin's B must win at idle.
+                (f.checkout / 'AGENTS.md').write_text('Local agent edit NATIVE_AGENTS_LOCAL.\n')
+                (f.checkout / '.agents/skills/repo-refresh/SKILL.md').write_text('---\nname: repo-refresh\ndescription: Local NATIVE_DESCRIPTION_LOCAL.\n---\nLocal NATIVE_SKILL_BODY_LOCAL.\n')
+                context('B', 'high'); f.git('-C', seed, 'add', '.')
+                f.git('-C', seed, 'commit', '--quiet', '--amend', '-m', 'rewrite native context B')
+                f.git('-C', seed, 'push', f.directory / 'repositories/owner/project.git', '+HEAD:main')
+                target = f.git('-C', seed, 'rev-parse', 'HEAD')
                 f.wait('checkout-refreshed'); self.settled(f)
                 probe = native_config(f.checkout, home, discovery=True, environment=f.environment)
                 self.assertEqual(probe['config']['model_reasoning_effort'], 'high')
@@ -669,18 +1087,22 @@ class CheckoutRefreshTests(unittest.TestCase):
                 listed = json.dumps(probe['fixtureSkills'])
                 self.assertIn(str(f.checkout / '.agents/skills/repo-refresh/SKILL.md'), listed)
                 self.assertIn('NATIVE_DESCRIPTION_B', listed)
-                self.assertNotIn('NATIVE_DESCRIPTION_A', listed)
+                self.assertNotIn('NATIVE_DESCRIPTION_A', listed); self.assertNotIn('NATIVE_DESCRIPTION_LOCAL', listed)
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_SECOND'
-                second = json.loads(f.wait('native-event').split(' native-event ', 1)[1])
+                second = native_event(f.wait('native-event'))
                 self.assertEqual(second['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(second), flush=True)
                 self.settled(f)
-                self.assertEqual(second['params']['turn']['status'], 'completed')
-                self.assertEqual(second['params']['threadId'], session)
+                self.assertEqual(second['status'], 'completed')
+                self.assertEqual(second['thread'], session)
                 self.assertEqual(json.loads(f.state.read_text())['discussions']['D1']['sessionId'], session)
                 self.assertEqual(len(f.provider.model_requests), 2)
+                # Each turn states the reasoning its checkout's project configuration selects at that turn.
+                self.assertEqual([request['body']['reasoning']['effort'] for request in f.provider.model_requests], ['low', 'high'])
                 request_b = json.dumps(f.provider.model_requests[1]['body'])
                 for text in ('NATIVE_USER_FIRST', 'Harmless fixture assistant 1.', 'NATIVE_USER_SECOND', 'NATIVE_AGENTS_B', 'NATIVE_SKILL_BODY_B'):
                     self.assertIn(text, request_b)
+                for text in ('NATIVE_AGENTS_LOCAL', 'NATIVE_SKILL_BODY_LOCAL', 'NATIVE_DESCRIPTION_LOCAL'):
+                    self.assertNotIn(text, request_b)
                 self.assertLess(request_b.index('NATIVE_AGENTS_A'), request_b.index('NATIVE_AGENTS_B'))
                 self.assertIn('These AGENTS.md instructions replace all previously provided AGENTS.md instructions.', request_b)
                 self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
@@ -694,6 +1116,101 @@ class CheckoutRefreshTests(unittest.TestCase):
                   completions=[first, second], config=probe['config'], skills=probe['fixtureSkills'], denied=f.provider.denied,
                   network=f.provider.requests, prefixLength=len(prefix), prefixSha256=hashlib.sha256(prefix).hexdigest(),
                   finalPrefixSha256=hashlib.sha256(final[:len(prefix)]).hexdigest(), rolloutSha256=hashlib.sha256(final).hexdigest())), flush=True)
+
+    def test_pinned_native_active_turn_holds_input_until_its_idle_report(self):
+        with self.fixture(responses=True) as f:
+            config = f.directory / 'home/config.toml'
+            config.write_text(config.read_text() + FIXTURE_MODEL)
+            hold = threading.Event(); f.provider.response_holds[1] = hold
+            try:
+                with self.controller(f):
+                    f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
+                    f.wait('native-accepted')
+                    f.wait('poll-completed success=True')
+                    self.eyes(f, ['D1'])
+                    session = json.loads(f.state.read_text())['discussions']['D1']['sessionId']
+                    # The first model response is held, so the real native turn stays active.
+                    f.provider.comments = {'D1': [self.comment(1, 'alice', 'NATIVE_WAITING_INPUT')]}
+                    f.wait('poll-completed success=True'); f.wait('poll-completed success=True')
+                    self.assertEqual(f.provider.reactions, ['D1'], 'Input was accepted into the active native turn')
+                    self.assertTrue(any('session-status session=' + session + ' status=Active' in line for line in f.lines),
+                                    'Adapter did not observe the native active report')
+                    self.assertTrue(any('input-waiting' in line and 'sources=C1' in line for line in f.lines))
+                    self.assertFalse(any('session-status session=' + session + ' status=Idle' in line for line in f.lines))
+                    hold.set()
+                    first = native_event(f.wait('native-event'))
+                    f.wait('session-status session=' + session + ' status=Active')  # Native report for the dispatched turn.
+                    second = native_event(f.wait('native-event'))
+                    self.eyes(f, ['D1', 'C1'])
+            finally: hold.set()
+            for completed in (first, second):
+                self.assertEqual((completed['method'], completed['thread'], completed['status']),
+                                 ('turn/completed', session, 'completed'))
+            self.assertNotEqual(first['turn'], second['turn'], 'Waiting input steered the first turn')
+            self.assertEqual(len(f.provider.model_requests), 2)
+            self.assertNotIn('NATIVE_WAITING_INPUT', json.dumps(f.provider.model_requests[0]['body']))
+            self.assertIn('NATIVE_WAITING_INPUT', json.dumps(f.provider.model_requests[1]['body']))
+            self.assertEqual(f.provider.reactions, ['D1', 'C1'])
+            print('NATIVE_IDLE_DISPATCH session=' + session + ' turns=' + first['turn'] + ',' + second['turn']
+                  + ' statuses=' + json.dumps([line.split(' ', 2)[2].strip() for line in f.lines if 'session-status' in line]), flush=True)
+
+    def test_pinned_native_turns_use_the_labelled_model_and_reasoning_and_label_removal_restores_the_defaults(self):
+        # Pinned native keeps a turn/start model and effort for later turns, so only an explicit default restores it.
+        with self.fixture(responses=True) as f:
+            config = f.directory / 'home/config.toml'
+            config.write_text(config.read_text() + FIXTURE_MODEL)
+            f.provider.labels = {'D1': ['repoagent:luna6:xhigh']}
+            with self.controller(f):
+                f.provider.discussions = [self.discussion(1)]
+                first = native_event(f.wait('native-event'))
+                f.provider.labels = {}
+                f.wait('poll-completed success=True'); f.wait('poll-completed success=True')
+                self.assertEqual(len(f.provider.model_requests), 1, 'A label-only change invoked the agent')
+                f.provider.discussions[0]['body'] += ' after the label was removed'
+                second = native_event(f.wait('native-event'))
+        self.assertEqual([(event['method'], event['status']) for event in (first, second)], [('turn/completed', 'completed')] * 2)
+        self.assertEqual([(request['body']['model'], request['body']['reasoning']['effort']) for request in f.provider.model_requests],
+                         [('gpt-6-luna', 'xhigh'), ('gpt-6.1-sol', 'low')])
+        print('NATIVE_MODEL_SELECTION ' + json.dumps([dict(model=request['body']['model'], reasoning=request['body']['reasoning'])
+                                                       for request in f.provider.model_requests]), flush=True)
+
+    def test_genuine_sessions_discover_packaged_skills_and_receive_orientation_when_started_or_resumed(self):
+        packaged = Path(self.controller_command[-1]).parent  # The controller's own installed skill directories.
+        with self.fixture(responses=True) as f:
+            f.provider.model_request_limit = 3
+            config = f.directory / 'home/config.toml'
+            config.write_text(config.read_text() + FIXTURE_MODEL)
+            def completed():
+                event = native_event(f.wait('native-event'))
+                self.assertEqual((event['method'], event['status']), ('turn/completed', 'completed'), event)
+            with self.controller(f):
+                f.provider.discussions = [self.discussion(1)]
+                completed()
+                f.provider.discussions[0]['body'] += ' same-process continuation'
+                completed()
+            with self.controller(f):
+                f.provider.discussions[0]['body'] += ' after restart'
+                completed()
+        self.assertEqual(len(f.provider.model_requests), 3, f.provider.denied)
+        def texts(request):
+            return [part['text'] for item in request['body']['input'] for part in item.get('content') or [] if 'text' in part]
+        def supplied(request):
+            # Native wraps each supplied SKILL.md exactly as read; history repeats earlier turns' blocks.
+            blocks = [re.fullmatch(r'<skill>\n<name>(.+)</name>\n<path>(.+)</path>\n(.*)\n</skill>', text, re.DOTALL) for text in texts(request)]
+            blocks = [block for block in blocks if block]
+            for name, path, content in (block.groups() for block in blocks):
+                if name in ('github-discussion', 'repoagent-orientation'):
+                    self.assertEqual(Path(path), packaged / name / 'SKILL.md')
+                    self.assertEqual(content, (ROOT / '.agents/skills' / name / 'SKILL.md').read_text())
+            return [block[1] for block in blocks]
+        started, continued, resumed = map(supplied, f.provider.model_requests)
+        self.assertEqual((started.count('repoagent-orientation'), continued.count('repoagent-orientation'), resumed.count('repoagent-orientation')), (1, 1, 2))
+        self.assertEqual((started.count('github-discussion'), continued.count('github-discussion'), resumed.count('github-discussion')), (1, 2, 3))
+        catalog = '\n'.join(text for text in texts(f.provider.model_requests[0]) if '### Available skills' in text)
+        for name in ('github-discussion', 'repoagent-orientation'):
+            self.assertRegex(catalog, r'(?m)^- ' + name + ': ')
+        self.assertTrue(any('$repoagent-orientation' in text and '$github-discussion' in text for text in texts(f.provider.model_requests[0])))
+        print('ORIENTATION_INTEGRATION ' + json.dumps(dict(packaged=str(packaged), started=started, continued=continued, resumed=resumed)), flush=True)
 
     def test_signed_push_is_durable_idle_safe_and_scoped_to_managed_clone(self):
         for clone in (True, False):
@@ -759,7 +1276,11 @@ class CheckoutRefreshTests(unittest.TestCase):
                     durable = f.journal.read_bytes(); Path(str(f.journal) + '.tmp').mkdir()
                     self.assertEqual(deliver(payload), 500); self.assertEqual(f.journal.read_bytes(), durable)
                     f.provider.discussions[0]['body'] += ' after fault'
-                    self.assertEqual(deliver(notice, event='discussion'), 202); f.wait('observation-error')
+                    self.assertEqual(deliver(notice, event='discussion'), 202)
+                    # T2 is still active, so the input waits; at idle the faulted journal blocks its admission.
+                    self.assertIsNotNone(f.wait_or_native('input-waiting'), 'Input reached the active turn')
+                    self.terminal(f, 'S1', 'T2'); f.wait('dispatch-error')
+                    self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Faulted journal admitted native input')
                     self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
 
     @contextmanager
@@ -855,7 +1376,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual(completed['completed'], completed['requested'])
                 self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
 
-    def test_durable_webhooks_retain_unfinished_native_work_and_admit_additional_input(self):
+    def test_durable_webhooks_retain_unfinished_native_work_and_hold_additional_input_until_idle(self):
         with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
             with self.controller(f, 'mode=webhook-fixed'):
                 f.wait('durable-webhook-observed hint=reconcile')
@@ -883,13 +1404,18 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual(queue_operation('peek'), 0, 'Invisible received work must remain retained')
                 f.provider.discussions[0]['body'] += ' additional input'
                 self.assertEqual(deliver(), 202)
-                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-                f.wait('durable-webhook-observed hint=discussion:1')
-                self.assertGreater(queue_operation('count'), 0, 'Additional input must remain admissible while the same turn is active')
-                self.assertEqual(deliver(), 202)  # Unchanged content must not repeat accepted native input.
+                self.assertIsNotNone(f.wait_or_native('durable-webhook-observed hint=discussion:1'), 'Additional input reached the active turn')
+                self.assertGreater(queue_operation('count'), 0, 'Waiting input must retain its durable work')
+                self.assertEqual(deliver(), 202)  # Unchanged content must not repeat waiting input.
                 f.wait('durable-webhook-observed hint=discussion:1')
                 self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Duplicate delivery repeated native input')
                 self.terminal(f, 'S1', 'T1')
+                request = self.rpc(f, 'turn/start')
+                self.assertIn('additional input', self.dispatched(request)['changes'][0]['subject']['body'])
+                self.reply(f, request, dict(turn=dict(id='T2')))
+                f.wait('forwarded')
+                self.assertGreater(queue_operation('count'), 0, 'Dispatched input retains durable work until its turn completes')
+                self.terminal(f, 'S1', 'T2')
                 eventually_count(0)
                 self.assertEqual(json.loads(f.journal.read_text())['active'], {})
                 self.assertFalse(json.loads(f.journal.read_text())['blocked'])
@@ -1010,6 +1536,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual(sorted(continued), ['D2'])
                 self.assertEqual(continued['D2']['sessionId'], 'S2')
                 self.assertEqual(continued['D2']['sources']['D2']['content']['body'], f.provider.discussions[0]['body'])
+                self.assertEqual(sum('discussion-forgotten' in line for line in f.lines), 1, 'Nothing was left to forget')
                 self.terminal(f, 'S2', 'T3')
                 self.drained(queue_operation)
                 self.assertIsNone(f.process.poll(), 'Stale work stopped the shared worker')
@@ -1064,6 +1591,44 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertGreaterEqual(first_retry - first_failure, 4, 'Failed work was retried without backoff')
             self.assertEqual(json.loads(f.state.read_text())['discussions']['D1'], retained)
             self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Retried unchanged work repeated native input')
+
+    def test_deleted_discussion_with_waiting_input_and_a_running_turn_never_dispatches_and_its_work_completes(self):
+        with self.fixture(protocol=True, webhooks=True) as f, self.durable_queue(f) as queue_operation:
+            f.provider.discussions = [self.discussion(1), self.discussion(2)]
+            with self.controller(f, 'mode=webhook-fixed'):
+                for number in (1, 2):
+                    request = self.rpc(f, 'thread/start')
+                    self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S' + str(number), cwd=str(f.checkout))))
+                    request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T' + str(number))))
+                f.wait('durable-webhook-observed hint=reconcile')
+                self.terminal(f, 'S2', 'T2')
+                # T1 keeps D1's active slot; a D1 edit waits in the controller behind it.
+                f.provider.discussions[0]['body'] += ' while T1 runs'
+                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(1), event='discussion'), 202)
+                f.wait('input-waiting'); f.wait('durable-webhook-observed hint=discussion:1')
+                saved = json.loads(f.state.read_text())['discussions']
+                self.assertEqual(saved['D1']['running']['turn'], 'T1')
+                self.assertEqual(len(saved['D1']['waiting']['inputs']), 1)
+                del f.provider.discussions[0]
+                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(1, 'deleted'), event='discussion'), 202)
+                self.assertIn('session=S1', f.wait('discussion-forgotten'))
+                f.wait('durable-webhook-observed hint=discussion:1')
+                discussions = json.loads(f.state.read_text())['discussions']
+                self.assertEqual(sorted(discussions), ['D2'], 'Waiting input, running and checkpoint state of D1 must be forgotten')
+                self.assertEqual(discussions['D2'], saved['D2'], 'Unrelated session and checkpoints must survive')
+                self.assertGreater(queue_operation('count'), 0, 'Work was completed while the native turn still ran')
+                # The native ends the turn: its slot frees, the forgotten input is never sent and retained work completes.
+                self.terminal(f, 'S1', 'T1')
+                self.drained(queue_operation)
+                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Forgotten input reached the native')
+                f.provider.discussions[0]['body'] += ' after the deletion'
+                self.assertEqual(self.durable_delivery(f, payload=self.discussion_event(2), event='discussion'), 202)
+                request = self.rpc(f, 'turn/start'); self.assertEqual(request['params']['threadId'], 'S2')
+                self.reply(f, request, dict(turn=dict(id='T3')))
+                f.wait('durable-webhook-observed hint=discussion:2')
+                self.terminal(f, 'S2', 'T3')
+                self.drained(queue_operation)
+                self.assertIsNone(f.process.poll(), 'Forgetting stopped the shared worker')
 
 
 if __name__ == '__main__':

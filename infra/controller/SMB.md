@@ -25,7 +25,7 @@ supported owner handover. For the selected deployed app, use the
 [StoryBeam operations guide](../../docs/storybeam-operations.md). Original NFS data
 and the Azure-owned account cache remain preserved; this candidate does not
 remove their existing bill. Setup deployment does not enroll a device or start
-broker, GitHub or native work.
+broker, GitHub or agent work.
 
 ## Conversation persistence boundary
 
@@ -137,9 +137,11 @@ UID1000. These views add no storage account, identity or always-on service.
 Checkout ownership records contain no token or account credentials. The native
 controller accepts owner execute on those workspace records while preserving all
 binding, content, link and exclusive-lease checks. Every group/other permission
-remains rejected. Enrollment, token caches, native trust configuration and refresh
-journals keep their existing strict private-file policy. Generated executable
-wrappers contain token-file paths rather than token values. The initializer
+remains rejected. Enrollment, native trust configuration and refresh journals
+keep their existing strict private-file policy. GitHub App tokens are never
+written to the share: generated executable wrappers contain only the credential
+directory path, and the controller's credential handoff socket lives in local
+temporary storage because SMB cannot host sockets. The initializer
 creates their directories before ACA mounts the nested paths.
 
 This profile still does not provide general POSIX chmod semantics: Git can track
@@ -180,7 +182,7 @@ Zero replicas means no ACA replica-consumption charge. Standard Hot storage
 continues charging for used bytes and operations; its32GiB quota is a size limit,
 not a provisioned32GiB bill. The public Sweden Central Hot LRS data-storage rate
 observed on2026-10-22 was USD0.0271/GB-month, before operations, transfer, tax or
-discounts. Subscription-wide ACA free grants are shared with the auth service.
+discounts. Subscription-wide ACA free grants are shared with the broker.
 See the [dated cost assessment](../../docs/research/2026-10-22-container-apps-idle-cost.md)
 and [Azure Files billing](https://learn.microsoft.com/en-us/azure/storage/files/understanding-billing).
 
@@ -199,19 +201,19 @@ Both setup and active selections use HTTP wake plus `azure-queue`, minimum zero
 and maximum one, target one and activation zero. `queueLengthStrategy: all` counts
 invisible leases as well as visible messages. The queue profile uses a15-second
 poll interval and60-second cooldown; the original NFS setup defaults are retained.
-A normal idle queue-mode shutdown preserves the wake hook. Unknown native work
+A normal idle queue-mode shutdown preserves the wake hook. Unknown agent work
 or queue uncertainty stays recoverable and can keep compute allocated; it is not
-idle. See [native work lifetime](../../docs/azure-durable-work.md) and
+idle. See [agent work lifetime](../../docs/azure-durable-work.md) and
 [KEDA queue counting](https://keda.sh/docs/2.21/scalers/azure-storage-queue/).
 
 The default `activate=false` still initializes private layout and serves only
 setup metadata. It does not read enrollment, import an account, contact GitHub or
-start native work. Use that selection for actual identity, queue authorization,
+start agent work. Use that selection for actual identity, queue authorization,
 invisible-message counting and zero/wake/zero checks before any owner handover.
 Inspect the real app principal, queue-scoped assignment, both scale rules and
 replica counts; compiled JSON and declared minimums are not acceptance evidence.
 The operator applying this Bicep must be able to assign the narrowly scoped role;
-the auth service's separate Contributor-only OIDC identity is not used or changed.
+the broker's separate Contributor-only OIDC identity is not used or changed.
 
 For the first selected activation/acceptance run, select a published immutable
 `controllerImage` containing
@@ -248,7 +250,7 @@ lifecycle. Do not log template parameters or dump app secrets/runtime environmen
 This is a first-activation path. Do not apply it over a running active controller
 or reapply the original setup template. For later image replacement, use the
 [controlled image updater](README.md#subsequent-controller-image-updates), which
-checks this persistence policy and fingerprints the native enrollment secret.
+checks this persistence policy and fingerprints the controller secret.
 Image replacement still requires deliberate stop/drain, old-replica and
 outstanding-authority settlement, preserved state and readiness before routing.
 Real signed webhook/native/history/restart and active-turn survival beyond the

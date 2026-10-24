@@ -4,7 +4,8 @@
 .SYNOPSIS
 Preview or explicitly apply one local RepoAgent installation.
 .DESCRIPTION
-PowerShell 7.4+ composes host Agent-variable enrollment and private Docker startup.
+PowerShell 7.4+ composes host repository Actions-variable enrollment and private Docker startup.
+-ApprovalLocation AgentVariable explicitly selects the legacy repository Agent variable.
 Inputs override saved launch choices; missing required inputs prompt unless
 -NonInteractive. Without -Apply there are no image builds, containers or writes.
 Existing own-App options remain available with -Authentication OwnApp.
@@ -14,19 +15,25 @@ Existing own-App options remain available with -Authentication OwnApp.
 .\install.ps1 -Repository owner/repo -BrokerOrigin https://broker.example -Instance demo -NonInteractive -Apply
 .EXAMPLE
 .\install.ps1 -Authentication OwnApp -Repository owner/repo -AppId 123 -KeyPath C:\keys\app.pem -Apply
+.EXAMPLE
+.\install.ps1 -Action Settings -Repository owner/repo -Setting REPOAGENT_MAX_ACTIVE_SESSIONS=4 -Apply
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Install', 'Enroll', 'Revoke', 'Uninstall', 'Update')][string]$Action = 'Install',
+    [ValidateSet('Install', 'Enroll', 'Revoke', 'Uninstall', 'Update', 'Settings')][string]$Action = 'Install',
     [ValidateSet('Broker', 'OwnApp')][string]$Authentication,
     [string]$BrokerOrigin,
     [string]$StateDirectory,
-    [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone')][string]$EnrollmentProfile,
+    [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone', 'polling-settings', 'webhook-settings', 'polling-clone-settings', 'webhook-clone-settings')][string]$EnrollmentProfile,
     [switch]$Clone,
+    # Read REPOAGENT_ repository settings: selects the explicit repository-settings profile
+    # (runtime v3, Actions variables read) for Broker, or the direct-App flag for OwnApp.
+    [switch]$RepositorySettings,
     [string]$ApprovalStatePath,
     [string]$EnrollmentFile,
     [string]$GitHubEnvironment,
     [string]$ApprovalVariable,
+    [ValidateSet('ActionsVariable', 'AgentVariable')][string]$ApprovalLocation,
     [string]$ExpectedValueSha256,
     [string]$ExpectedRepositoryId,
     [string]$ExpectedEnvironmentId,
@@ -54,6 +61,8 @@ param(
     [switch]$DeviceLogin,
     [switch]$SkipBuild,
     [switch]$NoStart,
+    [string[]]$Setting = @(),
+    [string[]]$ClearSetting = @(),
     [switch]$NonInteractive
 )
 
@@ -67,6 +76,13 @@ if ($Action -eq 'Update') {
     exit 0
 }
 if ($Image -or $Rollback) { throw 'Image and Rollback require Action Update.' }
+if ($Action -eq 'Settings') {
+    # Post-installation repository configuration through host gh; no instance, Docker or enrollment state is used.
+    & "$PSScriptRoot/scripts/repository-settings.ps1" -Repository $Repository -Setting $Setting -ClearSetting $ClearSetting `
+        -Apply:$Apply -NonInteractive:$NonInteractive
+    exit $LASTEXITCODE
+}
+if ($Setting.Count -or $ClearSetting.Count) { throw 'Setting and ClearSetting require Action Settings.' }
 if ($Action -in @('Install','Enroll')) {
     $selectedState = if ($StateDirectory) { $StateDirectory } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) ".repoagent/instances/$Instance" }
     if (Test-Path -LiteralPath (Join-Path $selectedState 'lifecycle.json')) { throw 'Selected instance is disabled or has unresolved lifecycle intent; use inspection or Uninstall retry.' }
@@ -77,16 +93,19 @@ if ($Action -in @('Install','Enroll')) {
     }
 }
 if ($Action -eq 'Enroll') {
-    if ($GitHubEnvironment -or $ExpectedEnvironmentId) { throw 'Enroll uses a repository Agent variable; Environment inputs are only for explicit legacy revoke.' }
+    if ($GitHubEnvironment -or $ExpectedEnvironmentId) { throw 'Enroll uses a repository variable; Environment inputs are only for explicit legacy revoke.' }
     $enrollOptions = @{}
     if ($EnrollmentProfile) { $enrollOptions.Profile = $EnrollmentProfile }
+    if ($ApprovalLocation) { $enrollOptions.ApprovalLocation = $ApprovalLocation }
     & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions -Repository $Repository -BrokerOrigin $BrokerOrigin `
         -StateDirectory $StateDirectory -ApprovalVariable $ApprovalVariable `
         -Apply:$Apply -NonInteractive:$NonInteractive
     exit $LASTEXITCODE
 }
 if ($Action -eq 'Revoke') {
-    & "$PSScriptRoot/scripts/revoke-approval.ps1" -Repository $Repository `
+    $revokeOptions = @{}
+    if ($ApprovalLocation) { $revokeOptions.ApprovalLocation = $ApprovalLocation }
+    & "$PSScriptRoot/scripts/revoke-approval.ps1" @revokeOptions -Repository $Repository `
         -GitHubEnvironment $GitHubEnvironment -ApprovalVariable $ApprovalVariable `
         -ExpectedValueSha256 $ExpectedValueSha256 -ExpectedRepositoryId $ExpectedRepositoryId `
         -ExpectedEnvironmentId $ExpectedEnvironmentId -ApprovalStatePath $ApprovalStatePath `
@@ -173,6 +192,7 @@ try {
         'mentionUser','model','mode','publicUrl','listenPort','reconcileInterval','toolUpdates','webSearch','codexAuthPath')
     if ($saved) {
         if ($saved.Contains('clone')) { $fields += 'clone' }
+        if ($saved.Contains('repositorySettings')) { $fields += 'repositorySettings' }
         if ($saved.Contains('launchState')) { $fields += 'launchState' }
         Assert-Fields $saved $fields
         if ($saved.schemaVersion -ne 1 -or $saved.instance -cne $Instance -or -not $(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase.Equals($saved.stateDirectory, $StateDirectory) } else { [StringComparer]::Ordinal.Equals($saved.stateDirectory, $StateDirectory) })) { Stop-Install 'Saved launch coordinates differ from the selected instance/state directory.' }
@@ -186,6 +206,12 @@ try {
     if ($saved -and $saved.Contains('clone') -and $saved.clone -cnotin @('true','false')) { Stop-Install 'Invalid saved clone selection.' }
     $resolvedClone = if ($provided.ContainsKey('Clone')) { [bool]$Clone } else { [bool]$savedClone }
     if ($saved -and $resolvedClone -ne [bool]$savedClone) { Stop-Install 'Changing clone authority requires a fresh instance and enrollment.' }
+    # Likewise, older records have no repository-settings choice. Reading settings is a separate
+    # authority (the explicit v3 broker profile or the direct-App flag); it is never added in place.
+    $savedSettings = $saved -and $saved.Contains('repositorySettings') -and $saved.repositorySettings -ceq 'true'
+    if ($saved -and $saved.Contains('repositorySettings') -and $saved.repositorySettings -cnotin @('true','false')) { Stop-Install 'Invalid saved repository-settings selection.' }
+    $resolvedSettings = if ($provided.ContainsKey('RepositorySettings')) { [bool]$RepositorySettings } else { [bool]$savedSettings }
+    if ($saved -and $resolvedSettings -ne [bool]$savedSettings) { Stop-Install 'Changing repository-settings authority requires a fresh instance and enrollment.' }
     $Authentication = Setting Authentication $(if ($AppId -or $KeyPath) { 'OwnApp' } else { 'Broker' })
     if ($Authentication -notin @('Broker','OwnApp')) { Stop-Install 'Authentication must be Broker or OwnApp.' }
     $approvalPath = Join-Path $StateDirectory 'approval.json'
@@ -201,13 +227,15 @@ try {
     $Mode = Setting Mode 'polling'
     $resolvedProfile = ''
     $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin
-    $ApprovalVariable = Setting ApprovalVariable $(if ($ApprovalVariable) { $ApprovalVariable } else { 'APPROVED_CONTROLLER' })
+    # Saved names are reused; fresh Actions-variable approval uses a REPOAGENT_ name.
+    $ApprovalVariable = Setting ApprovalVariable $(if ($ApprovalVariable) { $ApprovalVariable } else { (Get-ApprovalLocation -Location $ApprovalLocation).DefaultVariable })
     $AppId = Setting AppId
     $KeyPath = Setting KeyPath
     $InstallationId = Setting InstallationId
     $MentionUser = Setting MentionUser
     $Model = Setting Model 'gpt-6.1-sol'
-    $ToolUpdates = Setting ToolUpdates 'latest'
+    # A new install runs the image's tools. Launch records always carry their saved choice (every field is required).
+    $ToolUpdates = Setting ToolUpdates 'pinned'
     $WebSearch = Setting WebSearch 'live'
     $PublicUrl = Setting PublicUrl
     $ListenPort = Setting ListenPort '8080'
@@ -225,18 +253,20 @@ try {
         $BrokerOrigin = Get-BrokerOrigin $BrokerOrigin
         Select-RepositoryContext
         $expectedProfile = if ($resolvedClone) { if ($Mode -eq 'polling') { 'polling-clone' } else { 'webhook-clone' } } else { 'polling' }
+        if ($resolvedSettings) { $expectedProfile += '-settings' }
         $resolvedProfile = Setting EnrollmentProfile $(if ($EnrollmentProfile) { $EnrollmentProfile } else { $expectedProfile })
         if ($resolvedProfile -cne $expectedProfile -or (-not $resolvedClone -and $Mode -ne 'polling')) {
             Stop-Install 'Mode and clone selection must match the enrollment profile; ordinary guided setup supports polling only.'
         }
-        if ($resolvedClone -and $approval -and $approval.profile -cne $expectedProfile) { Stop-Install 'Changing clone authority requires a fresh instance and enrollment.' }
+        if (($resolvedClone -or $resolvedSettings) -and $approval -and $approval.profile -cne $expectedProfile) { Stop-Install 'Changing clone or repository-settings authority requires a fresh instance and enrollment.' }
         $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
         $enrollOptions = @{ Repository=$Repository; BrokerOrigin=$BrokerOrigin; ApprovalVariable=$ApprovalVariable; Profile=$resolvedProfile; StateDirectory=$StateDirectory; NonInteractive=$true }
+        if ($ApprovalLocation) { $enrollOptions.ApprovalLocation = $ApprovalLocation }
         $global:LASTEXITCODE = 0
         & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions | Out-Host
         if ($LASTEXITCODE -ne 0) { Stop-Install 'Host enrollment plan failed. Check the selected coordinates/private state; no runtime work was attempted.' }
     } else {
-        if ($BrokerOrigin -or $provided.ContainsKey('ApprovalVariable') -or $provided.ContainsKey('EnrollmentProfile')) { Stop-Install 'OwnApp cannot use broker enrollment selectors.' }
+        if ($BrokerOrigin -or $provided.ContainsKey('ApprovalVariable') -or $provided.ContainsKey('EnrollmentProfile') -or $provided.ContainsKey('ApprovalLocation')) { Stop-Install 'OwnApp cannot use broker enrollment selectors.' }
         $AppId = Setting AppId -Required; $KeyPath = Input-File (Setting KeyPath -Required)
         Select-RepositoryContext
         if ($AppId -cnotmatch '^(?:[0-9]+|Iv[A-Za-z0-9.]+)$') { Stop-Install 'Supply an App ID or client ID, not a token.' }
@@ -301,7 +331,7 @@ try {
         $match = [regex]::Match((Get-Content "$PSScriptRoot/scripts/compose-image.py" -Raw), "(?m)^RUNTIME = '([^']+)'\r?$")
         if (-not $match.Success) { Stop-Install 'Cannot read the maintained base image selection.' }; $match.Groups[1].Value
     }
-    $plan = [ordered]@{ clone=$(if ($resolvedClone) { 'true' } else { 'false' }); schemaVersion=1; instance=$Instance; stateDirectory=$StateDirectory; authentication=$Authentication; repository=$Repository;
+    $plan = [ordered]@{ clone=$(if ($resolvedClone) { 'true' } else { 'false' }); repositorySettings=$(if ($resolvedSettings) { 'true' } else { 'false' }); schemaVersion=1; instance=$Instance; stateDirectory=$StateDirectory; authentication=$Authentication; repository=$Repository;
         brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; enrollmentProfile=$resolvedProfile; imageManifest=$ImageManifest;
         imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
@@ -314,6 +344,10 @@ try {
     if ($resolvedClone) {
         Write-Host "Repository context: $resolvedProfile; Contents read, Discussions write$(if ($Mode -ne 'polling') { ', repository hooks write' }). Fresh instance and approval required."
         Write-Host 'Persistent checkout: /workspace/repository. Trust this exact repository root for native instructions, project configuration and local skills.'
+    }
+    if ($resolvedSettings) {
+        if ($Authentication -eq 'Broker') { Write-Host "Repository settings: $resolvedProfile adds Actions variables read for REPOAGENT_ settings (runtime v3). Fresh instance and approval required." }
+        else { Write-Host 'Repository settings: the runtime token adds Actions variables read for REPOAGENT_ settings; the App installation must grant Variables: read.' }
     }
     Write-Host "Host launch/recovery state: $StateDirectory"
     Write-Host "Image: $(if ($runtimeImageId) { $runtimeImageId } else { 'pending build' }); base: $baseImage; platform: linux/amd64; maintained compatibility: Ubuntu 26.04."
@@ -372,6 +406,7 @@ try {
     $stage = 'configure and privately import enrollment'
     $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--tool-updates', $ToolUpdates, '--web-search', $WebSearch)
     if ($resolvedClone) { $configuration += '--clone' }
+    if ($resolvedSettings) { $configuration += '--repository-settings' }
     if ($InstallationId) { $configuration += @('--installation-id', $InstallationId) }
     $configuration += @('--listen-port', $ListenPort, '--reconcile-interval', $ReconcileInterval, "--public-url=$PublicUrl")
     if ($Authentication -eq 'Broker') { $configuration += @('--broker-url', $BrokerOrigin, '--enrollment-file', $enrollmentPath) }

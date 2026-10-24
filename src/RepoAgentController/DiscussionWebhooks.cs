@@ -110,7 +110,9 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
     async Task CompleteDurable(CancellationToken ct)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-        while (await timer.WaitForNextTickAsync(ct)) await durable!.CompleteAtIdle(refresh!.CommitAtIdle, ct);
+        // Input still waiting in the controller keeps its durable wake hint, even when every native turn is idle.
+        while (await timer.WaitForNextTickAsync(ct))
+            await durable!.CompleteAtIdle((commit, token) => refresh!.CommitAtIdle(commit, token, () => bridge.HasWaitingInput), ct);
     }
 
     async Task Receive(HttpListener listener, string secret, CancellationToken ct)
@@ -184,7 +186,7 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             if (refresh is null) return 204;
             if (payload["repository"]?["id"] is not JsonValue identity || !identity.TryGetValue<long>(out var repositoryId) ||
                 repositoryId != refresh.RepositoryId) return 403;
-            if (payload["ref"] is not JsonValue reference || !reference.TryGetValue<string>(out var pushedRef) ||
+            if (payload["ref"].OptionalText() is not { } pushedRef ||
                 pushedRef.Length is 0 or > 1024 || pushedRef.Any(char.IsControl)) return 400;
             if (pushedRef != refresh.DefaultRef) return 204;
             if (durable is not null) await durable.Enqueue(new DurableWorkHint.CheckoutRefresh(), ct);
@@ -196,6 +198,10 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
         var action = payload["action"]?.ToString() ?? "";
         if (action.Length is 0 or > 64 || action.Any(c => !char.IsAsciiLetterLower(c) && c != '_')) return 400;
         if (payload["discussion"]?["number"] is not JsonValue value || !value.TryGetValue<int>(out var number) || number < 1) return 400;
+        var discussion = payload["discussion"]!;
+        // Every heartbeat edit of the controller's own status Discussion is notified too; none of it is agent input.
+        if (github.IsDashboard(Json.Object(("author", Json.Object(("login", discussion["user"]?["login"]?.ToString()),
+            ("__typename", discussion["user"]?["type"]?.ToString()))), ("body", discussion["body"]?.ToString())))) return 204;
         var sender = Json.Object(("login", payload["sender"]?["login"]?.ToString()), ("__typename", payload["sender"]?["type"]?.ToString()));
         if (eventName == "discussion_comment" && github.IsAgentActor(sender))
         {

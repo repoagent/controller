@@ -87,7 +87,9 @@ def marker(value):
     for name, pattern in patterns.items():
         if not isinstance(binding[name], str) or not re.fullmatch(pattern, binding[name]):
             raise ValueError('Invalid binding')
-    if binding['approvalKind'] == 'repository-agent-variable':
+    # Actions variables (setup v3) and legacy Agent variables (setup v2) are distinct
+    # direct repository locations without Environment identity.
+    if binding['approvalKind'] in ('repository-actions-variable', 'repository-agent-variable'):
         if binding['githubEnvironment'] is not None or binding['environmentId'] is not None:
             raise ValueError('Unexpected legacy binding')
     elif (binding['approvalKind'] != 'environment-variable'
@@ -103,10 +105,11 @@ def verify_binding(expected, config=None):
     binding = expected['binding']
     config = read(Path('/data/config/settings.json')) if config is None else config
     fields = {'repository', 'appId', 'installationId', 'brokerUrl', 'keyPath', 'mentionUser', 'model', 'mode',
-              'publicUrl', 'listenPort', 'reconcileInterval', 'toolUpdates', 'webSearch', 'clone', 'enroll', 'repositoryId'}
+              'publicUrl', 'listenPort', 'reconcileInterval', 'toolUpdates', 'webSearch', 'clone', 'enroll', 'repositoryId',
+              'repositorySettings'}
     if set(config) - fields or any(not isinstance(config.get(key), str) for key in ('repository', 'appId', 'brokerUrl', 'mode')):
         raise ValueError('Invalid runtime settings')
-    types = {'clone': bool, 'listenPort': int, 'reconcileInterval': int, 'enroll': list, 'repositoryId': int}
+    types = {'clone': bool, 'listenPort': int, 'reconcileInterval': int, 'enroll': list, 'repositoryId': int, 'repositorySettings': bool}
     for key, value in config.items():
         if value is not None and type(value) is not types.get(key, int if key == 'installationId' else str):
             raise ValueError('Invalid runtime setting type')
@@ -121,17 +124,20 @@ def verify_binding(expected, config=None):
         raise ValueError('Selected installation differs')
     if config.get('repositoryId') is not None and config['repositoryId'] != binding['repositoryId']:
         raise ValueError('Selected immutable repository differs')
-    profile = ('polling' if config.get('mode') == 'polling' else 'webhook') + ('-clone' if config.get('clone') else '')
+    settings = bool(config.get('repositorySettings'))
+    profile = (('polling' if config.get('mode') == 'polling' else 'webhook') + ('-clone' if config.get('clone') else '')
+               + ('-settings' if settings else ''))
     if profile != binding['profile']:
         raise ValueError('Selected profile differs')
     if checked(TARGETS[0], missing=True):
         credential = read(TARGETS[0])
         fields = {'protocolVersion', 'brokerOrigin', 'githubHost', 'deviceId', 'deviceSecret', 'appId', 'appSlug', 'installationId', 'repositoryId', 'repository', 'permissions'}
-        if credential.get('protocolVersion') == 2:
+        # Clone (v2) and repository-settings (v3) enrollments name their profile and policy.
+        if credential.get('protocolVersion') in (2, 3):
             fields |= {'profile', 'policyVersion'}
         if type(credential.get('protocolVersion')) is not int:
             raise ValueError('Invalid enrollment version')
-        if set(credential) != fields or credential['protocolVersion'] not in (1, 2) or credential['githubHost'] != 'github.com':
+        if set(credential) != fields or credential['protocolVersion'] != (3 if settings else 2 if config.get('clone') else 1) or credential['githubHost'] != 'github.com':
             raise ValueError('Invalid enrollment')
         for key in ('repositoryId', 'appId', 'installationId'):
             if type(credential[key]) is not int or not 0 < credential[key] < 2**63:
@@ -141,13 +147,18 @@ def verify_binding(expected, config=None):
         permissions = {'discussions': 'write'}
         if profile.startswith('webhook'):
             permissions['repository_hooks'] = 'write'
-        if profile.endswith('-clone'):
+        if config.get('clone'):
             permissions['contents'] = 'read'
-            if 'metadata' in credential['permissions']:
-                permissions['metadata'] = 'read'
+        if settings:
+            permissions['actions_variables'] = 'read'
+        if credential['protocolVersion'] > 1 and 'metadata' in credential['permissions']:
+            permissions['metadata'] = 'read'
         if credential['permissions'] != permissions:
             raise ValueError('Enrollment permissions differ')
-        if credential['protocolVersion'] == 2 and credential['policyVersion'] != 'repository-agent-clone-approval-v2':
+        policy = {'repository-actions-variable': 'repository-actions-settings-approval-v3'}.get(binding['approvalKind']) if settings else \
+            {'repository-actions-variable': 'repository-actions-clone-approval-v3',
+             'repository-agent-variable': 'repository-agent-clone-approval-v2'}.get(binding['approvalKind'])
+        if credential['protocolVersion'] > 1 and credential['policyVersion'] != policy:
             raise ValueError('Enrollment policy differs')
         for key in ('repository', 'repositoryId', 'deviceId', 'appId', 'installationId', 'brokerOrigin'):
             if credential[key] != binding[key]:

@@ -26,8 +26,8 @@ public sealed class BrokerAuthenticationTests
             "--clone", "--webhook-url", "https://controller.example.org", "--installation-id", "234", "--repository-id", "345",
             "--azure-work-queue", endpoint], fixture.Http, fixture.Gh));
         Assert.Empty(fixture.Transport.Requests);
-        Assert.Contains("prior-token", File.ReadAllText(fixture.TokenFile));
-        Assert.Equal("prior-temporary-token", File.ReadAllText(fixture.TokenFile + ".tmp"));
+        Assert.Contains("prior-token", File.ReadAllText(fixture.LegacyTokenFile));
+        Assert.Equal("prior-temporary-token", File.ReadAllText(fixture.LegacyTokenFile + ".tmp"));
         Assert.False(File.Exists(fixture.State));
     }
 
@@ -38,8 +38,57 @@ public sealed class BrokerAuthenticationTests
         fixture.SeedCache();
         Assert.Equal(1, await fixture.Start("--azure-work-queue", "https://account.queue.core.windows.net/controller-work"));
         Assert.Empty(fixture.Transport.Requests);
-        Assert.Contains("prior-token", File.ReadAllText(fixture.TokenFile));
+        Assert.Contains("prior-token", File.ReadAllText(fixture.LegacyTokenFile));
         Assert.False(File.Exists(fixture.State));
+    }
+
+    [Fact]
+    public async Task Startup_takes_enrollment_from_a_named_environment_variable_that_children_never_inherit()
+    {
+        using var fixture = new Fixture(clone: true);
+        var variable = "REPOAGENT_TEST_ENROLLMENT_" + Guid.NewGuid().ToString("N");
+        var childEnvironment = Path.Combine(fixture.Directory, "gh-environment");
+        File.WriteAllText(fixture.Gh, $"#!/bin/sh\nenv >> '{childEnvironment}'\nif [ \"$1\" = api ]; then cat >/dev/null; printf '%s' '{{\"data\":{{\"viewer\":{{\"login\":\"test-app[bot]\"}}}}}}'; fi\n");
+        File.Delete(fixture.EnrollmentFile); // No file copy exists anywhere.
+        Environment.SetEnvironmentVariable(variable, fixture.Enrollment.ToJsonString());
+        try
+        {
+            Assert.Equal(0, await fixture.Start("--enrollment-environment", variable));
+            Assert.Single(fixture.Transport.Requests); // The transport accepts only the enrolled device secret.
+            Assert.Null(Environment.GetEnvironmentVariable(variable));
+            var inherited = File.ReadAllText(childEnvironment);
+            Assert.Contains("GH_TOKEN=opaque-token-1", inherited);
+            Assert.DoesNotContain(variable, inherited);
+            Assert.DoesNotContain(fixture.Enrollment["deviceSecret"]!.GetValue<string>(), inherited);
+            Assert.DoesNotContain(fixture.Enrollment["deviceSecret"]!.GetValue<string>(), string.Concat(
+                System.IO.Directory.EnumerateFiles(fixture.Directory, "*", SearchOption.AllDirectories).Select(File.ReadAllText)));
+        }
+        finally { Environment.SetEnvironmentVariable(variable, null); }
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("empty")]
+    [InlineData("mismatched")]
+    [InlineData("with-file")]
+    public async Task Missing_or_mismatched_environment_enrollment_denies_startup_before_broker_contact(string fault)
+    {
+        using var fixture = new Fixture(clone: true);
+        var variable = "REPOAGENT_TEST_ENROLLMENT_" + Guid.NewGuid().ToString("N");
+        if (fault == "mismatched") fixture.Enrollment["repository"] = "owner/other";
+        Environment.SetEnvironmentVariable(variable, fault switch { "missing" => null, "empty" => "", _ => fixture.Enrollment.ToJsonString() });
+        try { Assert.Equal(1, await fixture.Start("--enrollment-environment", variable, keepFile: fault == "with-file")); }
+        finally { Environment.SetEnvironmentVariable(variable, null); }
+        Assert.Empty(fixture.Transport.Requests);
+        // Documented retained logs beside --state carry the operator diagnostic.
+        var retained = string.Concat(System.IO.Directory.EnumerateFiles(fixture.State + ".logs").Select(File.ReadAllText));
+        Assert.DoesNotContain(fixture.Enrollment["deviceSecret"]!.GetValue<string>(), retained);
+        Assert.Contains(fault switch
+        {
+            "mismatched" => "CLI App/repository differs from enrollment",
+            "with-file" => "exactly one of --enrollment-file or --enrollment-environment",
+            _ => $"enrollment environment variable {variable} is missing or empty",
+        }, retained);
     }
 
     [Fact]
@@ -62,16 +111,19 @@ public sealed class BrokerAuthenticationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Real_startup_accepts_the_enrolled_bot_without_a_PEM(bool webhooks)
+    public async Task Real_startup_accepts_the_enrolled_bot_without_a_PEM_and_leaves_no_usable_credential(bool webhooks)
     {
         using var fixture = new Fixture(webhooks);
+        fixture.SeedCache(); // An earlier controller version persisted its token here.
         Assert.Equal(0, await fixture.Start());
+        Assert.Single(fixture.Transport.Requests);
+        Assert.False(File.Exists(fixture.LegacyTokenFile));
+        Assert.False(File.Exists(fixture.LegacyTokenFile + ".tmp"));
+        // The checked lifetime has ended: its wrapper neither reuses that lease nor falls back to ambient sign-in.
         var result = await fixture.InvokeWrapper();
-        Assert.Equal(0, result.Exit);
-        Assert.Contains("opaque-token-1", result.Output);
-        Assert.DoesNotContain("human-token", result.Output);
-        if (!OperatingSystem.IsWindows())
-            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(fixture.TokenFile));
+        Assert.NotEqual(0, result.Exit);
+        Assert.DoesNotContain("gh-invoked", result.Output);
+        Assert.DoesNotContain("opaque-token-1", result.Output);
     }
 
     [Fact]
@@ -81,22 +133,28 @@ public sealed class BrokerAuthenticationTests
         fixture.SeedCache();
         fixture.Viewer("human-user");
         Assert.Equal(1, await fixture.Start());
-        Assert.False(File.Exists(fixture.TokenFile));
-        Assert.False(File.Exists(fixture.TokenFile + ".tmp"));
+        Assert.False(File.Exists(fixture.LegacyTokenFile));
+        Assert.False(File.Exists(fixture.LegacyTokenFile + ".tmp"));
         var result = await fixture.InvokeWrapper();
         Assert.NotEqual(0, result.Exit);
         Assert.DoesNotContain("gh-invoked", result.Output);
     }
 
     [Fact]
-    public async Task Losing_the_state_lock_preserves_the_active_owners_cache()
+    public async Task Losing_the_state_lock_preserves_the_active_owners_credential()
     {
         using var fixture = new Fixture();
-        fixture.SeedCache();
         using var owner = new FileStream(fixture.State + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        using var active = fixture.Credentials();
+        await active.Initialize(null, TestContext.Current.CancellationToken);
+        fixture.SeedCache();
         Assert.Equal(1, await fixture.Start());
-        Assert.Contains("prior-token", File.ReadAllText(fixture.TokenFile));
-        Assert.Empty(fixture.Transport.Requests);
+        Assert.Contains("prior-token", File.ReadAllText(fixture.LegacyTokenFile));
+        Assert.Single(fixture.Transport.Requests); // Only the active owner's acquisition.
+        var served = await fixture.InvokeWrapper();
+        Assert.Equal(0, served.Exit);
+        Assert.Contains("gh-invoked", served.Output);
+        Assert.Contains("opaque-token-1", served.Output);
     }
 
     [Fact]
@@ -109,17 +167,17 @@ public sealed class BrokerAuthenticationTests
             fixture.SeedCache();
             var denied = await Contender();
             Assert.Equal(1, denied.Exit);
-            Assert.True(File.Exists(fixture.TokenFile), "A losing contender cleared the active owner's cache");
-            Assert.Equal(token, File.ReadAllText(fixture.TokenFile));
-            Assert.Equal("prior-temporary-token", File.ReadAllText(fixture.TokenFile + ".tmp"));
+            Assert.True(File.Exists(fixture.LegacyTokenFile), "A losing contender cleared the active owner's cache");
+            Assert.Equal(token, File.ReadAllText(fixture.LegacyTokenFile));
+            Assert.Equal("prior-temporary-token", File.ReadAllText(fixture.LegacyTokenFile + ".tmp"));
             Assert.DoesNotContain("Unrecognized", denied.Output);
             if (!OperatingSystem.IsWindows()) Assert.Contains("errno=", denied.Output);
         }
         // A fresh process can acquire after explicit disposal and reach the missing-key refusal.
         var released = await Contender();
         Assert.Equal(1, released.Exit);
-        Assert.False(File.Exists(fixture.TokenFile));
-        Assert.False(File.Exists(fixture.TokenFile + ".tmp"));
+        Assert.False(File.Exists(fixture.LegacyTokenFile));
+        Assert.False(File.Exists(fixture.LegacyTokenFile + ".tmp"));
         Assert.Contains("missing-key.pem", released.Output);
 
         async Task<(int Exit, string Output)> Contender()
@@ -150,7 +208,7 @@ public sealed class BrokerAuthenticationTests
         fixture.SeedCache();
         File.WriteAllText(fixture.State, "{}");
         Assert.Equal(1, await fixture.Start());
-        Assert.False(File.Exists(fixture.TokenFile));
+        Assert.False(File.Exists(fixture.LegacyTokenFile));
     }
 
     [Fact]
@@ -168,7 +226,6 @@ public sealed class BrokerAuthenticationTests
         fixture.Transport.Status = HttpStatusCode.Unauthorized;
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
         Assert.DoesNotContain("DO-NOT-LOG", error.ToString());
-        Assert.False(File.Exists(fixture.TokenFile));
         var failed = await fixture.InvokeWrapper();
         Assert.NotEqual(0, failed.Exit);
         Assert.DoesNotContain("gh-invoked", failed.Output);
@@ -210,7 +267,6 @@ public sealed class BrokerAuthenticationTests
         fixture.Clock.Advance(TimeSpan.FromMinutes(56));
         fixture.Transport.Defect = defect;
         await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
-        Assert.False(File.Exists(fixture.TokenFile));
         var result = await fixture.InvokeWrapper();
         Assert.NotEqual(0, result.Exit);
         Assert.DoesNotContain("gh-invoked", result.Output);
@@ -224,7 +280,6 @@ public sealed class BrokerAuthenticationTests
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         await credentials.Initialize(null, cancellation.Token);
         Assert.Contains("opaque-token-1", (await fixture.InvokeWrapper()).Output);
-        File.WriteAllText(fixture.TokenFile + ".tmp", "prior-temporary-token");
         fixture.Clock.Advance(TimeSpan.FromMinutes(56));
         using var stalledBody = new StalledBody();
         fixture.Transport.Body = stalledBody;
@@ -237,8 +292,6 @@ public sealed class BrokerAuthenticationTests
             var error = await Record.ExceptionAsync(() => renewal.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
             Assert.IsAssignableFrom<OperationCanceledException>(error);
             Assert.False(cancellation.IsCancellationRequested);
-            Assert.False(File.Exists(fixture.TokenFile));
-            Assert.False(File.Exists(fixture.TokenFile + ".tmp"));
             var failed = await fixture.InvokeWrapper();
             Assert.NotEqual(0, failed.Exit);
             Assert.DoesNotContain("gh-invoked", failed.Output);
@@ -277,7 +330,7 @@ public sealed class BrokerAuthenticationTests
         fixture.SeedCache();
         Assert.Equal(1, await fixture.Start());
         Assert.Empty(fixture.Transport.Requests);
-        Assert.False(File.Exists(fixture.TokenFile));
+        Assert.False(File.Exists(fixture.LegacyTokenFile));
     }
 
     [Theory]
@@ -308,8 +361,8 @@ public sealed class BrokerAuthenticationTests
         recreated.SeedCache();
         Assert.Equal(1, await recreated.Start("--repository-id", "345"));
         Assert.Empty(recreated.Transport.Requests);
-        Assert.False(File.Exists(recreated.TokenFile));
-        Assert.False(File.Exists(recreated.TokenFile + ".tmp"));
+        Assert.False(File.Exists(recreated.LegacyTokenFile));
+        Assert.False(File.Exists(recreated.LegacyTokenFile + ".tmp"));
         Assert.NotEqual(0, (await recreated.InvokeWrapper()).Exit);
     }
 
@@ -373,7 +426,7 @@ public sealed class BrokerAuthenticationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Clone_consumer_selects_v2_and_renewal_preserves_exact_profile(bool webhooks)
+    public async Task Clone_consumer_selects_v2_and_renewal_keeps_the_repository_bound_Git_credential(bool webhooks)
     {
         using var fixture = new Fixture(webhooks, clone: true);
         using var credentials = fixture.Credentials();
@@ -382,9 +435,12 @@ public sealed class BrokerAuthenticationTests
         fixture.Clock.Advance(TimeSpan.FromMinutes(56));
         await credentials.GetToken(TestContext.Current.CancellationToken);
         Assert.Equal(2, fixture.Transport.Requests.Count);
-        var cached = JsonNode.Parse(File.ReadAllText(fixture.TokenFile))!;
-        Assert.Equal(webhooks ? "webhook-clone" : "polling-clone", cached["profile"]!.GetValue<string>());
-        Assert.Equal("owner/repository", cached["repository"]!.GetValue<string>());
+        var renewed = await fixture.InvokeGitHelper("owner/repository.git");
+        Assert.Equal(0, renewed.Exit);
+        Assert.Equal("username=x-access-token\npassword=opaque-token-2\n\n", renewed.Output);
+        var other = await fixture.InvokeGitHelper("owner/other.git");
+        Assert.NotEqual(0, other.Exit);
+        Assert.DoesNotContain("opaque-token-", other.Output);
     }
 
     [Theory]
@@ -407,9 +463,30 @@ public sealed class BrokerAuthenticationTests
         fixture.Clock.Advance(TimeSpan.FromMinutes(56));
         fixture.Transport.Defect = defect;
         await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
-        Assert.False(File.Exists(fixture.TokenFile));
+        var denied = await fixture.InvokeGitHelper("owner/repository.git");
+        Assert.NotEqual(0, denied.Exit);
+        Assert.Equal("quit=true\n\n", denied.Output);
         Assert.Equal(2, fixture.Transport.Requests.Count);
         Assert.All(fixture.Transport.Requests, uri => Assert.Contains("/v2/", uri.AbsolutePath));
+    }
+
+    [Theory]
+    [InlineData("repository-agent-clone-approval-v2")]
+    [InlineData("repository-actions-clone-approval-v3")]
+    public async Task Clone_lease_must_preserve_the_enrolled_approval_policy(string policy)
+    {
+        using var fixture = new Fixture(clone: true, clonePolicy: policy);
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        await credentials.GetToken(TestContext.Current.CancellationToken);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        fixture.Transport.Defect = "other-clone-policy";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
+        var denied = await fixture.InvokeGitHelper("owner/repository.git");
+        Assert.NotEqual(0, denied.Exit);
+        Assert.Equal("quit=true\n\n", denied.Output);
+        Assert.Equal(3, fixture.Transport.Requests.Count);
     }
 
     [Theory]
@@ -425,12 +502,89 @@ public sealed class BrokerAuthenticationTests
         Assert.Empty(fixture.Transport.Requests);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Settings_consumer_selects_v3_only_with_explicit_repository_settings(bool webhooks, bool clone)
+    {
+        using var fixture = new Fixture(webhooks, clone, settings: true);
+        Assert.Equal(0, await fixture.Start());
+        Assert.Equal("/v3/devices/device-1/installation-token", Assert.Single(fixture.Transport.Requests).AbsolutePath);
+
+        // Without the explicit selection the same file is never consumed as a frozen profile.
+        fixture.RepositorySettings = false;
+        Assert.Equal(1, await fixture.Start());
+        Assert.Single(fixture.Transport.Requests);
+        Assert.Contains("repository-settings profile requires --repository-settings", fixture.RetainedLog);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Frozen_enrollments_still_refuse_repository_settings_before_broker_contact(bool webhooks, bool clone)
+    {
+        using var fixture = new Fixture(webhooks, clone) { RepositorySettings = true };
+        Assert.Equal(1, await fixture.Start());
+        Assert.Empty(fixture.Transport.Requests);
+        Assert.Contains("--repository-settings requires a controller enrollment with a repository-settings profile", fixture.RetainedLog);
+    }
+
+    [Theory]
+    [InlineData("profile", "polling-clone")]
+    [InlineData("policyVersion", "repository-actions-clone-approval-v3")]
+    [InlineData("protocolVersion", "2")]
+    [InlineData("without-variables", "")]
+    [InlineData("variables-write", "write")]
+    public void Settings_file_must_name_its_exact_family_and_grants_before_contact(string field, string value)
+    {
+        using var fixture = new Fixture(clone: true, settings: true);
+        switch (field)
+        {
+            case "without-variables": fixture.Enrollment["permissions"]!.AsObject().Remove("actions_variables"); break;
+            case "variables-write": fixture.Enrollment["permissions"]!["actions_variables"] = value; break;
+            case "protocolVersion": fixture.Enrollment[field] = int.Parse(value); break;
+            default: fixture.Enrollment[field] = value; break;
+        }
+        fixture.SaveEnrollment();
+        Assert.Throws<InvalidOperationException>(() => fixture.Credentials());
+        Assert.Empty(fixture.Transport.Requests);
+    }
+
+    [Theory]
+    [InlineData("profile")]
+    [InlineData("policyVersion")]
+    [InlineData("frozen-policy")]
+    [InlineData("protocolVersion")]
+    [InlineData("without-variables")]
+    [InlineData("variables-write")]
+    [InlineData("permissions")]
+    public async Task Settings_lease_must_repeat_the_enrolled_family_and_exact_grants_on_renewal(string defect)
+    {
+        using var fixture = new Fixture(clone: true, settings: true);
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        var current = await fixture.InvokeGitHelper("owner/repository.git");
+        Assert.Equal("username=x-access-token\npassword=opaque-token-1\n\n", current.Output);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        fixture.Transport.Defect = defect;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
+        var denied = await fixture.InvokeGitHelper("owner/repository.git");
+        Assert.NotEqual(0, denied.Exit);
+        Assert.Equal("quit=true\n\n", denied.Output);
+        Assert.Equal(2, fixture.Transport.Requests.Count);
+        Assert.All(fixture.Transport.Requests, uri => Assert.Contains("/v3/", uri.AbsolutePath));
+    }
+
     internal sealed class Fixture : IDisposable
     {
         public string Directory { get; } = Path.Combine(Path.GetTempPath(), "broker-tests-" + Guid.NewGuid().ToString("N"));
         public string State => Path.Combine(Directory, "state.json");
         public string CredentialDirectory => State + ".github-app";
-        public string TokenFile => Path.Combine(CredentialDirectory, "installation-token.json");
+        public string LegacyTokenFile => Path.Combine(CredentialDirectory, "installation-token.json");
         public string EnrollmentFile => Path.Combine(Directory, "enrollment.json");
         public string Gh => Path.Combine(Directory, "gh-stub");
         public FakeTimeProvider Clock { get; } = new(DateTimeOffset.UtcNow);
@@ -441,27 +595,39 @@ public sealed class BrokerAuthenticationTests
         readonly bool clone;
         readonly string wrapper;
 
-        public Fixture(bool webhooks = false, bool clone = false)
+        // The CLI's explicit --repository-settings selection; it defaults to whether the enrolled profile is a repository-settings profile.
+        public bool RepositorySettings { get; set; }
+
+        public Fixture(bool webhooks = false, bool clone = false, string clonePolicy = "repository-agent-clone-approval-v2", bool settings = false)
         {
             this.webhooks = webhooks;
             this.clone = clone;
+            RepositorySettings = settings;
             System.IO.Directory.CreateDirectory(Directory);
             Enrollment = JsonNode.Parse("""
                 {"protocolVersion":1,"brokerOrigin":"https://credentials.example.org","githubHost":"github.com","deviceId":"device-1","deviceSecret":"abcdefghijklmnopqrstuvwxyz_0123456789-ABCDEFG","appId":123,"appSlug":"test-app","installationId":234,"repositoryId":345,"repository":"owner/repository","permissions":{"discussions":"write"}}
                 """)!.AsObject();
             if (webhooks) Enrollment["permissions"]!["repository_hooks"] = "write";
-            if (clone)
+            if (settings)
+            {
+                Enrollment["protocolVersion"] = 3;
+                Enrollment["profile"] = (webhooks ? "webhook" : "polling") + (clone ? "-clone" : "") + "-settings";
+                Enrollment["policyVersion"] = "repository-actions-settings-approval-v3";
+                if (clone) Enrollment["permissions"]!["contents"] = "read";
+                Enrollment["permissions"]!["actions_variables"] = "read";
+            }
+            else if (clone)
             {
                 Enrollment["protocolVersion"] = 2;
                 Enrollment["profile"] = webhooks ? "webhook-clone" : "polling-clone";
-                Enrollment["policyVersion"] = "repository-agent-clone-approval-v2";
+                Enrollment["policyVersion"] = clonePolicy;
                 Enrollment["permissions"]!["contents"] = "read";
             }
             SaveEnrollment();
             Transport = new Transport(Clock, Enrollment);
             http = new HttpClient(Transport);
             Viewer("test-app[bot]");
-            wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(CredentialDirectory, "bin"), Gh, TokenFile);
+            wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(CredentialDirectory, "bin"), Gh, CredentialDirectory);
         }
 
         public void SaveEnrollment()
@@ -478,18 +644,21 @@ public sealed class BrokerAuthenticationTests
 
         public void SeedCache()
         {
-            File.WriteAllText(TokenFile, "{\"token\":\"prior-token\",\"expiresAt\":\"2099-01-01T00:00:00Z\"}");
-            File.WriteAllText(TokenFile + ".tmp", "prior-temporary-token");
+            File.WriteAllText(LegacyTokenFile, "{\"token\":\"prior-token\",\"expiresAt\":\"2099-01-01T00:00:00Z\"}");
+            File.WriteAllText(LegacyTokenFile + ".tmp", "prior-temporary-token");
         }
 
         public HttpClient Http => http;
 
-        public GitHubAppCredentials Credentials() => GitHubAppCredentials.FromBroker(http, "https://credentials.example.org/", EnrollmentFile, "123", "OWNER/Repository", CredentialDirectory, Clock, webhooks, clone);
+        public GitHubAppCredentials Credentials() => GitHubAppCredentials.FromBroker(http, "https://credentials.example.org/", EnrollmentFile, "123", "OWNER/Repository", CredentialDirectory,
+            new RuntimeProfile(webhooks, clone, RepositorySettings), Clock);
 
-        public Task<int> Start(string? option = null, string? value = null)
+        public Task<int> Start(string? option = null, string? value = null, bool keepFile = false)
         {
             var args = new List<string> { "--repo", "owner/repository", "--app-id", "123", "--state", State, "--broker-url", "https://credentials.example.org", "--enrollment-file", EnrollmentFile, "--check-auth" };
+            if (option == "--enrollment-environment" && !keepFile) args.RemoveRange(args.IndexOf("--enrollment-file"), 2);
             if (clone) args.Add("--clone");
+            if (RepositorySettings) args.Add("--repository-settings");
             if (webhooks) args.AddRange(["--webhook-url", "https://controller.example.org"]);
             if (option is not null)
             {
@@ -511,6 +680,25 @@ public sealed class BrokerAuthenticationTests
             await process.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
             return (process.ExitCode, await output + await error);
         }
+
+        // The real controller Git credential-helper entry, as Git invokes it for an HTTPS repository path.
+        public async Task<(int Exit, string Output)> InvokeGitHelper(string path)
+        {
+            var apphost = Path.Combine(AppContext.BaseDirectory, "RepoAgentController");
+            var start = File.Exists(apphost) ? new ProcessStartInfo(apphost) : new ProcessStartInfo("dotnet")
+            {
+                ArgumentList = { Path.Combine(AppContext.BaseDirectory, "RepoAgentController.dll") }
+            };
+            foreach (var argument in new[] { "git-helper", CredentialDirectory, "get" }) start.ArgumentList.Add(argument);
+            start.RedirectStandardInput = start.RedirectStandardOutput = true;
+            using var process = Process.Start(start)!;
+            await process.StandardInput.WriteAsync($"protocol=https\nhost=github.com\npath={path}\n\n");
+            process.StandardInput.Close();
+            var output = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await process.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+            return (process.ExitCode, await output);
+        }
+        public string RetainedLog => string.Concat(System.IO.Directory.EnumerateFiles(State + ".logs").Select(File.ReadAllText));
         public void Dispose() { http.Dispose(); System.IO.Directory.Delete(Directory, true); }
     }
 
@@ -543,9 +731,16 @@ public sealed class BrokerAuthenticationTests
                 case "protocolVersion": result[Defect] = enrollment["protocolVersion"]!.GetValue<int>() == 1 ? 2 : 1; break;
                 case "profile": result[Defect] = "webhook-clone"; break;
                 case "policyVersion": result[Defect] = "repository-agent-approval-v2"; break;
+                case "other-clone-policy":
+                    result["policyVersion"] = result["policyVersion"]!.GetValue<string>() == "repository-agent-clone-approval-v2"
+                        ? "repository-actions-clone-approval-v3" : "repository-agent-clone-approval-v2";
+                    break;
                 case "appSlug": result[Defect] = "other-app"; break;
                 case "repository": result[Defect] = "owner/other"; break;
                 case "permissions": result["permissions"]!["contents"] = "write"; break;
+                case "frozen-policy": result["policyVersion"] = "repository-actions-clone-approval-v3"; break;
+                case "without-variables": result["permissions"]!.AsObject().Remove("actions_variables"); break;
+                case "variables-write": result["permissions"]!["actions_variables"] = "write"; break;
                 case "permission-level": result["permissions"]!["discussions"] = "read"; break;
                 case "token": result["token"] = ""; break;
                 case "whitespace-token": result["token"] = "token with space"; break;

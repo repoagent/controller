@@ -1,0 +1,30 @@
+name: Refresh baseline tools
+# Daily check for newer stable gh and Codex releases. Each tool is refreshed on its own
+# (refresh-baseline-tool.yml): a supported update is verified with the selected version before it
+# is pinned on main and published as a new baseline image, and an unusable or incompatible release
+# fails only its own tool's refresh. Refreshes run one at a time, each from the then-current main,
+# so every pin lands on exactly the commit it was verified on.
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: baseline-tool-refresh
+  cancel-in-progress: false
+jobs:
+  refresh:
+    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        tool: [gh, codex]
+    uses: ./.github/workflows/refresh-baseline-tool.yml
+    with:
+      tool: ${{ matrix.tool }}
+    # The ceiling for the called refresh; only its main-only commit job uses the write permissions.
+    permissions:
+      contents: write
+      actions: write

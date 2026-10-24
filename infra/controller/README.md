@@ -5,7 +5,7 @@ Keep the exact working local Docker controller running during that evaluation.
 The NFS foundation and activation instructions below describe the existing hosting
 path; the SMB candidate is setup-only and has not passed live storage acceptance.
 
-This foundation creates a dedicated VNet, network-restricted classic NFS 4.1 share, Consumption Container Apps environment and manual smoke job. The job uses the [accepted public controller image](https://github.com/repoagent/controller/actions/runs/39806177465) by immutable digest and runs its installed tools as UID 1000. There are no registry credentials, active controller, enrollment secrets or changes to the existing auth service. Local StoryBeam keeps running.
+This foundation creates a dedicated VNet, network-restricted classic NFS 4.1 share, Consumption Container Apps environment and manual smoke job. The job uses the [accepted public controller image](https://github.com/repoagent/controller/actions/runs/39806177465) by immutable digest and runs its installed tools as UID 1000. There are no registry credentials, active controller, controller secrets or changes to the existing broker. Local StoryBeam keeps running.
 
 Deploy to the selected subscription and dedicated resource group:
 
@@ -94,14 +94,16 @@ vault_name=$(az deployment group show --resource-group rg-storybeam-repoagent-co
 
 After preflight, stop the local controller with its existing instance selection (`repoagent.ps1 stop`). Use `scripts/revoke-approval.ps1` with its exact saved `-ApprovalStatePath`, `-EnrollmentFile` and `-Apply -NonInteractive` to withdraw the selected marker and close that device. Its result deliberately reports outstanding tokens as unsettled: closure alone does not release ownership. Observe positive broker cleanup/settlement and old-device denial before creating the cloud enrollment. Unknown capabilities remain blocked; never repair this with owner/counter/epoch resets.
 
-Use a fresh host state directory for the cloud device. The normal host flow saves the private enrollment before acknowledging it; retry with the same directory if interrupted. Run this only after settlement:
+Use a fresh host state directory for the cloud device. The normal host flow saves the private enrollment before acknowledging it; retry with the same directory if interrupted.
+
+The example keeps the deployed Agent-variable approval explicit. Once the deployed broker serves `/v3` setup and the App installation has accepted **Variables: Read**, drop `-ApprovalLocation AgentVariable` and `-ApprovalVariable` to use the default Actions variable `REPOAGENT_APPROVAL` ([ADR 0007](../../docs/adr/0007-use-repository-actions-variables-for-approval.md)). Run this only after settlement:
 
 ```sh
 cloud_state="$HOME/.repoagent/enrollment/storybeam-azure"
 pwsh -NoProfile -File scripts/enroll-controller.ps1 \
   -Repository StoryBeam/StoryBeam \
   -BrokerOrigin https://repoagent-auth.livelydune-309701b4.swedencentral.azurecontainerapps.io \
-  -ApprovalVariable APPROVED_CONTROLLER -Profile webhook-clone \
+  -ApprovalLocation AgentVariable -ApprovalVariable APPROVED_CONTROLLER -Profile webhook-clone \
   -StateDirectory "$cloud_state" -Apply -NonInteractive
 secret_uri=$(az keyvault secret set --vault-name "$vault_name" \
   --name controller-enrollment --file "$cloud_state/enrollment.json" --encoding utf-8 \
@@ -115,7 +117,7 @@ az deployment group create --resource-group rg-storybeam-repoagent-controller \
 
 Secret bytes travel from a private file to Key Vault and from its pinned version through a mounted secret into the existing private import transport. They never appear in source, command arguments or deployment outputs. [Versioned Key Vault references](https://learn.microsoft.com/en-us/azure/container-apps/manage-secrets#key-vault-secret-uri-and-secret-rotation) avoid automatic selection of newer enrollment versions. Initial active allocation is one .25 CPU/.5 GiB replica, about $19.71/month before grants plus storage/vault/network costs. This is not a spending cap.
 
-Startup validates the persistent binding and passes its numeric repository ID to the native enrollment consumer before any broker request. It configures the existing native runtime once, then starts clone mode at the stable HTTPS origin. Matching restarts retain saved settings, Codex sign-in/trust and native history. Conflicting settings fail before importing enrollment. Inspect the actual ready revision, native `ready` log, signed webhook receipt, canonical checkout, accepted native turn and retained history after a controlled restart. The native webhook listener has no `/health/ready` route; TCP platform readiness alone does not prove those outcomes.
+Startup validates the persistent binding and passes its numeric repository ID to the native enrollment consumer before any broker request. It configures the existing native runtime once, then starts clone mode at the stable HTTPS origin. Matching restarts retain saved settings, Codex sign-in/trust and native history. Conflicting settings fail before importing enrollment. Inspect the actual ready revision, native `ready` log, signed webhook receipt, canonical checkout, accepted agent turn and retained history after a controlled restart. The native webhook listener has no `/health/ready` route; TCP platform readiness alone does not prove those outcomes.
 
 ## Activation recovery
 
@@ -163,7 +165,7 @@ retain the private journal on uncertainty. Secret rotation, storage migration
 and persistence-policy changes require their own lifecycle operation.
 [Microsoft list-secrets API](https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/container-apps/list-secrets?view=rest-resource-manager-containerapps-2026-07-01).
 
-Updates deliberately interrupt service. The command saves a private atomic journal, takes a host process lock, selects multiple-revision control, deactivates the previous revision and checks actual replicas before starting the replacement. It routes traffic after platform readiness and records the transition. Verify a native turn and signed webhook afterward. Keep other Azure resource writers fenced; the host lock does not serialize other machines or portal changes.
+Updates deliberately interrupt service. The command saves a private atomic journal, takes a host process lock, selects multiple-revision control, deactivates the previous revision and checks actual replicas before starting the replacement. It routes traffic after platform readiness and records the transition. Verify an agent turn and signed webhook afterward. Keep other Azure resource writers fenced; the host lock does not serialize other machines or portal changes.
 
 An interrupted or failed update retains its journal and requires explicit `Rollback`. Rollback checks the recorded configuration, stops any recorded candidate, confirms its replicas are gone and reactivates the previous exact revision. Unexpected drift requires inspection; use the exact journal revision names when inspecting Azure and do not delete private state to retry. Data, history and enrollment are preserved. The same logical device continues to own its issued tokens; image replacement is not token revocation or owner reassignment. A different device still requires the supported broker settlement and fresh-enrollment flow.
 

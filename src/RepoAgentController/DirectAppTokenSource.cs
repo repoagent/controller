@@ -24,25 +24,25 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
     readonly RSA key;
     readonly string repository;
     readonly TimeProvider clock;
-    readonly bool repositoryWebhooks;
-    readonly bool clone;
+    readonly RuntimeProfile profile;
+    bool clone => profile.ManagedClone;
     long repositoryId;
     string canonicalRepository = "";
     public long? RepositoryId => clone ? repositoryId : null;
     public string? GitRepository => clone ? canonicalRepository : null;
-    public string? GitProfile => clone ? (repositoryWebhooks ? "webhook-clone" : "polling-clone") : null;
+    // Direct App credentials name the clone profile Git credential helpers accept; repository settings do not change it.
+    public string? GitProfile => clone ? (profile with { Settings = false }).Name : null;
     long installationId;
     string appSlug = "";
     public string AppSlug => appSlug;
 
-    public DirectAppTokenSource(HttpClient http, string appId, string privateKeyPath, string repository, TimeProvider clock, bool repositoryWebhooks, bool clone = false)
+    public DirectAppTokenSource(HttpClient http, string appId, string privateKeyPath, string repository, TimeProvider clock, RuntimeProfile profile)
     {
+        this.profile = profile;
         this.http = http;
         this.appId = appId;
         this.repository = repository;
         this.clock = clock;
-        this.repositoryWebhooks = repositoryWebhooks;
-        this.clone = clone;
         key = RSA.Create();
         try { key.ImportFromPem(File.ReadAllText(privateKeyPath)); }
         catch { key.Dispose(); throw; }
@@ -65,17 +65,17 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
             throw new InvalidOperationException("Install the GitHub App on this repository with Discussions read/write permission");
         if (clone && installation["permissions"]?.Text("contents") is not ("read" or "write"))
             throw new InvalidOperationException("Clone mode requires Contents read permission");
-        if (repositoryWebhooks && installation["permissions"]?.Text("repository_hooks") != "write")
+        if (profile.Webhooks && installation["permissions"]?.Text("repository_hooks") != "write")
             throw new InvalidOperationException("Webhook mode requires Webhooks: read and write; approve the updated App installation permissions");
+        if (profile.Settings && installation["permissions"]?.Text("actions_variables") is not ("read" or "write"))
+            throw new InvalidOperationException("Repository settings require Variables: read; approve the updated App installation permissions");
 
         Log.Write("app-installation", $"app={slug} installation={installationId} repository={repository} actor={appSlug}[bot]");
     }
 
     public async Task<InstallationLease> Acquire(CancellationToken ct)
     {
-        var permissions = Json.Object(("discussions", "write"));
-        if (repositoryWebhooks) permissions["repository_hooks"] = "write";
-        if (clone) permissions["contents"] = "read";
+        var permissions = profile.Permissions();
         var request = Json.Object(("permissions", permissions));
         if (clone && repositoryId > 0) request["repository_ids"] = new JsonArray(repositoryId);
         else request["repositories"] = new JsonArray(repository.Split('/')[1]);
