@@ -12,11 +12,6 @@ public interface IBrokerState
     // precondition failed and nothing was written. Any other failure leaves the outcome unknown: the transaction may
     // have committed, so callers re-read and never compensate.
     Task<IReadOnlyList<StateVersion?>> CommitAsync(StateTransaction transaction, CancellationToken ct);
-
-    // One page of at most 32 records of a range whose names sort ordinally after `after`. A page may be empty and still
-    // carry a continuation; only a null continuation ends the range.
-    Task<StatePage<T>> ListAsync<T>(StateRange<T> range, string after, string? continuation, CancellationToken ct)
-        where T : BrokerRecord, new();
 }
 
 // Where one record lives: a scope, which a transaction never spans, and the record's name within it. Factories on the
@@ -29,18 +24,6 @@ public abstract class StateKey(string scope, string name)
 }
 
 public sealed class StateKey<T>(string scope, string name) : StateKey(scope, name) where T : BrokerRecord, new();
-
-// The records of one scope whose names sort ordinally from `From` (inclusive) to `To` (exclusive).
-public sealed class StateRange<T>(string scope, string from, string to) where T : BrokerRecord, new()
-{
-    public string Scope { get; } = scope;
-    public string From { get; } = from;
-    public string To { get; } = to;
-}
-
-public sealed record StatePage<T>(IReadOnlyList<ListedRecord<T>> Records, string? Continuation) where T : BrokerRecord, new();
-
-public sealed record ListedRecord<T>(StateKey<T> Key, Versioned<T> Record) where T : BrokerRecord, new();
 
 public sealed record Versioned<T>(T Value, StateVersion Version) where T : BrokerRecord;
 

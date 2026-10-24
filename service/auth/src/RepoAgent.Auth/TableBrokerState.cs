@@ -31,32 +31,6 @@ internal sealed class TableBrokerState(TableClient table) : IBrokerState
         catch (Exception ex) when (FromTable(ex, ct)) { throw new BrokerStateUnavailable("The broker table did not confirm a transaction.", ex); }
     }
 
-    public async Task<StatePage<T>> ListAsync<T>(StateRange<T> range, string after, string? continuation, CancellationToken ct)
-        where T : BrokerRecord, new()
-    {
-        Page<TableEntity>? page;
-        try
-        {
-            var filter = TableClient.CreateQueryFilter(
-                $"PartitionKey eq {range.Scope} and RowKey ge {range.From} and RowKey lt {range.To} and RowKey gt {after}");
-            await using var pages = table.QueryAsync<TableEntity>(filter, maxPerPage: 32, cancellationToken: ct)
-                .AsPages(continuation, pageSizeHint: 32).GetAsyncEnumerator(ct);
-            page = await pages.MoveNextAsync() ? pages.Current : null;
-            if (page is not null && (page.Values.Count > 32 || page.ContinuationToken is { Length: > 8192 }))
-                throw new InvalidDataException("Invalid durable page.");
-            foreach (var row in page?.Values ?? [])
-            {
-                BrokerTable.Validate(row);
-                if (!Versioned(row) || row.PartitionKey != range.Scope || string.CompareOrdinal(row.RowKey, range.From) < 0
-                    || string.CompareOrdinal(row.RowKey, range.To) >= 0 || string.CompareOrdinal(row.RowKey, after) <= 0)
-                    throw new InvalidDataException("Invalid durable page.");
-            }
-        }
-        catch (Exception ex) when (FromTable(ex, ct)) { throw new BrokerStateUnavailable("The broker table did not answer a listing.", ex); }
-        return page is null ? new([], null) : new([.. page.Values.Select(row => new ListedRecord<T>(new(row.PartitionKey, row.RowKey),
-            new(BrokerRecord.Read<T>(Properties(row)), new(row.ETag.ToString()))))], page.ContinuationToken);
-    }
-
     private static TableTransactionAction Action(StateWrite write)
     {
         var entity = new TableEntity(write.Key.Scope, write.Key.Name);
@@ -70,8 +44,6 @@ internal sealed class TableBrokerState(TableClient table) : IBrokerState
     private static Dictionary<string, object> Properties(TableEntity row) => row
         .Where(property => property.Key is not ("PartitionKey" or "RowKey" or "Timestamp" or "odata.etag"))
         .ToDictionary(property => property.Key, property => property.Value, StringComparer.Ordinal);
-
-    private static bool Versioned(TableEntity row) => row.ETag != ETag.All && !string.IsNullOrEmpty(row.ETag.ToString());
 
     private static bool FromTable(Exception ex, CancellationToken ct) => ex is not OperationCanceledException || !ct.IsCancellationRequested;
 }

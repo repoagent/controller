@@ -86,43 +86,6 @@ public sealed class InMemoryBrokerStateTests
     }
 
     [Fact]
-    public async Task Listing_is_ordinal_within_its_range_in_pages_of_at_most_32()
-    {
-        state.PageSize = 100;
-        var names = Enumerable.Range(0, 34).Select(i => "e" + i.ToString("D2")).Concat(["E", "F", "a", "_"]).ToList();
-        foreach (var name in names) state.Seed(Receipt(name), new RevocationReceipt { EnrollmentId = name });
-        state.Seed(Gate, NewGate());
-        state.Seed(RevocationReceipt.Key("2", "other"), new RevocationReceipt());
-        var range = new StateRange<RevocationReceipt>("repository:" + Repository, "revocation:", "revocation;");
-
-        var first = await state.ListAsync(range, "revocation:E", null, Token);
-        var second = await state.ListAsync(range, "revocation:E", first.Continuation, Token);
-
-        var expected = names.Where(name => string.CompareOrdinal(name, "E") > 0).Order(StringComparer.Ordinal).ToList();
-        Assert.Equal(32, first.Records.Count);
-        Assert.NotNull(first.Continuation);
-        Assert.Null(second.Continuation);
-        Assert.Equal(expected, first.Records.Concat(second.Records).Select(record => record.Record.Value.EnrollmentId));
-        Assert.All(first.Records, record => Assert.Equal(record.Record.Version, state.Version(record.Key)));
-    }
-
-    [Fact]
-    public async Task An_empty_page_can_still_carry_a_continuation()
-    {
-        state.Seed(Receipt("a"), new RevocationReceipt { EnrollmentId = "a" });
-        var range = new StateRange<RevocationReceipt>("repository:" + Repository, "revocation:", "revocation;");
-        state.EmptyPages = 1;
-
-        var empty = await state.ListAsync(range, "", null, Token);
-        var next = await state.ListAsync(range, "", empty.Continuation, Token);
-
-        Assert.Empty(empty.Records);
-        Assert.NotNull(empty.Continuation);
-        Assert.Equal("a", Assert.Single(next.Records).Record.Value.EnrollmentId);
-        Assert.Null(next.Continuation);
-    }
-
-    [Fact]
     public async Task Hooks_commit_competing_writes_and_lose_responses_of_committed_transactions()
     {
         var version = state.Seed(Gate, NewGate());
