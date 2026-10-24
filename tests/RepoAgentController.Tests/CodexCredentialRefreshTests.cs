@@ -54,15 +54,20 @@ public sealed class CodexCredentialRefreshTests
             Assert.DoesNotContain("C2", native.Receipts());
 
             // The operator replaces the supplied file while the controller keeps running; time passes for its
-            // checks and polls. The held input reaches the same native session, resumed with its history,
-            // using the replacement credential.
+            // checks and polls. The same native session, resumed with its history, uses the replacement credential:
+            // first for the rejected turn's input, sent again as a redelivery, then for the input held meanwhile.
             native.Supply("sk-canary-B");
-            await model.Eventually(requests => requests.Skip(attempts).Any(request => request.Authorization == "Bearer sk-canary-B"),
+            await model.Eventually(requests => requests.Skip(attempts).Count(request => request.Authorization == "Bearer sk-canary-B") >= 2,
                 () => fixture.Clock.Advance(TimeSpan.FromSeconds(5)));
-            var resumed = model.Requests().Skip(attempts).First(request => request.Authorization == "Bearer sk-canary-B");
-            Assert.All(model.Requests().Skip(attempts), request => Assert.Equal("Bearer sk-canary-B", request.Authorization));
-            Assert.Contains("second comment while credentials are rejected", resumed.Body);
-            Assert.Contains(HistoryMarker, resumed.Body);
+            var replaced = model.Requests().Skip(attempts).ToArray();
+            Assert.All(replaced, request => Assert.Equal("Bearer sk-canary-B", request.Authorization));
+            var redelivered = Envelope(replaced[0].Body);
+            Assert.True(redelivered["_bridge"]?["redelivery"]?.GetValue<bool>(), "The rejected turn's input was not redelivered first");
+            Assert.Equal(["C1"], Subjects(redelivered));
+            Assert.Contains(HistoryMarker, replaced[0].Body);
+            var held = Envelope(replaced[1].Body);
+            Assert.Null(held["_bridge"]!["redelivery"]);
+            Assert.Equal(["C2"], Subjects(held));
             Assert.Equal(session, Session(fixture));
             await Until(() => Task.FromResult(native.Receipts().Contains("C2")));
             var healthy = await OperatorStatusTests.Eventually(fixture.State, status => status["codexAuthentication"]?["state"]?.GetValue<string>() == "healthy");
@@ -193,6 +198,20 @@ public sealed class CodexCredentialRefreshTests
         Assert.DoesNotContain(Canary, status.ToJsonString());
         Assert.DoesNotContain(Canary, await OperatorStatusTests.RetainedLogs(fixture.State));
     }
+
+    // The bridge envelope of the newest Discussion input in a model request; earlier history items come first.
+    static JsonNode Envelope(string body)
+    {
+        const string Prefix = "$github-discussion\n";
+        var texts = JsonNode.Parse(body)!["input"]!.AsArray().OfType<JsonObject>()
+            .Where(item => item["role"]?.GetValue<string>() == "user" && item["content"] is JsonArray)
+            .SelectMany(item => item["content"]!.AsArray().OfType<JsonObject>())
+            .Select(part => part["text"]?.GetValue<string>()).OfType<string>().Where(text => text.StartsWith(Prefix, StringComparison.Ordinal));
+        return JsonNode.Parse(texts.Last()[Prefix.Length..])!;
+    }
+
+    static string[] Subjects(JsonNode envelope) =>
+        [.. envelope["changes"]!.AsArray().Select(change => change!["subject"]!["id"]!.GetValue<string>())];
 
     static string Session(BrokerAuthenticationTests.Fixture fixture) =>
         JsonNode.Parse(File.ReadAllText(fixture.State))!["discussions"]!["D1"]!["sessionId"]!.GetValue<string>();

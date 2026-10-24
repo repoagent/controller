@@ -26,6 +26,8 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
     readonly Dictionary<(string Kind, string Url), string> reported = [];
     // Serializes observation and idle dispatch over the shared state store.
     readonly SemaphoreSlim gate = new(1, 1), wake = new(0, 1);
+    // Caller holds the gate. The batch each running turn carries, by turn ID, until its outcome; this lifetime only.
+    readonly Dictionary<string, JsonObject> running = [];
     volatile bool inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
 
     /// <summary>True while any observed Discussion input waits in the controller for idle dispatch.</summary>
@@ -38,6 +40,12 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
     /// <summary>Retries every delivery an earlier controller lifetime left unacknowledged. Call once, before observing.</summary>
     public void ResumeInterrupted()
     {
+        // Turns end with the native process of their lifetime.
+        foreach (var record in store.Discussions.Select(entry => entry.Value!.AsObject()).Where(record => record["running"] is not null).ToArray())
+        {
+            record.Remove("running");
+            store.Save();
+        }
         foreach (var record in store.Discussions.Select(entry => entry.Value!.AsObject()).Where(record => record["pending"] is not null).ToArray())
             Interrupted(record);
     }
@@ -79,6 +87,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
 
     async Task<bool> ObserveExclusive(List<JsonNode> discussions, CancellationToken ct)
     {
+        Settle();
         var succeeded = true;
         foreach (var discussion in discussions)
         {
@@ -187,7 +196,11 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
     public async Task<T> ExcludingDispatch<T>(Func<Task<T>> action, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
-        try { return await action(); }
+        try
+        {
+            Settle(); // Returned input is queued before a native restart can forget the turn that held it.
+            return await action();
+        }
         finally { gate.Release(); }
     }
 
@@ -212,6 +225,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
                 await gate.WaitAsync(stop);
                 try
                 {
+                    Settle();
                     var ready = store.Discussions.Select(entry => entry.Value!.AsObject())
                         .Where(record => record["waiting"] is not null && record["pending"] is null)
                         .OrderBy(record => record["waiting"]!["inputs"]![0]!.Text("observedAt"), StringComparer.Ordinal).ToArray();
@@ -350,6 +364,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         // Durable while the native outcome is unknown; an interrupted lifetime leaves it for redelivery at the next start.
         var pending = new JsonObject { ["operation"] = create ? "create-and-send" : "send", ["since"] = DateTimeOffset.UtcNow.ToString("O"), ["sourceIds"] = new JsonArray(receipts.Select(receipt => (JsonNode?)JsonValue.Create(receipt.Text("id"))).ToArray()), ["inputs"] = count };
         var offered = false;
+        var turn = "";
         try
         {
             if (create)
@@ -375,7 +390,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
             }
             if (!create) { record["pending"] = pending; store.Save(); }
             offered = true;
-            await codex.Accept(session, envelope, selection, ct, admission);
+            turn = await codex.Accept(session, envelope, selection, ct, admission);
         }
         // A failure while this lifetime stops leaves pending; the next start retries it as an interrupted delivery. Credential
         // loss kills the native before the lifetime token is cancelled, so it is checked directly.
@@ -386,17 +401,73 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
             finally { Retry(record, count, offered, error.Message); }
             return false;
         }
+        // Kept until the turn's outcome: a provider rejection of the Codex account credentials returns it to the queue.
+        var batch = new JsonObject { ["discussion"] = discussion.Copy(), ["inputs"] = new JsonArray(inputs.Take(count).Select(input => input!.Copy()).ToArray()) };
+        if (bootstrap) batch["context"] = waiting["context"]!.Copy();
+        running[turn] = batch;
         for (var index = 0; index < count; index++) inputs.RemoveAt(0);
         waiting.Remove("context");
         waiting.Remove("retry");
         if (inputs.Count == 0) record.Remove("waiting");
         record.Remove("pending");
+        // Status reports the running turn in every mode until the native reports it completed.
+        record["running"] = new JsonObject { ["turn"] = turn, ["since"] = clock.GetUtcNow().ToString("O") };
         store.Save();
         inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
         admission?.Confirm();
         Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count} latest={envelope["changes"]!.AsArray()[^1]!["subject"]!.Text("url")}" + (redelivery ? " redelivery=true" : ""));
         foreach (var source in receipts) outbox.Receipt(source);
         return true;
+    }
+
+    // Caller holds the gate. Ends the running marker of every turn the native completed or lost. Input of a turn the provider
+    // rejected for its Codex account credentials goes back first in line as a redelivery; it waits for replacement credentials,
+    // since the rejection holds all dispatch.
+    void Settle()
+    {
+        var (ended, active) = codex.TakeTurns();
+        var changed = false;
+        foreach (var outcome in ended)
+        {
+            var batch = running.Remove(outcome.Turn, out var value) ? value : null;
+            var record = store.Discussions.Select(entry => entry.Value as JsonObject)
+                .FirstOrDefault(record => record?["running"]?.Text("turn") == outcome.Turn);
+            if (record is null) continue;
+            record.Remove("running");
+            changed = true;
+            if (outcome.CredentialsRejected && batch is not null) Requeue(record, batch, outcome.Turn);
+        }
+        // A turn lost with its native process (disconnect) reports no outcome.
+        foreach (var record in store.Discussions.Select(entry => entry.Value as JsonObject)
+            .Where(record => record?["running"] is not null && !active.Contains(record.Text("sessionId"))).ToArray())
+        {
+            running.Remove(record!["running"]!.Text("turn"));
+            record.Remove("running");
+            changed = true;
+        }
+        if (!changed) return;
+        store.Save();
+        inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
+    }
+
+    // Caller holds the gate and saves. The native accepted this batch but the provider refused the Codex account, so no agent
+    // work ran; the history may still hold the input, so it is marked as a redelivery.
+    void Requeue(JsonObject record, JsonObject batch, string turn)
+    {
+        var waiting = record["waiting"] as JsonObject ?? new JsonObject { ["inputs"] = new JsonArray() };
+        waiting["discussion"] ??= batch["discussion"]!.Copy();
+        if (batch["context"] is { } context && waiting["context"] is null) waiting["context"] = context.Copy();
+        var inputs = waiting["inputs"]!.AsArray();
+        var returned = batch["inputs"]!.AsArray();
+        for (var index = returned.Count - 1; index >= 0; index--)
+        {
+            var input = returned[index]!.Copy();
+            input["redelivery"] = true;
+            inputs.Insert(0, input);
+        }
+        record["waiting"] = waiting;
+        Log.Write("input-requeued", $"{record.Text("url")} session={record.Text("sessionId")} turn={turn} inputs={returned.Count} sources={string.Join(',', returned.Select(input => input!["receipt"]).OfType<JsonNode>().Select(receipt => receipt.Text("id")).Distinct())}: " +
+            "Codex account credentials were rejected; the input is redelivered once replacement credentials apply");
     }
 
     // A delivery attempt that ended with an earlier controller lifetime is retried at once; once its

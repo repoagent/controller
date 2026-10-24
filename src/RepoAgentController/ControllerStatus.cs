@@ -18,7 +18,7 @@ sealed class ControllerStatus : IDisposable
         "codex-auth-failed", "codex-auth-invalid", "codex-auth-error", "selection-error", "label-read-error"];
     static readonly HashSet<string> ActivityKinds = ["session-created", "forwarded"];
     // Events after which the state file holds different work, such as input now waiting for its session.
-    static readonly HashSet<string> WorkKinds = ["input-waiting"];
+    static readonly HashSet<string> WorkKinds = ["input-waiting", "input-requeued"];
     // Terminal-readable output; status is never embedded in HTML.
     static readonly JsonSerializerOptions Indented = new() { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     readonly string statePath;
