@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 
 namespace RepoAgent.Auth;
 
-internal static class DeviceSecret
+public static class DeviceSecret
 {
     public static bool IsDeviceId(string value) => value.Length is >= 1 and <= 128
         && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');

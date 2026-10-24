@@ -171,7 +171,7 @@ public sealed class IssuanceFaultTests
         {
             if (!ObservedTransport.IsBatch(message) || ++batches != 2) return;
             if (changed == "revoked")
-                Assert.Equal(204, await new DeviceRevocation(f.Storage.Table, f.Options, f.Clock).RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
+                Assert.Equal(204, await new DeviceRevocation(new TableBrokerState(f.Storage.Table), RevocationFixture.Epoch, f.Clock).RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
             else
             {
                 var device = await f.DeviceAsync();
@@ -291,7 +291,7 @@ public sealed class IssuanceFaultTests
         {
             if (f.GitHub.Reads == 12 && request.StartsWith("variable ", StringComparison.Ordinal))
             {
-                Assert.Equal(204, await new DeviceRevocation(f.Storage.Table, f.Options, f.Clock).RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
+                Assert.Equal(204, await new DeviceRevocation(new TableBrokerState(f.Storage.Table), RevocationFixture.Epoch, f.Clock).RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
                 revoked = true;
             }
         };

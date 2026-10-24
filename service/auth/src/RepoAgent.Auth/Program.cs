@@ -25,7 +25,9 @@ builder.Services.AddSingleton(services =>
         });
 });
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<DeviceRevocation>();
+builder.Services.AddSingleton<IBrokerState>(services => new TableBrokerState(services.GetRequiredService<TableClient>()));
+builder.Services.AddSingleton(services => new DeviceRevocation(services.GetRequiredService<IBrokerState>(),
+    services.GetRequiredService<BrokerOptions>().DeploymentEpoch, services.GetRequiredService<TimeProvider>()));
 RequestProtection.Add(builder);
 IssuanceServices.Add(builder);
 builder.Services.AddHealthChecks().AddCheck<BrokerReadiness>("composition");

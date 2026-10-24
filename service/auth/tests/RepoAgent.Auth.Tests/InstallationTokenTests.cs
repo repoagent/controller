@@ -104,7 +104,7 @@ public sealed class InstallationTokenTests
         f.GitHub.BeforeMint = async mint =>
         {
             if (mint.Number == 2)
-                Assert.Equal(204, await new DeviceRevocation(f.Storage.Table, f.Options, f.Clock).RevokeAsync(f.Device.DeviceId, f.Device.Secret, TestContext.Current.CancellationToken));
+                Assert.Equal(204, await new DeviceRevocation(new TableBrokerState(f.Storage.Table), RevocationFixture.Epoch, f.Clock).RevokeAsync(f.Device.DeviceId, f.Device.Secret, TestContext.Current.CancellationToken));
         };
         Assert.NotEqual(200, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         Assert.Equal("closed", (await f.GateAsync()).GetString("State"));
@@ -118,7 +118,7 @@ public sealed class InstallationTokenTests
     {
         await using var f = await IssuanceFixture.CreateAsync();
         Assert.Equal(200, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
-        Assert.Equal(204, await new DeviceRevocation(f.Storage.Table, f.Options, f.Clock).RevokeAsync(f.Device.DeviceId, f.Device.Secret, TestContext.Current.CancellationToken));
+        Assert.Equal(204, await new DeviceRevocation(new TableBrokerState(f.Storage.Table), RevocationFixture.Epoch, f.Clock).RevokeAsync(f.Device.DeviceId, f.Device.Secret, TestContext.Current.CancellationToken));
         Assert.Equal("released", Assert.Single(await f.AttemptsAsync(), a => a.GetString("Purpose") == "runtime").GetString("State"));
         Assert.Equal(3, (await f.GateAsync()).GetInt64("OutstandingTokenCount"));
     }
