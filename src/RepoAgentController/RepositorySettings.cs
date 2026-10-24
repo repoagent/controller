@@ -56,7 +56,7 @@ sealed class RepositorySettings
         (this.github, this.clock, path) = (github, clock, statePath is null ? null : PathFor(statePath));
         var recorded = github is null ? null : Recorded(path);
         values = Catalogue.ToDictionary(s => s.Name, s => recorded?.GetValueOrDefault(s.Name) is { } known
-            ? new SettingValue("pending", known.Value) { Since = known.Since } : new SettingValue(github is null ? "disabled" : "pending", null));
+            ? new SettingValue(SettingState.Pending, known.Value) { Since = known.Since } : new SettingValue(github is null ? SettingState.Disabled : SettingState.Pending, null));
     }
 
     public SettingValue this[string name] => Volatile.Read(ref values)[name];
@@ -84,12 +84,12 @@ sealed class RepositorySettings
             {
                 // Absence is confirmed by GitHub. Invalid values and failed reads keep the last effective value.
                 var raw = await github.Variable(setting.Name, ct);
-                observed = raw is null ? new("absent", null)
-                    : setting.Normalize(raw, out var reason) is { } value ? new("configured", value) : new("invalid", retained, reason);
+                observed = raw is null ? new(SettingState.Absent, null)
+                    : setting.Normalize(raw, out var reason) is { } value ? new(SettingState.Configured, value) : new(SettingState.Invalid, retained, reason);
             }
             catch (Exception error) when (!ct.IsCancellationRequested)
             {
-                observed = new("read-failed", retained, error is GitHubRequestException { Status: { } status } ? $"HTTP {status}" : "GitHub read failed");
+                observed = new(SettingState.ReadFailed, retained, error is GitHubRequestException { Status: { } status } ? $"HTTP {status}" : "GitHub read failed");
             }
             observed = observed with { Since = observed.Value == previous[setting.Name].Value ? previous[setting.Name].Since : clock.GetUtcNow() };
             next[setting.Name] = observed;
@@ -108,7 +108,7 @@ sealed class RepositorySettings
         var settings = new JsonObject();
         foreach (var (name, value) in current)
         {
-            var item = Json.Object(("state", value.State));
+            var item = Json.Object(("state", value.State.Name()));
             if (value.Value is not null) { item["value"] = value.Value; item["since"] = value.Since.ToString("O", CultureInfo.InvariantCulture); }
             if (value.Reason is not null) item["reason"] = value.Reason;
             settings[name] = item;
@@ -164,7 +164,7 @@ sealed class RepositorySettings
         }
     }
 
-    static string Describe(string name, SettingValue value) => $"name={name} state={value.State}" +
+    static string Describe(string name, SettingValue value) => $"name={name} state={value.State.Name()}" +
         (value.Value is null ? "" : $" value={value.Value}") + (value.Reason is null ? "" : $" reason=\"{value.Reason}\"");
 
     static IReadOnlyList<RepositorySetting> Load()

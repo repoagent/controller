@@ -50,8 +50,8 @@ public static class ModelSelection
             throw new ModelSelectionException($"conflicting model labels {string.Join(", ", selected)}; keep one {LabelPrefix}<model>:<reasoning> label");
         if (selected.Length == 0)
             foreach (var (name, setting) in new[] { (ModelSetting, modelSetting), (ReasoningSetting, reasoningSetting) })
-                if (setting is { Value: null, State: "invalid" or "read-failed" })
-                    throw new ModelSelectionException(setting.State == "invalid"
+                if (setting is { Value: null, State: SettingState.Invalid or SettingState.ReadFailed })
+                    throw new ModelSelectionException(setting.State == SettingState.Invalid
                         ? $"{name} is invalid ({setting.Reason}) and no earlier value is known; correct or clear the variable"
                         : $"{name} could not be read ({setting.Reason}) and no earlier value is known; the input waits for a successful settings read");
         var (defaultModel, defaultReasoning) = (modelSetting.Value, reasoningSetting.Value);

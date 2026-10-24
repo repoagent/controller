@@ -38,7 +38,7 @@ sealed class CategoryEnrollment
     JsonObject Starts()
     {
         var setting = settings[Setting];
-        if (setting is { Value: null, State: not ("absent" or "disabled") }) return store.State["enrollmentCategories"] as JsonObject ?? new JsonObject();
+        if (setting is { Value: null, State: not (SettingState.Absent or SettingState.Disabled) }) return store.State["enrollmentCategories"] as JsonObject ?? new JsonObject();
         var names = setting.Value?.Split(',', StringSplitOptions.TrimEntries) ?? [];
         if (store.State["enrollmentCategories"] is not JsonObject starts)
         {

@@ -27,5 +27,5 @@ public sealed class ModelSelectionResolveTests
     }
 
     // A successful settings read: the normalized variable value, or GitHub's confirmed absence.
-    static SettingValue Setting(string? value) => value is null ? new("absent", null) : new("configured", value);
+    static SettingValue Setting(string? value) => value is null ? new(SettingState.Absent, null) : new(SettingState.Configured, value);
 }
