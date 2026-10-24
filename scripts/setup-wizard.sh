@@ -218,7 +218,7 @@ when available (otherwise offers device sign-in), verifies access and starts Doc
   --public-url HTTPS_ORIGIN     Required for fixed-url
   --listen-port PORT            Default: 8080
   --reconcile-interval SECONDS  Default: 300
-  --tool-updates latest|pinned  Default: latest
+  --tool-updates latest|pinned  Default: saved choice; pinned (image tools) for a new instance
   --web-search live|cached|disabled  Default: live
   --image-manifest PATH         Versioned nonsecret image manifest
   --derived-dockerfile PATH     Optional user-owned image extension
@@ -264,7 +264,10 @@ USAGE
       MODEL) field=model; default=gpt-6.1-sol ;; MODE) field=mode; default=polling ;;
       PUBLIC_URL) field=publicUrl ;; LISTEN_PORT) field=listenPort; default=8080 ;;
       RECONCILE_INTERVAL) field=reconcileInterval; default=300 ;;
-      TOOL_UPDATES) field=toolUpdates; default=latest ;; WEB_SEARCH) field=webSearch; default=live ;;
+      TOOL_UPDATES) field=toolUpdates; default=pinned
+        # Settings saved before this choice existed always updated tools at startup; they keep doing so.
+        [[ -z $("$cli" get repository 2>/dev/null || true) ]] || default=latest ;;
+      WEB_SEARCH) field=webSearch; default=live ;;
       CODEX_AUTH_PATH)
         local auth=${CODEX_HOME:-$HOME/.codex}/auth.json
         [[ ! -f "$auth" ]] || printf '%s' "$auth"

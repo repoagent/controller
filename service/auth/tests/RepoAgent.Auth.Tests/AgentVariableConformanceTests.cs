@@ -11,44 +11,42 @@ public sealed class AgentVariableConformanceTests
 {
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
+    // The legacy Agent location is read by name, like the Actions location.
+    private const string Named = "/repos/owner/project/agents/variables/APPROVAL", Listed = "/repos/owner/project/agents/variables";
+
     [Theory]
-    [InlineData("pagination-shift")]
-    [InlineData("partial")]
-    [InlineData("oversize")]
-    [InlineData("duplicate")]
-    [InlineData("malformed")]
     [InlineData("denied")]
-    [InlineData("404")]
+    [InlineData("isolated-404")]
+    [InlineData("404-without-variables-access")]
+    [InlineData("malformed")]
+    [InlineData("other-name")]
+    [InlineData("page-contradicts-404")]
+    [InlineData("malformed-page")]
     [InlineData("stale")]
-    public async Task Unverifiable_listing_denies_without_closing_and_page_two_positive_can_recover(string observation)
+    public async Task Unverifiable_named_read_denies_without_closing_and_a_fresh_positive_read_recovers(string observation)
     {
         await using var f = await AgentFixture();
         var pending = await Start(f);
         var receipt = await Complete(f, pending);
         var normal = f.GitHub.Before!;
-        var pages = new List<int>();
         f.GitHub.Before = request =>
         {
-            if (request.RequestUri!.AbsolutePath != "/repos/owner/project/agents/variables") return normal(request);
-            var page = request.RequestUri.Query.Contains("page=2", StringComparison.Ordinal) ? 2 : 1;
-            pages.Add(page);
-            // Initially the unchanged approval is at position31. An unrelated early
-            // deletion shifts it into the already-read first page; a new last item
-            // preserves total31 and unique names across the two responses.
-            if (observation is "pagination-shift" or "duplicate" or "stale")
+            var path = request.RequestUri!.AbsolutePath;
+            if (path is not (Named or Listed)) return normal(request);
+            // A 404 is absence only with a later access proof; a lost or narrowed verifier also gets 404.
+            if (path == Named && observation is "isolated-404" or "404-without-variables-access" or "page-contradicts-404" or "malformed-page")
+                return Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.NotFound));
+            if (observation == "stale") f.Clock.Advance(TimeSpan.FromSeconds(11));
+            return (path, observation) switch
             {
-                if (page == 1) return Reply(Listing(31, Unrelated(30)));
-                if (observation == "stale") f.Clock.Advance(TimeSpan.FromSeconds(11));
-                return Reply(Listing(31, observation == "duplicate" ? [Variable("N00", "unrelated")]
-                    : observation == "stale" ? [Variable("APPROVAL", f.GitHub.Marker)] : [Variable("ZZ_NEW", "unrelated")]));
-            }
-            return observation switch
-            {
-                "denied" => Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.Forbidden)),
-                "404" => Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.NotFound)),
-                "oversize" => Reply(Listing(61, Unrelated(30))),
-                "malformed" => Reply(Listing(1, [new { name = "APPROVAL", value = 42 }])),
-                _ => Reply(Listing(2, [Variable("UNRELATED", "private-provider-value")]))
+                (Named, "denied") => Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.Forbidden)),
+                (Listed, "isolated-404") => Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.NotFound)),
+                (Listed, "404-without-variables-access") => Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.Forbidden)),
+                (Named, "malformed") => Reply(new { name = "APPROVAL", value = 42 }),
+                (Named, "other-name") => Reply(Variable("UNRELATED", "private-provider-value")),
+                (Listed, "page-contradicts-404") => Reply(Listing(1, [Variable("APPROVAL", f.GitHub.Marker)])),
+                (Listed, "malformed-page") => Reply(Listing(2, Unrelated(2))),
+                _ => normal(request)
             };
         };
         f.Clock.Advance(TimeSpan.FromMinutes(1));
@@ -56,13 +54,8 @@ public sealed class AgentVariableConformanceTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, denied.StatusCode);
         Assert.DoesNotContain("deviceSecret", await denied.Content.ReadAsStringAsync(Token));
         Assert.DoesNotContain("private-provider-value", await denied.Content.ReadAsStringAsync(Token));
-        if (observation is "pagination-shift" or "duplicate" or "stale") Assert.Equal([1, 2], pages);
 
-        // A positive selected value on page2 is usable, unlike nonappearance there.
-        f.GitHub.Before = request => request.RequestUri!.AbsolutePath == "/repos/owner/project/agents/variables"
-            ? Reply(request.RequestUri.Query.Contains("page=2", StringComparison.Ordinal)
-                ? Listing(31, [Variable("APPROVAL", f.GitHub.Marker)]) : Listing(31, Unrelated(30)))
-            : normal(request);
+        f.GitHub.Before = normal;
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var recovered = await f.Send($"/v2/enrollments/{pending}/completion");
@@ -313,8 +306,8 @@ public sealed class AgentVariableConformanceTests
                 return Reply(new { total_count = 1, repositories = new[] { new {
                     id = change == "repository-id" ? 999999 : 123456,
                     full_name = change == "repository-name" ? "other/project" : "owner/project" } } });
-            if (change == "legacy-marker" && path == "/repos/owner/project/agents/variables")
-                return Reply(Listing(1, [Variable("APPROVAL", f.GitHub.Marker.Replace("\"version\":2", "\"version\":1", StringComparison.Ordinal))]));
+            if (change == "legacy-marker" && path == Named)
+                return Reply(Variable("APPROVAL", f.GitHub.Marker.Replace("\"version\":2", "\"version\":1", StringComparison.Ordinal)));
             return normal(request);
         };
         f.Clock.Advance(TimeSpan.FromMinutes(1));
@@ -346,31 +339,30 @@ public sealed class AgentVariableConformanceTests
     }
 
     [Theory]
-    [InlineData("two-page-mismatch")]
-    [InlineData("single-page-absence")]
+    [InlineData("changed")]
+    [InlineData("absent")]
     public async Task Stale_negative_runtime_observation_denies_without_closure_and_fresh_approval_recovers(string observation)
     {
         await using var f = await AgentFixture();
         var receipt = await Complete(f, await Start(f));
         await Ack(f, receipt);
         var normal = f.GitHub.Before!;
-        var listingReads = 0;
+        var variableReads = 0;
         f.GitHub.Before = request =>
         {
-            if (request.RequestUri!.AbsolutePath != "/repos/owner/project/agents/variables") return normal(request);
-            listingReads++;
-            if (observation == "two-page-mismatch" && !request.RequestUri.Query.Contains("page=2", StringComparison.Ordinal))
-                return Reply(Listing(31, Unrelated(30)));
+            var path = request.RequestUri!.AbsolutePath;
+            if (path is not (Named or Listed)) return normal(request);
+            variableReads++;
+            if (path == Named && observation == "absent") return Task.FromResult<HttpResponseMessage?>(new(HttpStatusCode.NotFound));
             // The final response is well formed but its oldest contributing read
             // is now11s old: outside freshness10s, inside operation lifetime15s.
             f.Clock.Advance(TimeSpan.FromSeconds(11));
-            return Reply(observation == "two-page-mismatch"
-                ? Listing(31, [Variable("APPROVAL", "changed-public-marker")]) : Listing(0, []));
+            return Reply(observation == "changed" ? Variable("APPROVAL", "changed-public-marker") : Listing(0, []));
         };
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var stale = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
         Assert.NotEqual(HttpStatusCode.OK, stale.StatusCode);
-        Assert.Equal(observation == "two-page-mismatch" ? 2 : 1, listingReads);
+        Assert.Equal(observation == "absent" ? 2 : 1, variableReads);
         Assert.DoesNotContain("token", await stale.Content.ReadAsStringAsync(Token));
 
         f.GitHub.Before = normal;
@@ -511,7 +503,7 @@ public sealed class AgentVariableConformanceTests
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
         return f;
     }
-    private static AgentEnrollmentRequest Request(string profile = "polling") => new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "APPROVAL", profile);
+    private static RepositoryVariableEnrollmentRequest Request(string profile = "polling") => new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "APPROVAL", profile);
     private static object Variable(string name, string value) => new { name, value };
     private static object[] Unrelated(int count) => Enumerable.Range(0, count).Select(i => Variable($"N{i:00}", "unrelated")).ToArray();
     private static object Listing(int total, object[] variables) => new { total_count = total, variables };

@@ -1,9 +1,12 @@
 # Durable webhook work for an idle Azure controller
 
+> **Retired** by [ADR 0009](adr/0009-keep-hosting-lifecycle-out-of-the-controller.md). The controller no longer owns hosting lifecycle; this mode is being removed. Kept for history until the removal lands.
+
 The native controller supports an opt-in `--azure-work-queue` mode. It retains
-work after the webhook HTTP response ends and releases it after native turns,
-observed-input checkpoints and requested checkout refreshes finish. Existing
-polling and ordinary webhook mode keep their behavior.
+work after the webhook HTTP response ends and releases it after agent turns,
+observed-input checkpoints and requested checkout refreshes finish. Polling
+keeps its behavior. Ordinary webhook mode shares the deleted-Discussion
+handling described under failures below, without the queue retry.
 
 This is the native implementation, not an activated Azure deployment profile.
 A published image, compatible storage, managed-identity authorization and real
@@ -42,10 +45,12 @@ number; Discussion bodies and credentials are not stored in the queue.
 
 The receiver holds at most 32 leases, renews their 90-second visibility every
 15 seconds using the latest pop receipt, and continues observing new inputs
-while an earlier native turn runs. Native acknowledgment does not complete
+while an earlier agent turn runs. Native acknowledgment does not complete
 work. The existing checkout admission/turn journal coordinates the idle
 boundary; only known completed work with saved checkpoints and completed
-refresh can be acknowledged. The acknowledgment batch is frozen before checking
+refresh can be acknowledged. Discussion input still waiting in the controller
+for an idle session also retains every observed item until it is dispatched.
+The acknowledgment batch is frozen before checking
 idle, so a push observed during that check retains its own queue item. A failed
 or cancelled enqueue also stops the runtime because the service may already
 have committed the hint. Duplicate hints reread observed state rather
@@ -59,15 +64,20 @@ Lease loss, lost broker credentials, unknown native activity, failed checkpoint
 and failed queue send, receive, retry or completion stop the runtime while
 retaining recovery evidence. A failed observation does not: its hint returns to
 the queue, invisible for 5 seconds doubling per delivery up to 10 minutes,
-while later hints continue (`durable-work-retry`). Only GitHub's typed
-`NOT_FOUND` for the Discussion itself in the resolved configured repository
-confirms deletion. The controller then forgets that Discussion's state,
-including its session mapping, checkpoints and pending marker, and completes
-its work (`discussion-forgotten`); native conversation history is retained.
-Timeouts, incomplete reads, access loss, rate limits and provider errors are
-never treated as deletion.
-Uncertain native work is not automatically replayed. Backlog, retried failures
-or manual recovery can therefore keep compute active; that condition is not idle.
+while later hints continue (`durable-work-retry`). A native delivery that fails
+after its input was observed is not retried through the queue: the controller
+retries it itself (`delivery-retry`), and the observed hint stays held until
+the input is dispatched. Only GitHub's typed `NOT_FOUND` for the Discussion
+itself in the resolved configured repository confirms deletion. The controller
+then forgets that Discussion's state, including its session mapping,
+checkpoints, waiting input, delivery retry and pending markers, and completes
+its work (`discussion-forgotten`); a turn it already runs continues until the
+native ends it, and native conversation history is retained. Timeouts,
+incomplete reads, access loss, rate limits and provider errors are never
+treated as deletion. Within a running lifetime, failed or unacknowledged native
+input is retried and redelivered with a marker; agent work left uncertain when
+a runtime stops is not automatically replayed. Backlog, retried failures or
+manual recovery can therefore keep compute active; that condition is not idle.
 
 ## Scaling and stopping
 

@@ -145,6 +145,12 @@ sealed class CheckoutRefresh : IAsyncDisposable
             }
             Log.Write("refresh-pending", error.Message);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Shutdown before applying leaves the checkout unchanged and the generation requested for the next lifetime.
+            lock (journalLock) if (journal["applying"] is not null) { blocked = true; try { Fault("Refresh interrupted while applying"); } catch { } }
+            throw;
+        }
         catch (Exception error)
         {
             lock (journalLock) { blocked = true; try { Fault(error.Message); } catch { } }
@@ -170,7 +176,7 @@ sealed class CheckoutRefresh : IAsyncDisposable
         catch { exclusion.Release(); throw; }
     }
 
-    public async Task<bool> CommitAtIdle(Func<CancellationToken, Task> commit, CancellationToken ct)
+    public async Task<bool> CommitAtIdle(Func<CancellationToken, Task> commit, CancellationToken ct, Func<bool>? deferred = null)
     {
         await exclusion.WaitAsync(ct);
         try
@@ -179,7 +185,7 @@ sealed class CheckoutRefresh : IAsyncDisposable
             lock (journalLock)
             {
                 CheckAdmission();
-                if (Busy || Generation("requested") != Generation("completed")) return false;
+                if (Busy || Generation("requested") != Generation("completed") || deferred?.Invoke() == true) return false;
             }
             await commit(ct);
             lock (journalLock) { CheckAdmission(); if (Busy) throw new IOException("Native activity changed during idle commit"); }
@@ -212,6 +218,39 @@ sealed class CheckoutRefresh : IAsyncDisposable
                 owner.Track(key, seen.Done, seen.Sequence);
                 record["turn"] = turn; owner.Save();
             }
+        }
+        /// <summary>Releases an admission that loaded or created a session but sent it no input.</summary>
+        public void Abandon()
+        {
+            lock (owner.journalLock)
+            {
+                owner.CheckAdmission();
+                if (record.Text("turn").Length != 0) throw new IOException("Accepted native admission cannot be abandoned");
+                owner.active.Remove(id); owner.Save(); confirmed = true;
+            }
+            owner.Signal();
+        }
+        /// <summary>
+        /// Releases an admission whose input the native may have accepted without acknowledgement. It stays recorded, so
+        /// the checkout remains excluded and that thread's lifecycle events still match, until a later acknowledged turn on
+        /// the same thread completes. Only the newest such admission per thread is kept, since it settles the same way.
+        /// </summary>
+        public void Unconfirmed()
+        {
+            lock (owner.journalLock)
+            {
+                owner.CheckAdmission();
+                var thread = record.Text("thread");
+                if (thread.Length == 0) owner.active.Remove(id); // No session, so no native turn can hold the input.
+                else
+                {
+                    foreach (var older in owner.active.Where(operation => operation.Key != id && Unsettled(operation.Value!, thread)).ToArray())
+                        owner.active.Remove(older.Key);
+                    record["unconfirmed"] = true;
+                }
+                owner.Save(); confirmed = true;
+            }
+            owner.Signal();
         }
         public void Confirm()
         {
@@ -250,8 +289,16 @@ sealed class CheckoutRefresh : IAsyncDisposable
         foreach (var operation in active.ToArray())
             if (operation.Value!["confirmed"]?.GetValue<bool>() == true &&
                 turns.TryGetValue((operation.Value!.Text("thread"), operation.Value!.Text("turn")), out var turn) && turn.Done)
+            {
                 active.Remove(operation.Key);
+                // A thread runs one turn at a time, so an earlier unacknowledged input to it cannot outlast this completion.
+                var since = operation.Value!["since"]!.GetValue<long>();
+                foreach (var earlier in active.Where(item => Unsettled(item.Value!, operation.Value!.Text("thread")) && item.Value!["since"]!.GetValue<long>() < since).ToArray())
+                    active.Remove(earlier.Key);
+            }
     }
+    static bool Unsettled(JsonNode operation, string thread) =>
+        operation["unconfirmed"]?.GetValue<bool>() == true && operation.Text("thread") == thread;
     public void NewEpoch(int value)
     {
         lock (journalLock)

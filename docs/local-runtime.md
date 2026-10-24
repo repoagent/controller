@@ -20,7 +20,7 @@ $env:REPOAGENT_INSTANCE = 'broker-example'
 .\repoagent.ps1 restart
 ```
 
-On Linux, use the same commands with absolute Linux file paths and `./repoagent.ps1`. Broker configure imports the supplied enrollment automatically. To replace an enrollment for the same configured binding, stop the instance, run `import-enrollment PRIVATE_FILE`, then `check` and `start`. Configuration keeps only the trusted origin and ordinary runtime options; it never stores the host enrollment path or secret JSON. Broker and direct-App inputs cannot be combined. The unchanged native consumer validates the frozen credential and its binding during check/start. A private imported file is not evidence of a successful authorization check.
+On Linux, use the same commands with absolute Linux file paths and `./repoagent.ps1`. Broker configure imports the supplied enrollment automatically. To replace an enrollment for the same configured binding, stop the instance, run `import-enrollment PRIVATE_FILE`, then `check` and `start`. Configuration keeps only the trusted origin and ordinary runtime options; it never stores the controller enrollment path or secret JSON. Broker and direct-App inputs cannot be combined. The unchanged native consumer validates the frozen credential and its binding during check/start. A private imported file is not evidence of a successful authorization check.
 
 The selected image's immutable SHA256 ID is recorded in ownership labels and reused for broker configure/import/check/start, even if a tag moves or `REPOAGENT_IMAGE` changes. Use explicit Update below to change the image of a managed instance; changing credential mode requires a fresh instance. Seven named volumes belong to the selected broker instance: config, credentials, workspace, history, state, tools and enrollment. Existing same-name resources must carry consistent ownership metadata. Legacy or unknown resources cause refusal before writes or mounts; choose a fresh instance instead of relabeling them.
 
@@ -30,7 +30,7 @@ Run lifecycle commands sequentially. The trust boundary includes the current hos
 
 Existing direct-App instances remain accessible with `--key-path`. Ordinary check/start/stop require an existing container to match the selected controller image, UID1000, the controller start entrypoint/arguments, all six expected volume destinations (config read-only), and only its configured read-only PEM bind. Mismatches require manual resolution. These checks do not adopt or relabel legacy data or authorize destructive migration.
 
-Native Windows PowerShell process tests and actual Docker Desktop acceptance are separate gates. Linux execution or a mocked Docker process does not establish Windows ACL, raw-byte transfer, UID/mode, read-only mount or restart persistence acceptance. A real authenticated Codex turn and live broker approval/token-scope acceptance also require their own authorized checks.
+Native Windows PowerShell and actual Docker Desktop acceptance are manual gates. Linux execution does not establish Windows ACL, raw-byte transfer, UID/mode, read-only mount or restart persistence acceptance. A real authenticated Codex turn and live broker approval/token-scope acceptance also require their own authorized checks.
 
 ## Disable and uninstall a managed instance
 
@@ -44,7 +44,7 @@ Preview one instance with its original private host state directory:
 ```
 
 Add `-Apply` to disable, stop and remove that selected runtime and clear its
-container enrollment, Codex auth and two installation-token cache files. All seven
+container enrollment, Codex auth and any legacy installation-token cache files. All seven
 volumes, workspace/history, settings, skills, tools and wrappers remain. Preview
 uses host records and Docker metadata only; private-volume binding and disable
 state are unverified until Apply.
@@ -74,7 +74,9 @@ Supplied source enrollment and host Codex auth/key files are never deleted.
 A supplied-enrollment installation can pass complete nonsecret coordinates using
 `-Repository`, `-ExpectedRepositoryId`, `-DeviceId`, `-AppId`, `-InstallationId`,
 `-BrokerOrigin`, `-EnrollmentProfile`, `-ApprovalVariable` and
-`-ExpectedValueSha256`. Legacy approval additionally requires explicit
+`-ExpectedValueSha256`. Without saved state these name an Actions-variable
+approval; add `-ApprovalLocation AgentVariable` for a legacy Agent-variable
+approval. Legacy Environment approval additionally requires explicit
 `-GitHubEnvironment` and `-ExpectedEnvironmentId`. These coordinates identify
 operator scope; they do not authenticate a controller or prove broker closure.
 

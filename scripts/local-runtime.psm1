@@ -255,9 +255,10 @@ function Invoke-LocalUninstall([hashtable]$Options) {
         @('InstallationId','installationId'),@('BrokerOrigin','brokerOrigin'),@('EnrollmentProfile','profile'),@('ApprovalVariable','approvalVariable'),
         @('ExpectedValueSha256','expectedValueSha256'),@('GitHubEnvironment','githubEnvironment'),@('ExpectedEnvironmentId','environmentId'))
     if (-not $binding) {
-        $binding = [ordered]@{ approvalKind=$(if ($Options.GitHubEnvironment) { 'environment-variable' } else { 'repository-agent-variable' }) }
+        $binding = [ordered]@{ approvalKind=$(if ($Options.GitHubEnvironment) { 'environment-variable' } else { (Get-ApprovalLocation -Location $Options.ApprovalLocation).Kind }) }
         foreach ($pair in $pairs) { $binding[$pair[1]] = $null }
     }
+    if ($Options.ApprovalLocation -and $binding.approvalKind -cne (Get-ApprovalLocation -Location $Options.ApprovalLocation).Kind) { throw 'Selected approval coordinates conflict.' }
     foreach ($pair in $pairs) {
         if ($Options[$pair[0]]) {
             if ($binding[$pair[1]] -and [string]$binding[$pair[1]] -cne [string]$Options[$pair[0]]) { throw 'Selected approval coordinates conflict.' }
@@ -276,7 +277,7 @@ function Invoke-LocalUninstall([hashtable]$Options) {
     Assert-Text $binding.deviceId '\A[A-Za-z0-9_-]{1,128}\z'
     Assert-Text $binding.expectedValueSha256 '\A[0-9a-f]{64}\z'
     Assert-Text $binding.approvalVariable '\A[A-Z_][A-Z0-9_]{0,99}\z'
-    Assert-Text $binding.profile '\A(?:polling|webhook)(?:-clone)?\z'
+    Assert-Text $binding.profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?\z'
     $null = Get-BrokerOrigin $binding.brokerOrigin
     $context = Initialize-LocalRuntime $Options.Instance $(if ($env:REPOAGENT_IMAGE) { $env:REPOAGENT_IMAGE } else { 'repoagent:local' }) $false $false $stateDirectory (-not $Options.Apply)
     if (-not $context.Managed) { throw 'Uninstall requires a proven managed instance.' }
@@ -323,6 +324,7 @@ function Invoke-LocalUninstall([hashtable]$Options) {
             ExpectedValueSha256=$binding.expectedValueSha256; Apply=$true; NonInteractive=$true }
         if ($approval) { $revokeOptions.ApprovalStatePath = $approvalPath }
         if ($binding.approvalKind -eq 'environment-variable') { $revokeOptions.GitHubEnvironment=$binding.githubEnvironment; $revokeOptions.ExpectedEnvironmentId=[string]$binding.environmentId }
+        else { $revokeOptions.ApprovalLocation = (Get-ApprovalLocation -Kind $binding.approvalKind).Location }
         if ($Options.EnrollmentFile -and $approval) { $revokeOptions.EnrollmentFile = $Options.EnrollmentFile }
         try {
             $output = @(& "$PSScriptRoot/revoke-approval.ps1" @revokeOptions)
@@ -344,7 +346,8 @@ function Invoke-LocalUninstall([hashtable]$Options) {
                     $recovery = Read-LocalJson (Join-Path $stateDirectory 'recovery.json')
                     Assert-Fields $recovery @('version','setupVersion','approvalKind','request','secret','completionId','lastWorkAt','acknowledged','ackAttempted')
                     Assert-Fields $recovery.request @('idempotencyId','repositoryId','repository','variable','profile')
-                    if ($recovery.version -ne 2 -or $recovery.setupVersion -ne 2 -or $recovery.acknowledged -isnot [bool] -or $recovery.ackAttempted -cne $true -or $recovery.completionId -cnotmatch '^[0-9a-f]{32}$') { throw 'Unresolved recovery.' }
+                    $recoveryVersion = (Get-ApprovalLocation -Kind $binding.approvalKind).SetupVersion
+                    if ($recovery.version -ne $recoveryVersion -or $recovery.setupVersion -ne $recoveryVersion -or $recovery.approvalKind -cne $binding.approvalKind -or $recovery.acknowledged -isnot [bool] -or $recovery.ackAttempted -cne $true -or $recovery.completionId -cnotmatch '^[0-9a-f]{32}$') { throw 'Unresolved recovery.' }
                     foreach ($pair in @(@('repositoryId','repositoryId'),@('repository','repository'),@('variable','approvalVariable'),@('profile','profile'))) {
                         if ($recovery.request[$pair[0]] -cne $binding[$pair[1]]) { throw 'Recovery binding differs.' }
                     }
@@ -412,7 +415,7 @@ function Get-LaunchChoices($Record) {
     $choices = [ordered]@{}
     foreach ($key in $Record.currentLaunch.settings.Keys | Where-Object { $_ -notin @('keyPath','enroll') }) {
         $field = if ($key -eq 'brokerUrl') { 'brokerOrigin' } else { $key }
-        $choices[$field] = if ($key -eq 'clone') { ([string]$Record.currentLaunch.settings[$key]).ToLowerInvariant() } else { [string]$Record.currentLaunch.settings[$key] }
+        $choices[$field] = if ($key -in @('clone','repositorySettings')) { ([string]$Record.currentLaunch.settings[$key]).ToLowerInvariant() } else { [string]$Record.currentLaunch.settings[$key] }
     }
     $choices['enrollmentProfile'] = $Record.currentLaunch.binding.profile
     return $choices

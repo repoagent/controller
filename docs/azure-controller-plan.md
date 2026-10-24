@@ -25,12 +25,6 @@ Desired settings describe HTTPS external ingress on port 8080, the image's UID10
 
 A stable existing origin is emitted only from a discovered external ingress FQDN under `azurecontainerapps.io`. No future app URL is invented. After provisioning, read the actual FQDN, verify HTTPS and webhook delivery, and configure GitHub with the versioned webhook secret. An existing FQDN alone is not hosted acceptance.
 
-Tests invoke real PowerShell with an executable `az` fixture on Linux and an `az.cmd` fixture on Windows (through the standard batch launcher path):
-
-```sh
-python3 -m unittest discover -s tests/installers -p test_azure_plan.py -v
-```
-
-These tests verify planner decisions and subprocess arguments, not Azure behavior. Local evidence currently covers Linux; the Windows CI run is required for batch-launcher evidence. Live Azure, actual storage, managed identity pulls, published image provenance, webhook delivery, broker operations and rollback require separate acceptance before an apply can be called usable. This command is reusable by a later `install.ps1` Azure setup slice; no installer entry point or deployment is added here.
+The planner is an installer script and has no automated tests; it is tested manually against the local AppHost ([#204](https://github.com/repoagent/controller/issues/204), not built yet) when it changes. Live Azure, actual storage, managed identity pulls, published image provenance, webhook delivery, broker operations and rollback require separate acceptance before an apply can be called usable. This command is reusable by a later `install.ps1` Azure setup slice; no installer entry point or deployment is added here.
 
 Provider references: [Azure Container Apps CLI](https://learn.microsoft.com/en-us/cli/azure/containerapp?view=azure-cli-latest), [managed identity image pulls](https://learn.microsoft.com/en-us/azure/container-apps/managed-identity-image-pull), and [secret references](https://learn.microsoft.com/en-us/azure/container-apps/manage-secrets).

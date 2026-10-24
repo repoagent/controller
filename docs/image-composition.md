@@ -16,7 +16,7 @@ The installers accept the same manifest. The build first runs a digest-pinned Py
 
 ## Version 1 manifest
 
-`image/default.json` is the maintained default. Objects reject unknown or duplicate fields; versions must match the reviewed catalog in `scripts/compose-image.py`. Arbitrary version strings, URLs, environment variables and credentials are not accepted.
+`image/default.json` is the maintained default. Objects reject unknown or duplicate fields; versions must match the catalog in `scripts/compose-image.py`, which changes only through review or a verified [tool refresh](ci-cd.md#tool-refresh). Arbitrary version strings, URLs, environment variables and credentials are not accepted.
 
 | Field | Contract |
 | --- | --- |
@@ -24,15 +24,15 @@ The installers accept the same manifest. The build first runs a digest-pinned Py
 | `platform` | `linux/amd64` |
 | `controller.source` | `checkout`; build the explicitly allowlisted source files |
 | `controller.sha256` | Optional expected source digest; a mismatch fails before build |
-| `agent.profile`, `agent.version` | `codex`, `0.163.0`; includes matching code-mode host |
-| `githubCli.version` | `2.102.0` |
+| `agent.profile`, `agent.version` | `codex` and the cataloged Codex version; includes the matching code-mode host |
+| `githubCli.version` | The cataloged GitHub CLI version |
 | `tools.cloudflared` | Optional `2026.10.1`; needed for Quick Tunnel mode |
 | `tools.developerUtilities` | Optional boolean, default false; add ripgrep, file, patch, diffutils, unzip, zip, less and OpenSSH client |
 | `baseImage.reference` | Optional digest-pinned registry/repository identity; omitted uses the maintained runtime-deps base |
 
 The default manifest enables Cloudflared and developer utilities, preserving the current default capabilities. Omitting them produces a smaller overlay. Bash, certificates, curl, Git, Python/PyYAML, jq, procps and native runtime libraries are required by the controller and its runtime tooling.
 
-Software archives use fixed HTTPS release URLs and SHA-256 verification before extraction. SDK and runtime bases are pinned by digest. Ubuntu packages come from the signed `20261020T000000Z` snapshot. The final image contains `/opt/repoagent/image-inventory.json` with resolved selections, artifact hashes, base identities and controller source digest, plus `/opt/repoagent/os-packages.txt` with actual installed package versions. There is no fallback to `latest`. Runtime `toolUpdates=latest` remains the existing, separately configured startup behavior; choose `pinned` during setup to keep running the image's tools.
+Software archives use fixed HTTPS release URLs and SHA-256 verification before extraction. SDK and runtime bases are pinned by digest. Ubuntu packages come from the signed `20261020T000000Z` snapshot. The final image contains `/opt/repoagent/image-inventory.json` with resolved selections, artifact hashes, base identities and controller source digest, plus `/opt/repoagent/os-packages.txt` with actual installed package versions. There is no fallback to `latest`. New container configurations run these bundled tools by default (`toolUpdates=pinned`, recorded in the saved settings), and settings saved before the choice existed keep their startup updates; runtime `toolUpdates=latest` is a separate, explicit opt-in to unverified startup updates.
 
 The shared `image/source-files.txt` inventory drives both host mounts and helper context creation. Host adapters reject symbolic links, reparse points and unsafe relative paths before mounting source files. Excluded checkout credentials are therefore invisible even to the helper.
 
@@ -81,7 +81,7 @@ LABEL project=${PROJECT_LABEL}
 
 Paths and argument values are passed as process arguments, without shell evaluation. Docker bind mount paths containing commas/newlines are rejected. Derived build arguments are nonsecret user-owned inputs; do not pass tokens or private keys. The derived Dockerfile receives only the allowlisted context, with its own file copied to a fixed filename. It receives `REPOAGENT_BASE` pointing to the locally composed base image. Arbitrary derived instructions are not reviewed agent profiles and may alter the runtime contract. Only Codex's native app-server adapter is supported.
 
-Credential exclusion guarantees concern the context and overlay controlled here. An explicitly supplied base or Dockerfile is trusted user content: existing secrets in its layers cannot be removed by adding this overlay. Keep those inputs credential-free as well. No host home, PEM, enrollment secret, auth cache or token is automatically copied; symlinks in allowlisted source paths are rejected.
+Credential exclusion guarantees concern the context and overlay controlled here. An explicitly supplied base or Dockerfile is trusted user content: existing secrets in its layers cannot be removed by adding this overlay. Keep those inputs credential-free as well. No host home, PEM, controller secret, auth cache or token is automatically copied; symlinks in allowlisted source paths are rejected.
 
 ## Publish the built image
 
@@ -89,4 +89,4 @@ Use the emitted immutable image ID with the separate [PowerShell 7 image publish
 
 ## Verification limits
 
-Process tests use actual Bash and Linux PowerShell with a Docker executable substitute for argument/error behavior. Real local Docker builds, inventory/layer inspection, compiled-controller execution and a credential-free Codex app-server handshake provide assembled-image evidence. Native Windows Docker Desktop, private registries, registry publication, live enrollment, Azure, authenticated Codex turns and unsupported base families require separate acceptance. See the PR verification evidence for the exact candidate tested.
+The `build-image` scripts have no automated tests ([ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)). Real local Docker builds, inventory/layer inspection, compiled-controller execution and a credential-free Codex app-server handshake provide assembled-image evidence. Native Windows Docker Desktop, private registries, registry publication, live enrollment, Azure, authenticated Codex turns and unsupported base families require separate acceptance. See the PR verification evidence for the exact candidate tested.

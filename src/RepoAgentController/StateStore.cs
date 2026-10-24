@@ -35,6 +35,20 @@ sealed class StateStore : IDisposable
         Save();
     }
 
+    /// <summary>Removes these Discussion records and saves. When the save fails they are restored before the error propagates,
+    /// so memory still matches the state file and a retry removes and saves them again.</summary>
+    public void Remove(IReadOnlyCollection<string> ids)
+    {
+        var removed = ids.Where(Discussions.ContainsKey).Select(id => (Id: id, Record: Discussions[id])).ToArray();
+        foreach (var (id, _) in removed) Discussions.Remove(id);
+        try { Save(); }
+        catch
+        {
+            foreach (var (id, record) in removed) Discussions[id] = record;
+            throw;
+        }
+    }
+
     public void Save()
     {
         var temporary = path + ".tmp";

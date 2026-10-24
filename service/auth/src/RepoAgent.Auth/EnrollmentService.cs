@@ -16,8 +16,9 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
     public Task<IssuanceResult> StartAsync(EnrollmentRequest request, string? secret, CancellationToken caller) =>
         StartAsync(() => EnrollmentInput.From(request), secret, caller);
 
-    public Task<IssuanceResult> StartAgentAsync(AgentEnrollmentRequest request, string? secret, CancellationToken caller) =>
-        StartAsync(() => EnrollmentInput.From(request), secret, caller);
+    // Setup v2 binds a repository Agent variable; setup v3 binds a repository Actions variable.
+    public Task<IssuanceResult> StartRepositoryVariableAsync(RepositoryVariableEnrollmentRequest request, string? secret, CancellationToken caller, int setupVersion = 2) =>
+        StartAsync(() => EnrollmentInput.From(request, setupVersion), secret, caller);
 
     private Task<IssuanceResult> StartAsync(Func<EnrollmentInput> input, string? secret, CancellationToken caller) => Run(async work =>
     {
@@ -130,7 +131,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
                 ["installationId"] = Number(s.Pending, "InstallationId"), ["repositoryId"] = Id(s.RepositoryId),
                 ["repository"] = Text(s.Pending, "Repository"), ["permissions"] = Permissions(Text(s.Pending, "Profile"))
             };
-            if (s.Approval == ApprovalContract.AgentClone)
+            if (s.Approval.NamesProfile)
             {
                 envelopeFields["profile"] = Text(s.Pending, "Profile");
                 envelopeFields["policyVersion"] = s.Approval.Policy;

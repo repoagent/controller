@@ -3,10 +3,7 @@ import json
 from pathlib import Path
 import sys
 import time
-import base64
-import os
 import subprocess
-import urllib.request
 
 root = Path('/data/control')
 command = sys.argv[1]
@@ -69,44 +66,14 @@ elif command in ('invalidate-session', 'restore-session'):
     temporary.write_text(json.dumps(state, indent=2))
     temporary.chmod(0o600)
     temporary.replace(state_path)
-elif command in ('read-only-credential', 'restore-credential'):
-    # Disposable live fault fixture: GitHub itself rejects receipt writes with this valid read-only token.
-    folder = Path('/data/state/bridge.json.github-app')
-    cache = folder / 'installation-token.json'
-    backup = folder / 'receipt-original.json'
-    readonly = folder / 'receipt-readonly.json'
-    if command == 'restore-credential':
-        if backup.exists():
-            readonly_token = json.loads(readonly.read_text())['token']
-            backup.replace(cache)
-            request = urllib.request.Request('https://api.github.com/installation/token', method='DELETE',
-                headers={'Authorization': 'Bearer ' + readonly_token, 'User-Agent': 'repoagent-receipt-fault'})
-            with urllib.request.urlopen(request, timeout=60):
-                pass
-            readonly.unlink()
-    else:
-        if backup.exists():
-            raise ValueError('A receipt-failure fixture is already active')
-        config = json.loads(Path('/data/config/settings.json').read_text())
-        def encode(value):
-            return base64.urlsafe_b64encode(value).rstrip(b'=')
-        now = int(time.time())
-        signed = encode(b'{"alg":"RS256","typ":"JWT"}') + b'.' + encode(json.dumps({'iat': now - 60, 'exp': now + 540, 'iss': config['appId']}).encode())
-        signature = subprocess.check_output(['openssl', 'dgst', '-sha256', '-sign', '/run/secrets/github-app.pem'], input=signed)
-        jwt = (signed + b'.' + encode(signature)).decode()
-        def api(path, body=None):
-            request = urllib.request.Request('https://api.github.com/' + path, data=json.dumps(body).encode() if body else None,
-                headers={'Authorization': 'Bearer ' + jwt, 'User-Agent': 'repoagent-receipt-fault', 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
-            with urllib.request.urlopen(request, timeout=60) as response:
-                return json.load(response)
-        installation = api('repos/' + config['repository'] + '/installation')['id']
-        result = api(f'app/installations/{installation}/access_tokens', {'repositories': [config['repository'].split('/')[1]], 'permissions': {'discussions': 'read'}})
-        os.umask(0o077)
-        backup.write_bytes(cache.read_bytes())
-        backup.chmod(0o600)
-        temporary = folder / 'receipt-readonly.tmp'
-        temporary.write_text(json.dumps({'token': result['token'], 'expiresAt': result['expires_at']}))
-        temporary.chmod(0o600)
-        readonly.write_bytes(temporary.read_bytes())
-        readonly.chmod(0o600)
-        temporary.replace(cache)
+elif command == 'revoke-credential':
+    # Disposable live fault fixture (C12). The controller holds its installation token only in memory, so
+    # nothing can substitute it; the fault is GitHub revoking that live token. The controller's own App gh
+    # wrapper reaches it through the credential handoff, as the agent's gh does, so the token never reaches
+    # this process, a file or an argument. GitHub then rejects the controller's requests with it until a new
+    # controller lifetime acquires a fresh token. Without a running controller nothing is revoked.
+    state = sys.argv[2] if len(sys.argv) > 2 else '/data/state/bridge.json'
+    result = subprocess.run([state + '.github-app/bin/gh', 'api', '--method', 'DELETE', 'installation/token'],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        sys.exit('No running controller credential was revoked: ' + (result.stderr.strip() or f'exit {result.returncode}'))

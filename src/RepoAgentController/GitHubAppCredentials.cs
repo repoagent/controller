@@ -1,51 +1,52 @@
-using System.Text;
 using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
 
-/// <summary>Owns the App identity and a renewable, repository-scoped installation credential.</summary>
+/// <summary>Owns the App identity and a renewable, repository-scoped installation credential held only in memory.</summary>
 public sealed class GitHubAppCredentials : IDisposable
 {
     readonly IInstallationTokenSource source;
     readonly TimeProvider clock;
     readonly SemaphoreSlim refreshLock = new(1);
     readonly CancellationTokenSource brokerCredentialLost = new();
-    string? token;
-    DateTimeOffset expiresAt;
+    readonly CredentialHandoff handoff;
+    InstallationCredential? credential;
     string appSlug = "";
 
     public string AgentLogin => appSlug.Length == 0 ? "" : appSlug + "[bot]";
-    public string TokenFile { get; }
+    /// <summary>Private gh/Git configuration, generated wrappers and the nonsecret pointer to this lifetime's credential handoff.</summary>
+    public string CredentialDirectory { get; }
     public CancellationToken BrokerCredentialLost => source is BrokerTokenSource ? brokerCredentialLost.Token : CancellationToken.None;
     internal long? RepositoryId => source.RepositoryId;
 
     public GitHubAppCredentials(HttpClient http, string appId, string privateKeyPath, string repository,
-        string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false)
-    {
-        this.clock = clock ?? TimeProvider.System;
-        SecureDirectory(credentialDirectory);
-        TokenFile = Path.Combine(credentialDirectory, "installation-token.json");
-        Invalidate();
-        source = new DirectAppTokenSource(http, appId, privateKeyPath, repository, this.clock, repositoryWebhooks, clone);
-    }
+        string credentialDirectory, TimeProvider? clock = null, RuntimeProfile profile = default)
+        : this(credentialDirectory, clock ?? TimeProvider.System,
+            time => new DirectAppTokenSource(http, appId, privateKeyPath, repository, time, profile)) { }
 
-    GitHubAppCredentials(IInstallationTokenSource source, string credentialDirectory, TimeProvider clock)
+    GitHubAppCredentials(string credentialDirectory, TimeProvider clock, Func<TimeProvider, IInstallationTokenSource> createSource)
     {
-        this.source = source;
         this.clock = clock;
         SecureDirectory(credentialDirectory);
-        TokenFile = Path.Combine(credentialDirectory, "installation-token.json");
-        Invalidate();
+        CredentialDirectory = credentialDirectory;
+        ClearCache(credentialDirectory);
+        source = createSource(clock);
+        try { handoff = new CredentialHandoff(credentialDirectory, Handoff, Reject); }
+        catch { source.Dispose(); throw; }
     }
 
     public static GitHubAppCredentials FromBroker(HttpClient http, string brokerOrigin, string enrollmentFile,
-        string appId, string repository, string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false,
-        long? expectedRepositoryId = null, long? expectedInstallationId = null)
-    {
-        ClearCache(credentialDirectory);
-        var time = clock ?? TimeProvider.System;
-        return new(new BrokerTokenSource(http, brokerOrigin, enrollmentFile, appId, repository, time, repositoryWebhooks, clone, expectedRepositoryId, expectedInstallationId), credentialDirectory, time);
-    }
+        string appId, string repository, string credentialDirectory, RuntimeProfile profile, TimeProvider? clock = null,
+        long? expectedRepositoryId = null, long? expectedInstallationId = null) =>
+        FromBroker(http, brokerOrigin, BrokerTokenSource.EnrollmentFile(enrollmentFile), appId, repository, credentialDirectory, profile, clock,
+            expectedRepositoryId, expectedInstallationId);
+
+    /// <summary>Uses an enrollment from any reader, such as one injected through the environment.</summary>
+    internal static GitHubAppCredentials FromBroker(HttpClient http, string brokerOrigin, Func<ReadOnlyMemory<byte>> readEnrollment,
+        string appId, string repository, string credentialDirectory, RuntimeProfile profile, TimeProvider? clock = null,
+        long? expectedRepositoryId = null, long? expectedInstallationId = null) =>
+        new(credentialDirectory, clock ?? TimeProvider.System, time => new BrokerTokenSource(http, brokerOrigin, readEnrollment, appId, repository,
+            time, profile, expectedRepositoryId, expectedInstallationId));
 
     public async Task Initialize(long? expectedInstallation, CancellationToken ct)
     {
@@ -58,13 +59,9 @@ public sealed class GitHubAppCredentials : IDisposable
         catch { Invalidate(); throw; }
     }
 
-    public void Invalidate()
-    {
-        token = null;
-        File.Delete(TokenFile);
-        File.Delete(TokenFile + ".tmp");
-    }
+    public void Invalidate() => Volatile.Write(ref credential, null);
 
+    /// <summary>Removes installation-token files that earlier controller versions persisted beside the state.</summary>
     internal static void ClearCache(string credentialDirectory)
     {
         if (!Directory.Exists(credentialDirectory)) return;
@@ -80,43 +77,24 @@ public sealed class GitHubAppCredentials : IDisposable
             (actor.Text("__typename") == "Bot" && string.Equals(login, appSlug, StringComparison.OrdinalIgnoreCase));
     }
 
-    public async Task<string> GetToken(CancellationToken ct)
+    public async Task<string> GetToken(CancellationToken ct) => (await GetCredential(ct)).Token;
+
+    internal async Task<InstallationCredential> GetCredential(CancellationToken ct)
     {
         await refreshLock.WaitAsync(ct);
         try
         {
             RequireLiveBrokerCredential();
             if (appSlug.Length == 0) throw new InvalidOperationException("GitHub App authentication has not been initialized");
-            if (token is not null && File.Exists(TokenFile) && expiresAt > clock.GetUtcNow().AddMinutes(5)) return token;
+            if (Volatile.Read(ref credential) is { } held && held.ExpiresAt > clock.GetUtcNow().AddMinutes(5)) return held;
             try
             {
                 var lease = await source.Acquire(ct);
-                var freshToken = lease.Token;
-                var expiry = lease.ExpiresAt;
-                Log.Protect(freshToken);
-                var temporary = TokenFile + ".tmp";
-                var options = new FileStreamOptions
-                {
-                    Mode = FileMode.Create, Access = FileAccess.Write
-                };
-                if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-                using (var file = new FileStream(temporary, options))
-                {
-                    var cache = Json.Object(("token", freshToken), ("expiresAt", expiry.ToString("O")));
-                    if (source.GitRepository is { } repository)
-                    {
-                        cache["repository"] = repository;
-                        cache["profile"] = source.GitProfile;
-                    }
-                    file.Write(Encoding.UTF8.GetBytes(cache.ToJsonString()));
-                    file.Flush(true);
-                }
-                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-                using (AppGitCredential.Lock(TokenFile)) File.Move(temporary, TokenFile, true);
-                token = freshToken;
-                expiresAt = expiry;
-                Log.Write("app-token-refreshed", $"actor={AgentLogin} expires={expiry:O}");
-                return token;
+                Log.Protect(lease.Token);
+                var fresh = new InstallationCredential(lease.Token, lease.ExpiresAt, source.GitRepository, source.GitProfile);
+                Volatile.Write(ref credential, fresh);
+                Log.Write("app-token-refreshed", $"actor={AgentLogin} expires={fresh.ExpiresAt:O}");
+                return fresh;
             }
             catch (Exception error)
             {
@@ -130,6 +108,16 @@ public sealed class GitHubAppCredentials : IDisposable
             }
         }
         finally { refreshLock.Release(); }
+    }
+
+    // Child gh/Git launches receive only a live, unexpired credential; renewal stays with this manager.
+    InstallationCredential? Handoff() => !brokerCredentialLost.IsCancellationRequested &&
+        Volatile.Read(ref credential) is { } held && held.ExpiresAt > clock.GetUtcNow().AddSeconds(30) ? held : null;
+
+    // Git reports a credential it saw rejected. Renewal then reacquires; a newer credential is never dropped.
+    void Reject(string token)
+    {
+        if (Volatile.Read(ref credential) is { } held && held.Token == token) Interlocked.CompareExchange(ref credential, null, held);
     }
 
     public async Task RefreshUntilCancelled(CancellationToken ct)
@@ -163,5 +151,5 @@ public sealed class GitHubAppCredentials : IDisposable
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
-    public void Dispose() { source.Dispose(); refreshLock.Dispose(); brokerCredentialLost.Dispose(); }
+    public void Dispose() { handoff.Dispose(); Invalidate(); source.Dispose(); refreshLock.Dispose(); brokerCredentialLost.Dispose(); }
 }
