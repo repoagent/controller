@@ -82,11 +82,14 @@ def marker(value):
         if type(binding[name]) is not int or not 0 < binding[name] < 2**63:
             raise ValueError('Invalid numeric identity')
     patterns = {'repository': r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', 'deviceId': r'[A-Za-z0-9_-]{1,128}',
-                'brokerOrigin': r'https://[A-Za-z0-9.-]+(?::[0-9]+)?', 'profile': r'(polling|webhook)(-clone)?',
+                'brokerOrigin': r'https://[A-Za-z0-9.-]+(?::[0-9]+)?', 'profile': r'(polling|webhook)(-clone)?(-settings)?',
                 'approvalVariable': r'[A-Z_][A-Z0-9_]{0,99}', 'expectedValueSha256': r'[a-f0-9]{64}'}
     for name, pattern in patterns.items():
         if not isinstance(binding[name], str) or not re.fullmatch(pattern, binding[name]):
             raise ValueError('Invalid binding')
+    # Repository-settings profiles exist only with Actions-variable approval (setup v3, ADR 0008).
+    if binding['profile'].endswith('-settings') and binding['approvalKind'] != 'repository-actions-variable':
+        raise ValueError('Invalid settings binding')
     # Actions variables (setup v3) and legacy Agent variables (setup v2) are distinct
     # direct repository locations without Environment identity.
     if binding['approvalKind'] in ('repository-actions-variable', 'repository-agent-variable'):
@@ -106,7 +109,7 @@ def verify_binding(expected, config=None):
     config = read(Path('/data/config/settings.json')) if config is None else config
     fields = {'repository', 'appId', 'installationId', 'brokerUrl', 'keyPath', 'mentionUser', 'model', 'mode',
               'publicUrl', 'listenPort', 'reconcileInterval', 'toolUpdates', 'webSearch', 'clone', 'enroll', 'repositoryId',
-              'repositorySettings'}
+              'repositorySettings', 'dashboardCategory'}
     if set(config) - fields or any(not isinstance(config.get(key), str) for key in ('repository', 'appId', 'brokerUrl', 'mode')):
         raise ValueError('Invalid runtime settings')
     types = {'clone': bool, 'listenPort': int, 'reconcileInterval': int, 'enroll': list, 'repositoryId': int, 'repositorySettings': bool}

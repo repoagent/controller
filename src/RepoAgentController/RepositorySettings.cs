@@ -71,13 +71,14 @@ sealed class RepositorySettings
     /// <summary>Raised after a refresh that changed any setting's state, value or reason.</summary>
     public event Action? Changed;
 
-    public async Task Refresh(CancellationToken ct)
+    /// <summary>Reads every setting once; returns whether any setting's state, value or reason changed.</summary>
+    public async Task<bool> Refresh(CancellationToken ct)
     {
         if (github is null)
         {
             Log.Write("repository-settings", "state=disabled reason=\"start with --repository-settings and Variables: read to use REPOAGENT_ variables\"");
             Record(values);
-            return;
+            return false;
         }
         var previous = Volatile.Read(ref values);
         var next = new Dictionary<string, SettingValue>();
@@ -104,6 +105,7 @@ sealed class RepositorySettings
         Volatile.Write(ref values, next);
         if (changed || path is not null && !File.Exists(path)) Record(next);
         if (changed) Changed?.Invoke();
+        return changed;
     }
 
     // Diagnostic and best effort, like status: a failed write keeps the controller running on the values in memory.
@@ -153,7 +155,9 @@ sealed class RepositorySettings
         return known;
     }
 
-    public async Task RefreshUntilCancelled(CancellationToken ct)
+    /// <summary>Refreshes every <see cref="RefreshInterval"/>. After a refresh that changed a setting, <paramref name="apply"/>
+    /// completes before the next refresh, so it observes every changed value in order.</summary>
+    public async Task RefreshUntilCancelled(Func<CancellationToken, Task> apply, CancellationToken ct)
     {
         if (github is null) return;
         while (!ct.IsCancellationRequested)
@@ -161,7 +165,7 @@ sealed class RepositorySettings
             try
             {
                 await Task.Delay(RefreshInterval, clock, ct);
-                await Refresh(ct);
+                if (await Refresh(ct)) await apply(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
         }

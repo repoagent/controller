@@ -131,6 +131,44 @@ public sealed class CategoryEnrollmentTests
         Assert.Equal(["D1"], world.Delivered());
     }
 
+    [Fact]
+    public async Task A_category_removed_and_selected_again_between_observations_starts_afresh()
+    {
+        using var world = new World();
+        world.Variables[Setting] = "Agents";
+        var controller = world.Start("--interval", "150");
+        int exit;
+        try
+        {
+            await world.WaitForLog(" poll-completed success=True");
+            await world.Clock.WaitForTimers(TimeSpan.FromMinutes(1), 2); // Credential renewal and settings refresh.
+            await world.Clock.WaitForTimers(TimeSpan.FromSeconds(150), 1); // The next poll.
+
+            // No poll observes a Discussion until the category is selected again. Each refresh is complete once both
+            // one-minute loops wait again.
+            world.Variables.Remove(Setting);
+            world.Save();
+            world.Clock.Advance(TimeSpan.FromMinutes(1));
+            await world.WaitForLog($" repository-setting name={Setting} state=absent");
+            await world.Clock.WaitForTimers(TimeSpan.FromMinutes(1), 2);
+
+            world.Discussion(1, "Agents", created: world.Clock.GetUtcNow().AddSeconds(30)); // While the category is not selected.
+            world.Variables[Setting] = "Agents";
+            world.Save();
+            world.Clock.Advance(TimeSpan.FromMinutes(1));
+            await world.WaitForLog($" repository-setting name={Setting} state=configured value=Agents", occurrences: 2);
+            await world.Clock.WaitForTimers(TimeSpan.FromMinutes(1), 2);
+
+            world.Discussion(2, "Agents", created: world.Clock.GetUtcNow().AddSeconds(10));
+            world.Clock.Advance(TimeSpan.FromSeconds(30));
+            await world.WaitForLog(" forwarded https://github.com/owner/repository/discussions/2 ");
+        }
+        finally { exit = await world.Stop(controller); }
+        Assert.Equal(0, exit);
+        Assert.DoesNotContain(world.Log(), line => line.Contains(" discovered https://github.com/owner/repository/discussions/1"));
+        Assert.Equal(["D2"], world.Delivered());
+    }
+
     [Theory]
     [InlineData(" Agents ,Q&A,  Show and tell ", "state=configured value=Agents, Q&A, Show and tell")]
     [InlineData("", Invalid)]
@@ -263,12 +301,12 @@ public sealed class CategoryEnrollmentTests
         }
 
         // A real-time watchdog for observing the controller's retained log; it never drives the controller's clock.
-        public async Task WaitForLog(string text)
+        public async Task WaitForLog(string text, int occurrences = 1)
         {
             var deadline = DateTime.UtcNow.AddSeconds(20);
-            while (!Log().Any(line => line.Contains(text, StringComparison.Ordinal)))
+            while (Log().Count(line => line.Contains(text, StringComparison.Ordinal)) < occurrences)
             {
-                Assert.True(DateTime.UtcNow < deadline, $"Log line containing '{text}' was not observed before the watchdog deadline");
+                Assert.True(DateTime.UtcNow < deadline, $"{occurrences} log lines containing '{text}' were not observed before the watchdog deadline");
                 await Task.Delay(50, TestContext.Current.CancellationToken);
             }
         }
