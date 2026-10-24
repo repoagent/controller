@@ -177,7 +177,7 @@ def run(bridge, port, environment=None):
             raise RuntimeError(str(error) + '; check that the container can run its bundled cloudflared executable, then restart.') from None
         except TunnelUnavailable as error:
             raise RuntimeError(str(error) + '; check network access and Cloudflare availability, then restart.') from None
-        if origin is None or stopping.is_set():
+        if origin is None or stopping.is_set():  # A stop can arrive after connect() last checked.
             return 0
         ready = launch(origin)
         attempt, serving_since = 0, None
