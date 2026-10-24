@@ -54,7 +54,7 @@ public sealed class ActionsVariableEnrollmentTests
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var runtime = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
-        Assert.Contains(f.GitHub.Requests, r => r.StartsWith("GET /repos/owner/project/actions/variables?per_page=30", StringComparison.Ordinal));
+        Assert.Contains("GET /repos/owner/project/actions/variables/REPOAGENT_APPROVAL", f.GitHub.Requests);
         Assert.DoesNotContain(f.GitHub.Requests, r => r.Contains("/agents/", StringComparison.Ordinal));
         Assert.Equal(1, github.VerifierMints);
         Assert.Equal("actions_variables", github.VerifierPermission);
@@ -67,6 +67,34 @@ public sealed class ActionsVariableEnrollmentTests
         await f.RestartAsync();
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var restored = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
+        Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
+    }
+
+    // CI workflows and repository settings share the direct repository Actions variables with the
+    // approval marker. Their number must never decide whether a running controller keeps its approval.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unrelated_Actions_variables_never_deny_approval_and_removal_still_closes_at_any_count(bool beforeEnrollment)
+    {
+        await using var f = await EnrollmentFixture.CreateAsync();
+        var github = Repository.Configure(f);
+        void Unrelated() { foreach (var i in Enumerable.Range(0, 100)) github.Actions[$"CI_SETTING_{i:000}"] = "public"; }
+        if (beforeEnrollment) Unrelated();
+        var active = await Active(f, github);
+        if (!beforeEnrollment) Unrelated();
+
+        using var renewed = await f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
+        Assert.Equal(HttpStatusCode.OK, renewed.StatusCode);
+
+        github.Actions.Remove("REPOAGENT_APPROVAL");
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var removed = await f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
+        Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
+        github.Actions["REPOAGENT_APPROVAL"] = active.Marker;
+        await f.RestartAsync();
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        using var restored = await f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
 
@@ -116,8 +144,10 @@ public sealed class ActionsVariableEnrollmentTests
     [Theory]
     [InlineData("denied", false)]
     [InlineData("isolated-404", false)]
+    [InlineData("404-without-variables-access", false)]
     [InlineData("malformed", false)]
-    [InlineData("multi-page-nonappearance", false)]
+    [InlineData("other-name", false)]
+    [InlineData("page-contradicts-404", false)]
     [InlineData("changed", true)]
     [InlineData("removed", true)]
     public async Task Runtime_reads_live_Actions_approval_and_only_confirmed_change_closes(string observation, bool terminal)
@@ -125,21 +155,19 @@ public sealed class ActionsVariableEnrollmentTests
         await using var f = await EnrollmentFixture.CreateAsync();
         var github = Repository.Configure(f);
         var active = await Active(f, github);
-        github.Fault = request =>
+        const string Named = "/repos/owner/project/actions/variables/REPOAGENT_APPROVAL", Listed = "/repos/owner/project/actions/variables";
+        github.Fault = request => (request.RequestUri!.AbsolutePath, observation) switch
         {
-            if (request.RequestUri!.AbsolutePath != "/repos/owner/project/actions/variables") return null;
-            return observation switch
-            {
-                "denied" => new HttpResponseMessage(HttpStatusCode.Forbidden),
-                "isolated-404" => new HttpResponseMessage(HttpStatusCode.NotFound),
-                "malformed" => GitHubTransport.Json(new { total_count = 1, variables = new[] { new { name = "REPOAGENT_APPROVAL" } } }),
-                "multi-page-nonappearance" => GitHubTransport.Json(new
-                {
-                    total_count = 31,
-                    variables = Enumerable.Range(0, 30).Select(i => new { name = $"REPOAGENT_SETTING_{i:00}", value = "public" }).ToArray()
-                }),
-                _ => null
-            };
+            (Named, "denied") => new HttpResponseMessage(HttpStatusCode.Forbidden),
+            // GitHub also answers 404 when the verifier lost access; the access proof then fails too.
+            (Named or Listed, "isolated-404") => new HttpResponseMessage(HttpStatusCode.NotFound),
+            (Named, "404-without-variables-access") => new HttpResponseMessage(HttpStatusCode.NotFound),
+            (Listed, "404-without-variables-access") => new HttpResponseMessage(HttpStatusCode.Forbidden),
+            (Named, "malformed") => GitHubTransport.Json(new { name = "REPOAGENT_APPROVAL" }),
+            (Named, "other-name") => GitHubTransport.Json(new { name = "REPOAGENT_OTHER", value = "public" }),
+            (Named, "page-contradicts-404") => new HttpResponseMessage(HttpStatusCode.NotFound),
+            (Listed, "page-contradicts-404") => GitHubTransport.Json(new { total_count = 1, variables = new[] { new { name = "REPOAGENT_APPROVAL", value = active.Marker } } }),
+            _ => null
         };
         if (observation == "changed") github.Actions["REPOAGENT_APPROVAL"] = active.Marker.Replace("\"version\":3", "\"version\":2", StringComparison.Ordinal);
         if (observation == "removed") github.Actions.Remove("REPOAGENT_APPROVAL");
@@ -326,20 +354,38 @@ public sealed class ActionsVariableEnrollmentTests
                         permissions = new { discussions = "write", repository_hooks = "write", contents = "read", actions_variables = "read", agent_variables = "read" }
                     });
                 if (path is "/repos/owner/project/actions/variables" or "/repos/owner/project/agents/variables")
-                {
-                    Assert.Contains("per_page=30", request.RequestUri.Query);
-                    var source = path.Contains("/actions/", StringComparison.Ordinal) ? repository.Actions : repository.Agent;
-                    return GitHubTransport.Json(new
-                    {
-                        total_count = source.Count,
-                        variables = source.Select(pair => new { name = pair.Key, value = pair.Value }).ToArray()
-                    });
-                }
+                    return Listing(path.Contains("/actions/", StringComparison.Ordinal) ? repository.Actions : repository.Agent, request.RequestUri.Query);
+                foreach (var (prefix, source) in new[] { ("/repos/owner/project/actions/variables/", repository.Actions), ("/repos/owner/project/agents/variables/", repository.Agent) })
+                    if (path.StartsWith(prefix, StringComparison.Ordinal))
+                        return Named(source, Uri.UnescapeDataString(path[prefix.Length..]));
                 Assert.DoesNotContain("/environments", path);
                 Assert.DoesNotContain("/orgs/", path);
                 return null;
             };
             return repository;
+        }
+
+        // GitHub pages direct repository variables (default 10, at most 30 per page) and reads one
+        // variable by name case-insensitively, answering with its stored name or 404.
+        internal static HttpResponseMessage Listing(Dictionary<string, string> source, string query)
+        {
+            var parameters = query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Select(pair => pair.Split('=', 2)).ToDictionary(pair => pair[0], pair => int.Parse(pair[1], System.Globalization.CultureInfo.InvariantCulture));
+            var size = Math.Min(30, parameters.GetValueOrDefault("per_page", 10));
+            var page = parameters.GetValueOrDefault("page", 1);
+            return GitHubTransport.Json(new
+            {
+                total_count = source.Count,
+                variables = source.OrderBy(pair => pair.Key, StringComparer.Ordinal).Skip((page - 1) * size).Take(size)
+                    .Select(pair => new { name = pair.Key, value = pair.Value }).ToArray()
+            });
+        }
+        internal static HttpResponseMessage Named(Dictionary<string, string> source, string name)
+        {
+            foreach (var (stored, value) in source)
+                if (string.Equals(stored, name, StringComparison.OrdinalIgnoreCase))
+                    return GitHubTransport.Json(new { name = stored, value, created_at = "2026-10-23T00:00:00Z", updated_at = "2026-10-23T00:00:00Z" });
+            return GitHubTransport.Json(new { message = "Not Found" }, HttpStatusCode.NotFound);
         }
     }
 }

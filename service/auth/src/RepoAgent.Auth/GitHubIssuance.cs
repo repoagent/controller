@@ -60,41 +60,35 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         return started;
     }
 
-    // Reads only the direct repository listing selected by the durable approval kind:
-    // Agent variables for setup v2, Actions variables for setup v3. Both APIs page at 30.
+    // Reads the selected variable by name from the direct repository location chosen only by the
+    // durable approval kind: Actions variables for setup v3, Agent variables for setup v2. Work is at
+    // most two reads, however many unrelated variables (CI, repository settings) share that location.
     internal async Task<bool> ObserveRepositoryVariableAsync(ApprovalContract approval, string repository, string selected, string marker, string token, IssuanceWork work)
     {
-        var path = string.Join('/', repository.Split('/').Select(Uri.EscapeDataString));
-        var listing = approval.VariablesPath;
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        int? total = null;
-        bool? approved = null;
-        for (var page = 1; page <= 2; page++)
+        var location = $"repos/{string.Join('/', repository.Split('/').Select(Uri.EscapeDataString))}/{approval.VariablesPath}";
+        using (var variable = await ReadAsync($"{location}/{Uri.EscapeDataString(selected)}", token, work, absentOnNotFound: true))
         {
-            using var response = await ReadAsync($"repos/{path}/{listing}?per_page=30&page={page}", token, work);
-            var root = response.RootElement;
-            var count = root.GetProperty("total_count").GetInt32();
-            if (count < 0 || count > 60 || total is not null && total != count) throw new IssuanceDenied();
-            total = count;
-            var variables = root.GetProperty("variables");
-            if (variables.GetArrayLength() > 30) throw new IssuanceDenied();
-            foreach (var variable in variables.EnumerateArray())
+            if (variable is not null)
             {
-                var name = variable.GetProperty("name").GetString();
-                var value = variable.GetProperty("value").GetString();
-                if (string.IsNullOrEmpty(name) || value is null || !seen.Add(name)) throw new IssuanceDenied();
-                if (name == selected) approved = value == marker;
+                // GitHub answers with the stored name. Another name is malformed evidence, never a change.
+                var root = variable.RootElement;
+                if (root.GetProperty("name").GetString() != selected || root.GetProperty("value").GetString() is not { } value) throw new IssuanceDenied();
+                return value == marker;
             }
-            if (seen.Count == total)
-            {
-                // Offset pages are not a snapshot: an unchanged marker can shift to an
-                // already-read page. Only one complete response can prove absence.
-                if (approved is null && page != 1) throw new IssuanceDenied();
-                return approved ?? false;
-            }
-            if (variables.GetArrayLength() < 30 || seen.Count > total) throw new IssuanceDenied();
         }
-        throw new IssuanceDenied();
+        // GitHub also answers 404 when this token cannot read the location (lost repository access or
+        // permission), so an isolated 404 never proves withdrawal. A well-formed 200 listing page read
+        // afterwards with the same token proves the location was readable, which confirms the 404 as
+        // absence. Reading it after the 404 means access lost before or during the named read is caught.
+        // The page is only an access proof: its count never matters, and a page showing the selected
+        // name contradicts the 404 and proves nothing.
+        using var listing = await ReadAsync($"{location}?per_page=1", token, work);
+        var page = listing.RootElement;
+        var variables = page.GetProperty("variables");
+        if (page.GetProperty("total_count").GetInt32() < 0 || variables.GetArrayLength() > 1) throw new IssuanceDenied();
+        foreach (var item in variables.EnumerateArray())
+            if (item.GetProperty("name").GetString() is not { Length: > 0 } name || name == selected) throw new IssuanceDenied();
+        return false;
     }
 
     public Task<IssuedToken> MintAsync(GrantSnapshot grant, string profile, string jwt, CancellationToken ct) =>
@@ -104,7 +98,7 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
     {
         using var request = Request(HttpMethod.Post, $"app/installations/{installationId}/access_tokens", jwt);
         request.Content = JsonContent.Create(new { repository_ids = new[] { Id(repositoryId) }, permissions = Permissions(profile) });
-        using var response = await SendAsync(request, HttpStatusCode.Created, ct);
+        using var response = await SendAsync(request, HttpStatusCode.Created, ct) ?? throw new IssuanceDenied();
         var root = response.RootElement;
         var token = root.GetProperty("token").GetString();
         if (token is null || !IsBearer(token)) throw new IssuanceDenied();
@@ -138,18 +132,22 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         if (response.StatusCode != HttpStatusCode.NoContent) throw new IssuanceDenied();
     }
 
-    internal async Task<JsonDocument> ReadAsync(string path, string token, IssuanceWork work)
+    internal async Task<JsonDocument> ReadAsync(string path, string token, IssuanceWork work) =>
+        await ReadAsync(path, token, work, absentOnNotFound: false) ?? throw new IssuanceDenied();
+    // Null reports 404 only to a caller that separately proves access before treating it as absence.
+    private async Task<JsonDocument?> ReadAsync(string path, string token, IssuanceWork work, bool absentOnNotFound)
     {
         work.Read();
         using var request = Request(HttpMethod.Get, path, token);
-        return await SendAsync(request, HttpStatusCode.OK, work.Cancellation);
+        return await SendAsync(request, HttpStatusCode.OK, work.Cancellation, absentOnNotFound);
     }
-    private async Task<JsonDocument> SendAsync(HttpRequestMessage request, HttpStatusCode expected, CancellationToken ct)
+    private async Task<JsonDocument?> SendAsync(HttpRequestMessage request, HttpStatusCode expected, CancellationToken ct, bool absentOnNotFound = false)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(3));
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
-        // In particular, isolated 404 is not proof of approval withdrawal.
+        // An isolated 404 is never proof of approval withdrawal; it reaches only a caller that proves access separately.
+        if (absentOnNotFound && response.StatusCode == HttpStatusCode.NotFound) return null;
         if (response.StatusCode != expected || response.Content.Headers.ContentLength is > 65536) throw new IssuanceDenied();
         await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
         using var bytes = new MemoryStream();

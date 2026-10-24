@@ -59,7 +59,7 @@ public sealed class AgentVariableEnrollmentTests
         using var runtime = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
         Assert.Equal(1, f.GitHub.VerifierMints);
-        Assert.Contains(f.GitHub.Requests, r => r.StartsWith("GET /repos/owner/project/agents/variables?", StringComparison.Ordinal));
+        Assert.Contains("GET /repos/owner/project/agents/variables/APPROVAL", f.GitHub.Requests);
 
         f.GitHub.Marker = "";
         f.Clock.Advance(TimeSpan.FromMinutes(1));
@@ -117,16 +117,12 @@ public sealed class AgentVariableEnrollmentTests
                     suspended_at = (string?)null,
                     permissions = new { discussions = "write", repository_hooks = "write", agent_variables = "read" }
                 });
+            // The legacy Agent location holds only the approval; an empty marker models its absence.
+            var variables = f.GitHub.Marker.Length == 0 ? new Dictionary<string, string>() : new() { ["APPROVAL"] = f.GitHub.Marker };
             if (path == "/repos/owner/project/agents/variables")
-            {
-                Assert.Contains("per_page=30", request.RequestUri.Query);
-                return GitHubTransport.Json(new
-                {
-                    total_count = f.GitHub.Marker.Length == 0 ? 0 : 1,
-                    variables = f.GitHub.Marker.Length == 0 ? Array.Empty<object>()
-                        : [new { name = "APPROVAL", value = f.GitHub.Marker }]
-                });
-            }
+                return ActionsVariableEnrollmentTests.Repository.Listing(variables, request.RequestUri.Query);
+            if (path.StartsWith("/repos/owner/project/agents/variables/", StringComparison.Ordinal))
+                return ActionsVariableEnrollmentTests.Repository.Named(variables, path["/repos/owner/project/agents/variables/".Length..]);
             Assert.DoesNotContain("/environments", path);
             Assert.DoesNotContain("/orgs/", path);
             return null;
