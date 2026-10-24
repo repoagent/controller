@@ -137,7 +137,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
     private async Task RevokeKnownAsync(GrantSnapshot grant, TableEntity attempt, GitHubToken token)
     {
         // Finite finalization allowance after the operation deadline; no fire-and-forget work.
-        using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+        using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(6), clock);
         try
         {
             if (Text(attempt, "Purpose") == "runtime")

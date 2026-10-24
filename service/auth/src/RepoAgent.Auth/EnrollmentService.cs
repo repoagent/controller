@@ -260,7 +260,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
     });
     private async Task RevokeKnownAsync(EnrollmentSnapshot s, TableEntity attempt, GitHubToken token)
     {
-        using var allowance = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+        using var allowance = new CancellationTokenSource(TimeSpan.FromSeconds(6), clock);
         try
         {
             await minter.RevokeAsync(token, allowance.Token);
