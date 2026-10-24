@@ -431,12 +431,13 @@ class QuickTunnelRecoveryTests(unittest.TestCase):
             with self.subTest(phase=phase), self.instance(timing=timing) as q:
                 q.wait(' ready repository=')
                 saved = json.loads(q.hook.read_text())
-                os.kill(q.launches()[0]['pid'], signal.SIGKILL)
-                q.wait('tunnel-recovering attempt=1 ')
+                # Inject the fault before the loss, not inside the short backoff. The running bridge holds an
+                # hour-long lease and its executable is already loaded, so neither fault reaches it.
                 if phase == 'exits-before-ready':
                     q.provider.lease_status = 503
                 else:
                     unavailable = q.bridge_runtime.rename(q.bridge_runtime.with_name('dotnet-unavailable'))
+                os.kill(q.launches()[0]['pid'], signal.SIGKILL)
                 failed = q.wait('tunnel-recovery-failed attempt=1 ')
                 failed_at = datetime.datetime.fromisoformat(failed.split(' ', 1)[0]).timestamp()
                 if phase == 'exits-before-ready':
@@ -533,7 +534,7 @@ class QuickTunnelRecoveryTests(unittest.TestCase):
                 recovering = q.wait('tunnel-recovering ')
                 delays.append((int(recovering.split('attempt=')[1].split()[0]), float(recovering.split('delay-seconds=')[1].split()[0])))
                 q.wait('tunnel-recovered')
-            # A replacement that dies before serving for the maximum delay does not restart the backoff.
+            # A replacement that dies before serving for BACKOFF_RESET_SECONDS does not restart the backoff.
             self.assertEqual(delays, [(1, 0.5), (2, 1.0), (1, 0.5)], q.output())
             self.assertEqual(q.stop(), 0)
 
