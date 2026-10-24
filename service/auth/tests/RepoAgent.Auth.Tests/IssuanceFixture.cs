@@ -15,7 +15,7 @@ internal sealed class IssuanceFixture : IAsyncDisposable
     public IssuanceStore Store(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) => new(Storage.CreateClient(transport), Options,
         Secrets, Clock, limits);
     public InstallationTokenIssuer Issuer(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) =>
-        new(Store(transport, limits), new GitHubIssuance(new HttpClient(GitHub), Clock), GitHub, GitHub, Clock);
+        new(Store(transport, limits), new GitHubTokens(new GitHubRest(new HttpClient(GitHub))), GitHub, GitHub, Clock);
 
     public static async Task<IssuanceFixture> CreateAsync(TimeSpan? runtimeLifetime = null)
     {

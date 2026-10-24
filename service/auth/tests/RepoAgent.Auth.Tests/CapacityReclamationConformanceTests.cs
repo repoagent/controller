@@ -199,7 +199,7 @@ public sealed partial class CapacityReclamationTests
                 return Task.CompletedTask;
             }
         };
-        await Assert.ThrowsAsync<HttpRequestException>(() => Cleanup(f, f.Storage.CreateClient(transport))
+        await Assert.ThrowsAsync<RequestFailedException>(() => Cleanup(f, f.Storage.CreateClient(transport))
             .ReclaimEnrollmentAsync(active.Id, ledger.GetString("Generation")!, Token));
         await Cleanup(f).ReclaimEnrollmentAsync(active.Id, ledger.GetString("Generation")!, Token);
         var released = await Read(f, RevocationFixture.Partition, ledger.RowKey);
@@ -355,7 +355,7 @@ public sealed partial class CapacityReclamationTests
             if (ObservedTransport.IsBatch(message) && ++batches == lostBatch) throw new HttpRequestException("Lost runtime settlement response");
             return Task.CompletedTask;
         }};
-        await Assert.ThrowsAsync<HttpRequestException>(() => Reclaim(f, runtime, f.Storage.CreateClient(fault)));
+        await Assert.ThrowsAsync<RequestFailedException>(() => Reclaim(f, runtime, f.Storage.CreateClient(fault)));
         await Reclaim(f, runtime);
         var obligation = await Read(f, RevocationFixture.Partition, "release:" + runtime.GetString("OperationId"));
         await Reclaim(f, runtime);

@@ -5,22 +5,29 @@ using System.Text.Json;
 namespace RepoAgent.Auth;
 
 // The broker's client of api.github.com. Every request carries the same headers and a 3 s timeout, and every answer
-// body is at most 64 KiB of JSON that names no member twice. The HttpClient must have redirects and retries disabled;
-// only fixed api.github.com paths are used.
+// body is at most 64 KiB of JSON that names no member twice. A request GitHub does not answer is GitHubUnavailable.
+// The HttpClient must have redirects and retries disabled; only fixed api.github.com paths are used.
 internal sealed class GitHubRest(HttpClient client)
 {
-    // Reads one GitHub resource and reports what GitHub answered. The fact reads JSON only and decides
-    // nothing: a missing member or another kind than GitHub documents makes the answer malformed.
-    internal async Task<GitHubRead<T>> ReadAsync<T>(string path, string bearer, Func<JsonElement, T> fact, CancellationToken ct)
+    // Reads one GitHub resource.
+    internal Task<GitHubRead<T>> ReadAsync<T>(string path, string bearer, Func<JsonElement, T> fact, CancellationToken ct) =>
+        SendAsync(HttpMethod.Get, path, bearer, null, HttpStatusCode.OK, fact, ct);
+
+    // Sends one request and reports what GitHub answered: Found for the success status and a body the fact reads,
+    // NotFound for 404 and Refused for any other status. The fact reads JSON only and decides nothing: a missing
+    // member or another kind than GitHub documents makes the answer malformed.
+    internal async Task<GitHubRead<T>> SendAsync<T>(HttpMethod method, string path, string bearer, HttpContent? content,
+        HttpStatusCode success, Func<JsonElement, T> fact, CancellationToken ct)
     {
-        using var request = Request(HttpMethod.Get, path, bearer);
+        using var request = Request(method, path, bearer);
+        request.Content = content;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(3));
         try
         {
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if (response.StatusCode == HttpStatusCode.NotFound) return new GitHubRead<T>.NotFound();
-            if (response.StatusCode != HttpStatusCode.OK) return new GitHubRead<T>.Refused();
+            if (response.StatusCode != success) return new GitHubRead<T>.Refused();
             if (await BodyAsync(response, timeout.Token) is not { } body) return new GitHubRead<T>.Malformed();
             JsonDocument document;
             try { document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 32 }); }
@@ -37,7 +44,24 @@ internal sealed class GitHubRest(HttpClient client)
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException)
         {
-            throw new GitHubUnavailable("GitHub did not answer the read.", ex);
+            throw new GitHubUnavailable("GitHub did not answer.", ex);
+        }
+    }
+
+    // Sends one request whose answer carries nothing to read, and returns GitHub's status.
+    internal async Task<HttpStatusCode> StatusAsync(HttpMethod method, string path, string bearer, CancellationToken ct)
+    {
+        using var request = Request(method, path, bearer);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        try
+        {
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            return response.StatusCode;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
+        {
+            throw new GitHubUnavailable("GitHub did not answer.", ex);
         }
     }
 
@@ -48,7 +72,7 @@ internal sealed class GitHubRest(HttpClient client)
     internal static string RepositoryPath(string repository) => string.Join('/', repository.Split('/').Select(Uri.EscapeDataString));
 
     // At most 64 KiB; null when GitHub sends more.
-    internal static async Task<byte[]?> BodyAsync(HttpResponseMessage response, CancellationToken ct)
+    private static async Task<byte[]?> BodyAsync(HttpResponseMessage response, CancellationToken ct)
     {
         if (response.Content.Headers.ContentLength is > 65536) return null;
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
@@ -64,7 +88,7 @@ internal sealed class GitHubRest(HttpClient client)
         return bytes.ToArray();
     }
 
-    internal static HttpRequestMessage Request(HttpMethod method, string path, string token)
+    private static HttpRequestMessage Request(HttpMethod method, string path, string token)
     {
         var request = new HttpRequestMessage(method, new Uri("https://api.github.com/" + path));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -75,7 +99,7 @@ internal sealed class GitHubRest(HttpClient client)
         return request;
     }
 
-    internal static bool HasDuplicateMember(JsonElement element)
+    private static bool HasDuplicateMember(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Object)
         {
