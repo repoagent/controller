@@ -59,15 +59,6 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     public async Task<(int Status, string Body)> Get(string resource, string subject, CancellationToken ct) =>
         Included(await Api("GET", resource, null, ct, include: true), subject);
 
-    /// <summary>Reads the newest page of another public repository's releases, such as the controller's own baseline releases.</summary>
-    public async Task<JsonArray> Releases(string repository, CancellationToken ct)
-    {
-        var (status, body) = Included(await Api("GET", $"repos/{repository}/releases?per_page=100", null, ct, include: true), "releases");
-        if (status != 200) throw GitHubRequestException.Rejected(status);
-        try { return JsonNode.Parse(body) as JsonArray ?? throw new IOException("Malformed GitHub releases response"); }
-        catch (System.Text.Json.JsonException) { throw new IOException("Malformed GitHub releases response"); }
-    }
-
     static (int Status, string Body) Included(string text, string subject) =>
         Included(text) is { } response ? (response.Status, response.Body) : throw new IOException($"Incomplete GitHub {subject} response");
 

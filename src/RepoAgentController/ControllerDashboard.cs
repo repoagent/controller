@@ -178,7 +178,7 @@ sealed class ControllerDashboard : IAsyncDisposable
         var at = Time(notice.CheckedAt);
         if (notice.Failure is { } failure)
         {
-            text.AppendLine($"The baseline release check failed at {at}: {Code(failure)}. No update is claimed; the next check is in about an hour.");
+            text.AppendLine($"The baseline release check failed at {at}: {Code(Log.Redact(failure))}. No update is claimed; the next check is in about an hour.");
             return;
         }
         if (notice.Newest is not { } newest) { text.AppendLine($"No published baseline release was found at {at}."); return; }

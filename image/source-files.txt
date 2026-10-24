@@ -21,7 +21,7 @@ src/RepoAgentController/CredentialHandoff.cs
 src/RepoAgentController/CodexCredentials.cs
 src/RepoAgentController/ControllerStatus.cs
 src/RepoAgentController/ControllerDashboard.cs
-src/RepoAgentController/BaselineReleases.cs
+src/RepoAgentController/GitHubBaselineReleases.cs
 src/RepoAgentController/MentionUser.cs
 src/RepoAgentController/Program.cs
 src/RepoAgentController/GitHubRepositorySettings.cs
@@ -40,6 +40,8 @@ src/RepoAgentController.Core/SettingValue.cs
 src/RepoAgentController.Core/IRepositorySettings.cs
 src/RepoAgentController.Core/IControllerState.cs
 src/RepoAgentController.Core/RepositorySettings.cs
+src/RepoAgentController.Core/IBaselineReleases.cs
+src/RepoAgentController.Core/BaselineReleases.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs
 tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj
