@@ -1284,8 +1284,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
 
     def webhooks(self, f):
-        with socket.socket() as listener:
-            listener.bind(('127.0.0.1', 0)); f.webhook_port = listener.getsockname()[1]
+        f.webhook_port = free_port()
         f.command += ['--webhook-url', 'https://fixture.invalid', '--listen-port', str(f.webhook_port), '--reconcile-interval', '3600']
 
     def delivery(self, f, payload, event='discussion'):
