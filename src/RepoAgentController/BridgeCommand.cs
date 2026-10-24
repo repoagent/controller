@@ -27,6 +27,7 @@ public static class BridgeCommand
         var interval = new Option<int>("--interval") { DefaultValueFactory = _ => 10, Description = "Seconds between polls" };
         var webhookUrl = new Option<string?>("--webhook-url") { Description = "Public HTTPS origin; enables repository webhooks at /github/webhook" };
         var listenPort = new Option<int>("--listen-port") { DefaultValueFactory = _ => 8080, Description = "Container HTTP listener port in webhook mode" };
+        var statusPort = new Option<int>("--status-port") { DefaultValueFactory = _ => 8081, Description = "Local (loopback) port for GET /status: busy or idle and work counts, while the controller runs in polling or webhook mode" };
         var reconcileInterval = new Option<int>("--reconcile-interval") { DefaultValueFactory = _ => 300, Description = "Seconds between full reconciliations in webhook mode" };
         var disableWebhook = new Option<bool>("--disable-webhook") { Description = "Deactivate this stopped controller's saved webhook without starting native work" };
         var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (native work may still be running)" };
@@ -39,7 +40,7 @@ public static class BridgeCommand
         var codexAuth = new Option<FileInfo>("--codex-auth") { Description = "Operator-supplied Codex account credentials (auth.json format), separate from GitHub App credentials. Installed into the private CODEX_HOME when it differs from the last supply; replacing the file while running restarts the owned Codex app-server at idle and resumes sessions" };
         var imageInventory = new Option<FileInfo?>("--image-inventory") { Description = "The running baseline image's inventory (/opt/repoagent/image-inventory.json); the dashboard compares its SHA-256 with published baseline releases" };
         var startupToolUpdates = new Option<bool>("--startup-tool-updates") { Description = "The runtime updates the image's gh and Codex at startup (tool updates: latest), possibly to versions no release records; the dashboard then reports release identity as uncertain" };
-        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, enrollmentEnvironment, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, reconcileInterval, disableWebhook, once, checkAuth, clone, repositorySettings, logFileBytes, logFiles, dashboardCategory, codexAuth, imageInventory, startupToolUpdates };
+        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, enrollmentEnvironment, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, statusPort, reconcileInterval, disableWebhook, once, checkAuth, clone, repositorySettings, logFileBytes, logFiles, dashboardCategory, codexAuth, imageInventory, startupToolUpdates };
         var ghCredentials = new Option<DirectoryInfo>("--credential-directory") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
@@ -81,11 +82,14 @@ public static class BridgeCommand
                 var urlText = result.GetValue(webhookUrl);
                 Uri? publicUrl = null;
                 if (result.GetValue(listenPort) is < 1 or > 65535) throw new ArgumentException("--listen-port must be between 1 and 65535");
+                if (result.GetValue(statusPort) is < 1 or > 65535) throw new ArgumentException("--status-port must be between 1 and 65535");
                 if (result.GetValue(reconcileInterval) < 1) throw new ArgumentException("--reconcile-interval must be positive");
                 if (urlText is not null && (!Uri.TryCreate(urlText, UriKind.Absolute, out publicUrl) || publicUrl.Scheme != "https" || publicUrl.UserInfo.Length != 0 ||
                     publicUrl.Query.Length != 0 || publicUrl.Fragment.Length != 0 || publicUrl.AbsolutePath != "/"))
                     throw new ArgumentException("--webhook-url must be a public HTTPS origin without a path, credentials, query or fragment; /github/webhook is added");
                 if (publicUrl is not null && result.GetValue(once)) throw new ArgumentException("--once applies to polling mode only");
+                if (publicUrl is not null && result.GetValue(statusPort) == result.GetValue(listenPort))
+                    throw new ArgumentException("--status-port must differ from --listen-port");
                 if (result.GetValue(disableWebhook) && (publicUrl is null || result.GetValue(once) || result.GetValue(checkAuth)))
                     throw new ArgumentException("--disable-webhook requires webhook mode without --once or --check-auth; stop the controller first");
                 var cwd = result.GetValue(workspace)!.FullName;
@@ -188,12 +192,14 @@ public static class BridgeCommand
                         var dispatcher = bridge.DispatchWhenIdle(dispatchStop.Token, runtimeToken);
                         try
                         {
-                            if (publicUrl is not null)
+                            var webhooks = publicUrl is null ? null : new DiscussionWebhooks(github, bridge, statePath,
+                                new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), reconciliation);
+                            // A long-running controller reports busy or idle in every mode; --once observes once and exits.
+                            // Disposed after the webhook is deactivated: the host stops last.
+                            await using var host = result.GetValue(once) ? null : await ControllerHost.Start(result.GetValue(statusPort),
+                                () => StatusSnapshot.From(status.Snapshot()), webhooks is null ? null : (result.GetValue(listenPort), webhooks.Receive), runtimeToken);
+                            if (webhooks is not null)
                             {
-                                var webhooks = new DiscussionWebhooks(github, bridge, statePath,
-                                    new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), reconciliation);
-                                // Disposed after the webhook is deactivated: the host stops last.
-                                await using var host = await ControllerHost.Start(result.GetValue(listenPort), webhooks.Receive, runtimeToken);
                                 await webhooks.Run(runtimeToken);
                                 return 0;
                             }

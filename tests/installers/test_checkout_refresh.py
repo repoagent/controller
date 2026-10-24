@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import urllib.request
 import unittest
 
-from test_managed_git import CONTROLLER, ROOT, CredentialManager, GitProvider
+from test_managed_git import CONTROLLER, ROOT, CredentialManager, GitProvider, free_port
 
 # Real native model turns against GitProvider's credential-free local Responses endpoint.
 FIXTURE_MODEL = 'model = "gpt-6.1-sol"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Credential-free local fixture"\nbase_url = "https://broker.fixture/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n'
@@ -207,7 +207,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 checkout = workspace / 'repository'
                 command = self.controller_command + ['--repo', 'owner/project', '--app-id', '123', '--broker-url',
                            'https://broker.fixture', '--enrollment-file', str(enrollment), '--state', str(state),
-                           '--workspace', str(workspace), '--clone', '--interval', '1']
+                           '--workspace', str(workspace), '--clone', '--interval', '1', '--status-port', str(free_port())]
                 if not clone: command.remove('--clone')
                 f = SimpleNamespace(directory=directory, provider=provider, environment=environment, state=state,
                                     checkout=checkout, owner=workspace / '.repoagent-checkout.json', command=command,

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace RepoAgentController;
@@ -211,3 +212,29 @@ sealed class ControllerStatus : IDisposable
         }
     }
 }
+
+/// <summary>
+/// What GET /status reports (ADR 0009): busy while an agent turn runs or input is pending, retrying or waiting, else idle,
+/// with the work counts of the operator status. A hosting environment decides what busy means for it.
+/// </summary>
+sealed record StatusSnapshot(string State, WorkCounts Work)
+{
+    public static StatusSnapshot From(JsonObject status)
+    {
+        var work = status["work"]!;
+        var counts = new WorkCounts(Count("sessions"), Count("pending"), Count("retrying"), Count("waiting"), Count("running"), Count("limit"),
+            work["admissionBlocked"] is JsonValue blocked && blocked.TryGetValue<bool>(out var held) ? held : null);
+        var busy = counts.Running + counts.Pending + counts.Retrying + counts.Waiting > 0;
+        return new(busy ? "busy" : "idle", counts);
+
+        int Count(string name) => work[name]!.GetValue<int>();
+    }
+}
+
+/// <summary>The operator status's work counts, by the same names.</summary>
+sealed record WorkCounts(int Sessions, int Pending, int Retrying, int Waiting, int Running, int Limit, bool? AdmissionBlocked);
+
+// Native AOT: the status endpoint serializes through generated metadata, never reflection.
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(StatusSnapshot))]
+sealed partial class StatusJson : JsonSerializerContext;

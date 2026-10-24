@@ -383,7 +383,7 @@ public sealed class CodexCredentialRefreshTests
         [
             "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
             "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
-            "--workspace", Workspace, "--codex-auth", Supplied, .. extra
+            "--workspace", Workspace, "--codex-auth", Supplied, "--status-port", ControllerHarness.FreePort().ToString(), .. extra
         ];
 
         /// <summary>Atomically replaces the operator's credential file, as a secret mount update would.</summary>

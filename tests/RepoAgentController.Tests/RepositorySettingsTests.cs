@@ -330,7 +330,7 @@ public sealed class RepositorySettingsTests
         public Task WaitForLog(string text) => capture.WaitFor(line => line.Contains(text, StringComparison.Ordinal));
 
         string[] Arguments() => ["--repo", "owner/repository", "--app-id", "123", "--private-key", privateKey,
-            "--state", Path.Combine(Directory, "bridge.json"), "--workspace", Directory];
+            "--state", Path.Combine(Directory, "bridge.json"), "--workspace", Directory, "--status-port", ControllerHarness.FreePort().ToString()];
 
         public IReadOnlyList<GitHubRequest> GitHubRequests() => File.Exists(requests)
             ? File.ReadAllLines(requests).Select(line => JsonSerializer.Deserialize<GitHubRequest>(line, JsonSerializerOptions.Web)!).ToList()

@@ -16,16 +16,24 @@ namespace RepoAgentController.Tests;
 /// peer are controlled, so this is not live-provider evidence. Tests that use it belong to the "Managed checkout
 /// environment" collection, since the controller reads PATH and the console.
 /// </summary>
-[System.Runtime.Versioning.UnsupportedOSPlatform("windows")] // The App gh wrapper and native relay use Unix tools.
 static class ControllerHarness
 {
     public const string Setting = "REPOAGENT_MAX_ACTIVE_SESSIONS";
     public static string Url(int discussion) => "https://github.com/owner/repository/discussions/" + discussion;
 
+    /// <summary>A loopback port that was free just now, for a controller listener in a test.</summary>
+    public static int FreePort()
+    {
+        using var probe = new TcpListener(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        return ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+    }
+
     /// <summary>One native turn the controlled peer accepted, with the Discussion its envelope carried.</summary>
     internal sealed record Turn(string Thread, string Id, int Discussion, JsonNode Envelope);
 
     /// <summary>Runs the real controller entrypoint in polling or webhook mode against a controlled GitHub world and native peer.</summary>
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")] // The App gh wrapper and native relay use Unix tools.
     internal sealed class Controller : IAsyncDisposable
     {
         static readonly TimeSpan PollInterval = TimeSpan.FromHours(1);
@@ -43,6 +51,8 @@ static class ControllerHarness
 
         /// <summary>The port of the webhook receiver, once started in webhook mode.</summary>
         public int WebhookPort { get; private set; }
+        /// <summary>The local port of the controller's status endpoint.</summary>
+        public int StatusPort { get; } = FreePort();
         public Dictionary<string, string> Variables { get; } = [];
         public Dictionary<string, int> Statuses { get; } = [];
         public NativePeer Native { get; }
@@ -93,9 +103,20 @@ static class ControllerHarness
             run = Task.Run(async () =>
             {
                 using (http) return await BridgeCommand.Run(["--repo", "owner/repository", "--app-id", "123", "--private-key", privateKey,
-                    "--state", state, "--workspace", directory, "--interval", ((int)PollInterval.TotalSeconds).ToString(), .. options],
+                    "--state", state, "--workspace", directory, "--interval", ((int)PollInterval.TotalSeconds).ToString(),
+                    "--status-port", StatusPort.ToString(), .. options],
                     http, gh, clock, shutdown.Token);
             });
+        }
+
+        /// <summary>The controller's answer to GET /status.</summary>
+        public async Task<JsonNode> Status()
+        {
+            using var client = new HttpClient();
+            using var response = await client.GetAsync($"http://127.0.0.1:{StatusPort}/status", TestContext.Current.CancellationToken);
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+            return JsonNode.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))!;
         }
 
         /// <summary>Stops the controller as an operator's shutdown does and returns its exit code.</summary>
@@ -200,13 +221,6 @@ static class ControllerHarness
             ["answer"] = null, ["category"] = new JsonObject { ["id"] = "DIC1", ["name"] = "General" },
             ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" + number }
         };
-
-        static int FreePort()
-        {
-            using var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-            probe.Start();
-            return ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
-        }
 
         void Save()
         {

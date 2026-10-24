@@ -133,7 +133,7 @@ public sealed class OperatorStatusTests
     [
         "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
         "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
-        "--workspace", fixture.Directory, .. extra
+        "--workspace", fixture.Directory, "--status-port", ControllerHarness.FreePort().ToString(), .. extra
     ];
 
     internal static async Task<JsonNode> Eventually(string state, Func<JsonNode, bool> condition)
