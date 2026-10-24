@@ -33,22 +33,23 @@ function Read-Repository {
     if ($repo.full_name -isnot [string] -or $repo.full_name -ine $Repository -or ($config.repositoryId -and $config.repositoryId -ne $repo.id)) { Stop-Enrollment 'Repository identity changed.' }
     return $repo.id
 }
-function Read-VariableListing {
-    $r = GitHub GET ($variablesPath + '?per_page=30&page=1')
+function Read-VariableAccess {
+    # One listing page proves that host gh can read the selected location. The number of variables
+    # never limits enrollment: CI workflows and repository settings share these variables.
+    $r = GitHub GET ($variablesPath + '?per_page=1&page=1')
     if ($r.Status -ne 200) { Stop-Enrollment "Direct repository $($script:Label) variables are unavailable; absence and write access are unconfirmed." }
     $v = Read-HostJson $r.Body
     Assert-Fields $v @('total_count','variables')
-    if (($v.total_count -isnot [long] -and $v.total_count -isnot [int]) -or $v.total_count -lt 0 -or $v.total_count -gt 60 -or $v.variables -isnot [array] -or $v.variables.Count -ne [Math]::Min(30, $v.total_count)) { Stop-Enrollment "$($script:Label)-variable listing exceeds the broker limit or is incomplete." }
-    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if (($v.total_count -isnot [long] -and $v.total_count -isnot [int]) -or $v.total_count -lt 0 -or $v.variables -isnot [array] -or $v.variables.Count -ne [Math]::Min(1, $v.total_count)) { Stop-Enrollment "$($script:Label)-variable listing is malformed or incomplete." }
     foreach ($item in $v.variables) {
-        if ($item -isnot [Collections.IDictionary] -or $item.name -isnot [string] -or [string]::IsNullOrEmpty($item.name) -or $item.value -isnot [string] -or -not $seen.Add($item.name)) { Stop-Enrollment "$($script:Label)-variable listing is malformed or contains duplicate names." }
+        if ($item -isnot [Collections.IDictionary] -or $item.name -isnot [string] -or [string]::IsNullOrEmpty($item.name) -or $item.value -isnot [string]) { Stop-Enrollment "$($script:Label)-variable listing is malformed." }
     }
     return $v
 }
 function Confirm-Absent {
-    $v = Read-VariableListing
-    # Offset pages are not a snapshot. Never infer absence across multiple pages.
-    if ($v.total_count -gt 30) { Stop-Enrollment "Absence above 30 $($script:Label) variables is unverifiable. Inspect manually; no approval will be created or restored." }
+    # GitHub also answers 404 without read access. A listing page read after the named 404 proves
+    # access, so the 404 is absence; a page that shows the selected name contradicts it.
+    $v = Read-VariableAccess
     foreach ($item in $v.variables) {
         if ($item.name -ieq $ApprovalVariable) { Stop-Enrollment "The selected $($script:Label) variable already exists. Rerun to inspect it; no write was attempted." }
     }
@@ -229,7 +230,7 @@ try {
     $brokerSetup = "/v$setupVersion"
     $script:Diagnostic = 'Enrollment transport or document validation failed. Check host gh authentication, broker availability and the saved binding; no automatic repair was attempted.'
     $config.repositoryId = Read-Repository
-    $null = Read-VariableListing
+    $null = Read-VariableAccess
     Write-PrivateJson $configPath $config
     if ($null -eq $recovery) {
         $recovery = [ordered]@{ version=$setupVersion; setupVersion=$setupVersion; approvalKind=$approvalKind; request=[ordered]@{ idempotencyId=[Guid]::NewGuid().ToString('N'); repositoryId=$config.repositoryId; repository=$Repository; variable=$ApprovalVariable; profile=$Profile }; secret=[Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).TrimEnd('=').Replace('+','-').Replace('/','_'); completionId=$null; lastWorkAt=$null; acknowledged=$false; ackAttempted=$false }

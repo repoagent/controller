@@ -47,9 +47,12 @@ if 'HOST_ENROLLMENT_GH_MODEL' in os.environ:
     if endpoint == 'repos/example/project' and method == 'GET':
         status, value = 200, {'id': 123, 'full_name': 'example/project'}
     elif location and endpoint.startswith(location + '?') and method == 'GET':
-        entries = [{'name': name, 'value': value} for name, value in store.items()]
+        # GitHub pages these listings: default 10 and at most 30 per page.
+        query = dict(pair.split('=', 1) for pair in endpoint.split('?', 1)[1].split('&') if pair)
+        size, page = min(30, int(query.get('per_page', 10))), int(query.get('page', 1))
+        entries = [{'name': name, 'value': value} for name, value in sorted(store.items())]
         status = model.get('listing_status', 200)
-        value = model.get('listing', {'total_count': len(entries), 'variables': entries})
+        value = model.get('listing', {'total_count': len(entries), 'variables': entries[(page - 1) * size:page * size]})
     elif location and endpoint == location and method == 'POST':
         status = model.get('write_status', 201)
         if not 400 <= status < 500:  # A rejection is never applied; a 5xx write may have been.
