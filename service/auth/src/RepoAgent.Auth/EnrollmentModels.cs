@@ -51,6 +51,7 @@ internal sealed record EnrollmentInput(string IdempotencyId, long RepositoryId, 
     {
         request.Validate();
         var approval = ApprovalContract.ForSetup(setupVersion, request.Profile);
+        if (!approval.AcceptsVariable(request.Variable)) throw new IssuanceDenied(400);
         var digest = approval.IsActions ? request.Digest("repository-actions-variable/setup-v3") : request.Digest();
         return new(request.IdempotencyId, request.RepositoryId, request.Repository, null,
             request.Variable, request.Profile, digest, approval);

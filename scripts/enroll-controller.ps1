@@ -209,6 +209,7 @@ try {
     Assert-Text $ApprovalVariable '\A[A-Za-z_][A-Za-z0-9_]{0,99}\z'
     $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
     if ($ApprovalVariable.StartsWith('GITHUB_', [StringComparison]::Ordinal)) { Stop-Enrollment 'Approval variable cannot start with GITHUB_.' }
+    if ($actions -and -not (Test-ActionsApprovalName $ApprovalVariable)) { Stop-Enrollment "Approval variable $ApprovalVariable is in the REPOAGENT_ repository-settings namespace, which repository-settings.ps1 writes. Use REPOAGENT_APPROVAL or a name without the REPOAGENT_ prefix." }
     $BrokerOrigin = Get-BrokerOrigin $BrokerOrigin
     if ($null -eq $config) { $config = [ordered]@{ version=$setupVersion; setupVersion=$setupVersion; approvalKind=$approvalKind; repository=$Repository; repositoryId=$null; brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; profile=$Profile; pendingId=$null; deadline=$null; marker=$null; expectedValueSha256=$null; approvalWriteAttempted=$false; approvalObserved=$false } }
     $recovery = $null

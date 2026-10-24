@@ -522,6 +522,18 @@ class HostEnrollmentTests(unittest.TestCase):
         self.assertFalse(journey.log.exists())
         self.assertFalse((journey.state / 'approval.json').exists())
 
+    def test_actions_approval_cannot_take_a_repository_settings_name_before_any_work(self):
+        # repository-settings.ps1 writes REPOAGENT_ Actions variables; only reserved names may hold approval.
+        for variable in ('REPOAGENT_MODEL', 'REPOAGENT_FUTURE_SETTING'):
+            with self.subTest(variable=variable):
+                journey = EnrollmentJourney(self, variable=variable)
+                result = journey.run()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('repository-settings namespace', result.stdout + result.stderr)
+                self.assertEqual(journey.events, [])
+                self.assertFalse(journey.log.exists())
+                self.assertFalse((journey.state / 'approval.json').exists())
+
     def test_legacy_saved_enrollment_is_refused_without_remote_work_or_file_changes(self):
         journey = EnrollmentJourney(self)
         journey.state.mkdir(mode=0o700)

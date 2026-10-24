@@ -107,6 +107,15 @@ function Get-ApprovalStateKind($State) {
     } elseif ($State.expectedValueSha256 -or $State.approvalObserved -or $State.approvalWriteAttempted) { throw 'Missing saved marker.' }
     return $kind
 }
+# scripts/repository-settings.ps1 writes REPOAGENT_ direct repository Actions variables. An Actions-variable
+# approval may use that prefix only under a name the shared settings catalogue reserves for approval, so
+# settings changes can never overwrite or delete an approval marker.
+function Test-ActionsApprovalName([string]$Name) {
+    if (-not $Name.StartsWith('REPOAGENT_', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    $catalogue = Read-HostJson ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/RepoAgentController/repository-settings.json')))
+    if ($catalogue.reserved -isnot [array]) { throw 'Unsupported repository settings catalogue.' }
+    return [bool]@($catalogue.reserved | Where-Object { $_ -is [string] -and $_ -ieq $Name }).Count
+}
 function Get-BrokerOrigin([string]$Value) {
     if ($Value -cnotmatch '\Ahttps://[A-Za-z0-9.-]+(?::[0-9]+)?/?\z') { throw 'Supply a canonical HTTPS broker origin.' }
     $uri = [Uri]$Value

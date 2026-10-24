@@ -29,8 +29,13 @@ internal sealed record ApprovalContract(string Kind, long SetupVersion, string P
     public bool NamesProfile => RuntimeVersion > 1;
     public bool Allows(string profile) => IsSettings ? profile is "polling-settings" or "webhook-settings" or "polling-clone-settings" or "webhook-clone-settings"
         : IsClone ? profile is "polling-clone" or "webhook-clone" : profile is "polling" or "webhook";
-    // Only the bound kind's direct listing is authority; locations never fall back to each other.
+    // Only the bound kind's direct location is authority; locations never fall back to each other.
     public string VariablesPath => IsActions ? "actions/variables" : IsAgent ? "agents/variables" : throw new IssuanceDenied();
+    // Repository-settings tooling writes REPOAGENT_ Actions variables. Actions approval may use that prefix
+    // only under the name the settings catalogue (src/RepoAgentController/repository-settings.json) reserves
+    // for approval, so settings changes never overwrite a marker. Agent variables are a separate store.
+    public bool AcceptsVariable(string variable) => !IsActions || !variable.StartsWith("REPOAGENT_", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(variable, "REPOAGENT_APPROVAL", StringComparison.OrdinalIgnoreCase);
 
     public static ApprovalContract ForSetup(int setupVersion, string profile)
     {
