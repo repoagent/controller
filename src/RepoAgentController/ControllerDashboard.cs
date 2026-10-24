@@ -74,7 +74,7 @@ sealed class ControllerDashboard : IAsyncDisposable
     static string Render(JsonObject snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, ReleaseNotice? release)
     {
         var text = new StringBuilder();
-        text.AppendLine(GitHub.DashboardMarker);
+        text.AppendLine(AppIdentity.DashboardMarker);
         text.AppendLine("Operational status of this repository's RepoAgent controller. The controller replaces this text on every update; comments and reactions here are never delivered to the agent.");
         text.AppendLine();
         var controller = snapshot["controller"] ?? new JsonObject();

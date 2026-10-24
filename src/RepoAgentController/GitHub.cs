@@ -9,7 +9,11 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     public string Repository { get; } = repository;
     public string AgentLogin => credentials.AgentLogin;
     public MentionUser? MentionUser { get; private set; }
-    public bool IsAgentActor(JsonNode? actor) => credentials.IsAgentActor(actor);
+    public AppIdentity Identity => credentials.Identity with { MentionUser = MentionUser };
+    public bool IsAgentActor(JsonNode? actor) => Identity.IsAgentActor(ActorOf(actor));
+
+    /// <summary>An author, sender or reaction user as GitHub's GraphQL reports it; null when GitHub reports none.</summary>
+    internal static Actor? ActorOf(JsonNode? actor) => actor is null ? null : new(actor.Text("login"), actor.Text("__typename"));
     const string MessageFields = "id url body bodyHTML createdAt updatedAt author { __typename login } reactionGroups { content viewerHasReacted }";
     const string DiscussionFields = MessageFields + " number title closed locked answer { id } category { id name }";
     const string PageInfo = "pageInfo { hasNextPage endCursor }";
@@ -119,9 +123,11 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         Log.Write("mention-user", $"@{MentionUser.Login} publishes-as={AgentLogin}");
     }
 
-    public bool IsEnrollmentMention(JsonNode source) => !IsAgentActor(source["author"]) &&
-        ((MentionUser?.IsMentioned(source.Text("bodyHTML")) ?? false) ||
-         Regex.IsMatch(source.Text("body"), @"(?<![\w-])@" + Regex.Escape(AgentLogin) + @"(?![\w-])", RegexOptions.IgnoreCase));
+    // The rendered body is parsed only when a mention user can be mentioned in it.
+    public bool IsEnrollmentMention(JsonNode source) => Identity.IsEnrollmentMention(ActorOf(source["author"]), source.Text("body"),
+        MentionUser is null ? NoMentions : RenderedMentions.Users(source.Text("bodyHTML")));
+
+    static readonly IReadOnlySet<string> NoMentions = new HashSet<string>();
 
     public async Task<List<JsonNode>> Discussions(CancellationToken ct)
     {
@@ -202,12 +208,7 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return node is null ? throw new GitHubRequestException(GitHubFailure.Permanent, "receipt subject no longer exists") : HasViewerReceipt(node);
     }
 
-    /// <summary>Hidden in the rendered dashboard body; with App authorship it identifies the controller-owned dashboard.</summary>
-    public const string DashboardMarker = "<!-- repoagent:controller-dashboard -->";
-
-    /// <summary>The controller's own status Discussion: authored by this App and marked. Participants cannot author as the App.</summary>
-    public bool IsDashboard(JsonNode discussion) =>
-        IsAgentActor(discussion["author"]) && discussion.Text("body").Contains(DashboardMarker, StringComparison.Ordinal);
+    public bool IsDashboard(JsonNode discussion) => Identity.IsDashboard(ActorOf(discussion["author"]), discussion.Text("body"));
 
     /// <summary>Resolves the repository and named Discussion category that hold the dashboard.</summary>
     public async Task<(string Repository, string Category)> DashboardCategory(string name, CancellationToken ct)

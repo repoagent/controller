@@ -9,7 +9,7 @@ public sealed class MentionUserTests
     [InlineData("<strong><a class=\"user-mention notranslate\" href=\"https://github.com/repoagent\">@repoagent</a></strong>")]
     public void A_rendered_mention_targets_the_configured_user(string html)
     {
-        Assert.True(new MentionUser("repoagent").IsMentioned(html));
+        Assert.True(new MentionUser("repoagent").IsMentioned(RenderedMentions.Users(html)));
     }
 
     [Theory]
@@ -23,6 +23,6 @@ public sealed class MentionUserTests
     [InlineData("<p>@repoagent</p>")]
     public void Other_rendered_content_does_not_enroll_a_discussion(string html)
     {
-        Assert.False(new MentionUser("repoagent").IsMentioned(html));
+        Assert.False(new MentionUser("repoagent").IsMentioned(RenderedMentions.Users(html)));
     }
 }
