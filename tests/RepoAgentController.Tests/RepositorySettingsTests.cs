@@ -183,6 +183,35 @@ public sealed class RepositorySettingsTests
         Assert.Single(fixture.Provider.TokenRequests); // Refresh reuses the unexpired read-only runtime token.
     }
 
+    [Fact]
+    public async Task After_a_restart_a_failed_or_invalid_read_keeps_the_last_known_value_and_status_reports_the_problem()
+    {
+        using var fixture = new Fixture();
+        fixture.Variables[Setting] = "6";
+        Assert.Equal(0, await fixture.Check("--repository-settings"));
+        Assert.Equal(("configured", "6"), Reported(await OperatorStatusTests.Status(fixture.State)));
+
+        // A later lifetime cannot read the variable: the value the earlier one read still applies.
+        fixture.Statuses[Setting] = 503;
+        Assert.Equal(0, await fixture.Check("--repository-settings"));
+        Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=read-failed value=6 reason=\"HTTP 503\""));
+        var unreadable = await OperatorStatusTests.Status(fixture.State);
+        Assert.Equal(("read-failed", "6"), Reported(unreadable));
+        Assert.Equal("HTTP 503", unreadable["settings"]![Setting]!["reason"]!.GetValue<string>());
+
+        fixture.Statuses.Clear();
+        fixture.Variables[Setting] = "unlimited";
+        Assert.Equal(0, await fixture.Check("--repository-settings"));
+        Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=invalid value=6 reason=\"must be an integer from 1 to 64\""));
+        var invalid = await OperatorStatusTests.Status(fixture.State);
+        Assert.Equal(("invalid", "6"), Reported(invalid));
+        Assert.Equal("must be an integer from 1 to 64", invalid["settings"]![Setting]!["reason"]!.GetValue<string>());
+        Assert.DoesNotContain("unlimited", invalid.ToJsonString()); // Invalid raw values are never echoed.
+
+        static (string?, string?) Reported(JsonNode status) =>
+            (status["settings"]?[Setting]?["state"]?.GetValue<string>(), status["settings"]?[Setting]?["value"]?.GetValue<string>());
+    }
+
     internal sealed record GitHubRequest(string Method, string Endpoint, string? Token);
 
     sealed class RunningController(Task<int> run, CancellationTokenSource shutdown, Clock clock, Fixture fixture, string? previousPath) : IAsyncDisposable
@@ -246,6 +275,7 @@ public sealed class RepositorySettingsTests
         public Dictionary<string, int> Statuses { get; } = [];
         public Provider Provider { get; } = new();
         public IReadOnlyList<string> Log => capture.Lines;
+        public string State => Path.Combine(Directory, "bridge.json");
 
         public Fixture()
         {

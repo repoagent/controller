@@ -88,6 +88,8 @@ public sealed class ModelSelectionTests
     [InlineData("repoagent:luna6:ultra", null, null,
         "reasoning ultra from label repoagent:luna6:ultra is not supported by gpt-6-luna; supported: low, medium, high, xhigh, max")]
     [InlineData("", "gpt-5.5", "max", "reasoning max from REPOAGENT_REASONING is not supported by gpt-5.5; supported: low, medium, high, xhigh")]
+    [InlineData("", "gpt 6.1", null, "REPOAGENT_MODEL is invalid (must be a name of at most 64 letters, digits, '.', '_' or '-') and no earlier value is known; correct or clear the variable")]
+    [InlineData("", null, "very high", "REPOAGENT_REASONING is invalid (must be a name of at most 64 letters, digits, '.', '_' or '-') and no earlier value is known; correct or clear the variable")]
     public async Task An_unusable_selection_holds_the_input_with_an_actionable_error_until_it_is_corrected(
         string labels, string? model, string? reasoning, string error)
     {

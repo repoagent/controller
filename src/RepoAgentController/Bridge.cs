@@ -509,7 +509,14 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         var catalogue = await codex.Models(ct);
         try
         {
-            var selection = ModelSelection.Resolve(labels, settings["REPOAGENT_MODEL"].Value, settings["REPOAGENT_REASONING"].Value,
+            // A repository default that is set but unusable, with no earlier value, is not replaced by a native default.
+            if (!labels.Any(ModelSelection.IsLabel))
+                foreach (var name in new[] { ModelSelection.ModelSetting, ModelSelection.ReasoningSetting })
+                    if (settings[name] is { Value: null, State: "invalid" or "read-failed" } problem)
+                        throw new ModelSelectionException(problem.State == "invalid"
+                            ? $"{name} is invalid ({problem.Reason}) and no earlier value is known; correct or clear the variable"
+                            : $"{name} could not be read ({problem.Reason}) and no earlier value is known; the input waits for a successful settings read");
+            var selection = ModelSelection.Resolve(labels, settings[ModelSelection.ModelSetting].Value, settings[ModelSelection.ReasoningSetting].Value,
                 nativeModel, nativeReasoning, catalogue);
             Report("selection-error", record.Text("url"), null);
             return selection;

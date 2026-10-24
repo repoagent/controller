@@ -60,13 +60,15 @@ repository-setting name=REPOAGENT_MAX_ACTIVE_SESSIONS state=absent
 
 `value` is the effective value. HTTP 404 confirms absence, and then no repository value applies, so the consuming feature uses its documented default. An invalid value or a failed read keeps the last effective value, and is never reported as absence. A failed read does not stop the controller; the next refresh retries it. Invalid raw values are not echoed.
 
+Each refresh records every setting's state, effective value and reason in `<state>.settings.json` beside the controller state. A restarted controller starts from the effective values recorded there, so an invalid value or a failed read at startup keeps the value an earlier lifetime read. `status` reports the same record under `settings`, and the [dashboard](../README.md#discussion-status-dashboard) lists every invalid or unreadable setting with the value that still applies, until a read succeeds.
+
 ## Active-session limit
 
 `REPOAGENT_MAX_ACTIVE_SESSIONS` bounds how many native Discussion turns one controller runs at the same time. A Discussion holds a slot from native acceptance of its turn until the native reports that turn completed or failed; a native `active` status report also holds one. Stored sessions that are idle, not loaded or failed hold no slot, however many there are.
 
 At the limit, newly observed input waits in the controller, as it does for a busy session. It shows as `waiting` in `status`, gets no EYES, and the observation logs `input-waiting ... active=N limit=M`. When a turn finishes, waiting Discussions are dispatched again.
 
-- **Default.** `4` applies whenever no repository value is effective: the variable is absent, the controller runs without `--repository-settings` (including every broker enrollment with a frozen profile), or the read failed before any value was known.
+- **Default.** `4` applies whenever no repository value is effective: the variable is absent, the controller runs without `--repository-settings` (including every broker enrollment with a frozen profile), or the value is invalid or unreadable and no controller lifetime has read a valid one. `status` and the dashboard show that problem.
 - **Refresh.** A change applies within one settings refresh, at most one minute. Raising the limit dispatches waiting input right after that refresh. Lowering it never stops or steers a running turn; new turns wait until running turns fall below the new limit. An invalid value or a failed read keeps the last effective limit.
 - **Order.** There is no fairness guarantee. When a slot frees, the controller tries the oldest waiting input first, but an observation that finds a free slot can dispatch its own Discussion first. Each Discussion still runs at most one turn at a time.
 
@@ -87,7 +89,7 @@ At the limit, newly observed input waits in the controller, as it does for a bus
 - A running controller reads a change within one minute. A Discussion created between the variable change and that read counts as preexisting, so wait for the `repository-setting name=REPOAGENT_ENROLLMENT_CATEGORIES state=configured` log line before relying on a new category.
 - The recorded time survives restarts, so Discussions created while the controller is stopped enroll when it starts again. A category first selected while the controller is stopped is recorded when the controller next starts.
 - Removing a category stops new enrollment from it and forgets its recorded time. Discussions already enrolled keep their sessions. Selecting the category again starts afresh, so Discussions created while it was unselected stay preexisting.
-- Clearing the variable, or running without `--repository-settings`, removes every selection. An invalid value or a failed read keeps the previous selection.
+- Clearing the variable, or running without `--repository-settings`, removes every selection. An invalid value or a failed read keeps the previous selection and its recorded times, also across a restart.
 
 **Never enrolled by category.** Discussions authored by the controller's own App, such as its status dashboard, never enroll by category. This prevents a controller-written Discussion from starting agent work.
 
@@ -109,7 +111,7 @@ For each turn, the controller uses the Discussion's model label if it has one. O
 
 - The native catalogue is `model/list` without hidden models. It reflects the signed-in account, so syntax and availability are checked separately.
 - One model label selects that Discussion's model and effort. Several model labels are a conflict.
-- A conflict, a malformed label, an unavailable model or an unsupported effort is never substituted. This applies equally to a default. Without validation, pinned Codex would clamp an unsupported effort, for example `ultra` to `max`. Instead, the Discussion's input waits without taking an [active-session](#active-session-limit) slot, and a `selection-error` names the label or setting, plus the available models or supported efforts. Status lists it under `failures`. The next observation after a fix delivers the waiting input.
+- A conflict, a malformed label, an unavailable model or an unsupported effort is never substituted. Neither is an invalid or unreadable `REPOAGENT_MODEL` or `REPOAGENT_REASONING` when no earlier value is known: the native configuration does not stand in for it. This applies equally to a default. Without validation, pinned Codex would clamp an unsupported effort, for example `ultra` to `max`. Instead, the Discussion's input waits without taking an [active-session](#active-session-limit) slot, and a `selection-error` names the label or setting, plus the available models or supported efforts. Status lists it under `failures`. The next observation after a fix delivers the waiting input.
 - Each accepted turn logs its selection: `native-accepted session=… model=gpt-6-luna effort=xhigh selection=label turn=…`.
 
 **Label changes.** The controller reads a Discussion's labels each time it observes that Discussion, and keeps them in its state. A label change is not input: it never starts or steers a turn, and it takes effect on the next turn. If labels cannot be read, `label-read-error` is logged once and the last observed labels still apply.

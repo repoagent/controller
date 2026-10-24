@@ -230,6 +230,28 @@ public sealed class ControllerDashboardTests
     }
 
     [Fact]
+    public async Task Unusable_repository_settings_are_listed_with_the_value_that_still_applies()
+    {
+        using var controller = new Controller(direct: true);
+        controller.App!.Variables = true;
+        controller.Variable("REPOAGENT_MAX_ACTIVE_SESSIONS", "unlimited");
+        controller.Variable("REPOAGENT_MODEL", null, status: 503);
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var run = controller.Run(shutdown.Token, "--dashboard-category", Category, "--repository-settings");
+        try
+        {
+            var published = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("Repository settings") ? dashboard : null);
+            Assert.Contains("- **Repository settings:** 2 unusable\n", published.Body);
+            Assert.Contains("  - `REPOAGENT_MAX_ACTIVE_SESSIONS` is invalid: `must be an integer from 1 to 64`; no repository value applies\n", published.Body);
+            Assert.Contains("  - `REPOAGENT_MODEL` could not be read: `HTTP 503`; no repository value applies\n", published.Body);
+            Assert.DoesNotContain("unlimited", published.Body); // Invalid raw values are never published.
+            Assert.Equal("RepoAgent controller status", published.Title);
+        }
+        finally { await shutdown.CancelAsync(); }
+        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task Missing_dashboard_category_is_reported_once_instead_of_retried_every_heartbeat()
     {
         using var controller = new Controller();
@@ -408,13 +430,19 @@ public sealed class ControllerDashboardTests
     {
         int tokens;
         public volatile bool Reject;
+        /// <summary>The installation grants Variables: read, so --repository-settings can request it.</summary>
+        public volatile bool Variables;
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             JsonNode? result = request.RequestUri!.AbsolutePath switch
             {
                 "/app" => new JsonObject { ["id"] = 123, ["slug"] = "test-app" },
-                "/repos/owner/repository/installation" => new JsonObject { ["id"] = 234, ["app_id"] = 123, ["permissions"] = new JsonObject { ["discussions"] = "write" } },
+                "/repos/owner/repository/installation" => new JsonObject
+                {
+                    ["id"] = 234, ["app_id"] = 123,
+                    ["permissions"] = Variables ? new JsonObject { ["discussions"] = "write", ["actions_variables"] = "read" } : new JsonObject { ["discussions"] = "write" }
+                },
                 "/app/installations/234/access_tokens" when !Reject => new JsonObject
                 {
                     ["token"] = "opaque-token-direct-" + Interlocked.Increment(ref tokens), ["expires_at"] = clock.GetUtcNow().AddHours(1).ToString("O")
@@ -482,6 +510,13 @@ public sealed class ControllerDashboardTests
             }.ToJsonString());
             Environment.SetEnvironmentVariable("PATH", tools + Path.PathSeparator + path);
         }
+
+        /// <summary>Sets a repository Actions variable, or with <paramref name="status"/> makes its read fail with that HTTP status.</summary>
+        public void Variable(string name, string? value, int? status = null) => Update(state =>
+        {
+            if (state["variables"] is not JsonObject variables) state["variables"] = variables = [];
+            variables[name] = status is null ? value : new JsonObject { ["status"] = status };
+        });
 
         /// <summary>Adds a participant's top-level comment to a Discussion (the first by default) and returns its URL.</summary>
         public string Comment(string id, string body, string discussion = "D1", string discussionUrl = First)
@@ -730,8 +765,12 @@ public sealed class ControllerDashboardTests
              groups=lambda id:[{'content':'EYES','viewerHasReacted':id in world['eyes']}]
              message=lambda item:dict(item,reactionGroups=groups(item['id']))
              entry={'include':include}
-             rest=args[1].startswith('repos/')
+             rest=args[1].startswith('repos/');status=200
              if rest and args[1].split('?')[0]=='repos/repoagent/controller/releases':entry['kind']='releases';data=world['releases']
+             elif rest and args[1].startswith('repos/owner/repository/actions/variables/'):
+              name=args[1].rsplit('/',1)[1];value=world.get('variables',{}).get(name);entry['kind']='variable'
+              status=value['status'] if isinstance(value,dict) else 404 if value is None else 200
+              data={'name':name,'value':value} if status==200 else {'message':'Fixture failure'}
              elif rest:raise RuntimeError('Unexpected GitHub request: '+args[1])
              elif 'addReaction' in query:
               entry.update(kind='addReaction',subject=variables['id'])
@@ -769,7 +808,7 @@ public sealed class ControllerDashboardTests
              if include:
               relay=next((r for r in world['responses'] if r.get('kind',entry['kind'])==entry['kind']),None)
               if relay is not None:world['responses'].remove(relay)
-              else:relay={'status':200,'body':json.dumps(data if rest else {'data':data}),'apply':True}
+              else:relay={'status':status,'body':json.dumps(data if rest else {'data':data}),'apply':True}
               entry['status']=relay['status']
               if relay.get('apply') and change:change()
              elif change:change()

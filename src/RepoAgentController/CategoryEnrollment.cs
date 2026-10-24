@@ -30,10 +30,12 @@ sealed class CategoryEnrollment
             created >= DateTimeOffset.Parse(since.GetValue<string>(), CultureInfo.InvariantCulture);
     }
 
-    // Reconciles the recorded selection starts with the effective setting; a retained value keeps its starts.
+    // Reconciles the recorded selection starts with the effective setting; a retained value keeps its starts. Without any
+    // known value, a failed or invalid read changes nothing: only a confirmed absence or disabled settings remove a selection.
     JsonObject Starts()
     {
         var setting = settings[Setting];
+        if (setting is { Value: null, State: not ("absent" or "disabled") }) return store.State["enrollmentCategories"] as JsonObject ?? new JsonObject();
         var names = setting.Value?.Split(',', StringSplitOptions.TrimEntries) ?? [];
         if (store.State["enrollmentCategories"] is not JsonObject starts)
         {

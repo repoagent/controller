@@ -128,6 +128,7 @@ sealed class ControllerDashboard : IAsyncDisposable
             "" => "unknown",
             var state => state
         });
+        Settings(text, snapshot["settings"] as JsonObject);
         var work = snapshot["work"] ?? new JsonObject();
         text.AppendLine($"- **Sessions:** {Count(work["sessions"])} stored; {(work["running"] is null ? "running turns are not tracked in this mode" : Count(work["running"]) + " running")}; " +
             $"{Count(work["pending"])} awaiting native acknowledgement; {Count(work["waiting"])} inputs waiting" +
@@ -158,6 +159,24 @@ sealed class ControllerDashboard : IAsyncDisposable
         foreach (var item in failures) text.AppendLine($"- {Time(item.Text("at"))} {Code(item.Text("kind"))}: {Code(item.Text("message"))}");
         if (failures.Length == 0) text.AppendLine("None recorded.");
         return text.ToString();
+    }
+
+    // Invalid and unreadable settings stay listed until a read succeeds; raw invalid values are never recorded.
+    static void Settings(StringBuilder text, JsonObject? settings)
+    {
+        if (settings is null || settings.All(setting => setting.Value?.Text("state") == "disabled"))
+        {
+            text.AppendLine("- **Repository settings:** not read; the controller runs without --repository-settings");
+            return;
+        }
+        var problems = settings.Where(setting => setting.Value?.Text("state") is "invalid" or "read-failed").ToArray();
+        text.AppendLine("- **Repository settings:** " + (problems.Length == 0 ? "read without problems" : $"{problems.Length} unusable"));
+        foreach (var (name, entry) in problems)
+        {
+            var value = entry!;
+            text.AppendLine($"  - {Code(name)} {(value.Text("state") == "invalid" ? "is invalid" : "could not be read")}: {Code(value.Text("reason"))}; " +
+                (value["value"] is null ? "no repository value applies" : $"the earlier value {Code(value.Text("value"))} still applies"));
+        }
     }
 
     // Only a published release that this controller's image identifies, and that a newer release supersedes, is offered.

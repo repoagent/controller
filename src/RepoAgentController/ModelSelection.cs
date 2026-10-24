@@ -19,6 +19,8 @@ sealed class ModelSelectionException(string message) : Exception(message);
 static class ModelSelection
 {
     public const string LabelPrefix = "repoagent:";
+    /// <summary>Repository settings holding the defaults for Discussions without a model label.</summary>
+    public const string ModelSetting = "REPOAGENT_MODEL", ReasoningSetting = "REPOAGENT_REASONING";
 
     /// <summary>Every label in the repoagent: namespace is a model label and must follow its grammar.</summary>
     public static bool IsLabel(string name) => name.StartsWith(LabelPrefix, StringComparison.OrdinalIgnoreCase);

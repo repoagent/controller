@@ -42,13 +42,29 @@ sealed record SettingValue(string State, string? Value, string? Reason = null)
 }
 
 /// <summary>Reads validated controller settings from direct repository Actions variables with bounded refresh.</summary>
-/// <remarks>Without a GitHub adapter the runtime has no explicit Variables: read permission; every setting stays disabled.</remarks>
-sealed class RepositorySettings(GitHub? github, TimeProvider clock)
+/// <remarks>Without a GitHub adapter the runtime has no explicit Variables: read permission; every setting stays disabled.
+/// Each refresh records the observed settings beside the controller state (<see cref="PathFor"/>) for status, and a later
+/// lifetime starts from the effective values recorded there, so a failed or invalid read never discards a known value.</remarks>
+sealed class RepositorySettings
 {
     /// <summary>Changes apply within one interval; each refresh is one GET per catalogue entry.</summary>
     public static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(1);
     public static IReadOnlyList<RepositorySetting> Catalogue { get; } = Load();
-    IReadOnlyDictionary<string, SettingValue> values = Catalogue.ToDictionary(s => s.Name, _ => new SettingValue(github is null ? "disabled" : "pending", null));
+    readonly GitHub? github;
+    readonly TimeProvider clock;
+    readonly string? path;
+    IReadOnlyDictionary<string, SettingValue> values;
+
+    /// <summary>The observed settings of the controller whose state file is <paramref name="statePath"/>.</summary>
+    public static string PathFor(string statePath) => statePath + ".settings.json";
+
+    public RepositorySettings(GitHub? github, TimeProvider clock, string? statePath = null)
+    {
+        (this.github, this.clock, path) = (github, clock, statePath is null ? null : PathFor(statePath));
+        var recorded = github is null ? null : Recorded(path);
+        values = Catalogue.ToDictionary(s => s.Name, s => recorded?.GetValueOrDefault(s.Name) is { } known
+            ? new SettingValue("pending", known.Value) { Since = known.Since } : new SettingValue(github is null ? "disabled" : "pending", null));
+    }
 
     public SettingValue this[string name] => Volatile.Read(ref values)[name];
 
@@ -60,6 +76,7 @@ sealed class RepositorySettings(GitHub? github, TimeProvider clock)
         if (github is null)
         {
             Log.Write("repository-settings", "state=disabled reason=\"start with --repository-settings and Variables: read to use REPOAGENT_ variables\"");
+            Record(values);
             return;
         }
         var previous = Volatile.Read(ref values);
@@ -85,7 +102,55 @@ sealed class RepositorySettings(GitHub? github, TimeProvider clock)
             if (observed != previous[setting.Name]) { changed = true; Log.Write("repository-setting", Describe(setting.Name, observed)); }
         }
         Volatile.Write(ref values, next);
+        if (changed || path is not null && !File.Exists(path)) Record(next);
         if (changed) Changed?.Invoke();
+    }
+
+    // Diagnostic and best effort, like status: a failed write keeps the controller running on the values in memory.
+    void Record(IReadOnlyDictionary<string, SettingValue> current)
+    {
+        if (path is null) return;
+        var settings = new JsonObject();
+        foreach (var (name, value) in current)
+        {
+            var item = Json.Object(("state", value.State));
+            if (value.Value is not null) { item["value"] = value.Value; item["since"] = value.Since.ToString("O", CultureInfo.InvariantCulture); }
+            if (value.Reason is not null) item["reason"] = value.Reason;
+            settings[name] = item;
+        }
+        var temporary = path + ".tmp";
+        try
+        {
+            var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write };
+            if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            using (var file = new FileStream(temporary, options))
+                file.Write(System.Text.Encoding.UTF8.GetBytes(Json.Object(("version", 1), ("settings", settings)).ToJsonString()));
+            File.Move(temporary, path, true);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            Log.Write("repository-settings-error", $"the observed settings could not be recorded: {error.Message}");
+        }
+    }
+
+    /// <summary>The settings a controller last recorded at <paramref name="file"/>, or null when there are none.</summary>
+    public static JsonObject? Read(string file)
+    {
+        try { return File.Exists(file) && JsonNode.Parse(File.ReadAllText(file))?["settings"] is JsonObject settings ? settings.Copy().AsObject() : null; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) { return null; }
+    }
+
+    // Effective values a previous lifetime recorded, for catalogue entries whose recorded value is still valid.
+    static Dictionary<string, (string Value, DateTimeOffset Since)>? Recorded(string? file)
+    {
+        if (file is null || Read(file) is not { } settings) return null;
+        var known = new Dictionary<string, (string, DateTimeOffset)>();
+        foreach (var setting in Catalogue)
+            if (settings[setting.Name] is JsonObject item && item["value"] is JsonValue value && value.TryGetValue<string>(out var text) &&
+                setting.Normalize(text, out _) == text && item["since"] is JsonValue since && since.TryGetValue<string>(out var at) &&
+                DateTimeOffset.TryParse(at, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var observed))
+                known[setting.Name] = (text, observed);
+        return known;
     }
 
     public async Task RefreshUntilCancelled(CancellationToken ct)

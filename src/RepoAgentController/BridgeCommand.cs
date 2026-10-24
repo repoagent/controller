@@ -160,7 +160,7 @@ public static class BridgeCommand
                         return await DiscussionWebhooks.DeactivateSaved(github, statePath) ? 0 : 1;
                     if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentialDirectory);
                     var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentialDirectory);
-                    var settings = new RepositorySettings(result.GetValue(repositorySettings) ? github : null, clock ?? TimeProvider.System);
+                    var settings = new RepositorySettings(result.GetValue(repositorySettings) ? github : null, clock ?? TimeProvider.System, statePath);
                     await settings.Refresh(startToken);
                     if (result.GetValue(checkAuth)) return 0;
                     agentCredentials?.Install(); // Before any owned native process starts.

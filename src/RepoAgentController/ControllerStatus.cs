@@ -154,6 +154,8 @@ sealed class ControllerStatus : IDisposable
             ["controller"] = recorded?["controller"]?.Copy() ?? Json.Object(("state", "unknown")),
             ["authentication"] = recorded?["authentication"]?.Copy() ?? Json.Object(("state", "unknown")),
             ["codexAuthentication"] = recorded?["codexAuthentication"]?.Copy() ?? Json.Object(("state", "unknown")),
+            // Each repository setting's latest observation: state, effective value and since when, and why it is unusable.
+            ["settings"] = RepositorySettings.Read(RepositorySettings.PathFor(statePath)),
             ["work"] = Json.Object(("sessions", started), ("pending", pending), ("retrying", retrying), ("waiting", waiting), ("running", journal is null ? null : running),
                 ("admissionBlocked", journal?["blocked"]?.Copy())),
             ["sessions"] = sessions,

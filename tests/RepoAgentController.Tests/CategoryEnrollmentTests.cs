@@ -82,6 +82,29 @@ public sealed class CategoryEnrollmentTests
     }
 
     [Fact]
+    public async Task A_failed_settings_read_after_a_restart_keeps_the_selection_and_its_recorded_start()
+    {
+        using var world = new World();
+        world.Variables[Setting] = "Agents";
+        Assert.Equal(0, await world.RunOnce());
+
+        // The next lifetime cannot read the variable; a Discussion created in the category meanwhile still enrolls.
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        world.Statuses[Setting] = 503;
+        world.Discussion(1, "Agents");
+        Assert.Equal(0, await world.RunOnce());
+        Assert.Contains(world.Log(), line => line.EndsWith($" repository-setting name={Setting} state=read-failed value=Agents reason=\"HTTP 503\""));
+        Assert.Equal(["D1"], world.Delivered());
+
+        // A Discussion created during the outage is not preexisting once the read recovers: the first start still applies.
+        world.Discussion(2, "Agents");
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        world.Statuses.Clear();
+        Assert.Equal(0, await world.RunOnce());
+        Assert.Equal(["D1", "D2"], world.Delivered());
+    }
+
+    [Fact]
     public async Task A_running_controller_selects_from_its_settings_refresh_without_waiting_for_the_next_observation()
     {
         using var world = new World();
@@ -138,6 +161,8 @@ public sealed class CategoryEnrollmentTests
         readonly JsonObject comments = [];
         public string Directory { get; } = Path.Combine(Path.GetTempPath(), "category-enrollment-" + Guid.NewGuid().ToString("N"));
         public Dictionary<string, string> Variables { get; } = [];
+        /// <summary>HTTP failure statuses for variable reads, by name.</summary>
+        public Dictionary<string, int> Statuses { get; } = [];
         public Clock Clock { get; } = new();
         public RepositorySettingsTests.Provider Provider { get; } = new();
 
@@ -195,6 +220,7 @@ public sealed class CategoryEnrollmentTests
         {
             var current = File.Exists(model) ? JsonNode.Parse(File.ReadAllText(model))!.AsObject() : new JsonObject { ["eyes"] = new JsonArray() };
             current["variables"] = new JsonObject(Variables.Select(pair => new KeyValuePair<string, JsonNode?>(pair.Key, pair.Value)));
+            current["statuses"] = new JsonObject(Statuses.Select(pair => new KeyValuePair<string, JsonNode?>(pair.Key, pair.Value)));
             current["discussions"] = discussions.DeepClone();
             current["comments"] = comments.DeepClone();
             File.WriteAllText(model + ".tmp", current.ToJsonString());
@@ -326,6 +352,7 @@ public sealed class CategoryEnrollmentTests
              prefix='repos/owner/repository/actions/variables/'
              if method=='GET' and endpoint.startswith(prefix):
               name=endpoint[len(prefix):]
+              if name in world.get('statuses',{}):reply({'message':'Fixture failure','status':str(world['statuses'][name])},world['statuses'][name])
               if name in world['variables']:reply({'name':name,'value':world['variables'][name],'created_at':'2026-10-23T00:00:00Z','updated_at':'2026-10-23T00:00:00Z'})
               reply({'message':'Not Found','status':'404'},404)
              if endpoint!='graphql':sys.stderr.write('Unexpected GitHub command\n');sys.exit(2)
