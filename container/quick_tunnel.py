@@ -190,11 +190,12 @@ def run(bridge, port, environment=None):
                 recovery_failed(attempt, 'restarted bridge exited with status ' + str(agent.returncode)
                                 + ' before reporting ready; see its preceding error')
             else:
-                if serving_since is None and ready.is_set():
-                    serving_since = time.monotonic()
-                    if attempt:
-                        log('tunnel-recovered', 'attempts=' + str(attempt) + ' public-url=' + origin + ' receiver=ready')
+                # Readiness counts only while the tunnel still runs; a replacement lost first is a failed attempt.
                 if tunnel.poll() is None:
+                    if serving_since is None and ready.is_set():
+                        serving_since = time.monotonic()
+                        if attempt:
+                            log('tunnel-recovered', 'attempts=' + str(attempt) + ' public-url=' + origin + ' receiver=ready')
                     continue
                 if attempt and serving_since is None:
                     recovery_failed(attempt, 'replacement cloudflared exited with status ' + str(tunnel.returncode)
