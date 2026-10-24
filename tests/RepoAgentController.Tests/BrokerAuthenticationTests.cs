@@ -517,7 +517,7 @@ public sealed class BrokerAuthenticationTests
         fixture.RepositorySettings = false;
         Assert.Equal(1, await fixture.Start());
         Assert.Single(fixture.Transport.Requests);
-        Assert.Contains("repository-settings enrollment requires --repository-settings", fixture.RetainedLog);
+        Assert.Contains("repository-settings profile requires --repository-settings", fixture.RetainedLog);
     }
 
     [Theory]
@@ -530,7 +530,7 @@ public sealed class BrokerAuthenticationTests
         using var fixture = new Fixture(webhooks, clone) { RepositorySettings = true };
         Assert.Equal(1, await fixture.Start());
         Assert.Empty(fixture.Transport.Requests);
-        Assert.Contains("--repository-settings requires a repository-settings enrollment", fixture.RetainedLog);
+        Assert.Contains("--repository-settings requires a controller enrollment with a repository-settings profile", fixture.RetainedLog);
     }
 
     [Theory]

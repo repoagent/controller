@@ -359,7 +359,7 @@ class ContainerConfigurationTests(unittest.TestCase):
             args.repository_settings = False
             runtime.configure(args)
             self.assertNotIn('repositorySettings', json.loads(runtime.CONFIG.read_text()))
-            # A broker instance selects the explicit repository-settings enrollment family once.
+            # A broker instance selects the explicit repository-settings profile once.
             broker = argparse.Namespace(**dict(vars(args), key_path=None, broker_url='https://broker.example',
                 enrollment_file='/data/enrollment/enrollment.json', repository_settings=True))
             runtime.CONFIG.unlink()

@@ -44,10 +44,10 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         {
             var root = enrollment.RootElement;
             version = checked((int)Id(root, "protocolVersion"));
-            // The repository-settings family is explicit on both sides: frozen files are never widened, and a
-            // settings file is never consumed as a frozen profile.
-            if (settings && version != 3) throw Invalid("--repository-settings requires a repository-settings enrollment (runtime v3); frozen profiles are not widened");
-            if (!settings && version == 3) throw Invalid("a repository-settings enrollment requires --repository-settings");
+            // A repository-settings profile is explicit on both sides: frozen profiles are never widened, and a
+            // repository-settings profile is never consumed as a frozen one.
+            if (settings && version != 3) throw Invalid("--repository-settings requires a controller enrollment with a repository-settings profile (runtime v3); frozen profiles are not widened");
+            if (!settings && version == 3) throw Invalid("a repository-settings profile requires --repository-settings");
             if (version != profile.Version) throw Invalid("explicit runtime selection differs from enrollment version");
             CheckFields(root, [.. Fields, "brokerOrigin", "githubHost", "deviceId", "deviceSecret"]);
             CheckBinding(root);

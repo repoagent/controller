@@ -62,7 +62,7 @@ class CloneAssembledTests(unittest.TestCase):
         self.run_clone_journey(container=True, expected_native=selected_native_sha256())
 
     def run_clone_journey(self, container=False, expected_native=None, profile='polling-clone'):
-        # The explicit repository-settings family is runtime v3; the frozen clone profile stays runtime v2.
+        # The explicit repository-settings profile is runtime v3; the frozen clone profile stays runtime v2.
         settings = profile.endswith('-settings')
         runtime = 3 if settings else 2
         journey = host.EnrollmentJourney(self, profile=profile)

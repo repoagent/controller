@@ -182,7 +182,7 @@ def configure(args, *, persist=True):
         if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment:
             raise ValueError('Fixed URL needs a public HTTPS origin without credentials, path, query or fragment.')
     repository_settings = getattr(args, 'repository_settings', False)
-    # Broker reads need the explicit repository-settings enrollment family (runtime v3), so the choice is
+    # Broker reads need an explicit repository-settings profile (runtime v3), so the choice is
     # fixed for the instance like clone. Direct-App instances only change their own token request.
     if config and broker and bool(config.get('repositorySettings', False)) != repository_settings:
         raise ValueError('Changing repository-settings authority requires a fresh instance and enrollment.')

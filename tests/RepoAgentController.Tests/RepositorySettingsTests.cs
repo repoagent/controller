@@ -147,7 +147,7 @@ public sealed class RepositorySettingsTests
 
         Assert.Empty(broker.Transport.Requests);
         Assert.Empty(fixture.GitHubRequests());
-        Assert.Contains(fixture.Log, line => line.Contains(" fatal ") && line.Contains("--repository-settings requires a repository-settings enrollment"));
+        Assert.Contains(fixture.Log, line => line.Contains(" fatal ") && line.Contains("--repository-settings requires a controller enrollment with a repository-settings profile"));
     }
 
     [Fact]

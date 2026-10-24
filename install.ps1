@@ -26,8 +26,8 @@ param(
     [string]$StateDirectory,
     [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone', 'polling-settings', 'webhook-settings', 'polling-clone-settings', 'webhook-clone-settings')][string]$EnrollmentProfile,
     [switch]$Clone,
-    # Read REPOAGENT_ repository settings: selects the explicit repository-settings enrollment
-    # profile (runtime v3, Actions variables read) for Broker, or the direct-App flag for OwnApp.
+    # Read REPOAGENT_ repository settings: selects the explicit repository-settings profile
+    # (runtime v3, Actions variables read) for Broker, or the direct-App flag for OwnApp.
     [switch]$RepositorySettings,
     [string]$ApprovalStatePath,
     [string]$EnrollmentFile,
