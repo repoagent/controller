@@ -28,7 +28,7 @@ Inspection needs repository Variables read access, and changes need write access
 
 ## Controller behavior
 
-Enable reading with `--repository-settings`. For the container runtime, run `repoagent configure ... --repository-settings`. The GitHub App installation must grant **Variables: read**. In direct-App mode, the flag makes the runtime token request `actions_variables: read` in addition to its existing permissions. It never requests write, even when the installation grants write. In broker mode, the flag selects a repository-settings enrollment (below). Without the flag, the controller requests no new permission and logs `repository-settings state=disabled`.
+Enable reading with `--repository-settings`. For the container runtime, run `repoagent configure ... --repository-settings`. The GitHub App installation must grant **Variables: read**. In direct-App mode, the flag makes the runtime token request `actions_variables: read` in addition to its existing permissions. It never requests write, even when the installation grants write. In broker mode, the flag requires a controller enrollment with a repository-settings profile (below). Without the flag, the controller requests no new permission and logs `repository-settings state=disabled`.
 
 ### Broker enrollments
 
@@ -47,7 +47,7 @@ An existing broker-enrolled controller is never upgraded in place. To move it to
 
 Rollback is the same procedure in reverse: revoke the settings grant, wait for settlement, and enroll a frozen profile in a new state directory (omit `-RepositorySettings`). A broker build without runtime v3 refuses settings profiles at setup (`400`) and answers the v3 runtime routes with `404`, so the controller fails closed rather than receiving a narrower or wider token.
 
-A settings token is read-only for variables, so the controller still cannot write or restore its own approval. It can read every direct repository Actions variable, however, including the nonsecret approval marker. Keep secrets out of repository variables.
+A repository-settings profile token is read-only for variables, so the controller still cannot write or restore its own approval. It can read every direct repository Actions variable, however, including the nonsecret approval marker. Keep secrets out of repository variables.
 
 The controller reads each supported variable at startup, including under `--check-auth`. It then reads them again every minute while running, with one `GET` per catalogue entry. A change in a setting's state, value or reason is logged once:
 
@@ -86,12 +86,12 @@ At the limit, newly observed input waits in the controller, as it does for a bus
 
 - A running controller reads a change within one minute. A Discussion created between the variable change and that read counts as preexisting, so wait for the `repository-setting name=REPOAGENT_ENROLLMENT_CATEGORIES state=configured` log line before relying on a new category.
 - The recorded time survives restarts, so Discussions created while the controller is stopped enroll when it starts again. A category first selected while the controller is stopped is recorded when the controller next starts.
-- Removing a category stops new enrollment from it and forgets its recorded time. Discussions already enrolled keep their sessions. Selecting the category again starts afresh, so Discussions created while it was unselected stay preexisting.
+- Removing a category stops new category enrollment from it and forgets its recorded time. Discussions already enrolled keep their sessions. Selecting the category again starts afresh, so Discussions created while it was unselected stay preexisting.
 - Clearing the variable, or running without `--repository-settings`, removes every selection. An invalid value or a failed read keeps the previous selection.
 
 **Never enrolled by category.** Discussions authored by the controller's own App, such as its status dashboard, never enroll by category. This prevents a controller-written Discussion from starting agent work.
 
-Category enrollment needs no permission beyond Discussions read and the Variables read that settings already require. Broker-enrolled controllers with a frozen profile cannot read settings, so they enroll only by mention or URL; a [repository-settings enrollment](#broker-enrollments) can use categories.
+Category enrollment needs no permission beyond Discussions read and the Variables read that settings already require. Broker-enrolled controllers with a frozen profile cannot read settings, so their Discussions enroll only by mention or URL; a controller with a [repository-settings profile](#broker-enrollments) can use categories.
 
 ## Model and reasoning selection
 
