@@ -6,7 +6,7 @@ This directory keeps four controller process suites until [#203](https://github.
 
 - `test_managed_git.py`: the managed Git credential helper, through the `CredentialDriver` fixture.
 - `test_checkout_refresh.py`: the managed checkout refresh, waiting input and redelivery, signed webhook deliveries and deleted Discussions.
-- `test_checkout_native.py`: the shipping source inventory and the agent runtime's view of the trusted checkout. The controller xUnit tests also call it with `--observe-production`.
+- `test_checkout_native.py`: the agent runtime's view of the trusted checkout. The controller xUnit tests also call it with `--observe-production`.
 - `test_controller_dashboard.py`: the dashboard heartbeat and stop reports.
 
 `scripts/delivery/verify.sh` runs them on Linux with the pinned .NET SDK and network access to download the pinned Codex:

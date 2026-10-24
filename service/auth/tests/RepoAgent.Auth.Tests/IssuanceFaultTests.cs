@@ -76,7 +76,7 @@ public sealed class IssuanceFaultTests
         Assert.Equal(reservedAt, retried.GetDateTimeOffset("ReservedAt"));
         Assert.Equal(reservedAt.AddSeconds(-60), retried.GetDateTimeOffset("JwtIssuedAt"));
         Assert.Equal(reservedAt.AddSeconds(120), retried.GetDateTimeOffset("JwtExpiresAt"));
-        Assert.Equal(existingQuota ? 3 : 2, f.Signing.Calls);
+        Assert.Equal(existingQuota ? 3 : 2, f.GitHub.Authorizations);
         Assert.Equal(existingQuota ? 3 : 2, f.GitHub.Mints);
         Assert.Equal(existingQuota ? 16 : 8, f.GitHub.Reads);
         Assert.Equal(1, f.GitHub.VerifierMints);
@@ -139,7 +139,7 @@ public sealed class IssuanceFaultTests
         Assert.Equal(503, (await f.IssueAsync(Token, transport)).Status);
         Assert.Equal(3, conflicts);
         Assert.Equal(8, batches);
-        Assert.Equal(1, f.Signing.Calls);
+        Assert.Equal(1, f.GitHub.Authorizations);
         Assert.Equal(1, f.GitHub.Mints);
         Assert.Equal(0, f.GitHub.Reads);
         var verifier = Assert.Single(await f.AttemptsAsync());
@@ -184,7 +184,7 @@ public sealed class IssuanceFaultTests
         Assert.True(changedAuthority);
         Assert.Equal(8, f.GitHub.Reads);
         Assert.Equal(2, f.GitHub.Mints);
-        Assert.Equal(2, f.Signing.Calls);
+        Assert.Equal(2, f.GitHub.Authorizations);
         Assert.Equal(2, (await f.AttemptsAsync()).Count);
         Assert.Equal(reuse ? 3 : 4, (await GlobalQuota(f)).GetInt64("Slots"));
         Assert.Equal(lastActivity, (await f.DeviceAsync()).GetDateTimeOffset("LastActivityAt"));
@@ -259,9 +259,9 @@ public sealed class IssuanceFaultTests
         await using var f = await IssuanceFixture.CreateAsync(runtimeLifetime: TimeSpan.FromMinutes(6));
         var signingEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var continueSigning = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        f.Signing.Before = async () =>
+        f.GitHub.BeforeAuthorize = async () =>
         {
-            if (f.Signing.Calls != 1) return;
+            if (f.GitHub.Authorizations != 1) return;
             signingEntered.SetResult();
             await continueSigning.Task.WaitAsync(TimeSpan.FromSeconds(5), Token);
         };
@@ -287,14 +287,13 @@ public sealed class IssuanceFaultTests
         Assert.Equal(200, (await f.IssueAsync(Token)).Status);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var revoked = false;
-        f.GitHub.Before = async request =>
+        f.GitHub.BeforeRead = async request =>
         {
-            if (f.GitHub.Reads == 12 && request.RequestUri!.AbsolutePath.Contains("/variables/", StringComparison.Ordinal))
+            if (f.GitHub.Reads == 12 && request.StartsWith("variable ", StringComparison.Ordinal))
             {
                 Assert.Equal(204, await new DeviceRevocation(f.Storage.Table, f.Options, f.Clock).RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
                 revoked = true;
             }
-            return null;
         };
         Assert.NotEqual(200, (await f.IssueAsync(Token)).Status);
         Assert.True(revoked);
@@ -324,7 +323,7 @@ public sealed class IssuanceFaultTests
             f.Clock.Advance(TimeSpan.FromMinutes(1));
         }
         Assert.Equal(7, f.GitHub.Mints);
-        Assert.Equal(7, f.Signing.Calls);
+        Assert.Equal(7, f.GitHub.Authorizations);
         Assert.Equal(7, (await f.AttemptsAsync()).Count);
         Assert.Equal(12, (await GlobalQuota(f)).GetInt64("Slots"));
     }
@@ -347,7 +346,7 @@ public sealed class IssuanceFaultTests
         Assert.Equal(4, quota.GetInt64("Slots"));
         Assert.Equal(3, quota.GetInt64("Admissions"));
         Assert.Equal(2, (await f.AttemptsAsync()).Count);
-        Assert.Equal(2, f.Signing.Calls);
+        Assert.Equal(2, f.GitHub.Authorizations);
         Assert.Equal(2, f.GitHub.Mints);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         Assert.Equal(429, (await f.Issuer(limits: limits).IssueAsync(f.Device.DeviceId, f.Device.Secret, Token)).Status);

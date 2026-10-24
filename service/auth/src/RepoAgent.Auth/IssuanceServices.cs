@@ -72,6 +72,7 @@ public static class IssuanceServices
         builder.Services.AddDataProtection().SetApplicationName(application)
             .PersistKeysToAzureBlobStorage(keyRing)
             .ProtectKeysWithAzureKeyVault(wrapping, new KeyResolver(credential, CryptoOptions()));
+        builder.Services.AddSingleton<ISecretProtection, DataProtectionSecretProtection>();
         builder.Services.AddSingleton(new CryptographyClient(signing, credential, CryptoOptions()));
         builder.Services.AddSingleton(new GitHubIssuance(new HttpClient(new SocketsHttpHandler
         {
@@ -80,7 +81,8 @@ public static class IssuanceServices
         }) { Timeout = Timeout.InfiniteTimeSpan }, TimeProvider.System));
         builder.Services.AddSingleton(IssuanceLimits.Read(builder.Configuration));
         builder.Services.AddSingleton<IssuanceStore>();
-        builder.Services.AddSingleton<AppJwtSigner>();
+        builder.Services.AddSingleton<IAppInstallations, GitHubAppInstallations>();
+        builder.Services.AddSingleton<IControllerApprovals, GitHubControllerApprovals>();
         builder.Services.AddSingleton<InstallationTokenIssuer>();
         if (options.BrokerOrigin is not null)
         {

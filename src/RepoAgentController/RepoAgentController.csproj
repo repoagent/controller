@@ -24,4 +24,7 @@
     <InternalsVisibleTo Include="RepoAgentController.Tests" />
     <InternalsVisibleTo Include="NativeSmoke" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RepoAgentController.Core/RepoAgentController.Core.csproj" />
+  </ItemGroup>
 </Project>

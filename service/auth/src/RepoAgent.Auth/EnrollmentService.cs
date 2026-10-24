@@ -3,15 +3,16 @@ using System.Text.Json;
 using Azure;
 using Azure.Data.Tables;
 using Azure.Identity;
-using Microsoft.AspNetCore.DataProtection;
 using static RepoAgent.Auth.IssuancePolicy;
+using static RepoAgent.Auth.TableValues;
 using static RepoAgent.Auth.EnrollmentStore;
 
 namespace RepoAgent.Auth;
 
-public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance github, AppJwtSigner signer, BrokerOptions options, TimeProvider clock)
+public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance github, IAppInstallations installations,
+    IControllerApprovals approvals, BrokerOptions options, TimeProvider clock)
 {
-    private readonly EnrollmentGitHub provider = new(github, clock);
+    private readonly ApprovalObserver observer = new(installations, approvals, clock);
 
     public Task<IssuanceResult> StartAsync(EnrollmentRequest request, string? secret, CancellationToken caller) =>
         StartAsync(() => EnrollmentInput.From(request), secret, caller);
@@ -41,8 +42,8 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         var reservation = await store.ReserveWorkAsync(s, existing is null, work);
         // Retry admission pays for new work, but an unsent mint keeps its original signed authority.
         if (existing is not null && Text(existing, "State") == "reserved") reservation = existing;
-        var jwt = await signer.SignAsync(reservation, work.Cancellation);
-        var installation = await provider.DiscoverAsync(s, jwt, work);
+        var app = await observer.AuthorizeAsync(AppAuthorizationWindow.Read(reservation), work.Cancellation);
+        var installation = await observer.DiscoverAsync(s.ApprovalRequest(), app, work);
         s.Pending["InstallationId"] = installation;
         if (existing is null || Text(existing, "State") == "reserved")
         {
@@ -55,8 +56,8 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
             IssuedToken? known = null;
             try
             {
-                known = await github.MintAsync(s.RepositoryId, Text(s.Pending, "RequestedRepository"), installation, s.Approval.VerifierProfile, jwt, work.Cancellation);
-                reservation["ProtectedToken"] = store.TokenProtector(s, reservation).Protect(known.Token);
+                known = await github.MintAsync(s.RepositoryId, Text(s.Pending, "RequestedRepository"), installation, s.Approval.VerifierProfile, app, work.Cancellation);
+                reservation["ProtectedToken"] = store.ProtectToken(s, reservation, known.Token);
                 reservation["ExpiresAt"] = known.ExpiresAt;
                 reservation["ScopeValid"] = known.ScopeValid;
                 reservation["State"] = "known";
@@ -72,7 +73,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         }
         var token = store.Recover(s, existing!);
         var started = clock.GetUtcNow();
-        var binding = await provider.BindAsync(s, token, work);
+        var binding = await observer.BindAsync(s.ApprovalRequest(), new GitHubToken(token), work);
         s.Pending["Repository"] = binding.Repository;
         if (s.Approval == ApprovalContract.Legacy)
         {
@@ -137,7 +138,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
                 envelopeFields["policyVersion"] = s.Approval.Policy;
             }
             var envelope = JsonSerializer.Serialize(envelopeFields);
-            s.Pending["ProtectedCompletion"] = store.CompletionProtector(s).Protect(envelope);
+            s.Pending["ProtectedCompletion"] = store.ProtectCompletion(s, envelope);
             s.Pending["CompletionId"] = completion!;
             s.Pending["State"] = "completed";
             s.Gate["OwnerDeviceId"] = s.DeviceId;
@@ -150,7 +151,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         await store.PublishLocatorAsync(s, work.Cancellation);
         store.RequireLive(s.Pending);
         work.Fresh(observation.Started);
-        var result = JsonSerializer.Deserialize<JsonElement>(store.CompletionProtector(s).Unprotect(Text(s.Pending, "ProtectedCompletion")));
+        var result = JsonSerializer.Deserialize<JsonElement>(store.UnprotectCompletion(s, Text(s.Pending, "ProtectedCompletion")));
         return new(200, new { completionId = completion, enrollment = result });
     });
 
@@ -190,13 +191,13 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         return new(200, new { state = "active" });
     });
 
-    private async Task<(bool Approved, DateTimeOffset Started)> ObserveAsync(EnrollmentSnapshot s, TableEntity attempt, IssuanceWork work)
+    private async Task<ApprovalObservation> ObserveAsync(EnrollmentSnapshot s, TableEntity attempt, IssuanceWork work)
     {
-        var token = store.Recover(s, attempt);
+        var token = new GitHubToken(store.Recover(s, attempt));
         var reservation = await store.ReserveWorkAsync(s, false, work);
-        var jwt = await signer.SignAsync(reservation, work.Cancellation);
-        (bool Approved, DateTimeOffset Started) observation;
-        try { observation = await provider.ObserveAsync(s, jwt, token, work); }
+        var app = await observer.AuthorizeAsync(AppAuthorizationWindow.Read(reservation), work.Cancellation);
+        ApprovalObservation observation;
+        try { observation = await observer.ObserveAsync(s.ApprovalRequest(), app, token, work); }
         catch (ApprovalChanged)
         {
             if (s.Pending.GetBoolean("PositiveApproval") == true) await CloseAsync(s, attempt, work.Cancellation);
@@ -278,5 +279,6 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
     }
     private static bool Expected(Exception ex) => ex is IssuanceDenied or ApprovalChanged or RequestFailedException or AuthenticationFailedException
         or HttpRequestException or IOException or InvalidDataException or InvalidCastException or FormatException or JsonException
-        or OverflowException or OperationCanceledException or CryptographicException or KeyNotFoundException or InvalidOperationException or ArgumentException;
+        or OverflowException or OperationCanceledException or CryptographicException or KeyNotFoundException or InvalidOperationException or ArgumentException
+        or SecretProtectionFailed or GitHubUnavailable;
 }

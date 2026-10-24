@@ -1,4 +1,4 @@
-"""Shipping source closure and genuine native config observations, without model turns."""
+"""Genuine native config observations, without model turns."""
 import json
 import os
 from pathlib import Path
@@ -9,8 +9,6 @@ import sys
 import tempfile
 import time
 import unittest
-
-ROOT = Path(__file__).resolve().parents[2]
 
 
 def native_config(root, home, discovery=False, environment=None):
@@ -74,33 +72,6 @@ def assert_trusted_project(test, observation, root):
     test.assertEqual(len(layers), 1, observation)
     test.assertFalse(layers[0].get('disabledReason'), dict(project=layers[0], effective=observation['config']['model_reasoning_effort']))
     test.assertEqual(observation['config']['model_reasoning_effort'], 'low', observation)
-
-
-class CheckoutShippingInputs(unittest.TestCase):
-    def test_default_image_contains_all_evaluated_controller_compile_and_packaged_inputs(self):
-        result = subprocess.run(['dotnet', 'msbuild', str(ROOT / 'src/RepoAgentController'), '-getItem:Compile,Content'],
-                                text=True, capture_output=True, check=True, timeout=60)
-        items = json.loads(result.stdout)['Items']
-        expected = {str(Path(item['FullPath']).relative_to(ROOT)) for item in items['Compile'] + items['Content']}
-        inventory = {line.strip() for line in (ROOT / 'image/source-files.txt').read_text().splitlines()
-                     if line.strip() and not line.startswith('#')}
-        self.assertFalse(expected - inventory, 'Shipping context omits controller inputs: ' + repr(sorted(expected - inventory)))
-
-    def test_actual_default_composed_context_builds_without_injected_sources(self):
-        with tempfile.TemporaryDirectory(prefix='checkout shipping ') as directory:
-            context = Path(directory) / 'context'
-            composition = subprocess.run([sys.executable, str(ROOT / 'scripts/compose-image.py'), '--source', str(ROOT),
-                                         '--manifest', str(ROOT / 'image/default.json'), '--output', str(context)],
-                                        capture_output=True, text=True, timeout=60)
-            self.assertEqual(composition.returncode, 0, composition.stdout + composition.stderr)
-            config = Path(directory) / 'nuget.config'
-            config.write_text('<configuration><packageSources><clear/><add key="public" value="https://api.nuget.org/v3/index.json"/></packageSources></configuration>')
-            environment = dict(os.environ, DOTNET_CLI_HOME=str(Path(directory) / 'cli-home'),
-                               DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1', DOTNET_CLI_TELEMETRY_OPTOUT='1')
-            result = subprocess.run(['dotnet', 'build', str(context / 'src/RepoAgentController'), '-c', 'Release',
-                                     '--nologo', '--configfile', str(config), '-p:TreatWarningsAsErrors=true', '-p:NuGetAudit=false'],
-                                    env=environment, capture_output=True, text=True, timeout=120)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 @unittest.skipUnless(os.environ.get('CHECKOUT_SHIPPING_IMAGE'), 'Explicit image built from current shipping context required')

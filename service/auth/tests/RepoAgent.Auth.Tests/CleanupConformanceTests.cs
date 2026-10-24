@@ -153,12 +153,12 @@ public sealed partial class CleanupProcessTests
             using var control = await f.Send(route, secret: secret);
             Assert.Equal(HttpStatusCode.OK, control.StatusCode);
             var mintsBeforeRestore = f.GitHub.Mints;
-            var signsBeforeRestore = f.Signing.Calls;
+            var signsBeforeRestore = f.GitHub.Authorizations;
             await f.RestartAsync(epoch: "restored-epoch");
             using var denied = await f.Send(route, secret: secret);
             Assert.Equal(HttpStatusCode.ServiceUnavailable, denied.StatusCode);
             Assert.Equal(mintsBeforeRestore, f.GitHub.Mints);
-            Assert.Equal(signsBeforeRestore, f.Signing.Calls);
+            Assert.Equal(signsBeforeRestore, f.GitHub.Authorizations);
             output.WriteLine("Matching current epoch issued HTTP200; restored epoch denied HTTP503 with zero additional signing/mint calls.");
         }
     }
@@ -176,7 +176,7 @@ public sealed partial class CleanupProcessTests
             ? throw new HttpRequestException("Unobserved revocation")
             : request.Method == HttpMethod.Post
                 ? sending ? throw new HttpRequestException("Unknown send outcome")
-                    : Task.FromResult<HttpResponseMessage?>(GitHubTransport.Json(new { token = "unsettled-test-token", expires_at = "invalid" }, HttpStatusCode.Created))
+                    : Task.FromResult<HttpResponseMessage?>(InMemoryGitHub.Json(new { token = "unsettled-test-token", expires_at = "invalid" }, HttpStatusCode.Created))
                 : normal(request);
         f.Clock.Advance(TimeSpan.FromDays(-2));
         using var start = await Start(f, Guid.NewGuid().ToString("N"));
@@ -441,7 +441,7 @@ public sealed partial class CleanupProcessTests
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
         var normal = f.GitHub.Before!;
         f.GitHub.Before = request => request.Method == HttpMethod.Post
-            ? Task.FromResult<HttpResponseMessage?>(GitHubTransport.Json(new
+            ? Task.FromResult<HttpResponseMessage?>(InMemoryGitHub.Json(new
             {
                 token = "invalid-scope-test-token", expires_at = f.Clock.GetUtcNow().AddHours(1), repository_selection = "all",
                 permissions = new { agent_variables = "read" },
