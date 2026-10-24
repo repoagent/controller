@@ -137,7 +137,7 @@ try {
     if ($ApprovalVariable) { $ApprovalVariable = $ApprovalVariable.ToUpperInvariant() }
     $script:Legacy = -not [string]::IsNullOrEmpty($GitHubEnvironment)
     if ($script:Legacy -and $ApprovalLocation) { Stop-Revoke 'A GitHub Environment cannot be combined with a repository variable location.' }
-    $script:Kind = if ($script:Legacy) { 'environment-variable' } elseif ($ApprovalLocation -eq 'AgentVariable') { 'repository-agent-variable' } else { 'repository-actions-variable' }
+    $script:Kind = if ($script:Legacy) { 'environment-variable' } else { (Get-ApprovalLocation -Location $ApprovalLocation).Kind }
     if ($ExpectedEnvironmentId -and -not $GitHubEnvironment -and -not $ApprovalStatePath) { Stop-Revoke 'Legacy Environment ID requires an explicit GitHub Environment or matching saved legacy state.' }
     if ($ApprovalStatePath) {
         if ([IO.FileInfo]::new([IO.Path]::GetFullPath($ApprovalStatePath)).Length -gt 65536) { Stop-Revoke 'Saved approval exceeds 64 KiB.' }
@@ -145,8 +145,8 @@ try {
         $kind = Get-ApprovalStateKind $saved
         if ($kind -ne 'environment-variable' -and ($GitHubEnvironment -or $ExpectedEnvironmentId)) { Stop-Revoke 'Repository-variable state cannot be combined with Environment arguments.' }
         # The saved location is authoritative; a conflicting explicit location never reinterprets it.
-        $savedLocation = @{ 'repository-actions-variable'='ActionsVariable'; 'repository-agent-variable'='AgentVariable' }[$kind]
-        if ($ApprovalLocation -and $ApprovalLocation -cne $savedLocation) { Stop-Revoke 'Arguments conflict with saved approval coordinates.' }
+        $savedLocation = if ($kind -ne 'environment-variable') { (Get-ApprovalLocation -Kind $kind).Location }
+        if ($ApprovalLocation -and (Get-ApprovalLocation -Location $ApprovalLocation).Location -cne $savedLocation) { Stop-Revoke 'Arguments conflict with saved approval coordinates.' }
         $script:Legacy = $kind -eq 'environment-variable'
         $script:Kind = $kind
         $pairs = @(@('Repository','repository'),@('ApprovalVariable','approvalVariable'),@('ExpectedRepositoryId','repositoryId'),@('ExpectedValueSha256','expectedValueSha256'))
@@ -157,7 +157,7 @@ try {
             Set-Variable -Name $pair[0] -Value ([string]$saved[$pair[1]])
         }
     }
-    if (-not $ApprovalVariable) { $ApprovalVariable = if ($script:Kind -eq 'repository-actions-variable') { 'REPOAGENT_APPROVAL' } else { 'APPROVED_CONTROLLER' } }
+    if (-not $ApprovalVariable) { $ApprovalVariable = if ($script:Legacy) { 'APPROVED_CONTROLLER' } else { (Get-ApprovalLocation -Kind $script:Kind).DefaultVariable } }
     if (-not $Repository -and -not $NonInteractive) { $Repository = Read-Host 'Repository (OWNER/REPO)' }
     if ($Repository -cnotmatch '\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z' `
         -or @($Repository.Split('/') | Where-Object { $_ -in @('.', '..') }).Count) {
@@ -196,12 +196,10 @@ try {
         $environmentEndpoint = $repoEndpoint + '/environments/' + [Uri]::EscapeDataString($GitHubEnvironment)
         $variableEndpoint = $environmentEndpoint + '/variables/' + [Uri]::EscapeDataString($ApprovalVariable)
         Write-Host 'Inspecting explicitly selected legacy Environment approval using host gh.'
-    } elseif ($script:Kind -eq 'repository-agent-variable') {
-        $variableEndpoint = $repoEndpoint + '/agents/variables/' + [Uri]::EscapeDataString($ApprovalVariable)
-        Write-Host 'Inspecting legacy repository Agent-variable approval using host gh.'
     } else {
-        $variableEndpoint = $repoEndpoint + '/actions/variables/' + [Uri]::EscapeDataString($ApprovalVariable)
-        Write-Host 'Inspecting repository Actions-variable approval using host gh.'
+        $location = Get-ApprovalLocation -Kind $script:Kind
+        $variableEndpoint = $repoEndpoint + '/' + $location.Path + '/' + [Uri]::EscapeDataString($ApprovalVariable)
+        Write-Host "Inspecting $(if ($location.Legacy) { 'legacy ' })repository $($location.Name)-variable approval using host gh."
     }
     Write-Host 'Approval means GitHub-authorized variable management; it does not attest a particular human administrator.'
     Write-Host 'A concurrent writer can lose a newer approval between GET and DELETE. Inspect and reapprove manually if needed.'
@@ -254,7 +252,7 @@ try {
             if ($marker.deviceId -cne $enrollment.deviceId -or $marker.repositoryId -ne $repositoryId -or $marker.variable -cne $ApprovalVariable -or $marker.appId -ne $enrollment.appId -or $marker.installationId -ne $enrollment.installationId) { throw 'Private enrollment differs from selected approval.' }
             if ($script:Legacy) {
                 if ($marker.version -ne 1 -or $marker.environmentId -ne $environmentId -or $marker.environment -cne $GitHubEnvironment -or $marker.policyVersion -cne 'repository-approval-v1') { throw 'Legacy marker differs.' }
-            } elseif ($marker.version -ne $(if ($actions) { 3 } else { 2 }) -or $marker.approvalKind -cne $script:Kind -or $marker.policyVersion -cne $policy -or (($clone -or $settings) -and $marker.profile -cne $enrollment.profile)) { throw 'Repository-variable marker differs.' }
+            } elseif ($marker.version -ne $location.SetupVersion -or $marker.approvalKind -cne $script:Kind -or $marker.policyVersion -cne $policy -or (($clone -or $settings) -and $marker.profile -cne $enrollment.profile)) { throw 'Repository-variable marker differs.' }
             $closed = Invoke-EnrollmentBroker $saved.brokerOrigin DELETE ('/v' + $enrollment.protocolVersion + '/devices/' + $enrollment.deviceId) $enrollment.deviceSecret
             if ($closed.Status -eq 204) { $script:BrokerClosure = 'confirmed' }
         } catch { $script:BrokerClosure = 'unconfirmed' }

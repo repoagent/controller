@@ -74,6 +74,22 @@ function Assert-Text($Value, [string]$Pattern) {
 function Assert-Id($Value) {
     if (($Value -isnot [long] -and $Value -isnot [int]) -or $Value -le 0) { throw 'Invalid numeric identity.' }
 }
+# Repository-variable approval locations: operator-facing -ApprovalLocation, durable approval kind,
+# setup (and marker) version, default variable name and direct GitHub API path. Fresh approval uses
+# Actions variables (ADR 0007); Agent variables are the explicitly selected legacy v2 location.
+$script:ApprovalLocations = @(
+    [pscustomobject]@{ Location='ActionsVariable'; Kind='repository-actions-variable'; SetupVersion=3; Name='Actions'; Legacy=$false; DefaultVariable='REPOAGENT_APPROVAL'; Path='actions/variables' }
+    [pscustomobject]@{ Location='AgentVariable'; Kind='repository-agent-variable'; SetupVersion=2; Name='Agent'; Legacy=$true; DefaultVariable='APPROVED_CONTROLLER'; Path='agents/variables' }
+)
+# Selects by -ApprovalLocation (case-insensitive, like its ValidateSet) or by saved approval kind
+# (exact); with neither, returns the fresh-approval default.
+function Get-ApprovalLocation([string]$Location, [string]$Kind) {
+    if ($Location -and $Kind) { throw 'Select an approval location by location or by kind.' }
+    if (-not $Location -and -not $Kind) { return $script:ApprovalLocations[0] }
+    $match = @($script:ApprovalLocations | Where-Object { ($Location -and $_.Location -ieq $Location) -or ($Kind -and $_.Kind -ceq $Kind) })
+    if ($match.Count -ne 1) { throw 'Unsupported repository-variable approval location.' }
+    return $match[0]
+}
 function Get-ApprovalStateKind($State) {
     Assert-Id $State.version
     if ($State.version -eq 1) {
