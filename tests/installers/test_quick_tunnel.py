@@ -6,7 +6,8 @@ tunnel. The actual controller registers its saved hook against the local TLS Git
 fixture, never a real repository. Native Codex is a minimal app-server stand-in that
 records requested methods, so recovery cannot silently start or replay native work.
 """
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
+import datetime
 import hashlib
 import hmac
 import http.client
@@ -14,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import shutil
 import signal
 import socket
 import subprocess
@@ -174,8 +176,12 @@ class QuickTunnelRecoveryTests(unittest.TestCase):
                 state, port = directory / 'state/bridge.json', free_port()
                 state.parent.mkdir()
                 state.write_text(json.dumps(RETAINED_STATE))
+                # The bridge's runtime executable, so a test can make the bridge impossible to start.
+                runtime = directory / 'runtime/dotnet'
+                runtime.parent.mkdir()
+                runtime.symlink_to(shutil.which('dotnet'))
                 # Mirrors runtime.bridge_args for broker quick-tunnel mode; the supervisor adds --webhook-url.
-                bridge = ['dotnet', str(CONTROLLER), '--repo', 'owner/project', '--app-id', '123',
+                bridge = [str(runtime), str(CONTROLLER), '--repo', 'owner/project', '--app-id', '123',
                           '--workspace', str(workspace), '--state', str(state), '--broker-url', 'https://broker.fixture',
                           '--enrollment-file', str(enrollment), '--listen-port', str(port), '--reconcile-interval', '3600']
                 supervisor = subprocess.Popen([sys.executable, '-c', LAUNCH_SUPERVISOR, str(ROOT / 'container'),
@@ -239,6 +245,21 @@ class QuickTunnelRecoveryTests(unittest.TestCase):
                     staged.write_text(json.dumps(list(behaviors)))
                     staged.replace(control / 'plan.json')
 
+                @contextmanager
+                def credential_held():
+                    """Hold bridges at their broker credential request, so a restarted bridge cannot report ready."""
+                    held, release, lease = threading.Event(), threading.Event(), provider.lease
+                    def held_lease():
+                        held.set()
+                        release.wait(30)
+                        return lease()
+                    provider.lease = held_lease
+                    try:
+                        yield held
+                    finally:
+                        provider.lease = lease
+                        release.set()
+
                 def receiver_listening():
                     try:
                         with socket.create_connection(('127.0.0.1', port), timeout=2):
@@ -249,7 +270,8 @@ class QuickTunnelRecoveryTests(unittest.TestCase):
                 yield SimpleNamespace(directory=directory, provider=provider, supervisor=supervisor, wait=wait, launches=launches, port=port,
                                       hook_writes=hook_writes, deliver_ping=deliver_ping, output=output, stop=stop,
                                       hook=Path(str(state) + '.webhook/hook.json'), state=state, replan=replan,
-                                      receiver_listening=receiver_listening, native_methods=native_methods)
+                                      receiver_listening=receiver_listening, native_methods=native_methods, bridge_runtime=runtime,
+                                      credential_held=credential_held)
             finally:
                 if supervisor is not None and supervisor.poll() is None:
                     supervisor.send_signal(signal.SIGTERM)
@@ -322,6 +344,20 @@ class QuickTunnelRecoveryTests(unittest.TestCase):
             self.assertNotIn(' ready repository=', log)
             self.assertEqual(q.hook_writes(), [])
 
+    def test_cloudflared_that_cannot_start_reports_its_os_error_without_blaming_the_network(self):
+        with tempfile.TemporaryDirectory(prefix='quick-tunnel-missing-') as temporary:
+            tools = Path(temporary) / 'tools'
+            tools.mkdir()  # No cloudflared executable on PATH.
+            result = subprocess.run([sys.executable, '-c', LAUNCH_SUPERVISOR, str(ROOT / 'container'),
+                                     json.dumps([str(Path(temporary) / 'never-started-bridge')]), str(free_port()), '{}'],
+                                    env=dict(os.environ, PATH=str(tools)), capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            error = next((line for line in result.stdout.splitlines() if ' tunnel-error ' in line), None)
+            self.assertIsNotNone(error, result.stdout + result.stderr)
+            self.assertIn("cloudflared could not start: [Errno 2] No such file or directory: 'cloudflared'", error)
+            self.assertNotIn('network', error)
+            self.assertNotIn('Cloudflare availability', error)
+
     def test_prolonged_tunnel_failure_retries_with_capped_backoff_without_claiming_readiness(self):
         timing = dict(RETRY_FIRST_SECONDS=0.4, RETRY_MAX_SECONDS=1.6)
         with self.instance(plan=('connect', 'fail'), timing=timing) as q:
@@ -363,8 +399,106 @@ class QuickTunnelRecoveryTests(unittest.TestCase):
             print('QUICK_TUNNEL_PROLONGED ' + json.dumps(dict(scheduled=scheduled, launches=len(q.launches()),
                   gaps=[round(b['started'] - a['started'], 2) for a, b in zip(failed, failed[1:])])), flush=True)
 
+    def test_restarted_bridge_failure_is_a_failed_recovery_attempt_that_is_retried(self):
+        # A brief broker error just after a tunnel loss, or a bridge executable that cannot be run.
+        timing = dict(RETRY_FIRST_SECONDS=0.5, RETRY_MAX_SECONDS=4.0)
+        for phase in ('exits-before-ready', 'cannot-start'):
+            with self.subTest(phase=phase), self.instance(timing=timing) as q:
+                q.wait(' ready repository=')
+                saved = json.loads(q.hook.read_text())
+                os.kill(q.launches()[0]['pid'], signal.SIGKILL)
+                q.wait('tunnel-recovering attempt=1 ')
+                if phase == 'exits-before-ready':
+                    q.provider.lease_status = 503
+                else:
+                    unavailable = q.bridge_runtime.rename(q.bridge_runtime.with_name('dotnet-unavailable'))
+                failed = q.wait('tunnel-recovery-failed attempt=1 ')
+                failed_at = datetime.datetime.fromisoformat(failed.split(' ', 1)[0]).timestamp()
+                if phase == 'exits-before-ready':
+                    q.provider.lease_status = 200
+                    self.assertIn('reason=restarted bridge exited with status ', failed)
+                    self.assertIn('before reporting ready', failed)
+                else:
+                    unavailable.rename(q.bridge_runtime)
+                    self.assertIn('reason=restarted bridge could not start: ', failed)
+                    self.assertIn('No such file or directory', failed)
+                recovered = q.wait('tunnel-recovered')
+
+                replacement = 'https://fixture-tunnel-3.trycloudflare.com'
+                self.assertIn('attempts=2 public-url=' + replacement, recovered)
+                log = q.output()
+                scheduled = [(int(line.split('attempt=')[1].split()[0]), float(line.split('delay-seconds=')[1].split()[0]))
+                             for line in log.splitlines() if 'tunnel-recovering' in line]
+                self.assertEqual(scheduled, [(1, 0.5), (2, 1.0)], log)
+                # The failed attempt stops its replacement tunnel, then backs off before the next one.
+                failure = log.index('tunnel-recovery-failed attempt=1 ')
+                self.assertLess(log.index('tunnel-process-stopped process=cloudflared', failure),
+                                log.index('tunnel-recovering attempt=2 '), log)
+                launches = q.launches()
+                self.assertEqual(len(launches), 3, log)
+                self.assertTrue(all(launch['overlapping'] == [] for launch in launches), 'Tunnel owners overlapped')
+                self.assertGreaterEqual(launches[2]['started'] - failed_at, 1.0 * 0.9, 'Retry ignored its backoff')
+                # The failed attempt never claimed readiness or advertised its endpoint; the retry updates the same hook.
+                self.assertEqual(log.count(' ready repository='), 2, log)
+                self.assertNotIn('tunnel-error', log)
+                writes = q.hook_writes()
+                self.assertEqual([request for request, _ in writes],
+                                 [('POST', HOOKS), ('PATCH', HOOKS + '/456'), ('PATCH', HOOKS + '/456')])
+                self.assertEqual(writes[1][1], {'active': False})
+                self.assertEqual((writes[2][1]['active'], writes[2][1]['config']['url'], writes[2][1]['config']['secret']),
+                                 (True, replacement + '/github/webhook', saved['secret']))
+                self.assertEqual(q.deliver_ping(saved['secret']), 204)
+                self.assertEqual(q.stop(), 0)
+                time.sleep(0.5)
+                self.assertEqual(owned_processes(q.directory), [], 'Owned bridge, tunnel or native processes survived stop')
+                print('QUICK_TUNNEL_BRIDGE_FAILURE ' + json.dumps(dict(phase=phase, scheduled=scheduled,
+                      backoff=round(launches[2]['started'] - failed_at, 2))), flush=True)
+
+    def test_replacement_tunnel_lost_before_the_restarted_bridge_is_ready_is_a_failed_recovery_attempt(self):
+        timing = dict(RETRY_FIRST_SECONDS=0.5, RETRY_MAX_SECONDS=4.0)
+        with self.instance(timing=timing) as q:
+            q.wait(' ready repository=')
+            saved = json.loads(q.hook.read_text())
+            os.kill(q.launches()[0]['pid'], signal.SIGKILL)
+            q.wait('tunnel-recovering attempt=1 ')
+            with q.credential_held() as held:
+                self.assertTrue(held.wait(30), 'Restarted bridge never requested its credential\n' + q.output())
+                self.assertIn('tunnel-connected mode=quick-tunnel public-url=https://fixture-tunnel-2.', q.output())
+                os.kill(q.launches()[1]['pid'], signal.SIGKILL)
+                q.wait('tunnel-recovering attempt=2 ')
+            recovered = q.wait('tunnel-recovered')
+
+            log = q.output()
+            replacement = 'https://fixture-tunnel-3.trycloudflare.com'
+            self.assertIn('attempts=2 public-url=' + replacement, recovered)
+            # Reported as a failed recovery attempt, not as another loss of a serving tunnel.
+            self.assertEqual(log.count('tunnel-lost'), 1, log)
+            failed = next((line for line in log.splitlines() if 'tunnel-recovery-failed attempt=1 ' in line), None)
+            self.assertIsNotNone(failed, log)
+            self.assertIn('reason=replacement cloudflared exited with status -9 before the restarted bridge reported ready', failed)
+            # Both owned processes stop before the backoff, and the next tunnel overlaps nothing.
+            failure = log.index('tunnel-recovery-failed attempt=1 ')
+            retry = log.index('tunnel-recovering attempt=2 delay-seconds=1 ')
+            self.assertLess(failure, log.index('tunnel-process-stopped process=bridge', failure), log)
+            self.assertLess(log.index('tunnel-process-stopped process=cloudflared', failure), retry, log)
+            self.assertLess(log.index('tunnel-process-stopped process=bridge', failure), retry, log)
+            launches = q.launches()
+            self.assertEqual(len(launches), 3, log)
+            self.assertTrue(all(launch['overlapping'] == [] for launch in launches), 'Tunnel owners overlapped')
+            # The failed attempt never claimed readiness or advertised the lost hostname.
+            self.assertEqual(log.count(' ready repository='), 2, log)
+            self.assertNotIn('tunnel-error', log)
+            writes = q.hook_writes()
+            self.assertEqual([request for request, _ in writes],
+                             [('POST', HOOKS), ('PATCH', HOOKS + '/456'), ('PATCH', HOOKS + '/456')])
+            self.assertEqual(writes[1][1], {'active': False})
+            self.assertEqual((writes[2][1]['active'], writes[2][1]['config']['url'], writes[2][1]['config']['secret']),
+                             (True, replacement + '/github/webhook', saved['secret']))
+            self.assertEqual(q.deliver_ping(saved['secret']), 204)
+            self.assertEqual(q.stop(), 0)
+
     def test_flapping_tunnel_keeps_backing_off_until_a_replacement_has_served(self):
-        timing = dict(RETRY_FIRST_SECONDS=0.5, RETRY_MAX_SECONDS=3.0)
+        timing = dict(RETRY_FIRST_SECONDS=0.5, RETRY_MAX_SECONDS=3.0, BACKOFF_RESET_SECONDS=3.0)
         with self.instance(timing=timing) as q:
             q.wait(' ready repository=')
             delays = []
@@ -381,13 +515,16 @@ class QuickTunnelRecoveryTests(unittest.TestCase):
     def test_intentional_stop_never_respawns_and_leaves_the_saved_hook_inactive(self):
         phases = {'serving': (('connect',), dict()),
                   'recovery-backoff': (('connect',), dict(RETRY_FIRST_SECONDS=60.0, RETRY_MAX_SECONDS=60.0)),
-                  'replacement-connecting': (('connect', 'hang'), dict(RETRY_FIRST_SECONDS=0.2, CONNECT_SECONDS=60))}
+                  'replacement-connecting': (('connect', 'hang'), dict(RETRY_FIRST_SECONDS=0.2, CONNECT_SECONDS=60)),
+                  'restarted-bridge-starting': (('connect',), dict(RETRY_FIRST_SECONDS=0.5))}
         for phase, (plan, timing) in phases.items():
-            with self.subTest(phase=phase), self.instance(plan=plan, timing=timing) as q:
+            with self.subTest(phase=phase), self.instance(plan=plan, timing=timing) as q, ExitStack() as hold:
                 q.wait(' ready repository=')
                 if phase != 'serving':
                     os.kill(q.launches()[0]['pid'], signal.SIGKILL)
                     q.wait('tunnel-recovering attempt=1 ')
+                if phase == 'restarted-bridge-starting':
+                    self.assertTrue(hold.enter_context(q.credential_held()).wait(30), 'Restarted bridge did not start\n' + q.output())
                 if phase == 'replacement-connecting':
                     deadline = time.monotonic() + 10
                     while len(q.launches()) < 2:
