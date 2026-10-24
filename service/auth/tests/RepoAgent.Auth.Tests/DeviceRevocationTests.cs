@@ -225,6 +225,7 @@ public sealed class DeviceRevocationTests
     [InlineData("unknown-kind", 1, 503)]
     [InlineData("agent-with-environment", 2, 503)]
     [InlineData("kind-without-profile", 3, 503)]
+    [InlineData("kind-without-profile", 1, 401)]
     public async Task Approval_contract_selects_the_runtime_version_that_may_revoke(string contract, int runtimeVersion, int status)
     {
         Enroll(shape: enrollment =>
@@ -314,7 +315,7 @@ public sealed class DeviceRevocationTests
     }
 
     [Theory]
-    [InlineData("device")]
+    [InlineData("enrollment")]
     [InlineData("gate")]
     public async Task Conflict_rechecks_authority_and_rolls_back_every_revocation_write(string changedRecord)
     {
@@ -324,7 +325,7 @@ public sealed class DeviceRevocationTests
         {
             if (changed) return Task.CompletedTask;
             changed = true;
-            if (changedRecord == "device") state.Change(EnrollmentKey(), row => row["ExpiresAt"] = clock.GetUtcNow().AddHours(-1));
+            if (changedRecord == "enrollment") state.Change(EnrollmentKey(), row => row["ExpiresAt"] = clock.GetUtcNow().AddHours(-1));
             else state.Change(GateKey, row => row["OwnerDeviceId"] = "replacement");
             return Task.CompletedTask;
         };

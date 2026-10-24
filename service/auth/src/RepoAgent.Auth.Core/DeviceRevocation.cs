@@ -45,8 +45,8 @@ public sealed class DeviceRevocation(IBrokerState state, string epoch, TimeProvi
                 {
                     var approval = ApprovalContract.Stored(enrollment.ApprovalKind, enrollment.SetupVersion, enrollment.PolicyVersion,
                         enrollment.Environment is not null || enrollment.EnvironmentId is not null);
-                    var profile = enrollment.Profile is { Length: > 0 and <= 8192 } stored ? stored : throw new IssuanceDenied();
-                    if (approval.RuntimeVersion != runtimeVersion || !approval.Allows(profile)) return 401;
+                    // Another runtime version is denied before the profile is read, as before the move to the core.
+                    if (approval.RuntimeVersion != runtimeVersion || !approval.Allows(Profile(enrollment.Profile))) return 401;
                 }
                 else if (runtimeVersion != 1) return 401;
                 var sequence = gate.Sequence is >= 0 and var value ? value : throw new InvalidDataException("Missing or invalid gate sequence.");
@@ -102,6 +102,9 @@ public sealed class DeviceRevocation(IBrokerState state, string epoch, TimeProvi
 
     private static string Required(string? value) =>
         value is { Length: > 0 } text ? text : throw new InvalidDataException("Missing or invalid durable field.");
+
+    private static string Profile(string? value) =>
+        value is { Length: > 0 and <= 8192 } profile ? profile : throw new IssuanceDenied();
 
     private static DateTimeOffset Required(DateTimeOffset? value) =>
         value ?? throw new InvalidDataException("Missing or invalid durable date.");
