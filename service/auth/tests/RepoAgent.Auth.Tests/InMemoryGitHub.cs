@@ -7,7 +7,7 @@ namespace RepoAgent.Auth.Tests;
 // GitHub as the broker's approval and installation ports see it: the App installed on owner/project, and the
 // variables an operator wrote. State answers every read unless a test replaces an answer; nothing here decides.
 // Token mints and revocations still arrive over HTTP until the GitHub tokens slice moves them behind a port.
-internal sealed class InMemoryGitHub(TimeProvider? clock = null) : HttpMessageHandler, IAppInstallations, IControllerApprovals
+internal sealed class InMemoryGitHub(TimeProvider? clock = null) : HttpMessageHandler, IAppInstallations, IControllerApprovals, IGitHubTokens
 {
     public static readonly RepositoryIdentity Project = new(123456, "owner/project");
     // A variable value only the repository may know. No broker response may contain it.
@@ -53,6 +53,16 @@ internal sealed class InMemoryGitHub(TimeProvider? clock = null) : HttpMessageHa
 
     public int Mints, Revokes, VerifierMints;
     public TimeSpan RuntimeLifetime = TimeSpan.FromHours(1);
+    public List<TokenMint> MintRequests { get; } = [];
+    public List<GitHubToken> Revoked { get; } = [];
+    // Runs after a mint is counted and before it is answered, so a test can act concurrently or throw to lose GitHub's answer.
+    public Func<TokenMint, Task>? BeforeMint { get; set; }
+    // Replaces GitHub's answer to a mint, given the token GitHub mints by default.
+    public Func<TokenMint, MintedGitHubToken, GitHubRead<MintedGitHubToken>>? MintAnswer { get; set; }
+    // Runs after a revocation is counted and before it is answered, so a test can act or throw to lose GitHub's answer.
+    public Func<GitHubToken, Task>? BeforeRevoke { get; set; }
+    // False makes GitHub refuse every revocation.
+    public bool RevocationConfirmed { get; set; } = true;
     // Replaces GitHub's answer to a mint (POST) or revocation (DELETE); a null result keeps the default answer.
     public Func<HttpRequestMessage, Task<HttpResponseMessage?>>? Before = static _ => Task.FromResult<HttpResponseMessage?>(null);
 
@@ -109,6 +119,39 @@ internal sealed class InMemoryGitHub(TimeProvider? clock = null) : HttpMessageHa
             .Skip(((page ?? 1) - 1) * size).Take(size).Select(pair => new GitHubVariable(pair.Key, pair.Value))]));
     }
 
+    // GitHub mints a token for exactly the repository and authority asked for: for an hour, or RuntimeLifetime for
+    // a controller enrollment's token. GitHub answers with the repository's own identity.
+    public async Task<GitHubRead<MintedGitHubToken>> MintAsync(AppAuthorization app, long installationId, RepositoryIdentity repository,
+        RuntimeAuthority authority, CancellationToken ct)
+    {
+        var mint = new TokenMint(Interlocked.Increment(ref Mints), app, installationId, repository, authority);
+        if (mint.Verifier) Interlocked.Increment(ref VerifierMints);
+        lock (Requests)
+        {
+            Requests.Add($"mint {installationId} {repository.Id} " + string.Join(',', authority.Permissions.Select(p => p.Key + ":" + p.Value)));
+            MintRequests.Add(mint);
+        }
+        if (BeforeMint is not null) await BeforeMint(mint);
+        if (app is not GitHubAppAuthorization) return new GitHubRead<MintedGitHubToken>.Refused();
+        if (repository.Id != Project.Id) throw new InvalidOperationException("Unexpected requested repository scope.");
+        var token = new MintedGitHubToken(mint.Verifier ? "verifier-token" : "runtime-token-" + mint.Number,
+            (clock ?? TimeProvider.System).GetUtcNow().Add(mint.Verifier ? TimeSpan.FromHours(1) : RuntimeLifetime), true, [Project],
+            authority.Permissions.ToDictionary(p => p.Key, p => (string?)p.Value, StringComparer.Ordinal));
+        return MintAnswer is null ? GitHubRead.Found(token) : MintAnswer(mint, token);
+    }
+
+    public async Task<bool> RevokeAsync(GitHubToken token, CancellationToken ct)
+    {
+        Interlocked.Increment(ref Revokes);
+        lock (Requests)
+        {
+            Requests.Add("revoke");
+            Revoked.Add(token);
+        }
+        if (BeforeRevoke is not null) await BeforeRevoke(token);
+        return RevocationConfirmed;
+    }
+
     private Dictionary<string, string> Variables(ApprovalVariable variable) =>
         variable.Contract.IsActions ? Actions : variable.Contract.IsAgent ? Agent : EnvironmentVariables;
 
@@ -146,4 +189,15 @@ internal sealed class InMemoryGitHub(TimeProvider? clock = null) : HttpMessageHa
     }
 
     public static HttpResponseMessage Json(object value, HttpStatusCode status = HttpStatusCode.OK) => new(status) { Content = JsonContent.Create(value) };
+}
+
+// A mint the broker asked GitHub for; Number counts the test's mints from 1.
+internal sealed record TokenMint(int Number, AppAuthorization App, long InstallationId, RepositoryIdentity Repository, RuntimeAuthority Authority)
+{
+    private static readonly RuntimeAuthority[] Verifiers =
+        [.. new[] { "verification", "agent-variable-verification", "actions-variable-verification" }.Select(RuntimeAuthority.For)];
+
+    // The broker's verifier token carries one of the approval contracts' verifier authorities.
+    public bool Verifier => Verifiers.Any(verifier => verifier.Permissions.Count == Authority.Permissions.Count
+        && verifier.Permissions.All(p => Authority.Permissions.TryGetValue(p.Key, out var level) && level == p.Value));
 }
