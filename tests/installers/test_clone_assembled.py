@@ -131,10 +131,13 @@ class CloneAssembledTests(unittest.TestCase):
             journey.private()
             self.assertTrue(any((directory / 'keys').glob('*.xml')))
             self.assertTrue(journey.read('recovery.json')['acknowledged'])
-            # Completion used the remaining repository sign in its minute.
-            # Observe actual quota metadata and cross only that legitimate window.
+            # Completion used repository signs in its minute; the broker allows two per minute.
+            # The consumer below mints once (--check-auth). The Docker probe mints twice: --check-auth,
+            # then its running controller, because leases are memory-only. Observe actual quota metadata
+            # and cross only that legitimate window when fewer signs remain than the next step needs.
             snapshots = [event for event in events() if event.get('quotaObservation') and event['partition'] == 'repository:123']
-            if snapshots[-1]['counters']['Signs'] >= 2:
+            signs_per_minute, needed = 2, 2 if container else 1
+            if snapshots[-1]['counters']['Signs'] > signs_per_minute - needed:
                 cross_observed_window()
             if container:
                 self.assert_docker_runtime(journey, provider, public, expected_native)
