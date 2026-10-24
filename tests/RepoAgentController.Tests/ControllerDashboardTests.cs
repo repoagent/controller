@@ -110,7 +110,7 @@ public sealed class ControllerDashboardTests
         var run = controller.Run(shutdown.Token, "--dashboard-category", Category);
         try
         {
-            var idle = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("0 of 4 turns running") ? dashboard : null);
+            var idle = await Until(() => controller.Turns == 1 && controller.Dashboard() is { } dashboard && dashboard.Body.Contains("0 of 4 turns running") ? dashboard : null);
             Assert.Contains("### Active and queued sessions\nNone.", idle.Body);
 
             // The next turn stays active, so a later comment waits in the controller instead of steering it.
