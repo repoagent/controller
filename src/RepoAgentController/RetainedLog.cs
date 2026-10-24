@@ -31,9 +31,12 @@ sealed partial class RetainedLog : IDisposable
         Validate(fileBytes, files);
         this.directory = directory; this.fileBytes = fileBytes; this.files = files;
         GitHubAppCredentials.SecureDirectory(directory);
-        // A lowered retention setting also bounds files left by an earlier, larger setting.
+        // A lowered retention setting also bounds files left by an earlier, larger setting: surplus and oversized archives
+        // are deleted, and an oversized active file keeps its newest whole lines.
         foreach (var (index, path) in Rotated(directory))
-            if (index >= files) File.Delete(path);
+            if (index >= files || new FileInfo(path).Length > fileBytes) File.Delete(path);
+        var active = Path.Combine(directory, Active);
+        if (File.Exists(active) && new FileInfo(active).Length > fileBytes) KeepNewest(active, fileBytes);
         current = Open(FileMode.Append);
     }
 
@@ -93,6 +96,25 @@ sealed partial class RetainedLog : IDisposable
             if (File.Exists(source)) File.Move(source, Path.Combine(directory, Name(index + 1)), true);
         }
         current = Open(FileMode.Create);
+    }
+
+    // Moves the newest whole lines that fit in fileBytes to the start of the file through a bounded buffer, then truncates.
+    static void KeepNewest(string path, long fileBytes)
+    {
+        using var file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        // Kept text starts after the line break that ends the newest line not wholly within the last fileBytes.
+        file.Position = file.Length - fileBytes - 1;
+        while (file.ReadByte() is not (-1 or '\n')) { }
+        var buffer = new byte[64 * 1024];
+        long kept = 0;
+        for (int count; (count = file.Read(buffer)) > 0; kept += count)
+        {
+            var next = file.Position;
+            file.Position = kept;
+            file.Write(buffer, 0, count);
+            file.Position = next;
+        }
+        file.SetLength(kept);
     }
 
     FileStream Open(FileMode mode)
