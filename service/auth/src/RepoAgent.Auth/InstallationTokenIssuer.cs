@@ -37,7 +37,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
                 return await ReuseAsync(grant, published, work, caller);
             (grant, runtime) = await store.ReserveAsync(grant, "runtime", work);
             verifier = await store.VerifierAsync(grant, work.Cancellation) ?? throw new IssuanceDenied();
-            var verifierToken = new GitHubToken(store.Recover(grant, verifier));
+            var verifierToken = store.Recover(grant, verifier);
             var app = await observer.AuthorizeAsync(AppAuthorizationWindow.Read(runtime), work.Cancellation);
             work.Check();
             var admission = await ObserveAsync(grant, app, verifierToken, work);
@@ -56,7 +56,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
             work.Fresh(release);
             await store.ReleaseAsync(grant, runtime, verifier, work.Cancellation);
             released = true;
-            return Response(grant, known);
+            return Response(grant, new GitHubToken(known.Token, known.ExpiresAt));
         }
         catch (Exception ex) when (Expected(ex))
         {
@@ -76,23 +76,23 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, GitHubIssuance 
         var verifier = await store.VerifierAsync(grant, work.Cancellation) ?? throw new IssuanceDenied();
         var token = store.Recover(grant, attempt);
         var app = await observer.AuthorizeAsync(AppAuthorizationWindow.Read(reservation.Jwt), work.Cancellation);
-        var verifierToken = new GitHubToken(store.Recover(grant, verifier));
+        var verifierToken = store.Recover(grant, verifier);
         var admission = await ObserveAsync(grant, app, verifierToken, work);
         var release = await ObserveAsync(grant, app, verifierToken, work);
         work.Fresh(admission);
         work.Fresh(release);
         caller.ThrowIfCancellationRequested();
         await store.RepublishAsync(grant, attempt, verifier, reservation.Jwt.RowKey, work.Cancellation);
-        return Response(grant, new(token, Date(attempt, "ExpiresAt"), true));
+        return Response(grant, token);
     }
 
-    private static IssuanceResult Response(GrantSnapshot grant, IssuedToken token)
+    private static IssuanceResult Response(GrantSnapshot grant, GitHubToken token)
     {
         var response = new Dictionary<string, object>
         {
             ["protocolVersion"] = grant.Approval.RuntimeVersion, ["appId"] = AppId, ["appSlug"] = AppSlug,
             ["installationId"] = grant.InstallationId, ["repositoryId"] = Id(grant.RepositoryId), ["repository"] = grant.Repository,
-            ["permissions"] = Permissions(grant.Profile), ["token"] = token.Token, ["expiresAt"] = token.ExpiresAt
+            ["permissions"] = RuntimeAuthority.For(grant.Profile).Permissions, ["token"] = token.Value, ["expiresAt"] = token.ExpiresAt
         };
         if (grant.Approval.NamesProfile)
         {

@@ -73,7 +73,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         }
         var token = store.Recover(s, existing!);
         var started = clock.GetUtcNow();
-        var binding = await observer.BindAsync(s.ApprovalRequest(), new GitHubToken(token), work);
+        var binding = await observer.BindAsync(s.ApprovalRequest(), token, work);
         s.Pending["Repository"] = binding.Repository;
         if (s.Approval == ApprovalContract.Legacy)
         {
@@ -130,7 +130,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
                 ["protocolVersion"] = s.Approval.RuntimeVersion, ["brokerOrigin"] = options.BrokerOrigin!.GetLeftPart(UriPartial.Authority), ["githubHost"] = "github.com",
                 ["deviceId"] = s.DeviceId, ["deviceSecret"] = deviceSecret, ["appId"] = AppId, ["appSlug"] = AppSlug,
                 ["installationId"] = Number(s.Pending, "InstallationId"), ["repositoryId"] = Id(s.RepositoryId),
-                ["repository"] = Text(s.Pending, "Repository"), ["permissions"] = Permissions(Text(s.Pending, "Profile"))
+                ["repository"] = Text(s.Pending, "Repository"), ["permissions"] = RuntimeAuthority.For(Text(s.Pending, "Profile")).Permissions
             };
             if (s.Approval.NamesProfile)
             {
@@ -193,7 +193,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
 
     private async Task<ApprovalObservation> ObserveAsync(EnrollmentSnapshot s, TableEntity attempt, IssuanceWork work)
     {
-        var token = new GitHubToken(store.Recover(s, attempt));
+        var token = store.Recover(s, attempt);
         var reservation = await store.ReserveWorkAsync(s, false, work);
         var app = await observer.AuthorizeAsync(AppAuthorizationWindow.Read(reservation), work.Cancellation);
         ApprovalObservation observation;

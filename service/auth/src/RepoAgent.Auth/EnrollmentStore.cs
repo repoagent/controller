@@ -213,13 +213,13 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, IS
         s.Pending.Remove("Attempt");
         await CommitAsync(s, [Action(attempt)], ct);
     }
-    internal string Recover(EnrollmentSnapshot s, TableEntity attempt)
+    internal GitHubToken Recover(EnrollmentSnapshot s, TableEntity attempt)
     {
         PayloadClock.RequireAttempt(attempt);
         if (Text(attempt, "State") != "known" || attempt.GetBoolean("ScopeValid") != true
             || Number(attempt, "InstallationId") != Number(s.Pending, "InstallationId")
             || Date(attempt, "ExpiresAt") <= clock.GetUtcNow().AddMinutes(5)) throw new IssuanceDenied();
-        return secrets.Unprotect(TokenPurpose(s, attempt), Text(attempt, "ProtectedToken"));
+        return new(secrets.Unprotect(TokenPurpose(s, attempt), Text(attempt, "ProtectedToken")), Date(attempt, "ExpiresAt"));
     }
     internal string ProtectToken(EnrollmentSnapshot s, TableEntity attempt, string token) => secrets.Protect(TokenPurpose(s, attempt), token);
     internal string ProtectCompletion(EnrollmentSnapshot s, string completion) => secrets.Protect(CompletionPurpose(s), completion);

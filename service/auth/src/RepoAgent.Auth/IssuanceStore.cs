@@ -52,13 +52,13 @@ public sealed partial class IssuanceStore(TableClient table, BrokerOptions optio
         return attempt;
     }
 
-    public string Recover(GrantSnapshot grant, TableEntity attempt)
+    public GitHubToken Recover(GrantSnapshot grant, TableEntity attempt)
     {
         PayloadClock.RequireAttempt(attempt);
         BindAttempt(grant, attempt, Text(attempt, "Purpose"));
         var token = secrets.Unprotect(TokenPurpose(grant, attempt), Text(attempt, "ProtectedToken"));
         if (!IsBearer(token)) throw new IssuanceDenied();
-        return token;
+        return new(token, Date(attempt, "ExpiresAt"));
     }
 
     public async Task<(GrantSnapshot Grant, TableEntity Attempt)> ReserveAsync(GrantSnapshot grant, string purpose, IssuanceWork work)

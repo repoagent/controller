@@ -14,7 +14,7 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
     internal async Task<IssuedToken> MintAsync(string repositoryId, string repository, long installationId, string profile, AppAuthorization app, CancellationToken ct)
     {
         using var request = GitHubRest.Request(HttpMethod.Post, $"app/installations/{installationId}/access_tokens", GitHubAppAuthorization.Jwt(app));
-        request.Content = JsonContent.Create(new { repository_ids = new[] { Id(repositoryId) }, permissions = Permissions(profile) });
+        request.Content = JsonContent.Create(new { repository_ids = new[] { Id(repositoryId) }, permissions = RuntimeAuthority.For(profile).Permissions });
         using var response = await SendAsync(request, HttpStatusCode.Created, ct);
         var root = response.RootElement;
         var token = root.GetProperty("token").GetString();
@@ -27,7 +27,7 @@ public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
         {
             expiry = root.GetProperty("expires_at").GetDateTimeOffset();
             ValidateRepository(root.GetProperty("repositories"), repositoryId, repository);
-            var expected = Permissions(profile);
+            var expected = RuntimeAuthority.For(profile).Permissions;
             var actual = root.GetProperty("permissions");
             if (actual.ValueKind != JsonValueKind.Object) throw new IssuanceDenied();
             var actualMap = actual.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString());

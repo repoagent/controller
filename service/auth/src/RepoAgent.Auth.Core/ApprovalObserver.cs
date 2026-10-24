@@ -189,7 +189,7 @@ public sealed class ApprovalObserver(IAppInstallations installations, IControlle
         var installation = Value(read);
         if (installation.Id <= 0 || installation.AppId != AppId || installation.AppSlug != AppSlug || installation.Suspended)
             throw new IssuanceDenied();
-        foreach (var (permission, level) in Permissions(profile).Concat(Permissions(contract.VerifierProfile)))
+        foreach (var (permission, level) in RuntimeAuthority.For(profile).Permissions.Concat(RuntimeAuthority.For(contract.VerifierProfile).Permissions))
             if (!installation.Permissions.TryGetValue(permission, out var granted) || granted != level && !(granted == "write" && level == "read"))
                 throw new IssuanceDenied();
         return installation.Id;
@@ -210,5 +210,4 @@ public sealed class ApprovalObserver(IAppInstallations installations, IControlle
 
     // Only a well-formed 200 is evidence; any other answer denies without proving anything.
     private static T Value<T>(GitHubRead<T> read) => read is GitHubRead<T>.Found found ? found.Value : throw new IssuanceDenied();
-
 }
