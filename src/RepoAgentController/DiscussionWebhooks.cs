@@ -1,45 +1,48 @@
-using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
+using Microsoft.AspNetCore.Http;
 
 namespace RepoAgentController;
 
 sealed record WebhookConfiguration(Uri PublicUrl, int Port, TimeSpan ReconcileInterval)
 {
-    public Uri Endpoint => new(PublicUrl, "/github/webhook");
+    public Uri Endpoint => new(PublicUrl, ControllerHost.WebhookPath);
 }
 
-/// <summary>Authenticates HTTP deliveries and serializes observations with reconciliation.</summary>
+/// <summary>
+/// Authenticates HTTP deliveries and serializes observations with reconciliation. The controller host serves
+/// <see cref="Receive"/>; <see cref="Run"/> registers the repository webhook and deactivates it when the controller stops.
+/// </summary>
 sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, WebhookConfiguration configuration, CheckoutRefresh? refresh = null)
 {
     readonly Channel<int> work = Channel.CreateUnbounded<int>(new UnboundedChannelOptions { SingleReader = true });
     readonly HashSet<int> queued = [];
+    readonly Registration registration = new(github, statePath + ".webhook");
+    readonly SemaphoreSlim slots = new(16);
+    // Cancelled when the controller stops: deliveries still being read then end with 408.
+    readonly CancellationTokenSource stop = new();
     const int MaximumBody = 2 * 1024 * 1024;
 
     public static Task<bool> DeactivateSaved(GitHub github, string statePath) => new Registration(github, statePath + ".webhook").Deactivate();
 
+    /// <summary>Registers the webhook, then observes deliveries and reconciles until <paramref name="ct"/> stops the controller.</summary>
+    /// <remarks>The host must already serve <see cref="Receive"/>: GitHub pings a newly registered hook at once.</remarks>
     public async Task Run(CancellationToken ct)
     {
-        var registration = new Registration(github, statePath + ".webhook");
-        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        using var listener = new HttpListener();
-        listener.Prefixes.Add($"http://+:{configuration.Port}/");
-        listener.Start();
-        var receive = Receive(listener, registration.Secret, stop.Token);
+        using var stopping = ct.UnsafeRegister(_ => stop.Cancel(), null);
         Task worker = Task.CompletedTask, reconcile = Task.CompletedTask;
         try
         {
             await registration.Configure(configuration.Endpoint, refresh is not null, ct);
-            if (receive.IsCompleted) await receive;
             Log.Write("mode", $"webhook-fixed public-url={configuration.Endpoint} port={configuration.Port} reconcile-seconds={configuration.ReconcileInterval.TotalSeconds:F0}");
             Log.Write("ready", $"repository={github.Repository} actor={github.AgentLogin} mode=webhook-fixed");
             Schedule(0);
             worker = Observe(stop.Token);
             reconcile = Reconcile(stop.Token);
-            var completed = await Task.WhenAny(receive, worker, reconcile);
+            var completed = await Task.WhenAny(worker, reconcile);
             await completed;
         }
         finally
@@ -47,9 +50,8 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             await stop.CancelAsync();
             // The runtime token is cancelled: remote cleanup gets its own bounded budget.
             await registration.Deactivate();
-            listener.Close();
             work.Writer.TryComplete();
-            try { await Task.WhenAll(receive, worker, reconcile); }
+            try { await Task.WhenAll(worker, reconcile); }
             catch (Exception) when (stop.IsCancellationRequested) { }
         }
     }
@@ -84,52 +86,36 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
         while (await timer.WaitForNextTickAsync(ct)) Schedule(0);
     }
 
-    async Task Receive(HttpListener listener, string secret, CancellationToken ct)
+    /// <summary>Answers one delivery to POST /github/webhook with an empty response and its status code.</summary>
+    public async Task Receive(HttpContext context)
     {
-        using var slots = new SemaphoreSlim(16);
-        var requests = new List<Task>();
+        if (!slots.Wait(0)) { context.Response.StatusCode = 503; return; }
+        var status = 500;
         try
         {
-            while (!ct.IsCancellationRequested)
-            {
-                var context = await listener.GetContextAsync().WaitAsync(ct);
-                if (!slots.Wait(0)) { Respond(context, 503); continue; }
-                requests.RemoveAll(task => task.IsCompleted);
-                requests.Add(Handle(context));
-            }
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stop.Token, context.RequestAborted);
+            deadline.CancelAfter(TimeSpan.FromSeconds(5));
+            status = await Accept(context.Request, registration.Secret, deadline.Token);
         }
-        finally { await Task.WhenAll(requests); }
-
-        async Task Handle(HttpListenerContext context)
-        {
-            var status = 500;
-            try
-            {
-                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                deadline.CancelAfter(TimeSpan.FromSeconds(5));
-                status = await Accept(context.Request, secret, deadline.Token);
-            }
-            catch (OperationCanceledException) { status = 408; }
-            catch (JsonException) { status = 400; }
-            catch (Exception error) { Log.Write("webhook-error", error.Message); }
-            finally { Respond(context, status); slots.Release(); }
-        }
+        catch (OperationCanceledException) { status = 408; }
+        catch (JsonException) { status = 400; }
+        catch (Exception error) { Log.Write("webhook-error", error.Message); }
+        finally { slots.Release(); }
+        context.Response.StatusCode = status;
     }
 
-    async Task<int> Accept(HttpListenerRequest request, string secret, CancellationToken ct)
+    async Task<int> Accept(HttpRequest request, string secret, CancellationToken ct)
     {
-        if (request.Url?.AbsolutePath.TrimEnd('/') != "/github/webhook") return 404;
-        if (request.HttpMethod != "POST") return 405;
-        if (request.ContentLength64 > MaximumBody) return 413;
+        if (request.ContentLength > MaximumBody) return 413;
         using var body = new MemoryStream();
         var buffer = new byte[8192];
         int length;
-        while ((length = await request.InputStream.ReadAsync(buffer, ct)) != 0)
+        while ((length = await request.Body.ReadAsync(buffer, ct)) != 0)
         {
             if (body.Length + length > MaximumBody) return 413;
             body.Write(buffer, 0, length);
         }
-        var signature = request.Headers["X-Hub-Signature-256"] ?? "";
+        var signature = request.Headers["X-Hub-Signature-256"].ToString();
         byte[] supplied;
         try { supplied = signature.StartsWith("sha256=", StringComparison.Ordinal) ? Convert.FromHexString(signature[7..]) : []; }
         catch (FormatException) { supplied = []; }
@@ -145,8 +131,8 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
             Log.Write("webhook-rejected", "reason=repository");
             return 403;
         }
-        if (!Guid.TryParse(request.Headers["X-GitHub-Delivery"], out var delivery)) return 400;
-        var eventName = request.Headers["X-GitHub-Event"];
+        if (!Guid.TryParse(request.Headers["X-GitHub-Delivery"].ToString(), out var delivery)) return 400;
+        var eventName = request.Headers["X-GitHub-Event"].ToString();
         if (eventName == "ping") { Log.Write("webhook-ping", $"delivery={delivery}"); return 204; }
         if (eventName == "push")
         {
@@ -177,12 +163,6 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, string statePath, 
         if (!Schedule(number)) return 503;
         Log.Write("webhook-delivery", $"delivery={delivery} event={eventName} action={action} discussion={number} scheduled=True");
         return 202;
-    }
-
-    static void Respond(HttpListenerContext context, int status)
-    {
-        try { context.Response.StatusCode = status; context.Response.ContentLength64 = 0; context.Response.Close(); }
-        catch (Exception error) when (error is IOException or HttpListenerException or ObjectDisposedException) { }
     }
 
     sealed class Registration

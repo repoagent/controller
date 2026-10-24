@@ -190,8 +190,11 @@ public static class BridgeCommand
                         {
                             if (publicUrl is not null)
                             {
-                                await new DiscussionWebhooks(github, bridge, statePath,
-                                    new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), reconciliation).Run(runtimeToken);
+                                var webhooks = new DiscussionWebhooks(github, bridge, statePath,
+                                    new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), reconciliation);
+                                // Disposed after the webhook is deactivated: the host stops last.
+                                await using var host = await ControllerHost.Start(result.GetValue(listenPort), webhooks.Receive, runtimeToken);
+                                await webhooks.Run(runtimeToken);
                                 return 0;
                             }
                             Log.Write("mode", $"polling interval-seconds={result.GetValue(interval)}");
