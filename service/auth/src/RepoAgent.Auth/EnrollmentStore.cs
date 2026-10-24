@@ -1,13 +1,12 @@
 using System.Globalization;
 using Azure;
 using Azure.Data.Tables;
-using Microsoft.AspNetCore.DataProtection;
 using static RepoAgent.Auth.IssuancePolicy;
 
 namespace RepoAgent.Auth;
 
 // Concrete Table authority. Global reservations are conservative, never rolled back across partitions.
-public sealed class EnrollmentStore(TableClient table, BrokerOptions options, IDataProtectionProvider protection,
+public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ISecretProtection secrets,
     TimeProvider clock, IssuanceLimits limits, IssuanceStore reads)
 {
     private const string Global = "global:enrollment-v1";
@@ -219,11 +218,14 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ID
         if (Text(attempt, "State") != "known" || attempt.GetBoolean("ScopeValid") != true
             || Number(attempt, "InstallationId") != Number(s.Pending, "InstallationId")
             || Date(attempt, "ExpiresAt") <= clock.GetUtcNow().AddMinutes(5)) throw new IssuanceDenied();
-        return TokenProtector(s, attempt).Unprotect(Text(attempt, "ProtectedToken"));
+        return secrets.Unprotect(TokenPurpose(s, attempt), Text(attempt, "ProtectedToken"));
     }
-    internal IDataProtector TokenProtector(EnrollmentSnapshot s, TableEntity attempt) => s.Approval.TokenProtector(
-        protection, s.RepositoryId, options.DeploymentEpoch, Text(attempt, "OperationId"), "verification");
-    internal IDataProtector CompletionProtector(EnrollmentSnapshot s) => s.Approval.CompletionProtector(protection, s.RepositoryId, options.DeploymentEpoch, s.Id);
+    internal string ProtectToken(EnrollmentSnapshot s, TableEntity attempt, string token) => secrets.Protect(TokenPurpose(s, attempt), token);
+    internal string ProtectCompletion(EnrollmentSnapshot s, string completion) => secrets.Protect(CompletionPurpose(s), completion);
+    internal string UnprotectCompletion(EnrollmentSnapshot s, string protectedCompletion) => secrets.Unprotect(CompletionPurpose(s), protectedCompletion);
+    private SecretPurpose TokenPurpose(EnrollmentSnapshot s, TableEntity attempt) => s.Approval.TokenPurpose(
+        s.RepositoryId, options.DeploymentEpoch, Text(attempt, "OperationId"), "verification");
+    private SecretPurpose CompletionPurpose(EnrollmentSnapshot s) => s.Approval.CompletionPurpose(s.RepositoryId, options.DeploymentEpoch, s.Id);
 
     internal async Task CommitAsync(EnrollmentSnapshot s, IEnumerable<TableTransactionAction> extra, CancellationToken ct)
     {

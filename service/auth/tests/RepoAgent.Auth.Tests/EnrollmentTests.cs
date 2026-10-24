@@ -120,7 +120,7 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
         }).ConfigureServices(services =>
         {
             services.AddSingleton<TimeProvider>(Clock);
-            services.AddSingleton(Protection);
+            services.AddSingleton<ISecretProtection>(new DataProtectionSecretProtection(Protection));
             services.AddSingleton(limits);
             services.AddSingleton(new GitHubIssuance(new HttpClient(GitHub), Clock));
             services.AddSingleton(new AppJwtSigner(Signing, Clock));

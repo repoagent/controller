@@ -72,6 +72,7 @@ public static class IssuanceServices
         builder.Services.AddDataProtection().SetApplicationName(application)
             .PersistKeysToAzureBlobStorage(keyRing)
             .ProtectKeysWithAzureKeyVault(wrapping, new KeyResolver(credential, CryptoOptions()));
+        builder.Services.AddSingleton<ISecretProtection, DataProtectionSecretProtection>();
         builder.Services.AddSingleton(new CryptographyClient(signing, credential, CryptoOptions()));
         builder.Services.AddSingleton(new GitHubIssuance(new HttpClient(new SocketsHttpHandler
         {

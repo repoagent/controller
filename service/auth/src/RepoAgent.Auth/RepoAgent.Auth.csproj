@@ -17,5 +17,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../RepoAgent.Auth.Core/RepoAgent.Auth.Core.csproj" />
+    <InternalsVisibleTo Include="RepoAgent.Auth.Tests" />
   </ItemGroup>
 </Project>

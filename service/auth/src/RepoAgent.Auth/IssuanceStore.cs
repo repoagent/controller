@@ -1,14 +1,13 @@
 using System.Globalization;
 using Azure;
 using Azure.Data.Tables;
-using Microsoft.AspNetCore.DataProtection;
 using static RepoAgent.Auth.IssuancePolicy;
 
 namespace RepoAgent.Auth;
 
 // One Table-specific module owns the two-part conservative reservation and repository EGTs.
 // Capacity release is owned by BrokerCapacityReclamation after repository settlement.
-public sealed partial class IssuanceStore(TableClient table, BrokerOptions options, IDataProtectionProvider protection, TimeProvider clock, IssuanceLimits? configuredLimits = null)
+public sealed partial class IssuanceStore(TableClient table, BrokerOptions options, ISecretProtection secrets, TimeProvider clock, IssuanceLimits? configuredLimits = null)
 {
     private readonly RetainedState retained = new(table, options);
     private readonly IssuanceLimits limits = configuredLimits ?? new();
@@ -56,7 +55,7 @@ public sealed partial class IssuanceStore(TableClient table, BrokerOptions optio
     {
         PayloadClock.RequireAttempt(attempt);
         BindAttempt(grant, attempt, Text(attempt, "Purpose"));
-        var token = Protector(grant, attempt).Unprotect(Text(attempt, "ProtectedToken"));
+        var token = secrets.Unprotect(TokenPurpose(grant, attempt), Text(attempt, "ProtectedToken"));
         if (!IsBearer(token)) throw new IssuanceDenied();
         return token;
     }
@@ -195,7 +194,7 @@ public sealed partial class IssuanceStore(TableClient table, BrokerOptions optio
         var grant = await SnapshotAsync(original.Partition, original.DeviceId, ct);
         BindAttempt(grant, attempt, Text(attempt, "Purpose"));
         if (Text(attempt, "State") != "sending") throw new IssuanceDenied();
-        attempt["ProtectedToken"] = Protector(grant, attempt).Protect(token.Token);
+        attempt["ProtectedToken"] = secrets.Protect(TokenPurpose(grant, attempt), token.Token);
         attempt["ExpiresAt"] = token.ExpiresAt;
         attempt["ScopeValid"] = token.ScopeValid;
         attempt["State"] = "known";
@@ -264,8 +263,8 @@ public sealed partial class IssuanceStore(TableClient table, BrokerOptions optio
         await BrokerTable.SubmitAsync(table, actions, ct);
         // Post-observation conflicts invalidate the decision and deny; only admission owns a bounded reevaluation loop.
     }
-    private IDataProtector Protector(GrantSnapshot grant, TableEntity attempt) => grant.Approval.TokenProtector(
-        protection, grant.RepositoryId, grant.Epoch, Text(attempt, "OperationId"), Text(attempt, "Purpose"));
+    private static SecretPurpose TokenPurpose(GrantSnapshot grant, TableEntity attempt) => grant.Approval.TokenPurpose(
+        grant.RepositoryId, grant.Epoch, Text(attempt, "OperationId"), Text(attempt, "Purpose"));
     private static void BindAttempt(GrantSnapshot grant, TableEntity attempt, string purpose)
     {
         grant.Approval.Require(attempt);

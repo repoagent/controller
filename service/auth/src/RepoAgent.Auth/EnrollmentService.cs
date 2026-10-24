@@ -3,7 +3,6 @@ using System.Text.Json;
 using Azure;
 using Azure.Data.Tables;
 using Azure.Identity;
-using Microsoft.AspNetCore.DataProtection;
 using static RepoAgent.Auth.IssuancePolicy;
 using static RepoAgent.Auth.EnrollmentStore;
 
@@ -56,7 +55,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
             try
             {
                 known = await github.MintAsync(s.RepositoryId, Text(s.Pending, "RequestedRepository"), installation, s.Approval.VerifierProfile, jwt, work.Cancellation);
-                reservation["ProtectedToken"] = store.TokenProtector(s, reservation).Protect(known.Token);
+                reservation["ProtectedToken"] = store.ProtectToken(s, reservation, known.Token);
                 reservation["ExpiresAt"] = known.ExpiresAt;
                 reservation["ScopeValid"] = known.ScopeValid;
                 reservation["State"] = "known";
@@ -137,7 +136,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
                 envelopeFields["policyVersion"] = s.Approval.Policy;
             }
             var envelope = JsonSerializer.Serialize(envelopeFields);
-            s.Pending["ProtectedCompletion"] = store.CompletionProtector(s).Protect(envelope);
+            s.Pending["ProtectedCompletion"] = store.ProtectCompletion(s, envelope);
             s.Pending["CompletionId"] = completion!;
             s.Pending["State"] = "completed";
             s.Gate["OwnerDeviceId"] = s.DeviceId;
@@ -150,7 +149,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         await store.PublishLocatorAsync(s, work.Cancellation);
         store.RequireLive(s.Pending);
         work.Fresh(observation.Started);
-        var result = JsonSerializer.Deserialize<JsonElement>(store.CompletionProtector(s).Unprotect(Text(s.Pending, "ProtectedCompletion")));
+        var result = JsonSerializer.Deserialize<JsonElement>(store.UnprotectCompletion(s, Text(s.Pending, "ProtectedCompletion")));
         return new(200, new { completionId = completion, enrollment = result });
     });
 
@@ -278,5 +277,6 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
     }
     private static bool Expected(Exception ex) => ex is IssuanceDenied or ApprovalChanged or RequestFailedException or AuthenticationFailedException
         or HttpRequestException or IOException or InvalidDataException or InvalidCastException or FormatException or JsonException
-        or OverflowException or OperationCanceledException or CryptographicException or KeyNotFoundException or InvalidOperationException or ArgumentException;
+        or OverflowException or OperationCanceledException or CryptographicException or KeyNotFoundException or InvalidOperationException or ArgumentException
+        or SecretUnreadable or SecretProtectionUnavailable;
 }
