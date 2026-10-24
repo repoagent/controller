@@ -203,6 +203,35 @@ public sealed class PublishedRuntimeLeaseTests
         Assert.Equal(3, f.Gate.OutstandingTokenCount);
     }
 
+    // A competing reuse that commits right after this one's observation replaces it. Reading the observation back
+    // stops the older request before it signs an App JWT or reads approval for a publication it can no longer make.
+    [Fact]
+    public async Task Reuse_whose_observation_was_replaced_stops_before_App_authorization_or_approval_reads()
+    {
+        var f = IssuanceFixture.Create();
+        Assert.Equal(200, (await f.IssueAsync(Token)).Status);
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var (authorizations, reads) = (f.GitHub.Authorizations, f.GitHub.Reads);
+        var batches = 0;
+        IssuanceResult? competing = null;
+        f.State.AfterCommit = async _ =>
+        {
+            // The reuse charges the global quota, then commits its observation with the repository charge.
+            if (++batches != 2) return;
+            competing = await f.IssueAsync(Token);
+        };
+
+        var stale = await f.IssueAsync(Token);
+
+        Assert.Equal(200, competing!.Status);
+        Assert.Equal(503, stale.Status);
+        Assert.Null(stale.Body);
+        // Only the competing reuse signed and read approval.
+        Assert.Equal(authorizations + 1, f.GitHub.Authorizations);
+        Assert.Equal(reads + 8, f.GitHub.Reads);
+        Assert.Equal(2, f.GitHub.Mints);
+    }
+
     [Theory]
     [InlineData("State", "known")]
     [InlineData("State", "sending")]
