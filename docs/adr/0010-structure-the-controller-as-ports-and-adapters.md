@@ -32,6 +32,6 @@ Two rules keep the layer honest:
 ## Considered options
 
 - **Keep concrete edges and fake at the process level** (a fake `gh` and `codex` on `PATH`, as today). Rejected. Every test pays for process startup and real timers, which is why the suite takes tens of minutes, and GitHub's response shapes spread through the core.
-- **Contract test each adapter against the real provider.** Rejected for GitHub, because its API is stable and the cost is not worth it. The agent runtime is pinned in the image, so a protocol change arrives with a deliberate image update and shows up in the end-to-end environment. Optional startup tool updates bypass that pin and carry this risk.
+- **Contract test each adapter against the real provider.** Rejected for GitHub, because its API is stable and the cost is not worth it. The agent runtime is pinned in the image, so a protocol change arrives with a deliberate image update and shows up in the end-to-end environment. Optional startup tool updates bypass that pin and carry this risk. We accept it and revisit if updates break the adapter.
 
 Implementation: [#203](https://github.com/repoagent/controller/issues/203) (ports and adapters), [#204](https://github.com/repoagent/controller/issues/204) (Aspire end-to-end environment).
