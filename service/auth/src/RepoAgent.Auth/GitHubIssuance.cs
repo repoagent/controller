@@ -6,8 +6,6 @@ using static RepoAgent.Auth.IssuancePolicy;
 
 namespace RepoAgent.Auth;
 
-public sealed class ApprovalChanged : Exception;
-
 // HttpClient must have redirects and retries disabled. Only fixed api.github.com paths are used.
 public sealed class GitHubIssuance(HttpClient client, TimeProvider clock)
 {
