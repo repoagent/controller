@@ -128,6 +128,8 @@ internal sealed class InMemoryGitHub(TimeProvider? clock = null) : IAppInstallat
             MintRequests.Add(mint);
         }
         if (BeforeMint is not null) await BeforeMint(mint);
+        // A request cancelled while in flight fails, as HttpClient's does; its outcome at GitHub stays unknown.
+        ct.ThrowIfCancellationRequested();
         if (app is not Authorization) return new GitHubRead<MintedGitHubToken>.Refused();
         if (repository.Id != Project.Id) throw new InvalidOperationException("Unexpected requested repository scope.");
         var token = new MintedGitHubToken(mint.Verifier ? "verifier-token" : "runtime-token-" + mint.Number,

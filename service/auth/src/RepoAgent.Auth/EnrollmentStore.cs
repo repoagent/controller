@@ -8,7 +8,7 @@ namespace RepoAgent.Auth;
 
 // Concrete Table authority. Global reservations are conservative, never rolled back across partitions.
 public sealed class EnrollmentStore(TableClient table, BrokerOptions options, ISecretProtection secrets,
-    TimeProvider clock, IssuanceLimits limits, IssuanceStore reads)
+    TimeProvider clock, IssuanceLimits limits)
 {
     private const string Global = "global:enrollment-v1";
     private readonly RetainedState retained = new(table, options);
@@ -20,7 +20,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, IS
         TableEntity? reservation = null;
         for (var retry = 0; retry < 4; retry++)
         {
-            reservation = await reads.ReadAsync(Global, key, ct);
+            reservation = await BrokerTable.ReadAsync(table, Global, key, ct);
             if (reservation is not null) break;
             var quota = (await retained.SchemaAsync(ct)).Enrollment;
             var directory = await retained.DirectoryAsync(repository, ct);
@@ -49,8 +49,8 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, IS
         var partition = "repository:" + repository;
         for (var retry = 0; retry < 4; retry++)
         {
-            var gate = await reads.ReadAsync(partition, "gate", ct);
-            var current = await reads.ReadAsync(Global, key, ct) ?? throw new IssuanceDenied();
+            var gate = await BrokerTable.ReadAsync(table, partition, "gate", ct);
+            var current = await BrokerTable.ReadAsync(table, Global, key, ct) ?? throw new IssuanceDenied();
             if (Text(current, "Generation") != Text(reservation, "Generation")
                 || current.GetBoolean("PendingCapacityReleased") == true || current.ContainsKey("RetirementState")
                 || Text(current, "RepositoryId") != repository || Text(current, "RecoveryHash") != hash
@@ -58,7 +58,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, IS
             request.Approval.Require(current);
             RequireLive(current);
             reservation = current;
-            var pending = await reads.ReadAsync(partition, key, ct);
+            var pending = await BrokerTable.ReadAsync(table, partition, key, ct);
             if (pending is not null) return await SnapshotAsync(Text(reservation, "PendingId"), hash, ct, request.Approval.SetupVersion);
             var fresh = gate is null;
             gate ??= new(partition, "gate")
@@ -99,8 +99,8 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, IS
         if (parts.Length != 2 || !Guid.TryParseExact(parts[1], "N", out _)) throw new IssuanceDenied(401);
         _ = Id(parts[0]);
         var partition = "repository:" + parts[0];
-        var pending = await reads.ReadAsync(partition, "pending:" + parts[1], ct) ?? throw new IssuanceDenied(401);
-        var gate = await reads.ReadAsync(partition, "gate", ct) ?? throw new IssuanceDenied(401);
+        var pending = await BrokerTable.ReadAsync(table, partition, "pending:" + parts[1], ct) ?? throw new IssuanceDenied(401);
+        var gate = await BrokerTable.ReadAsync(table, partition, "gate", ct) ?? throw new IssuanceDenied(401);
         if (Text(pending, "PendingId") != id || Text(pending, "RepositoryId") != parts[0]
             || Text(gate, "RepositoryId") != parts[0] || Text(gate, "Epoch") != options.DeploymentEpoch
             || Text(pending, "Epoch") != options.DeploymentEpoch) throw new IssuanceDenied(401);
@@ -114,7 +114,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, IS
             if (environment.Length > 255 || environment.Any(char.IsControl)) throw new IssuanceDenied();
             if (pending.ContainsKey("Marker") && Number(pending, "EnvironmentId") <= 0) throw new IssuanceDenied();
         }
-        if (pending.ContainsKey("Marker") && Text(pending, "Marker") != ApprovalMarker.Create(new(gate, pending))) throw new IssuanceDenied();
+        if (pending.ContainsKey("Marker") && Text(pending, "Marker") != new GrantRows(gate, pending).CreateMarker()) throw new IssuanceDenied();
         return snapshot;
     }
 
@@ -165,7 +165,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, IS
         await BrokerTable.SubmitAsync(table, actions, work.Cancellation);
         if (mint) await retained.RequireIssuanceAsync(operation, generation, s.RepositoryId, s.DeviceId,
             "verification", options.DeploymentEpoch, slot!.Value, work.Cancellation);
-        var quota = await reads.ReadAsync(s.Partition, "quota", work.Cancellation);
+        var quota = await BrokerTable.ReadAsync(table, s.Partition, "quota", work.Cancellation);
         var freshQuota = quota is null;
         quota ??= Quota(s.Partition);
         Charge(quota, now, limits.RepositoryAdmissions, limits.RepositoryReads, limits.RepositorySigns, limits.RepositoryMints, mint);
@@ -195,7 +195,7 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, IS
 
     internal async Task<TableEntity> AttemptAsync(EnrollmentSnapshot s, CancellationToken ct)
     {
-        var a = await reads.ReadAsync(s.Partition, "attempt:" + Text(s.Pending, "Attempt"), ct) ?? throw new IssuanceDenied();
+        var a = await BrokerTable.ReadAsync(table, s.Partition, "attempt:" + Text(s.Pending, "Attempt"), ct) ?? throw new IssuanceDenied();
         if (Text(a, "PendingId") != s.Id || Text(a, "RepositoryId") != s.RepositoryId || Text(a, "DeviceId") != s.DeviceId
             || Text(a, "Epoch") != options.DeploymentEpoch || Text(a, "Purpose") != "verification" || Text(a, "Profile") != s.Approval.VerifierProfile) throw new IssuanceDenied();
         s.Approval.Require(a);
@@ -249,12 +249,15 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, IS
         try { await BrokerTable.AddAsync(table, row, ct); }
         catch (RequestFailedException ex) when (ex.Status == 409)
         {
-            var current = await reads.ReadAsync(row.PartitionKey, row.RowKey, ct) ?? throw new IssuanceDenied();
+            var current = await BrokerTable.ReadAsync(table, row.PartitionKey, row.RowKey, ct) ?? throw new IssuanceDenied();
             if (Text(current, "RepositoryId") != s.RepositoryId || Text(current, "DeviceId") != s.DeviceId || Text(current, "PendingId") != s.Id) throw new IssuanceDenied();
         }
     }
-    internal Task<TableEntity?> ReadAsync(string partition, string row, CancellationToken ct) => reads.ReadAsync(partition, row, ct);
+    internal Task<TableEntity?> ReadAsync(string partition, string row, CancellationToken ct) => BrokerTable.ReadAsync(table, partition, row, ct);
     internal static TableTransactionAction Action(TableEntity entity, bool add = false) => new(add ? TableTransactionActionType.Add : TableTransactionActionType.UpdateReplace, entity, entity.ETag);
+    // Enrollment creates its repository quota row and charges both quota rows as TableEntity. Issuance does the same
+    // through the core ChargedQuota (RepositoryQuota.New and ChargedQuota.Charge) over IBrokerState; Quota and Charge
+    // duplicate it, writing the same rows, until slice 1c moves enrollment to the core.
     private static TableEntity Quota(string partition) => new(partition, "quota")
     { ["Window"] = 0L, ["Admissions"] = 0L, ["Reads"] = 0L, ["Signs"] = 0L, ["Mints"] = 0L, ["Slots"] = 0L };
     private static void Charge(TableEntity q, DateTimeOffset now, int admissions, int reads, int signs, int mints, bool mint)

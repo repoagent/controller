@@ -13,13 +13,15 @@ internal sealed class InMemoryBrokerState : IBrokerState
     private readonly Lock sync = new();
     private readonly Dictionary<(string Scope, string Name), (Dictionary<string, object> Row, StateVersion Version)> rows = [];
     private long versions;
-    private int reads, commits;
+    private int reads, commits, conflicts;
 
     public Func<StateKey, Task>? BeforeRead { get; set; }
     public Func<StateTransaction, Task>? BeforeCommit { get; set; }
     public Func<StateTransaction, Task>? AfterCommit { get; set; }
     public int Reads => reads;
     public int Commits => commits;
+    // Transactions that failed with a StateConflict and wrote nothing.
+    public int Conflicts => conflicts;
 
     public async Task<Versioned<T>?> ReadAsync<T>(StateKey<T> key, CancellationToken ct) where T : BrokerRecord, new()
     {
@@ -51,7 +53,11 @@ internal sealed class InMemoryBrokerState : IBrokerState
             foreach (var write in writes)
             {
                 var exists = rows.TryGetValue((write.Key.Scope, write.Key.Name), out var current);
-                if (write.Kind == StateWriteKind.Add ? exists : exists && current.Version != write.Version) throw new StateConflict();
+                if (write.Kind == StateWriteKind.Add ? exists : exists && current.Version != write.Version)
+                {
+                    conflicts++;
+                    throw new StateConflict();
+                }
                 if (write.Kind != StateWriteKind.Add && !exists) throw new BrokerStateUnavailable("The record to change does not exist.");
             }
             for (var i = 0; i < writes.Count; i++)
@@ -94,6 +100,14 @@ internal sealed class InMemoryBrokerState : IBrokerState
     public Dictionary<string, object>? Row(string scope, string name)
     {
         lock (sync) return rows.TryGetValue((scope, name), out var stored) ? new(stored.Row) : null;
+    }
+
+    // Every stored row of a scope, by name, in ordinal name order.
+    public IReadOnlyList<(string Name, Dictionary<string, object> Row)> Rows(string scope)
+    {
+        lock (sync)
+            return [.. rows.Where(stored => stored.Key.Scope == scope).OrderBy(stored => stored.Key.Name, StringComparer.Ordinal)
+                .Select(stored => (stored.Key.Name, new Dictionary<string, object>(stored.Value.Row)))];
     }
 
     public StateVersion? Version(StateKey key) => Version(key.Scope, key.Name);

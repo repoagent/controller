@@ -1,61 +1,141 @@
-using Azure.Core.Pipeline;
-using Azure.Data.Tables;
+using System.Security.Cryptography;
+using System.Text;
+using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-internal sealed class IssuanceFixture : IAsyncDisposable
+// One acknowledged setup v1 controller enrollment in broker state, as offline initialization and enrollment leave it:
+// both global quotas, the candidate repository, and one earlier unknown runtime attempt ("one") that still holds global
+// slot 0, a retained ledger and one outstanding GitHub token on the gate and the enrollment.
+internal sealed class IssuanceFixture
 {
-    public RevocationFixture Storage { get; } = new();
-    public EnrolledDevice Device { get; private set; } = null!;
+    public const string Epoch = "test-epoch", RepositoryId = "123456";
+    public InMemoryBrokerState State { get; } = new();
     public IssuanceClock Clock { get; } = new();
     public InMemoryGitHub GitHub { get; }
-    public IssuanceFixture() => GitHub = new(Clock);
     public InMemorySecretProtection Secrets { get; } = new();
-    public BrokerOptions Options => new(new Uri("https://example.table.core.windows.net"), Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15);
-    public IssuanceStore Store(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) => new(Storage.CreateClient(transport), Options,
-        Secrets, Clock, limits);
-    public InstallationTokenIssuer Issuer(HttpPipelineTransport? transport = null, IssuanceLimits? limits = null) =>
-        new(Store(transport, limits), GitHub, GitHub, GitHub, Clock);
+    public EnrolledDevice Device { get; private set; } = null!;
+    private IssuanceFixture() => GitHub = new(Clock);
 
-    public static async Task<IssuanceFixture> CreateAsync(TimeSpan? runtimeLifetime = null)
+    public IssuanceStore Store(IssuanceLimits? limits = null) => new(State, Epoch, 4096, Secrets, Clock, limits);
+    public InstallationTokenIssuer Issuer(IssuanceLimits? limits = null) => new(Store(limits), GitHub, GitHub, GitHub, Clock);
+    public Task<IssuanceResult> IssueAsync(CancellationToken caller = default, IssuanceLimits? limits = null) =>
+        Issuer(limits).IssueAsync(Device.DeviceId, Device.Secret, caller);
+    public DeviceRevocation Revocation() => new(State, Epoch, Clock);
+
+    public static StateKey<RepositoryGate> GateKey => RepositoryGate.Key(RepositoryId);
+    public StateKey<ControllerEnrollment> EnrollmentKey => ControllerEnrollment.Key(RepositoryId, Device.DeviceId);
+    public static StateKey<RepositoryQuota> QuotaKey => RepositoryQuota.Key(RepositoryId);
+    public RepositoryGate Gate => State.Get(GateKey)!;
+    public ControllerEnrollment Enrollment => State.Get(EnrollmentKey)!;
+    public IssuanceQuota GlobalQuota => State.Get(IssuanceQuota.Key)!;
+    public RepositoryQuota Quota => State.Get(QuotaKey)!;
+
+    // The attempts issuance created; the offline unknown attempt "one" stays charged separately.
+    public List<IssuanceAttempt> Attempts() => [.. State.Rows("repository:" + RepositoryId)
+        .Where(row => row.Name.StartsWith("attempt:", StringComparison.Ordinal) && row.Name != "attempt:one")
+        .Select(row => BrokerRecord.Read<IssuanceAttempt>(row.Row))];
+
+    public IssuanceAttempt Attempt(string purpose) => Assert.Single(Attempts(), attempt => attempt.Purpose == purpose);
+
+    // The global issuance rows: every slot has exactly one retained ledger, and the quota counts them.
+    public (List<IssuanceSlot> Slots, List<IssuanceLedger> Ledgers) GlobalRows()
+    {
+        var rows = State.Rows(IssuanceCapacity.Scope);
+        var slots = rows.Where(row => row.Name.StartsWith("slot:", StringComparison.Ordinal)).Select(row => BrokerRecord.Read<IssuanceSlot>(row.Row)).ToList();
+        var ledgers = rows.Where(row => row.Name.StartsWith("operation:", StringComparison.Ordinal)).Select(row => BrokerRecord.Read<IssuanceLedger>(row.Row)).ToList();
+        Assert.Equal(1 + slots.Count + ledgers.Count, rows.Count);
+        Assert.Equal(slots.Count, ledgers.Count);
+        Assert.Equal(ledgers.Count, GlobalQuota.RetainedIssuanceCount);
+        foreach (var slot in slots)
+        {
+            var ledger = Assert.Single(ledgers, l => l.OperationId == slot.OperationId);
+            Assert.Equal(slot.Generation, ledger.Generation);
+            Assert.Equal(slot.ReservedAt, ledger.ReservedAt);
+            Assert.Equal(slot.ReservedAt!.Value.AddHours(24), ledger.PayloadPurgeAt);
+            Assert.Equal(4, ledger.RowCredits);
+        }
+        Assert.Equal("attempt:one", Assert.Single(ledgers, l => l.OperationId == "one").AttemptRowKey);
+        return (slots, ledgers);
+    }
+
+    public static IssuanceFixture Create(TimeSpan? runtimeLifetime = null)
     {
         var f = new IssuanceFixture();
         if (runtimeLifetime is { } lifetime) f.GitHub.RuntimeLifetime = lifetime;
-        await f.Storage.InitializeAsync();
-        f.Device = await f.Storage.EnrollAsync();
-        var d = (await f.Storage.Table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "device:" + f.Device.DeviceId)).Value;
-        d["Acknowledged"] = true;
-        d["AppId"] = IssuancePolicy.AppId;
-        d["AppSlug"] = IssuancePolicy.AppSlug;
-        d["GitHubHost"] = "github.com";
-        d["PolicyVersion"] = IssuancePolicy.Version;
-        d["Repository"] = "owner/project";
-        d["InstallationId"] = 789L;
-        d["Profile"] = "polling";
-        d["Environment"] = "approval/environment";
-        d["EnvironmentId"] = 987L;
-        d["Variable"] = "APPROVAL";
-        d["Challenge"] = new string('a', 43);
-        var gate = await f.GateAsync();
-        d["Marker"] = ApprovalMarker.Create(new(gate, d));
-        await f.Storage.Table.UpdateEntityAsync(d, d.ETag, TableUpdateMode.Replace);
-        f.GitHub.Marker = (string)d["Marker"];
+        f.Device = f.Enroll(RepositoryId, "owner/project", outstanding: 1);
+        f.GitHub.Marker = f.Enrollment.Marker!;
         return f;
     }
-    public Task<IssuanceResult> IssueAsync(CancellationToken caller = default, HttpPipelineTransport? transport = null) =>
-        Issuer(transport).IssueAsync(Device.DeviceId, Device.Secret, caller);
-    public async Task<TableEntity> GateAsync() => (await Storage.Table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "gate")).Value;
-    public async Task<TableEntity> DeviceAsync() => (await Storage.Table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "device:" + Device.DeviceId)).Value;
-    public async Task<List<TableEntity>> AttemptsAsync()
+
+    // Enrolls the same controller in another repository with no outstanding GitHub token, and returns its grant.
+    public async Task<GrantSnapshot> EnrollCompetitorAsync(string repositoryId, string repository, CancellationToken ct)
     {
-        var rows = new List<TableEntity>();
-        await foreach (var row in Storage.Table.QueryAsync<TableEntity>(e => e.PartitionKey == RevocationFixture.Partition && e.RowKey.CompareTo("attempt:") >= 0 && e.RowKey.CompareTo("attempt;") < 0))
-            // Return attempts produced by the tested issuer; the offline unknown attempt remains charged separately.
-            if (row.RowKey != "attempt:one") rows.Add(row);
-        return rows;
+        _ = Enroll(repositoryId, repository, outstanding: 0, Device);
+        return await Store().SnapshotAsync(repositoryId, Device.DeviceId, ct);
     }
-    public async ValueTask DisposeAsync() => await Storage.DisposeAsync();
+
+    private EnrolledDevice Enroll(string repositoryId, string repository, long outstanding, EnrolledDevice? existing = null)
+    {
+        var deviceId = existing?.DeviceId ?? Base64Url(RandomNumberGenerator.GetBytes(24));
+        var secret = existing?.Secret ?? Base64Url(RandomNumberGenerator.GetBytes(32));
+        var created = Clock.GetUtcNow();
+        var enrollmentQuota = State.Get(EnrollmentQuota.Key) ?? new() { RetentionSchemaVersion = 1, CandidateCount = 0, RetainedEnrollmentCount = 0, Count = 0 };
+        enrollmentQuota.CandidateCount++;
+        enrollmentQuota.RetainedEnrollmentCount++;
+        State.Seed(EnrollmentQuota.Key, enrollmentQuota);
+        State.Seed(CandidateRepository.Key(repositoryId), new() { RepositoryId = repositoryId, PendingCount = 0 });
+        if (existing is null)
+        {
+            var generation = Guid.NewGuid().ToString("N");
+            State.Seed(IssuanceQuota.Key, new()
+            {
+                RetentionSchemaVersion = 1, RetainedIssuanceCount = 1,
+                Window = 0, Admissions = 0, Reads = 0, Signs = 0, Mints = 0, Slots = 1
+            });
+            var ledger = new IssuanceLedger
+            {
+                OperationId = "one", Generation = generation, RepositoryId = repositoryId, EnrollmentId = deviceId, Purpose = "runtime",
+                Epoch = Epoch, ReservedAt = created, PayloadPurgeAt = created.AddHours(24), GlobalSlot = 0, AttemptRowKey = "attempt:one",
+                RowCredits = 4, ApprovalKind = "environment-variable", SetupVersion = 1, PolicyVersion = IssuancePolicy.Version
+            };
+            State.Seed(IssuanceLedger.Key("one"), ledger);
+            State.Seed(IssuanceSlot.Key(0), new()
+            {
+                OperationId = "one", Generation = generation, RepositoryId = repositoryId, Purpose = "runtime", Epoch = Epoch,
+                ReservedAt = created, PayloadPurgeAt = created.AddHours(24), GlobalSlot = 0,
+                ApprovalKind = "environment-variable", SetupVersion = 1, PolicyVersion = IssuancePolicy.Version
+            });
+            State.Seed(EnrollmentLocator.Key(deviceId), new() { RepositoryId = repositoryId, EnrollmentId = deviceId, PendingId = repositoryId + "_" + Guid.NewGuid().ToString("N") });
+            State.Seed(IssuanceAttempt.Key(repositoryId, "one"), new()
+            {
+                RepositoryId = repositoryId, EnrollmentId = deviceId, Epoch = Epoch, State = "outstanding", Purpose = "runtime",
+                OperationId = "one", Generation = generation, ReservedAt = created, PayloadPurgeAt = created.AddHours(24), GlobalSlot = 0,
+                ApprovalKind = "environment-variable", SetupVersion = 1, PolicyVersion = IssuancePolicy.Version
+            });
+        }
+        State.Seed(RepositoryGate.Key(repositoryId), new()
+        {
+            RepositoryId = repositoryId, Epoch = Epoch, OwnerEnrollmentId = deviceId, State = "active", Sequence = 7, OutstandingTokenCount = outstanding
+        });
+        var challenge = new string('a', 43);
+        State.Seed(ControllerEnrollment.Key(repositoryId, deviceId), new()
+        {
+            RepositoryId = repositoryId, EnrollmentId = deviceId, Epoch = Epoch,
+            ControllerSecretHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret))),
+            ExpiresAt = created.AddHours(1), State = "active", OutstandingTokenCount = outstanding, Acknowledged = true,
+            AppId = IssuancePolicy.AppId, AppSlug = IssuancePolicy.AppSlug, GitHubHost = "github.com", PolicyVersion = IssuancePolicy.Version,
+            Repository = repository, InstallationId = 789, Profile = "polling", Environment = "approval/environment", EnvironmentId = 987,
+            Variable = "APPROVAL", Challenge = challenge,
+            Marker = ApprovalMarker.Create(ApprovalContract.Legacy, repositoryId, repository, 789, deviceId, challenge, "polling", Epoch,
+                "APPROVAL", "approval/environment", 987)
+        });
+        return new(deviceId, secret);
+    }
+
+    private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }
+
 internal sealed class IssuanceClock : TimeProvider
 {
     private DateTimeOffset current = DateTimeOffset.UtcNow;
