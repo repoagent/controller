@@ -112,6 +112,10 @@ The App's EYES reaction on a Discussion, comment or reply, added once the agent 
 **GitHub outbox**:
 The controller's durable queue of its own GitHub writes, such as EYES receipts and dashboard updates, retained until each succeeds or fails permanently. It never resends agent input, and agent replies do not pass through it.
 
+**Status endpoint**:
+The controller's local `GET /status`, which reports it busy while an agent turn runs or input is pending, retrying or waiting, and idle otherwise, with its work counts. A hosting environment reads it to decide whether it may stop the controller; the controller never acts on it.
+_Avoid_: health check
+
 **Dashboard**:
 The controller-owned Discussion, in an operator-chosen category, where the controller publishes its nonsecret status, a heartbeat and update notices for newer baseline releases. It is never agent input.
 

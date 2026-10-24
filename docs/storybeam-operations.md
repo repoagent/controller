@@ -20,6 +20,20 @@ beyond cooldown, and return to zero have passed. Storage and request charges
 continue at zero replicas. The separately retained original NFS account
 `raccvldjd5jofski` also has provisioned charges; it is not required by the lean app.
 
+**Before updating to an image without durable webhook work.** This app runs the
+retired `--azure-work-queue` mode, which kept the replica alive through the
+`controller-work` queue while an agent turn ran.
+[ADR 0009](adr/0009-keep-hosting-lifecycle-out-of-the-controller.md) removed it
+(#201). The updater keeps the app's identity, queue grant and `azure-queue` scale
+rule, but a newer image never reads the queue: the rule then holds a replica only
+while old messages remain, and with minimum 0 replicas a replica can stop during
+an agent turn once the cooldown ends. Until a hosting component reads the
+controller's [status endpoint](../README.md#status-endpoint) (#37/#38), either
+set minimum 1 replica before the update, accepting the idle compute charge, or
+accept that long turns can be cut off. After the update, clear the
+`controller-work` queue; once no controller uses them, remove the `azure-queue`
+scale rule, the queue's role assignment, the system identity and the queue.
+
 ## Update or recover this existing app
 
 Run from this controller checkout in PowerShell 7.4+, with authenticated host
