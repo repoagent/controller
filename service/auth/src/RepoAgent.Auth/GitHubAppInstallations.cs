@@ -1,0 +1,55 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Azure;
+using Azure.Identity;
+using Azure.Security.KeyVault.Keys.Cryptography;
+using static RepoAgent.Auth.IssuancePolicy;
+
+namespace RepoAgent.Auth;
+
+// The GitHub App's JWT. Key Vault owns the App's private key; the reserved window owns the JWT's timestamps,
+// so a slow or retried operation can never stretch them.
+internal sealed class GitHubAppAuthorization(string jwt) : AppAuthorization
+{
+    private string Value { get; } = jwt;
+    public static string Jwt(AppAuthorization app) => (app as GitHubAppAuthorization ?? throw new IssuanceDenied()).Value;
+}
+
+// App installations on GitHub, read with the App's JWT or an installation token.
+internal sealed class GitHubAppInstallations(GitHubIssuance github, CryptographyClient key) : IAppInstallations
+{
+    public async Task<AppAuthorization> AuthorizeAsync(AppAuthorizationWindow window, CancellationToken ct)
+    {
+        var header = Base64(Encoding.UTF8.GetBytes("{\"alg\":\"RS256\",\"typ\":\"JWT\"}"));
+        var payload = Base64(JsonSerializer.SerializeToUtf8Bytes(new { iat = window.IssuedAt.ToUnixTimeSeconds(), exp = window.ExpiresAt.ToUnixTimeSeconds(), iss = AppId }));
+        var unsigned = header + "." + payload;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        SignResult signature;
+        try { signature = await key.SignAsync(SignatureAlgorithm.RS256, SHA256.HashData(Encoding.ASCII.GetBytes(unsigned)), timeout.Token); }
+        catch (Exception ex) when (ex is RequestFailedException or AuthenticationFailedException)
+        {
+            throw new GitHubUnavailable("The App signing key did not sign.", ex);
+        }
+        if (signature.Algorithm != SignatureAlgorithm.RS256) throw new GitHubUnavailable("The App signing key used another algorithm.");
+        return new GitHubAppAuthorization(unsigned + "." + Base64(signature.Signature));
+    }
+
+    public Task<GitHubRead<AppInstallation>> FindAsync(AppAuthorization app, string repository, CancellationToken ct) =>
+        github.ReadAsync($"repos/{GitHubIssuance.RepositoryPath(repository)}/installation", GitHubAppAuthorization.Jwt(app), Installation, ct);
+
+    public Task<GitHubRead<InstallationRepositories>> RepositoriesAsync(GitHubToken token, CancellationToken ct) =>
+        github.ReadAsync("installation/repositories?per_page=2", token.Value, Repositories, ct);
+
+    private static AppInstallation Installation(JsonElement root) => new(root.GetProperty("id").GetInt64(),
+        root.GetProperty("app_id").GetInt64(), GitHubIssuance.JsonText(root.GetProperty("app_slug")),
+        root.GetProperty("suspended_at").ValueKind != JsonValueKind.Null,
+        root.GetProperty("permissions").EnumerateObject().ToDictionary(p => p.Name, p => GitHubIssuance.JsonText(p.Value), StringComparer.Ordinal));
+
+    private static InstallationRepositories Repositories(JsonElement root) => new(root.GetProperty("total_count").GetInt32(),
+        [.. root.GetProperty("repositories").EnumerateArray()
+            .Select(r => new RepositoryIdentity(r.GetProperty("id").GetInt64(), GitHubIssuance.JsonText(r.GetProperty("full_name"))))]);
+
+    private static string Base64(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+}

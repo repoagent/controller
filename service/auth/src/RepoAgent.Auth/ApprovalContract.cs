@@ -49,8 +49,5 @@ internal static class ApprovalContractRows
         {
             if (ApprovalContract.Read(entity) != contract) throw new IssuanceDenied();
         }
-
-        // Only the bound kind's direct location is authority; locations never fall back to each other.
-        public string VariablesPath => contract.IsActions ? "actions/variables" : contract.IsAgent ? "agents/variables" : throw new IssuanceDenied();
     }
 }

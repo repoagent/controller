@@ -68,6 +68,18 @@ internal sealed record EnrollmentSnapshot(TableEntity Gate, TableEntity Pending)
     public string Id => Text(Pending, "PendingId");
     public string DeviceId => Text(Pending, "DeviceId");
     public ApprovalContract Approval => ApprovalContract.Read(Pending);
+
+    // What the pending enrollment asked for and has bound so far, for GitHub to confirm.
+    public ApprovalRequest ApprovalRequest()
+    {
+        var p = Pending;
+        return new(Approval, IssuancePolicy.Id(RepositoryId), Text(p, "RequestedRepository"), Text(p, "Profile"), Text(p, "Variable"),
+            Approval == ApprovalContract.Legacy ? Text(p, "Environment") : null,
+            p.ContainsKey("InstallationId") ? Number(p, "InstallationId") : null,
+            p.ContainsKey("EnvironmentId") ? Number(p, "EnvironmentId") : null,
+            p.ContainsKey("Repository") ? Text(p, "Repository") : null,
+            p.ContainsKey("Marker") ? Text(p, "Marker") : null);
+    }
 }
 
 internal static class EnrollmentSecrets

@@ -121,7 +121,8 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
             services.AddSingleton<ISecretProtection>(Secrets);
             services.AddSingleton(limits);
             services.AddSingleton(new GitHubIssuance(new HttpClient(GitHub), Clock));
-            services.AddSingleton(new AppJwtSigner(Signing, Clock));
+            services.AddSingleton<IAppInstallations>(provider => new GitHubAppInstallations(provider.GetRequiredService<GitHubIssuance>(), Signing));
+            services.AddSingleton<IControllerApprovals, GitHubControllerApprovals>();
             services.AddSingleton<IssuanceStore>(); services.AddSingleton<InstallationTokenIssuer>();
             services.AddSingleton<EnrollmentStore>(); services.AddSingleton<EnrollmentService>();
         }));

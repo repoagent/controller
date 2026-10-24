@@ -12,6 +12,17 @@ internal static class TableValues
     public static DateTimeOffset Date(TableEntity e, string key) => e.TryGetValue(key, out var v) && v is DateTimeOffset d ? d : throw new IssuanceDenied();
 }
 
+// The App authorization window an attempt row reserved. Only a still-reserved attempt may be signed.
+internal static class AppAuthorizationWindowRows
+{
+    extension(AppAuthorizationWindow)
+    {
+        public static AppAuthorizationWindow Read(TableEntity attempt) => TableValues.Text(attempt, "State") == "reserved"
+            ? AppAuthorizationWindow.Reserved(TableValues.Date(attempt, "ReservedAt"), TableValues.Date(attempt, "JwtIssuedAt"), TableValues.Date(attempt, "JwtExpiresAt"))
+            : throw new IssuanceDenied();
+    }
+}
+
 public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
 {
     public string RepositoryId => TableValues.Text(Device, "RepositoryId");
@@ -26,6 +37,14 @@ public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
     public string Marker => TableValues.Text(Device, "Marker");
     public string Partition => Gate.PartitionKey;
     public string Epoch => TableValues.Text(Gate, "Epoch");
+    // The approval GitHub must still show for this enrollment.
+    internal ControllerApproval BoundApproval()
+    {
+        var repository = new RepositoryIdentity(IssuancePolicy.Id(RepositoryId), Repository);
+        return Approval == ApprovalContract.Legacy
+            ? new(Approval, repository, InstallationId, Profile, Variable, Marker, Environment, EnvironmentId)
+            : new(Approval, repository, InstallationId, Profile, Variable, Marker);
+    }
     public void RequireActive(DateTimeOffset now)
     {
         PayloadClock.RequirePayload(Device);
