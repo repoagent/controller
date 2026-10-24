@@ -23,7 +23,8 @@ public abstract record GitHubRead<T>
 // GitHub could not be reached or did not answer in time. Callers treat it like any unverifiable read.
 public sealed class GitHubUnavailable(string message, Exception? cause = null) : Exception(message, cause);
 
-// A GitHub installation token the broker holds. Its value never appears in logs or exception text.
+// A token GitHub minted for the App on one repository that the broker holds: a controller enrollment's GitHub token,
+// or the broker's own verifier token, which may only read controller approvals. Its value never appears in logs or exception text.
 public sealed record GitHubToken(string Value)
 {
     public override string ToString() => "GitHubToken { Value = [redacted] }";

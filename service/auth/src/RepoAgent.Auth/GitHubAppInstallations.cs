@@ -17,7 +17,7 @@ internal sealed class GitHubAppAuthorization(string jwt) : AppAuthorization
         ?? throw new InvalidOperationException("Only GitHubAppInstallations issues the broker's App authorizations.")).Value;
 }
 
-// App installations on GitHub, read with the App's JWT or an installation token.
+// App installations on GitHub, read with the App's JWT or the broker's verifier token.
 internal sealed class GitHubAppInstallations(GitHubIssuance github, CryptographyClient key) : IAppInstallations
 {
     public async Task<AppAuthorization> AuthorizeAsync(AppAuthorizationWindow window, CancellationToken ct)

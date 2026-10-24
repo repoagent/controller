@@ -59,7 +59,7 @@ public sealed class ApprovalObserverTests
     [InlineData("legacy", 4, "read variable environment approval/environment owner/project APPROVAL")]
     [InlineData("agent", 3, "read variable agents owner/project APPROVAL")]
     [InlineData("actions", 3, "read variable actions owner/project REPOAGENT_APPROVAL")]
-    public async Task Unchanged_approval_is_read_from_its_contracts_own_variable(string kind, int reads, string read)
+    public async Task Unchanged_controller_approval_is_read_from_its_contracts_own_variable(string kind, int reads, string read)
     {
         var approval = Approval(kind);
         Publish(approval, approval.Marker);
@@ -255,7 +255,7 @@ public sealed class ApprovalObserverTests
     [InlineData("unreadable-marker", "denied")]
     [InlineData("environment-refused", "denied")]
     [InlineData("variable-not-found", "denied")]
-    public async Task Setup_v1_approval_changes_with_its_environment_or_marker(string observation, string outcome)
+    public async Task Setup_v1_controller_approval_changes_with_its_environment_or_marker(string observation, string outcome)
     {
         var approval = Approval("legacy");
         Publish(approval, observation == "marker" ? "changed-marker" : approval.Marker);
@@ -341,7 +341,7 @@ public sealed class ApprovalObserverTests
     [InlineData("absent", "pending")]
     [InlineData("changed", "pending")]
     [InlineData("uncertain", "denied")]
-    public async Task Pending_repository_variable_approval_is_observed_from_its_variable(string observation, string outcome)
+    public async Task Pending_repository_variable_controller_approval_is_observed_from_its_variable(string observation, string outcome)
     {
         var request = Bound(Request("actions"));
         if (observation == "shown") github.Actions[request.Variable] = request.Marker!;
@@ -362,7 +362,7 @@ public sealed class ApprovalObserverTests
     [InlineData("over-500", "denied")]
     [InlineData("total-changes-between-pages", "denied")]
     [InlineData("over-100-on-a-page", "denied")]
-    public async Task Setup_v1_approval_needs_a_complete_environment_listing(string observation, string outcome)
+    public async Task Setup_v1_controller_approval_needs_a_complete_environment_listing(string observation, string outcome)
     {
         var request = Bound(Request("legacy"));
         if (observation == "shown") github.EnvironmentVariables["APPROVAL"] = request.Marker!;

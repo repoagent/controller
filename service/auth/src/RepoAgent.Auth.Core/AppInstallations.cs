@@ -10,7 +10,7 @@ public interface IAppInstallations
     // The App's installation on the repository, read with the App authorization.
     Task<GitHubRead<AppInstallation>> FindAsync(AppAuthorization app, string repository, CancellationToken ct);
 
-    // The first repositories the installation token can reach: at most two, with GitHub's total count.
+    // The first repositories the broker's verifier token can reach: at most two, with GitHub's total count.
     Task<GitHubRead<InstallationRepositories>> RepositoriesAsync(GitHubToken token, CancellationToken ct);
 }
 
