@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The credential broker core (ADR 0010): decisions only, no I/O. It references no Azure,
+       ASP.NET Core or HTTP types; BannedSymbols.txt rejects the I/O and wall-clock APIs the
+       shared framework still offers. Adapters live in RepoAgent.Auth. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>RepoAgent.Auth</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Remove="System.Net.Http" />
+    <AdditionalFiles Include="BannedSymbols.txt" />
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="4.14.0" PrivateAssets="all" />
+  </ItemGroup>
+</Project>
