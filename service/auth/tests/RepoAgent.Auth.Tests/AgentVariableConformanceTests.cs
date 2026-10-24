@@ -17,11 +17,14 @@ public sealed class AgentVariableConformanceTests
         await using var f = await AgentFixture();
         var pending = await Start(f);
         var receipt = await Complete(f, pending);
-        f.GitHub.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Refused(403);
+        // GitHub answers the named read with another variable, whose value the response must not disclose.
+        f.GitHub.VariableAnswer = _ => GitHubRead.Found(new GitHubVariable("UNRELATED", InMemoryGitHub.PrivateValue));
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var denied = await f.Send($"/v2/enrollments/{pending}/completion");
         Assert.Equal(HttpStatusCode.ServiceUnavailable, denied.StatusCode);
-        Assert.DoesNotContain("deviceSecret", await denied.Content.ReadAsStringAsync(Token));
+        var body = await denied.Content.ReadAsStringAsync(Token);
+        Assert.DoesNotContain("deviceSecret", body);
+        Assert.DoesNotContain(InMemoryGitHub.PrivateValue, body);
 
         f.GitHub.VariableAnswer = null;
         await f.RestartAsync();
@@ -295,7 +298,7 @@ public sealed class AgentVariableConformanceTests
         var receipt = await Complete(f, await Start(f));
         await Ack(f, receipt);
         var marker = f.GitHub.Marker;
-        f.GitHub.Agent["APPROVAL"] = "changed-public-marker";
+        f.GitHub.Agent["APPROVAL"] = InMemoryGitHub.PrivateValue;
         var variableReads = 0;
         f.GitHub.BeforeRead = request =>
         {
@@ -310,7 +313,9 @@ public sealed class AgentVariableConformanceTests
         using var stale = await f.Send($"/v1/devices/{Device(receipt)}/installation-token", secret: Secret(receipt));
         Assert.NotEqual(HttpStatusCode.OK, stale.StatusCode);
         Assert.Equal(1, variableReads);
-        Assert.DoesNotContain("token", await stale.Content.ReadAsStringAsync(Token));
+        var body = await stale.Content.ReadAsStringAsync(Token);
+        Assert.DoesNotContain("token", body);
+        Assert.DoesNotContain(InMemoryGitHub.PrivateValue, body);
 
         f.GitHub.BeforeRead = null;
         f.GitHub.Marker = marker;

@@ -10,6 +10,8 @@ namespace RepoAgent.Auth.Tests;
 internal sealed class InMemoryGitHub(TimeProvider? clock = null) : HttpMessageHandler, IAppInstallations, IControllerApprovals
 {
     public static readonly RepositoryIdentity Project = new(123456, "owner/project");
+    // A variable value only the repository may know. No broker response may contain it.
+    public const string PrivateValue = "private-provider-value";
     // The App's installation on owner/project, with every permission a setup version asks for.
     public static readonly AppInstallation Installed = new(789, IssuancePolicy.AppId, IssuancePolicy.AppSlug, false, new Dictionary<string, string>
     {
