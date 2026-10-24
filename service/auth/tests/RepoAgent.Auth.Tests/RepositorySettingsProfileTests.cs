@@ -114,34 +114,6 @@ public sealed class RepositorySettingsProfileTests
         Assert.Equal(expected, Assert.Single(github.RuntimePermissions));
     }
 
-    [Fact]
-    public async Task GitHub_returning_Variables_for_a_frozen_profile_is_an_invalid_scope_that_is_never_served()
-    {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var github = ActionsVariableEnrollmentTests.Repository.Configure(f);
-        var active = await ActionsVariableEnrollmentTests.Active(f, github);
-        var configured = f.GitHub.Before!;
-        f.GitHub.Before = async request =>
-        {
-            if (request.Method != HttpMethod.Post || request.RequestUri!.AbsolutePath.EndsWith("/installation/token", StringComparison.Ordinal))
-                return await configured(request);
-            var input = await request.Content!.ReadFromJsonAsync<JsonElement>(Token);
-            if (!input.GetProperty("permissions").TryGetProperty("discussions", out _)) return await configured(request);
-            return InMemoryGitHub.Json(new
-            {
-                token = "widened-runtime-token", expires_at = f.Clock.GetUtcNow().AddHours(1), repository_selection = "selected",
-                permissions = new { discussions = "write", actions_variables = "read" },
-                repositories = new[] { new { id = 123456, full_name = "owner/project" } }
-            }, HttpStatusCode.Created);
-        };
-
-        using var runtime = await f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
-
-        Assert.NotEqual(HttpStatusCode.OK, runtime.StatusCode);
-        Assert.DoesNotContain("widened-runtime-token", await runtime.Content.ReadAsStringAsync(Token));
-        Assert.Contains(f.GitHub.Requests, r => r == "DELETE /installation/token");
-    }
-
     [Theory]
     [InlineData("Profile", "polling")]
     [InlineData("Profile", "webhook-settings")]

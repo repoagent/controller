@@ -95,7 +95,7 @@ public sealed class PublishedRuntimeLeaseTests
         await using var f = await IssuanceFixture.CreateAsync();
         Assert.Equal(200, (await f.IssueAsync(TestContext.Current.CancellationToken)).Status);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        f.GitHub.BeforeAuthorize = async () => Assert.Equal(204, await new DeviceRevocation(f.Storage.Table, f.Options, f.Clock)
+        f.GitHub.BeforeAuthorize = async () => Assert.Equal(204, await new DeviceRevocation(new TableBrokerState(f.Storage.Table), RevocationFixture.Epoch, f.Clock)
             .RevokeAsync(f.Device.DeviceId, f.Device.Secret, TestContext.Current.CancellationToken));
 
         var result = await f.IssueAsync(TestContext.Current.CancellationToken);

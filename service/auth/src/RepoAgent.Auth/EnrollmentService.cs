@@ -9,10 +9,11 @@ using static RepoAgent.Auth.EnrollmentStore;
 
 namespace RepoAgent.Auth;
 
-public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance github, IAppInstallations installations,
+public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens tokens, IAppInstallations installations,
     IControllerApprovals approvals, BrokerOptions options, TimeProvider clock)
 {
     private readonly ApprovalObserver observer = new(installations, approvals, clock);
+    private readonly GitHubTokenMinter minter = new(tokens, clock);
 
     public Task<IssuanceResult> StartAsync(EnrollmentRequest request, string? secret, CancellationToken caller) =>
         StartAsync(() => EnrollmentInput.From(request), secret, caller);
@@ -53,12 +54,13 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
             reservation["State"] = "sending";
             reservation["SendClaimedAt"] = clock.GetUtcNow();
             await store.CommitAsync(s, [Action(reservation)], work.Cancellation);
-            IssuedToken? known = null;
+            KnownGitHubToken? known = null;
             try
             {
-                known = await github.MintAsync(s.RepositoryId, Text(s.Pending, "RequestedRepository"), installation, s.Approval.VerifierProfile, app, work.Cancellation);
-                reservation["ProtectedToken"] = store.ProtectToken(s, reservation, known.Token);
-                reservation["ExpiresAt"] = known.ExpiresAt;
+                known = await minter.MintAsync(app, installation, new RepositoryIdentity(Id(s.RepositoryId), Text(s.Pending, "RequestedRepository")),
+                    RuntimeAuthority.For(s.Approval.VerifierProfile), work.Cancellation);
+                reservation["ProtectedToken"] = store.ProtectToken(s, reservation, known.Token.Value);
+                reservation["ExpiresAt"] = known.Token.ExpiresAt;
                 reservation["ScopeValid"] = known.ScopeValid;
                 reservation["State"] = "known";
                 await store.CommitAsync(s, [Action(reservation)], work.Cancellation);
@@ -73,7 +75,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         }
         var token = store.Recover(s, existing!);
         var started = clock.GetUtcNow();
-        var binding = await observer.BindAsync(s.ApprovalRequest(), new GitHubToken(token), work);
+        var binding = await observer.BindAsync(s.ApprovalRequest(), token, work);
         s.Pending["Repository"] = binding.Repository;
         if (s.Approval == ApprovalContract.Legacy)
         {
@@ -130,7 +132,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
                 ["protocolVersion"] = s.Approval.RuntimeVersion, ["brokerOrigin"] = options.BrokerOrigin!.GetLeftPart(UriPartial.Authority), ["githubHost"] = "github.com",
                 ["deviceId"] = s.DeviceId, ["deviceSecret"] = deviceSecret, ["appId"] = AppId, ["appSlug"] = AppSlug,
                 ["installationId"] = Number(s.Pending, "InstallationId"), ["repositoryId"] = Id(s.RepositoryId),
-                ["repository"] = Text(s.Pending, "Repository"), ["permissions"] = Permissions(Text(s.Pending, "Profile"))
+                ["repository"] = Text(s.Pending, "Repository"), ["permissions"] = RuntimeAuthority.For(Text(s.Pending, "Profile")).Permissions
             };
             if (s.Approval.NamesProfile)
             {
@@ -193,7 +195,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
 
     private async Task<ApprovalObservation> ObserveAsync(EnrollmentSnapshot s, TableEntity attempt, IssuanceWork work)
     {
-        var token = new GitHubToken(store.Recover(s, attempt));
+        var token = store.Recover(s, attempt);
         var reservation = await store.ReserveWorkAsync(s, false, work);
         var app = await observer.AuthorizeAsync(AppAuthorizationWindow.Read(reservation), work.Cancellation);
         ApprovalObservation observation;
@@ -256,12 +258,12 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         pendingId = s.Id, state = Date(s.Pending, "Deadline") <= clock.GetUtcNow() && Text(s.Pending, "State") != "active" ? "expired" : Text(s.Pending, "State"),
         marker = s.Pending.GetString("Marker"), deadline = Date(s.Pending, "Deadline")
     });
-    private async Task RevokeKnownAsync(EnrollmentSnapshot s, TableEntity attempt, string token)
+    private async Task RevokeKnownAsync(EnrollmentSnapshot s, TableEntity attempt, GitHubToken token)
     {
         using var allowance = new CancellationTokenSource(TimeSpan.FromSeconds(6));
         try
         {
-            await github.RevokeAsync(token, allowance.Token);
+            await minter.RevokeAsync(token, allowance.Token);
             PayloadClock.RequireAttempt(attempt);
             PayloadClock.FirstTerminal(attempt, clock.GetUtcNow());
             attempt["State"] = "settled";
@@ -278,7 +280,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         catch (Exception ex) when (Expected(ex)) { return new(ex is IssuanceDenied denied ? denied.Status : 503); }
     }
     private static bool Expected(Exception ex) => ex is IssuanceDenied or ApprovalChanged or RequestFailedException or AuthenticationFailedException
-        or HttpRequestException or IOException or InvalidDataException or InvalidCastException or FormatException or JsonException
+        or IOException or InvalidDataException or InvalidCastException or FormatException or JsonException
         or OverflowException or OperationCanceledException or CryptographicException or KeyNotFoundException or InvalidOperationException or ArgumentException
         or SecretProtectionFailed or GitHubUnavailable;
 }

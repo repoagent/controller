@@ -11,14 +11,7 @@ public sealed partial class CapacityReclamationTests
     {
         await using var f = await EnrollmentFixture.CreateAsync(settings: new() { ["Broker:RetainedIssuanceLimit"] = "1" });
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
-        var previous = f.GitHub.Before;
-        f.GitHub.Before = request => request.Method == HttpMethod.Post
-            ? Task.FromResult<HttpResponseMessage?>(InMemoryGitHub.Json(new
-            {
-                token = "invalid-scope-token", expires_at = f.Clock.GetUtcNow().AddHours(1), repository_selection = "all",
-                permissions = new { agent_variables = "read" },
-                repositories = new[] { new { id = 123456, full_name = "owner/project" } }
-            }, HttpStatusCode.Created)) : previous!(request);
+        f.GitHub.MintAnswer = (_, token) => GitHubRead.Found(token with { Value = "invalid-scope-token", OnlyListedRepositories = false });
         using var failedScope = await f.Send("/v2/enrollments", Request(Guid.NewGuid().ToString("N")));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, failedScope.StatusCode);
         Assert.Equal(1, f.GitHub.Revokes);
@@ -44,7 +37,7 @@ public sealed partial class CapacityReclamationTests
         await AssertAbsent(f, RevocationFixture.Partition, "release:" + ledger.GetString("OperationId"));
         Assert.Equal(0L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("RetainedIssuanceCount"));
         await Reclaim(f, ledger); // A duplicate cannot refund another allocation.
-        AgentVariableEnrollmentTests.ConfigureGitHub(f);
+        f.GitHub.MintAnswer = null; // GitHub mints in scope again.
         using var replacement = await f.Send("/v2/enrollments", Request(Guid.NewGuid().ToString("N")));
         Assert.Equal(HttpStatusCode.OK, replacement.StatusCode);
         Assert.Equal(1L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("RetainedIssuanceCount"));

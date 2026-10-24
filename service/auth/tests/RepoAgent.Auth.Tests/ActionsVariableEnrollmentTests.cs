@@ -310,41 +310,25 @@ public sealed class ActionsVariableEnrollmentTests
         public static Repository Configure(EnrollmentFixture f)
         {
             var repository = new Repository(f.GitHub);
-            f.GitHub.Before = async request =>
+            f.GitHub.BeforeMint = mint =>
             {
-                if (request.Method == HttpMethod.Post)
+                Assert.Equal(InMemoryGitHub.Project.Id, mint.Repository.Id);
+                var permissions = mint.Authority.Permissions;
+                if (permissions.Keys.ToArray() is [var permission] && permission.EndsWith("variables", StringComparison.Ordinal))
                 {
-                    var input = JsonSerializer.Deserialize<JsonElement>(await request.Content!.ReadAsStringAsync(Token));
-                    var permissions = input.GetProperty("permissions");
-                    Assert.Equal(123456, Assert.Single(input.GetProperty("repository_ids").EnumerateArray()).GetInt64());
-                    var names = permissions.EnumerateObject().Select(p => p.Name).ToArray();
-                    if (names is [var permission] && permission.EndsWith("variables", StringComparison.Ordinal))
-                    {
-                        // The broker-internal verifier reads approval with exactly one read-only grant.
-                        Assert.Equal("read", permissions.GetProperty(permission).GetString());
-                        repository.VerifierPermission = permission;
-                        repository.VerifierMints++;
-                        return InMemoryGitHub.Json(new
-                        {
-                            token = "actions-verifier-token", expires_at = f.Clock.GetUtcNow().AddHours(1),
-                            repository_selection = "selected", permissions,
-                            repositories = new[] { new { id = 123456, full_name = "owner/project" } }
-                        }, HttpStatusCode.Created);
-                    }
-                    // Runtime credentials never write variables or read other approval locations; only
-                    // the explicit repository-settings profiles may add Actions variables read (asserted per test).
-                    Assert.DoesNotContain(names, name => name is "actions" or "environments" or "variables" or "secrets" or "agent_variables");
-                    if (permissions.TryGetProperty("actions_variables", out var variables)) Assert.Equal("read", variables.GetString());
-                    Assert.Equal("write", permissions.GetProperty("discussions").GetString());
-                    repository.RuntimePermissions.Add(permissions.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString()!));
-                    return InMemoryGitHub.Json(new
-                    {
-                        token = "runtime-token-" + f.GitHub.Mints, expires_at = f.Clock.GetUtcNow().Add(f.GitHub.RuntimeLifetime),
-                        repository_selection = "selected", permissions,
-                        repositories = new[] { new { id = 123456, full_name = "owner/project" } }
-                    }, HttpStatusCode.Created);
+                    // The broker-internal verifier reads approval with exactly one read-only grant.
+                    Assert.Equal("read", permissions[permission]);
+                    repository.VerifierPermission = permission;
+                    repository.VerifierMints++;
+                    return Task.CompletedTask;
                 }
-                return null;
+                // Runtime credentials never write variables or read other approval locations; only
+                // the explicit repository-settings profiles may add Actions variables read (asserted per test).
+                Assert.DoesNotContain(permissions.Keys, name => name is "actions" or "environments" or "variables" or "secrets" or "agent_variables");
+                if (permissions.TryGetValue("actions_variables", out var variables)) Assert.Equal("read", variables);
+                Assert.Equal("write", permissions["discussions"]);
+                repository.RuntimePermissions.Add(permissions.ToDictionary(p => p.Key, p => p.Value));
+                return Task.CompletedTask;
             };
             return repository;
         }

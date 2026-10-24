@@ -167,38 +167,28 @@ public sealed class CloneEnrollmentContractTests
         return versions.Order().ToArray();
     }
 
-    private static void AssertPermissions(string profile, JsonElement actual)
+    private static void AssertPermissions(string profile, JsonElement actual) =>
+        AssertPermissions(profile, actual.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString()!));
+
+    private static void AssertPermissions(string profile, IReadOnlyDictionary<string, string> actual)
     {
         var expected = new Dictionary<string, string> { ["discussions"] = "write" };
         if (profile.EndsWith("-clone", StringComparison.Ordinal)) expected["contents"] = "read";
         if (profile == "webhook-clone") expected["repository_hooks"] = "write";
-        Assert.Equal(expected.OrderBy(p => p.Key), actual.EnumerateObject()
-            .Select(p => new KeyValuePair<string, string>(p.Name, p.Value.GetString()!)).OrderBy(p => p.Key));
+        Assert.Equal(expected.OrderBy(p => p.Key), actual.OrderBy(p => p.Key));
     }
 
+    // Runtime tokens of clone enrollments carry exactly the clone profile's authority.
     internal static void ConfigureGitHub(EnrollmentFixture f, string profile)
     {
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
-        var agent = f.GitHub.Before!;
-        f.GitHub.Before = async request =>
+        var agent = f.GitHub.BeforeMint!;
+        f.GitHub.BeforeMint = mint =>
         {
-            if (request.Method == HttpMethod.Post)
-            {
-                var body = await request.Content!.ReadFromJsonAsync<JsonElement>(Token);
-                var permissions = body.GetProperty("permissions");
-                if (!permissions.TryGetProperty("agent_variables", out _))
-                {
-                    Assert.Equal(123456, Assert.Single(body.GetProperty("repository_ids").EnumerateArray()).GetInt64());
-                    AssertPermissions(profile, permissions);
-                    return InMemoryGitHub.Json(new
-                    {
-                        token = "runtime-token-" + f.GitHub.Mints, expires_at = f.Clock.GetUtcNow().Add(f.GitHub.RuntimeLifetime),
-                        repository_selection = "selected", permissions,
-                        repositories = new[] { new { id = 123456, full_name = "owner/project" } }
-                    }, HttpStatusCode.Created);
-                }
-            }
-            return await agent(request);
+            if (mint.Authority.Permissions.ContainsKey("agent_variables")) return agent(mint);
+            Assert.Equal(InMemoryGitHub.Project.Id, mint.Repository.Id);
+            AssertPermissions(profile, mint.Authority.Permissions);
+            return Task.CompletedTask;
         };
     }
 }

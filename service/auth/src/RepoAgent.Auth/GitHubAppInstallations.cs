@@ -18,7 +18,7 @@ internal sealed class GitHubAppAuthorization(string jwt) : AppAuthorization
 }
 
 // App installations on GitHub, read with the App's JWT or the broker's verifier token.
-internal sealed class GitHubAppInstallations(GitHubIssuance github, CryptographyClient key) : IAppInstallations
+internal sealed class GitHubAppInstallations(GitHubRest github, CryptographyClient key) : IAppInstallations
 {
     public async Task<AppAuthorization> AuthorizeAsync(AppAuthorizationWindow window, CancellationToken ct)
     {
@@ -38,7 +38,7 @@ internal sealed class GitHubAppInstallations(GitHubIssuance github, Cryptography
     }
 
     public Task<GitHubRead<AppInstallation>> FindAsync(AppAuthorization app, string repository, CancellationToken ct) =>
-        github.ReadAsync($"repos/{GitHubIssuance.RepositoryPath(repository)}/installation", GitHubAppAuthorization.Jwt(app), Installation, ct);
+        github.ReadAsync($"repos/{GitHubRest.RepositoryPath(repository)}/installation", GitHubAppAuthorization.Jwt(app), Installation, ct);
 
     public Task<GitHubRead<InstallationRepositories>> RepositoriesAsync(GitHubToken token, CancellationToken ct) =>
         github.ReadAsync("installation/repositories?per_page=2", token.Value, Repositories, ct);
@@ -46,14 +46,14 @@ internal sealed class GitHubAppInstallations(GitHubIssuance github, Cryptography
     // A permission level that is not a JSON string is passed on as null, so a permission the broker
     // does not need never fails the read.
     private static AppInstallation Installation(JsonElement root) => new(root.GetProperty("id").GetInt64(),
-        root.GetProperty("app_id").GetInt64(), GitHubIssuance.JsonText(root.GetProperty("app_slug")),
+        root.GetProperty("app_id").GetInt64(), GitHubRest.JsonText(root.GetProperty("app_slug")),
         root.GetProperty("suspended_at").ValueKind != JsonValueKind.Null,
         root.GetProperty("permissions").EnumerateObject().ToDictionary(p => p.Name,
             p => p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : null, StringComparer.Ordinal));
 
     private static InstallationRepositories Repositories(JsonElement root) => new(root.GetProperty("total_count").GetInt32(),
         [.. root.GetProperty("repositories").EnumerateArray()
-            .Select(r => new RepositoryIdentity(r.GetProperty("id").GetInt64(), GitHubIssuance.JsonText(r.GetProperty("full_name"))))]);
+            .Select(r => new RepositoryIdentity(r.GetProperty("id").GetInt64(), GitHubRest.JsonText(r.GetProperty("full_name"))))]);
 
     private static string Base64(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }

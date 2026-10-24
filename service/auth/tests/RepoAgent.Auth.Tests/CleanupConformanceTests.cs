@@ -171,13 +171,10 @@ public sealed partial class CleanupProcessTests
     {
         await using var f = await EnrollmentFixture.CreateAsync();
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
-        var normal = f.GitHub.Before!;
-        f.GitHub.Before = request => request.Method == HttpMethod.Delete
-            ? throw new HttpRequestException("Unobserved revocation")
-            : request.Method == HttpMethod.Post
-                ? sending ? throw new HttpRequestException("Unknown send outcome")
-                    : Task.FromResult<HttpResponseMessage?>(InMemoryGitHub.Json(new { token = "unsettled-test-token", expires_at = "invalid" }, HttpStatusCode.Created))
-                : normal(request);
+        f.GitHub.BeforeRevoke = _ => throw new GitHubUnavailable("Unobserved revocation");
+        if (sending) f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("Unknown send outcome");
+        // GitHub's answer carries the token, but neither a readable expiry nor any scope.
+        else f.GitHub.MintAnswer = (_, _) => GitHubRead.Found(new MintedGitHubToken("unsettled-test-token", null, null, null, null));
         f.Clock.Advance(TimeSpan.FromDays(-2));
         using var start = await Start(f, Guid.NewGuid().ToString("N"));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, start.StatusCode);
@@ -439,14 +436,7 @@ public sealed partial class CleanupProcessTests
     {
         await using var f = await EnrollmentFixture.CreateAsync();
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
-        var normal = f.GitHub.Before!;
-        f.GitHub.Before = request => request.Method == HttpMethod.Post
-            ? Task.FromResult<HttpResponseMessage?>(InMemoryGitHub.Json(new
-            {
-                token = "invalid-scope-test-token", expires_at = f.Clock.GetUtcNow().AddHours(1), repository_selection = "all",
-                permissions = new { agent_variables = "read" },
-                repositories = new[] { new { id = 123456, full_name = "owner/project" } }
-            }, HttpStatusCode.Created)) : normal(request);
+        f.GitHub.MintAnswer = (_, token) => GitHubRead.Found(token with { Value = "invalid-scope-test-token", OnlyListedRepositories = false });
         f.Clock.Advance(TimeSpan.FromDays(-40));
         using var start = await Start(f, Guid.NewGuid().ToString("N"));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, start.StatusCode);
