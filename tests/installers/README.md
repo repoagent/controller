@@ -74,7 +74,7 @@ controller executable inside it; the test checks both hashes before use. It star
 the image's own entrypoint with `REPOAGENT_ENROLLMENT` injected by name and
 nonsecret `REPOAGENT_*` configuration, with no config or enrollment volume. The
 `GitProvider` fixture stands in for GitHub and the broker behind an HTTPS proxy and
-accepts only the injected device secret. The test checks readiness, that no file
+accepts only the injected controller secret. The test checks readiness, that no file
 or native process receives the secret, restart with reinjection over retained
 volumes, and safe refusal of missing, mismatched or rejected credentials without
 falling back to an ambient `GH_TOKEN`. This is controlled-transport evidence, not

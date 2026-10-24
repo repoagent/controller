@@ -4,7 +4,7 @@ Polling remains the default. Fixed-URL mode adds an HTTP listener and registers 
 
 ## Configure and run
 
-Install the App with **Discussions: read and write** and **Webhooks: read and write**. The installation owner must approve the additional permission after it is added to the App. Polling-only deployments do not need the Webhooks permission. Webhook-mode installation tokens retain both approved permissions when renewed.
+Install the App with **Discussions: read and write** and **Webhooks: read and write**. The installation owner must approve the additional permission after it is added to the App. Polling-only deployments do not need the Webhooks permission. Webhook-mode GitHub tokens retain both approved permissions when renewed.
 
 Provide external HTTPS ingress that forwards `/github/webhook` to the container's HTTP listener. The public URL must be an HTTPS origin without a path, query, fragment or embedded credentials. TLS terminates at the ingress; keep certificate verification enabled for GitHub deliveries.
 
@@ -62,19 +62,19 @@ Deleting local storage does not disable or delete the remote hook. For permanent
 | [Quick Tunnel](quick-tunnel.md) | Available | Temporary hostname for local testing, no Cloudflare account/domain |
 | Named tunnel | Planned in [#22](https://github.com/repoagent/controller/issues/22) | Stable hostname with operator-managed Cloudflare configuration |
 
-The same image can run behind external HTTP ingress in Azure Container Apps or another host. Set the public origin to that deployment's HTTPS hostname and the ingress target port to the configured listener port. Run image command `start`; provide the selected key at `/run/secrets/github-app.pem`, container-owned Codex authentication, public configuration, and persistent storage at the paths in the container guide. Keep configuration read-only during native work. Use one replica and persistent storage for the JSON state/native history; do not rely on an ephemeral container filesystem for conversation continuity. Provisioning the cloud resources and HTTPS ingress is operator-owned.
+The same image can run behind external HTTP ingress in Azure Container Apps or another host. Set the public origin to that deployment's HTTPS hostname and the ingress target port to the configured listener port. Run image command `start`; provide the selected key at `/run/secrets/github-app.pem`, container-owned Codex authentication, public configuration, and persistent storage at the paths in the container guide. Keep configuration read-only during agent work. Use one replica and persistent storage for the JSON state/native history; do not rely on an ephemeral container filesystem for conversation continuity. Provisioning the cloud resources and HTTPS ingress is operator-owned.
 
 ## Manual verification catalog
 
-Use authorized disposable Discussions and separate human participant credentials. Observe conditions with bounded deadlines; retain failures for diagnosis rather than automatically retrying the journey. Record image/tool versions, source/reply URLs, delivery IDs, native session IDs, hook ID/URL and redacted logs in issue #20.
+Use authorized disposable Discussions and separate human participant credentials. Observe conditions with bounded deadlines; retain failures for diagnosis rather than automatically retrying the journey. Record image/tool versions, source/reply URLs, delivery IDs, agent session IDs, hook ID/URL and redacted logs in issue #20.
 
 | Case | Action | Observable result |
 | --- | --- | --- |
-| W01 | After startup reconciliation, create a canonical App mention while periodic reconciliation is not due. | Real GitHub delivery gets a prompt 2xx; targeted observation, native session, App reply and source EYES precede the next reconciliation. |
+| W01 | After startup reconciliation, create a canonical App mention while periodic reconciliation is not due. | Real GitHub delivery gets a prompt 2xx; targeted observation, agent session, App reply and source EYES precede the next reconciliation. |
 | W02 | Add a comment and a nested reply. | Each delivery targets the existing Discussion/session and the App replies under the correct root, with source EYES. |
 | W03 | Redeliver a handled delivery using GitHub's delivery API/UI. | Delivery is acknowledged/observed without another forwarded accepted source or duplicate reply. |
 | W04 | Send an invalid signature; separately sign a wrong-repository payload using the test deployment's secret. | HTTP401/403 respectively; neither schedules agent work. Never put the secret in a command argument or log. |
-| W05 | Restart; then change the externally supplied origin and start again. | One saved hook ID/secret is reused, URL changes in GitHub, and a real continuation keeps the same native session/context. |
+| W05 | Restart; then change the externally supplied origin and start again. | One saved hook ID/secret is reused, URL changes in GitHub, and a real continuation keeps the same agent session/context. |
 | W06 | Add a human reaction on App output. | A scheduled reconciliation observes it and native feedback is accepted, without requiring a reaction webhook. |
 | W07 | Select polling in a separate clean instance. | Authentication and ordinary polling still work without hook permission, listener or published port. |
 
