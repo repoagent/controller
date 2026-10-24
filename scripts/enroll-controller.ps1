@@ -192,8 +192,8 @@ try {
     if (-not $Profile) { $Profile = 'polling' }
     Assert-Text $Profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?\z'
     $clone = $Profile.Contains('-clone', [StringComparison]::Ordinal)
-    # The repository-settings family (runtime v3) adds exactly Actions variables read to a frozen
-    # profile. It exists only under Actions-variable approval; frozen profiles are never widened.
+    # Repository-settings profiles (runtime v3) add exactly Actions variables read to a frozen
+    # profile. They exist only under Actions-variable approval; frozen profiles are never widened.
     $settings = $Profile.EndsWith('-settings', [StringComparison]::Ordinal)
     if ($settings -and -not $actions) { Stop-Enrollment 'Repository-settings profiles require Actions-variable approval (setup v3); Agent-variable approval serves only the frozen profiles.' }
     $runtimeVersion = if ($settings) { 3 } elseif ($clone) { 2 } else { 1 }

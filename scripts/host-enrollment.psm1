@@ -270,7 +270,7 @@ function Invoke-EnrollmentBroker([string]$Origin, [string]$Method, [string]$Path
     $origin = Get-BrokerOrigin $Origin
     Assert-Text $Secret '\A[A-Za-z0-9_-]{43,128}\z'
     # Setup v2 (legacy Agent variable) and v3 (Actions variable); runtime revoke is v1/v2 for frozen
-    # profiles and v3 for the repository-settings family.
+    # profiles and v3 for repository-settings profiles.
     if ($Path -cnotmatch '\A(?:/v[23]/enrollments(?:/[A-Za-z0-9_-]+(?:/completion)?)?|/v[23]/devices/[A-Za-z0-9_-]+/acknowledgment|/v[123]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker route.' }
     $operation = $Method + ' ' + $Path
     if ($operation -cnotmatch '\A(?:POST /v[23]/enrollments|GET /v[23]/enrollments/[A-Za-z0-9_-]+|POST /v[23]/enrollments/[A-Za-z0-9_-]+/completion|POST /v[23]/devices/[A-Za-z0-9_-]+/acknowledgment|DELETE /v[123]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker operation.' }

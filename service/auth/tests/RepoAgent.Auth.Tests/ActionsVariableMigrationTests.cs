@@ -54,7 +54,7 @@ public sealed partial class CapacityReclamationTests
     }
 
     // Opting in to repository settings is a fresh enrollment. The frozen v3 owner keeps its exact
-    // grants, is never upgraded to the settings family and blocks it until revoked and settled.
+    // grants, is never upgraded to a repository-settings profile and blocks it until revoked and settled.
     [Fact]
     public async Task Frozen_Actions_owner_moves_to_the_settings_profile_only_through_revocation_and_fresh_enrollment()
     {
