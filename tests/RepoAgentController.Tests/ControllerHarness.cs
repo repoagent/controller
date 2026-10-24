@@ -1,11 +1,13 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Microsoft.Extensions.Time.Testing;
+using Microsoft.Win32.SafeHandles;
 using RepoAgentController;
 using Xunit;
 
@@ -29,6 +31,42 @@ static class ControllerHarness
         probe.Start();
         return ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
     }
+
+    /// <summary>
+    /// Reads a controlled gh's JSON file and, with <paramref name="write"/>, rewrites it in place, while holding the exclusive
+    /// flock that gh takes on it, so neither sees the other's partial file or loses the other's change. A replacement would
+    /// leave gh locking the old copy.
+    /// </summary>
+    public static T LockedJson<T>(string file, Func<JsonObject, T> use, bool write = false)
+    {
+        // On Unix, .NET emulates FileShare with a non-blocking flock, so File.ReadAllText or any FileStream it opens fails at
+        // once ("being used by another process") while gh holds its lock, and a second open would conflict with this lock.
+        // So the file is opened outside .NET, close-on-exec (a child the controller starts meanwhile must not inherit the
+        // lock), and the lock is waited for as gh waits for it.
+        using var handle = new SafeFileHandle(Open(file, OpenReadWrite | OpenCloseOnExec), ownsHandle: true);
+        if (handle.IsInvalid) throw new IOException($"Could not open {file}: errno {Marshal.GetLastPInvokeError()}");
+        while (Flock(handle, LockExclusive) != 0)
+            if (Marshal.GetLastPInvokeError() is var error && error != Interrupted)
+                throw new IOException($"Could not lock {file}: errno {error}");
+        using var stream = new FileStream(handle, FileAccess.ReadWrite);
+        var state = JsonNode.Parse(stream)!.AsObject();
+        var result = use(state);
+        if (write)
+        {
+            stream.SetLength(0);
+            stream.Position = 0;
+            stream.Write(Encoding.UTF8.GetBytes(state.ToJsonString()));
+        }
+        return result;
+    }
+
+    const int OpenReadWrite = 2, OpenCloseOnExec = 0x80000, LockExclusive = 2, Interrupted = 4; // Linux values.
+
+    [DllImport("libc", EntryPoint = "open", SetLastError = true)]
+    static extern int Open([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
+
+    [DllImport("libc", EntryPoint = "flock", SetLastError = true)]
+    static extern int Flock(SafeFileHandle descriptor, int operation);
 
     /// <summary>A <see cref="Delivery.Signature"/> that sends no signature header.</summary>
     public const string Unsigned = "\0";
