@@ -27,6 +27,6 @@ It runs when a tool has a newer release, and on manual dispatch, for example to 
 
 - `toolUpdates: latest` and `container/update_tools.py` are removed. Configurations saved with `latest`, or saved before the choice existed, run the image's pinned tools.
 - cloudflared joins Codex and the GitHub CLI in the daily tool refresh.
-- The smoke test needs a token for the `repoagent` account and an OpenAI API key, both held in a protected environment.
+- The smoke test needs a token for the `repoagent` account and an OpenAI API key, held as repository secrets. Only a run on `main` pins tools and publishes; any branch can run the smoke test, one run at a time.
 
 Implementation: [#207](https://github.com/repoagent/controller/issues/207).
