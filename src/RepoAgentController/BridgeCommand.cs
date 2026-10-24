@@ -141,7 +141,7 @@ public static class BridgeCommand
                     await github.ConfigureMentionUser(result.GetValue(mentionUser), cancellationToken);
                     store.VerifyIdentity(credentials.AgentLogin);
                     if (result.GetValue(disableWebhook))
-                        return await DiscussionWebhooks.DeactivateSaved(github, statePath) ? 0 : 1;
+                        return await new GitHubWebhookRegistration(github, statePath).Deactivate() ? 0 : 1;
                     if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentialDirectory);
                     var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentialDirectory);
                     var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, result.GetValue(repositorySettings) ? new GitHubRepositorySettings(github) : null, new ControllerStateFiles(statePath), time, new ControllerLog());
@@ -194,7 +194,7 @@ public static class BridgeCommand
                         var dispatcher = bridge.DispatchWhenIdle(dispatchStop.Token, runtimeToken);
                         try
                         {
-                            var webhooks = publicUrl is null ? null : new DiscussionWebhooks(github, bridge, statePath,
+                            var webhooks = publicUrl is null ? null : new DiscussionWebhooks(github, bridge, new GitHubWebhookRegistration(github, statePath),
                                 new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), time, reconciliation);
                             // A long-running controller reports busy or idle in every mode; --once observes once and exits.
                             // Disposed after the webhook is deactivated: the HTTP server stops last.
