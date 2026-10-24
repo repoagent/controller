@@ -98,6 +98,23 @@ public sealed class ActionsVariableEnrollmentTests
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
 
+    // Repository-settings tooling writes REPOAGENT_ Actions variables; only the catalogue's reserved
+    // approval name may share that prefix, so settings changes can never overwrite an approval marker.
+    // Legacy Agent variables are a separate store and keep their name rules.
+    [Theory]
+    [InlineData(3, "repoagent_model", HttpStatusCode.BadRequest)]
+    [InlineData(3, "REPOAGENT_FUTURE_SETTING", HttpStatusCode.BadRequest)]
+    [InlineData(3, "repoagent_approval", HttpStatusCode.OK)]
+    [InlineData(2, "REPOAGENT_MODEL", HttpStatusCode.OK)]
+    public async Task Actions_variable_approval_cannot_take_a_repository_settings_name(int setupVersion, string variable, HttpStatusCode expected)
+    {
+        await using var f = await EnrollmentFixture.CreateAsync();
+        Repository.Configure(f);
+        using var start = await f.Send($"/v{setupVersion}/enrollments", Request() with { Variable = variable });
+        Assert.Equal(expected, start.StatusCode);
+        if (expected == HttpStatusCode.BadRequest) Assert.Empty(f.GitHub.Requests);
+    }
+
     [Fact]
     public async Task Public_coordinates_copied_markers_or_the_wrong_variable_location_never_complete_enrollment()
     {
