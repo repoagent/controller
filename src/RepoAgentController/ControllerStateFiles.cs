@@ -18,14 +18,16 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) { return null; }
     }
 
-    // An entry of an unknown state, or with a value but no readable time, is ignored.
+    // An entry with a value but no readable time is ignored. A value is retained whatever state was recorded with it, so an
+    // entry of an unknown state reads as pending: not yet observed by this lifetime.
     public RecordedSettings? ReadSettings()
     {
         if (SettingsJson(statePath) is not { } settings) return null;
         var recorded = new Dictionary<string, SettingValue>();
         foreach (var (name, entry) in settings)
         {
-            if (entry is not JsonObject item || SettingStates.Parse(item["state"].OptionalText()) is not { } state) continue;
+            if (entry is not JsonObject item) continue;
+            var state = SettingStates.Parse(item["state"].OptionalText()) ?? SettingState.Pending;
             var value = item["value"].OptionalText();
             var since = default(DateTimeOffset);
             if (value is not null && !(item["since"].OptionalText() is { } at &&
