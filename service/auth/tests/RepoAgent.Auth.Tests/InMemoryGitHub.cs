@@ -176,6 +176,5 @@ internal sealed record TokenMint(int Number, AppAuthorization App, long Installa
         [.. new[] { "verification", "agent-variable-verification", "actions-variable-verification" }.Select(RuntimeAuthority.For)];
 
     // The broker's verifier token carries one of the approval contracts' verifier authorities.
-    public bool Verifier => Verifiers.Any(verifier => verifier.Permissions.Count == Authority.Permissions.Count
-        && verifier.Permissions.All(p => Authority.Permissions.TryGetValue(p.Key, out var level) && level == p.Value));
+    public bool Verifier => Verifiers.Contains(Authority);
 }

@@ -20,7 +20,7 @@ public sealed class GitHubTokenMinter(IGitHubTokens tokens, TimeProvider clock)
         // An expiry GitHub did not report readably is never treated as passed.
         var token = new GitHubToken(minted.Value, minted.ExpiresAt ?? DateTimeOffset.MaxValue);
         return new(token, minted.ExpiresAt is { } expiry && Serviceable(expiry)
-            && OnlyThe(repository, minted) && minted.Permissions is { } permissions && Exactly(authority, permissions));
+            && OnlyThe(repository, minted) && minted.Permissions is { } permissions && authority.MatchesExactly(permissions));
     }
 
     // Returns only when GitHub confirmed the revocation. Otherwise the token stays known, and charged, until it expires.
@@ -42,9 +42,4 @@ public sealed class GitHubTokenMinter(IGitHubTokens tokens, TimeProvider clock)
     private static bool OnlyThe(RepositoryIdentity repository, MintedGitHubToken minted) =>
         minted.OnlyListedRepositories == true && minted.Repositories is [var only]
         && only.Id == repository.Id && string.Equals(only.FullName, repository.FullName, StringComparison.OrdinalIgnoreCase);
-
-    // Every permission at exactly its level, and nothing more but the metadata read GitHub adds to every token.
-    private static bool Exactly(RuntimeAuthority authority, IReadOnlyDictionary<string, string?> permissions) =>
-        authority.Permissions.All(p => permissions.TryGetValue(p.Key, out var level) && level == p.Value)
-        && permissions.All(p => authority.Permissions.TryGetValue(p.Key, out var level) && level == p.Value || p is { Key: "metadata", Value: "read" });
 }

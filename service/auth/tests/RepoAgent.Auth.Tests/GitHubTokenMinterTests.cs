@@ -29,7 +29,7 @@ public sealed class GitHubTokenMinterTests
 
         var mint = Assert.Single(github.MintRequests);
         Assert.Equal((789L, Project), (mint.InstallationId, mint.Repository));
-        Assert.Equal(RuntimeAuthority.For(profile).Permissions, mint.Authority.Permissions);
+        Assert.Equal(RuntimeAuthority.For(profile), mint.Authority);
         Assert.True(known.ScopeValid);
         Assert.Equal(new GitHubToken(mint.Verifier ? "verifier-token" : "runtime-token-1", clock.GetUtcNow().AddHours(1)), known.Token);
         Assert.Equal(1, github.Authorizations);
