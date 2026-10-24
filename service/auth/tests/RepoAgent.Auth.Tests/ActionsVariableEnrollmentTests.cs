@@ -273,10 +273,10 @@ public sealed class ActionsVariableEnrollmentTests
         Assert.Equal(expected, body.GetProperty("permissions").EnumerateObject().Select(p => p.Name).Order());
     }
 
-    internal static AgentEnrollmentRequest Request(string profile = "polling") =>
+    internal static RepositoryVariableEnrollmentRequest Request(string profile = "polling") =>
         new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "repoagent_approval", profile);
     private static Task<JsonElement> Json(HttpResponseMessage response) => response.Content.ReadFromJsonAsync<JsonElement>(Token);
-    private static async Task<(string Id, string Marker)> Start(EnrollmentFixture f, string route, AgentEnrollmentRequest request, string? secret = null)
+    private static async Task<(string Id, string Marker)> Start(EnrollmentFixture f, string route, RepositoryVariableEnrollmentRequest request, string? secret = null)
     {
         using var start = await f.Send(route, request, secret);
         Assert.Equal(HttpStatusCode.OK, start.StatusCode);
@@ -292,7 +292,7 @@ public sealed class ActionsVariableEnrollmentTests
         Assert.Equal("pending", JsonSerializer.Deserialize<JsonElement>(text).GetProperty("state").GetString());
     }
 
-    internal sealed record ActiveGrant(AgentEnrollmentRequest Request, string Pending, string Marker, string Device, string Secret, string Completion, JsonElement Enrollment);
+    internal sealed record ActiveGrant(RepositoryVariableEnrollmentRequest Request, string Pending, string Marker, string Device, string Secret, string Completion, JsonElement Enrollment);
 
     // Setup v2 uses the legacy Agent location; setup v3 the Actions location. The request
     // variable is preserved so a legacy grant can be compared with copied v3 coordinates.

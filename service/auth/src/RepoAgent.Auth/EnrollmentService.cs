@@ -17,7 +17,7 @@ public sealed class EnrollmentService(EnrollmentStore store, GitHubIssuance gith
         StartAsync(() => EnrollmentInput.From(request), secret, caller);
 
     // Setup v2 binds a repository Agent variable; setup v3 binds a repository Actions variable.
-    public Task<IssuanceResult> StartAgentAsync(AgentEnrollmentRequest request, string? secret, CancellationToken caller, int setupVersion = 2) =>
+    public Task<IssuanceResult> StartRepositoryVariableAsync(RepositoryVariableEnrollmentRequest request, string? secret, CancellationToken caller, int setupVersion = 2) =>
         StartAsync(() => EnrollmentInput.From(request, setupVersion), secret, caller);
 
     private Task<IssuanceResult> StartAsync(Func<EnrollmentInput> input, string? secret, CancellationToken caller) => Run(async work =>

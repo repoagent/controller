@@ -11,15 +11,17 @@ public sealed record EnrollmentRequest(string IdempotencyId, long RepositoryId, 
 {
     public void Validate()
     {
-        new AgentEnrollmentRequest(IdempotencyId, RepositoryId, Repository, Variable, Profile).Validate();
+        new RepositoryVariableEnrollmentRequest(IdempotencyId, RepositoryId, Repository, Variable, Profile).Validate();
         if (Profile is not ("polling" or "webhook")) throw new IssuanceDenied(400);
         if (Environment is null || Environment.Length is < 1 or > 255 || Environment.Any(char.IsControl)) throw new IssuanceDenied(400);
     }
     public string Digest() => Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(this)));
 }
 
+// The setup v2 (repository Agent variable) and v3 (repository Actions variable) start body. Wire names
+// and digests come from its properties and domain strings, never from this type name.
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record AgentEnrollmentRequest(string IdempotencyId, long RepositoryId, string Repository, string Variable, string Profile)
+public sealed record RepositoryVariableEnrollmentRequest(string IdempotencyId, long RepositoryId, string Repository, string Variable, string Profile)
 {
     public void Validate()
     {
@@ -47,7 +49,7 @@ internal sealed record EnrollmentInput(string IdempotencyId, long RepositoryId, 
         return new(request.IdempotencyId, request.RepositoryId, request.Repository, request.Environment,
             request.Variable, request.Profile, request.Digest(), ApprovalContract.Legacy);
     }
-    public static EnrollmentInput From(AgentEnrollmentRequest request, int setupVersion = 2)
+    public static EnrollmentInput From(RepositoryVariableEnrollmentRequest request, int setupVersion = 2)
     {
         request.Validate();
         var approval = ApprovalContract.ForSetup(setupVersion, request.Profile);
