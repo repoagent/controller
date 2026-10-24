@@ -1,6 +1,9 @@
 # Repository settings
 
-Nonsecret controller settings live in direct repository **Actions variables** named `REPOAGENT_*`. Operators change them after installation, without reinstalling. The operator's host GitHub authority writes them; the controller's runtime credential can only read them. Never store a secret in these variables: the runtime installation token is shared with the agent's `gh`, so the agent can read them too.
+Nonsecret controller settings live in direct repository **Actions variables** named `REPOAGENT_*`. Operators change them after installation, without reinstalling. The operator's host GitHub authority writes them; the controller's runtime credential can only read them.
+
+> [!WARNING]
+> Repository Actions variables must never hold secrets. A controller that reads repository settings, and so the agent it runs, can read every direct repository Actions variable, not only `REPOAGENT_*` settings: the agent's `gh` uses the controller's runtime token ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md)).
 
 The supported names and validation rules are in [`src/RepoAgentController/repository-settings.json`](../src/RepoAgentController/repository-settings.json). The controller and the operator script use this same catalogue.
 

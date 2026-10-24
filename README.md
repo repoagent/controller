@@ -25,6 +25,9 @@ PowerShell also supports [inspecting or withdrawing legacy Environment approval]
 
 After installation, inspect or change nonsecret [repository settings](docs/repository-settings.md) in `REPOAGENT_*` Actions variables with `./install.ps1 -Action Settings`. The controller reads them only with `--repository-settings` and an App installation that grants Variables: read. Broker-enrolled controllers also need a controller enrollment with an explicit [repository-settings profile](docs/repository-settings.md#broker-enrollments) (`-RepositorySettings`); existing controller enrollments are never widened.
 
+> [!WARNING]
+> Repository Actions variables must never hold secrets. A controller that reads repository settings, and so the agent it runs, can read every direct repository Actions variable, not only `REPOAGENT_*` settings ([ADR 0008](docs/adr/0008-add-an-explicit-repository-settings-runtime-profile.md)).
+
 For local development without a public hostname, select [Quick Tunnel mode](docs/quick-tunnel.md).
 
 Run the bridge in a Linux container containing `gh` and `codex`. The packaged bridge is Native AOT compiled and needs no installed .NET runtime. Native Codex uses its normal sign-in. GitHub access uses an installed GitHub App with **Discussions: read/write** and a read-only mounted PEM signing key. An agent GitHub-user login is unnecessary. Container bootstrap and live verification are tracked in [#5](https://github.com/repoagent/controller/issues/5).
