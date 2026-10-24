@@ -38,9 +38,12 @@ URLS = {'gh': f'https://github.com/cli/cli/releases/download/v{GH_NEW}/gh_{GH_NE
 TOOLS = {'gh': ('cli/cli', ('gh',), GH_NEW, GH),
          'codex': ('openai/codex', ('codex', 'codex-code-mode-host'), CODEX_NEW, CODEX)}
 # Identical trees and metadata give every checkout copy the same commit, as with one main commit.
+# Without auto maintenance: from Git 2.55 a commit may start a detached repack, depending on which loose objects the copied
+# files hash to, and that repack would still be writing into .git when the test removes the checkout.
 GIT = dict(GIT_AUTHOR_NAME='fixture', GIT_AUTHOR_EMAIL='fixture@example.test', GIT_AUTHOR_DATE='2026-10-01T00:00:00Z',
            GIT_COMMITTER_NAME='fixture', GIT_COMMITTER_EMAIL='fixture@example.test',
-           GIT_COMMITTER_DATE='2026-10-01T00:00:00Z', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+           GIT_COMMITTER_DATE='2026-10-01T00:00:00Z', GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
+           GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='maintenance.auto', GIT_CONFIG_VALUE_0='false')
 
 
 def gh_release(version, **changes):
