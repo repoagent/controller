@@ -38,6 +38,32 @@ sealed class InMemoryRepositorySettings : IRepositorySettings
     }
 }
 
+/// <summary>repoagent/controller's published baseline releases, in the order GitHub lists them. A set failure answers reads instead.</summary>
+sealed class InMemoryBaselineReleases : IBaselineReleases
+{
+    readonly Lock sync = new();
+    readonly List<BaselineRelease> releases = [];
+    Exception? failure;
+    int reads;
+
+    /// <summary>Publishes a release, listed first as GitHub lists the most recently created release.</summary>
+    public void Publish(BaselineRelease release) { lock (sync) releases.Insert(0, release); }
+
+    /// <summary>Later reads fail with <paramref name="error"/>, or succeed again when it is null.</summary>
+    public void Fail(Exception? error) { lock (sync) failure = error; }
+
+    public int Reads { get { lock (sync) return reads; } }
+
+    public Task<IReadOnlyList<BaselineRelease>> Published(CancellationToken ct)
+    {
+        lock (sync)
+        {
+            reads++;
+            return failure is not null ? Task.FromException<IReadOnlyList<BaselineRelease>>(failure) : Task.FromResult<IReadOnlyList<BaselineRelease>>([.. releases]);
+        }
+    }
+}
+
 /// <summary>The controller state as its files hold it: only what was written survives into another lifetime. A write can fail
 /// on demand, as a full or read-only disk does.</summary>
 sealed class InMemoryControllerState : IControllerState

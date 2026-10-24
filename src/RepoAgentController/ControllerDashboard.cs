@@ -171,7 +171,7 @@ sealed class ControllerDashboard : IAsyncDisposable
     }
 
     // Only a published release that this controller's image identifies, and that a newer release supersedes, is offered.
-    static void Updates(StringBuilder text, ReleaseNotice? notice)
+    internal static void Updates(StringBuilder text, ReleaseNotice? notice)
     {
         text.AppendLine("### Updates");
         if (notice is null) { text.AppendLine("The baseline release check has not completed yet."); return; }
