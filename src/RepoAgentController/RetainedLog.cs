@@ -51,8 +51,9 @@ sealed partial class RetainedLog : IDisposable
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
             {
-                // Stdout remains the operational record; never recurse into Log from its own sink.
-                current.Dispose(); current = null;
+                // Stdout remains the operational record; never recurse into Log from its own sink. A failed rotation has
+                // already closed the active file.
+                current?.Dispose(); current = null;
                 Console.WriteLine($"{DateTimeOffset.UtcNow:O} retained-log-error retention stopped for this lifetime: {error.Message}");
             }
         }
