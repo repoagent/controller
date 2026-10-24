@@ -1,5 +1,7 @@
 # Durable webhook work for an idle Azure controller
 
+> **Retired** by [ADR 0009](adr/0009-keep-hosting-lifecycle-out-of-the-controller.md). The controller no longer owns hosting lifecycle; this mode is being removed. Kept for history until the removal lands.
+
 The native controller supports an opt-in `--azure-work-queue` mode. It retains
 work after the webhook HTTP response ends and releases it after agent turns,
 observed-input checkpoints and requested checkout refreshes finish. Polling
