@@ -126,9 +126,11 @@ internal sealed class InMemoryBrokerState : IBrokerState
         lock (sync) return rows.TryGetValue((scope, name), out var stored) ? new(stored.Row) : null;
     }
 
-    public StateVersion? Version(StateKey key)
+    public StateVersion? Version(StateKey key) => Version(key.Scope, key.Name);
+
+    public StateVersion? Version(string scope, string name)
     {
-        lock (sync) return rows.TryGetValue((key.Scope, key.Name), out var stored) ? stored.Version : null;
+        lock (sync) return rows.TryGetValue((scope, name), out var stored) ? stored.Version : null;
     }
 
     public bool Remove(StateKey key)
