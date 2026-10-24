@@ -3,16 +3,16 @@
 [`low-idle-setup.bicep`](low-idle-setup.bicep) prepares three top-level resources:
 a Consumption Container Apps environment on default managed networking, a
 Standard LRS storage account with a classic Hot SMB share, and a setup-only app.
-The SMB share, dedicated work queue, environment storage definition and queue-scoped role assignment are child resources. The app uses its embedded system-assigned identity; it adds no separate identity resource. There is no
+The SMB share and environment storage definition are child resources. The app has no managed identity. There is no
 custom VNet/NSG, separately billed managed network group, NFS, registry, vault,
 user-assigned identity, Log Analytics workspace or compatibility Job in this
 candidate. Setup defaults to the immutable public selection in `image.json`.
 Setup is the default; first activation uses the conversation persistence profile below.
 
 Real Azure setup checks passed on 2026-10-22: the three-resource profile reached
-zero replicas, woke through HTTP and an invisible queue message, held the replica
-while that message existed, and returned to zero after its exact deletion. The
-system identity exercised the queue successfully.
+zero replicas, woke through HTTP and returned to zero. Those checks also covered a
+durable work queue that [ADR 0009](../../docs/adr/0009-keep-hosting-lifecycle-out-of-the-controller.md)
+has since removed.
 
 Direct native SQLite initialization on the SMB mount failed with `SQLITE_BUSY`.
 The app therefore sets `CODEX_SQLITE_HOME=/tmp/repoagent-codex-sqlite`, keeping the
@@ -186,34 +186,32 @@ discounts. Subscription-wide ACA free grants are shared with the broker.
 See the [dated cost assessment](../../docs/research/2026-10-22-container-apps-idle-cost.md)
 and [Azure Files billing](https://learn.microsoft.com/en-us/azure/storage/files/understanding-billing).
 
-## Queue scaling and gated activation design
+## Scaling and gated activation design
 
-The profile always provisions `controller-work` in the same Standard account and
-gives the app's system identity **Storage Queue Data Contributor** at that queue
-scope. The nested `queue-access.bicep` deployment receives the created principal;
-its role name also includes that principal so recreating an app cannot update an
-immutable assignment to a different identity. No queue connection string, SAS,
-user-assigned identity or host Azure credential discovery is used at runtime.
-[Queue role](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/storage#storage-queue-data-contributor),
-[managed-identity scaling](https://learn.microsoft.com/en-us/azure/container-apps/scale-app#using-managed-identity)
+Both setup and active selections use the original setup scaling: HTTP wake,
+minimum zero and maximum one, with the platform's default cooldown. The controller
+no longer keeps a replica alive after the webhook response
+([ADR 0009](../../docs/adr/0009-keep-hosting-lifecycle-out-of-the-controller.md)).
+It reports busy or idle on its local `GET /status` instead, and nothing in this
+profile reads it yet. Until a hosting component that keeps a busy replica alive
+exists (#37/#38), an active controller with minimum zero replicas can be stopped
+during an agent turn.
 
-Both setup and active selections use HTTP wake plus `azure-queue`, minimum zero
-and maximum one, target one and activation zero. `queueLengthStrategy: all` counts
-invisible leases as well as visible messages. The queue profile uses a15-second
-poll interval and60-second cooldown; the original NFS setup defaults are retained.
-A normal idle queue-mode shutdown preserves the wake hook. Unknown agent work
-or queue uncertainty stays recoverable and can keep compute allocated; it is not
-idle. See [agent work lifetime](../../docs/azure-durable-work.md) and
-[KEDA queue counting](https://keda.sh/docs/2.21/scalers/azure-storage-queue/).
+An app deployed from the earlier queue profile keeps its `controller-work` queue,
+the queue-scoped **Storage Queue Data Contributor** assignment, its system-assigned
+identity and its `azure-queue` scale rule: the controlled image updater retains
+them, and this template is not an update path. A controller image without durable
+work never reads that queue, so the rule then keeps a replica running only while
+old messages remain, not while an agent turn runs. An incremental deployment of
+this template would remove the identity and the rule but leave the queue and the
+assignment; remove those manually once no controller uses them.
 
 The default `activate=false` still initializes private layout and serves only
 setup metadata. It does not read enrollment, import an account, contact GitHub or
-start agent work. Use that selection for actual identity, queue authorization,
-invisible-message counting and zero/wake/zero checks before any owner handover.
-Inspect the real app principal, queue-scoped assignment, both scale rules and
-replica counts; compiled JSON and declared minimums are not acceptance evidence.
-The operator applying this Bicep must be able to assign the narrowly scoped role;
-the broker's separate Contributor-only OIDC identity is not used or changed.
+start agent work. Use that selection for zero/wake/zero checks before any owner
+handover. Inspect the real scale rule and replica counts; compiled JSON and
+declared minimums are not acceptance evidence. The broker's separate
+Contributor-only OIDC identity is not used or changed.
 
 For the first selected activation/acceptance run, select a published immutable
 `controllerImage` containing
@@ -240,8 +238,7 @@ az deployment group create \
 ```
 
 The bootstrap imports into the existing protected0600 enrollment file and checks
-the saved immutable binding/settings before native validation. The queue endpoint
-is retained in configuration and passed to native `--azure-work-queue`. Conflicting
+the saved immutable binding/settings before native validation. Conflicting
 saved settings refuse before credential replacement. Native secrets avoid a vault
 resource here; operators with app-secret management authority can access that
 credential. Restrict that authority and rotate through the supported enrollment
