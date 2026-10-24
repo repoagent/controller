@@ -579,7 +579,8 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
             }
             // Its waiting input no longer retains durable work.
             inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
-            if (forgotten.Length != 0) store.Save();
+            if (forgotten.Length == 0) return;
+            store.Save();
             Log.Write("discussion-forgotten", $"{url} reason=not-found session={string.Join(',', forgotten.Select(entry => entry.Value!.Text("sessionId")))}");
         }
         finally { gate.Release(); }

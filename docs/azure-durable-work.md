@@ -2,8 +2,9 @@
 
 The native controller supports an opt-in `--azure-work-queue` mode. It retains
 work after the webhook HTTP response ends and releases it after native turns,
-observed-input checkpoints and requested checkout refreshes finish. Existing
-polling and ordinary webhook mode keep their behavior.
+observed-input checkpoints and requested checkout refreshes finish. Polling
+keeps its behavior. Ordinary webhook mode shares the deleted-Discussion
+handling described under failures below, without the queue retry.
 
 This is the native implementation, not an activated Azure deployment profile.
 A published image, compatible storage, managed-identity authorization and real

@@ -1536,6 +1536,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual(sorted(continued), ['D2'])
                 self.assertEqual(continued['D2']['sessionId'], 'S2')
                 self.assertEqual(continued['D2']['sources']['D2']['content']['body'], f.provider.discussions[0]['body'])
+                self.assertEqual(sum('discussion-forgotten' in line for line in f.lines), 1, 'Nothing was left to forget')
                 self.terminal(f, 'S2', 'T3')
                 self.drained(queue_operation)
                 self.assertIsNone(f.process.poll(), 'Stale work stopped the shared worker')
