@@ -583,9 +583,10 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         try
         {
             var forgotten = store.Discussions.Where(entry => string.Equals(entry.Value?.Text("url"), url, StringComparison.OrdinalIgnoreCase)).ToArray();
-            foreach (var (id, record) in forgotten)
+            // Saved before this lifetime's own view changes: a failed save keeps every record, so a retry forgets it again.
+            if (forgotten.Length != 0) store.Remove([.. forgotten.Select(entry => entry.Key)]);
+            foreach (var (_, record) in forgotten)
             {
-                store.Discussions.Remove(id);
                 if (record!["running"]?.Text("turn") is { Length: > 0 } turn) running.Remove(turn);
                 var stored = record.Text("url");
                 held.Remove(stored);
@@ -594,7 +595,6 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
             // Its waiting input no longer retains durable work.
             inputWaiting = store.Discussions.Any(entry => entry.Value?["waiting"] is not null);
             if (forgotten.Length == 0) return;
-            store.Save();
             Log.Write("discussion-forgotten", $"{url} reason=not-found session={string.Join(',', forgotten.Select(entry => entry.Value!.Text("sessionId")))}");
         }
         finally { gate.Release(); }
