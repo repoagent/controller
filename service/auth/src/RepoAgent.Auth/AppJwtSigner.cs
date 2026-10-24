@@ -4,6 +4,7 @@ using System.Text.Json;
 using Azure.Data.Tables;
 using Azure.Security.KeyVault.Keys.Cryptography;
 using static RepoAgent.Auth.IssuancePolicy;
+using static RepoAgent.Auth.TableValues;
 
 namespace RepoAgent.Auth;
 

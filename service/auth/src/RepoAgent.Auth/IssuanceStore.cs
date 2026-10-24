@@ -2,6 +2,7 @@ using System.Globalization;
 using Azure;
 using Azure.Data.Tables;
 using static RepoAgent.Auth.IssuancePolicy;
+using static RepoAgent.Auth.TableValues;
 
 namespace RepoAgent.Auth;
 

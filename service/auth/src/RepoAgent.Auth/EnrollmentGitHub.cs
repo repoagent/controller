@@ -1,4 +1,5 @@
 using static RepoAgent.Auth.IssuancePolicy;
+using static RepoAgent.Auth.TableValues;
 
 namespace RepoAgent.Auth;
 

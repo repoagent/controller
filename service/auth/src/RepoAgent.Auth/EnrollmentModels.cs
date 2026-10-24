@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Azure.Data.Tables;
 using static RepoAgent.Auth.IssuancePolicy;
+using static RepoAgent.Auth.TableValues;
 
 namespace RepoAgent.Auth;
 

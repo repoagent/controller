@@ -42,7 +42,7 @@ public sealed class DeviceRevocation(TableClient table, BrokerOptions options, T
                 if (device.ContainsKey("ApprovalKind") || device.ContainsKey("SetupVersion") || device.ContainsKey("PolicyVersion") || device.ContainsKey("Profile"))
                 {
                     var approval = ApprovalContract.Read(device);
-                    if (approval.RuntimeVersion != runtimeVersion || !approval.Allows(IssuancePolicy.Text(device, "Profile"))) return 401;
+                    if (approval.RuntimeVersion != runtimeVersion || !approval.Allows(TableValues.Text(device, "Profile"))) return 401;
                 }
                 else if (runtimeVersion != 1) return 401;
                 var sequence = RequiredSequence(gate);

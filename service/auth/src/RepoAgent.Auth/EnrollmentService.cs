@@ -4,6 +4,7 @@ using Azure;
 using Azure.Data.Tables;
 using Azure.Identity;
 using static RepoAgent.Auth.IssuancePolicy;
+using static RepoAgent.Auth.TableValues;
 using static RepoAgent.Auth.EnrollmentStore;
 
 namespace RepoAgent.Auth;
