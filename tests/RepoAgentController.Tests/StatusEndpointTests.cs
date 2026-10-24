@@ -68,6 +68,27 @@ public sealed class StatusEndpointTests
         Assert.Contains(log.Lines, line => line.EndsWith(" fatal " + error));
     }
 
+    [Theory]
+    [InlineData("ASPNETCORE_ENVIRONMENT")]
+    [InlineData("DOTNET_ENVIRONMENT")]
+    public async Task A_failing_request_gets_an_empty_500_even_when_the_environment_names_Development(string variable)
+    {
+        // The controller behaves the same in every environment (ADR 0009): no developer exception page.
+        var previous = Environment.GetEnvironmentVariable(variable);
+        Environment.SetEnvironmentVariable(variable, "Development");
+        try
+        {
+            var port = FreePort();
+            await using var server = await ControllerHost.Start(port, () => throw new InvalidOperationException("status detail"), null,
+                TestContext.Current.CancellationToken);
+            using var client = new HttpClient();
+            using var response = await client.GetAsync($"http://127.0.0.1:{port}/status", TestContext.Current.CancellationToken);
+            Assert.Equal(System.Net.HttpStatusCode.InternalServerError, response.StatusCode);
+            Assert.Empty(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        }
+        finally { Environment.SetEnvironmentVariable(variable, previous); }
+    }
+
     static void AssertStatus(string expected, JsonNode actual) =>
         Assert.True(JsonNode.DeepEquals(JsonNode.Parse(expected), actual), actual.ToJsonString());
 }

@@ -26,8 +26,13 @@ sealed class ControllerHost : IAsyncDisposable
     public static async Task<ControllerHost> Start(int statusPort, Func<StatusSnapshot> status, (int Port, RequestDelegate Receive)? webhooks,
         CancellationToken ct)
     {
-        // The content root is the installed controller, never the agent's workspace.
-        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [], ContentRootPath = AppContext.BaseDirectory });
+        // The content root is the installed controller, never the agent's workspace. The environment name is fixed: the
+        // builder reads DOTNET_ENVIRONMENT/ASPNETCORE_ENVIRONMENT before its sources are cleared, and Development would
+        // answer a failing request with the developer exception page.
+        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
+        {
+            Args = [], ContentRootPath = AppContext.BaseDirectory, EnvironmentName = Environments.Production
+        });
         builder.Configuration.Sources.Clear();
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton<IHostLifetime, ControlledLifetime>();
