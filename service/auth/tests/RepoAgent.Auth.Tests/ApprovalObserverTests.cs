@@ -7,7 +7,7 @@ namespace RepoAgent.Auth.Tests;
 public sealed class ApprovalObserverTests
 {
     private static CancellationToken Token => TestContext.Current.CancellationToken;
-    private static readonly GitHubToken Verifier = new("verifier-token");
+    private static readonly GitHubToken Verifier = new("verifier-token", new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero));
     private readonly IssuanceClock clock = new();
     private readonly InMemoryGitHub github = new();
     private ApprovalObserver Observer => new(github, github, clock);

@@ -103,17 +103,10 @@ public sealed partial class PayloadRedactionTests
     {
         await using var f = await EnrollmentFixture.CreateAsync();
         AgentVariableEnrollmentTests.ConfigureGitHub(f);
-        var normal = f.GitHub.Before!;
-        f.GitHub.Before = request =>
-        {
-            if (request.Method == HttpMethod.Delete) throw new HttpRequestException("Revocation unavailable");
-            if (request.Method == HttpMethod.Post)
-            {
-                if (fault == "unknown") throw new HttpRequestException("Unknown provider outcome");
-                return Task.FromResult<HttpResponseMessage?>(InMemoryGitHub.Json(new { token = "known-invalid-expiry", expires_at = "invalid" }, HttpStatusCode.Created));
-            }
-            return normal(request);
-        };
+        f.GitHub.BeforeRevoke = _ => throw new GitHubUnavailable("Revocation unavailable");
+        if (fault == "unknown") f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("Unknown provider outcome");
+        // GitHub's answer carries the token, but neither a readable expiry nor any scope.
+        else f.GitHub.MintAnswer = (_, _) => GitHubRead.Found(new MintedGitHubToken("known-invalid-expiry", null, null, null, null));
         var id = Guid.NewGuid().ToString("N");
         using var start = await f.Send("/v2/enrollments", AgentRequest(id));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, start.StatusCode);

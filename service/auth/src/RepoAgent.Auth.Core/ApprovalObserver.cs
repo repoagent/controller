@@ -183,15 +183,15 @@ public sealed class ApprovalObserver(IAppInstallations installations, IControlle
     }
 
     // An installation is usable only when it is this App's, active, and grants both the enrollment's
-    // runtime authority and its verifier's. A write grant satisfies a read requirement.
+    // runtime authority and its verifier's.
     private static long Installed(GitHubRead<AppInstallation> read, string profile, ApprovalContract contract)
     {
         var installation = Value(read);
         if (installation.Id <= 0 || installation.AppId != AppId || installation.AppSlug != AppSlug || installation.Suspended)
             throw new IssuanceDenied();
-        foreach (var (permission, level) in Permissions(profile).Concat(Permissions(contract.VerifierProfile)))
-            if (!installation.Permissions.TryGetValue(permission, out var granted) || granted != level && !(granted == "write" && level == "read"))
-                throw new IssuanceDenied();
+        var runtime = RuntimeAuthority.For(profile);
+        var verifier = RuntimeAuthority.For(contract.VerifierProfile);
+        if (!runtime.IsGrantedBy(installation.Permissions) || !verifier.IsGrantedBy(installation.Permissions)) throw new IssuanceDenied();
         return installation.Id;
     }
 
@@ -210,5 +210,4 @@ public sealed class ApprovalObserver(IAppInstallations installations, IControlle
 
     // Only a well-formed 200 is evidence; any other answer denies without proving anything.
     private static T Value<T>(GitHubRead<T> read) => read is GitHubRead<T>.Found found ? found.Value : throw new IssuanceDenied();
-
 }

@@ -52,13 +52,13 @@ public sealed partial class IssuanceStore(TableClient table, BrokerOptions optio
         return attempt;
     }
 
-    public string Recover(GrantSnapshot grant, TableEntity attempt)
+    public GitHubToken Recover(GrantSnapshot grant, TableEntity attempt)
     {
         PayloadClock.RequireAttempt(attempt);
         BindAttempt(grant, attempt, Text(attempt, "Purpose"));
         var token = secrets.Unprotect(TokenPurpose(grant, attempt), Text(attempt, "ProtectedToken"));
         if (!IsBearer(token)) throw new IssuanceDenied();
-        return token;
+        return new(token, Date(attempt, "ExpiresAt"));
     }
 
     public async Task<(GrantSnapshot Grant, TableEntity Attempt)> ReserveAsync(GrantSnapshot grant, string purpose, IssuanceWork work)
@@ -189,14 +189,14 @@ public sealed partial class IssuanceStore(TableClient table, BrokerOptions optio
         return await RequiredAttemptAsync(grant, Text(attempt, "OperationId"), ct);
     }
 
-    public async Task<TableEntity> RecordKnownAsync(GrantSnapshot original, TableEntity attempt, IssuedToken token, CancellationToken ct)
+    public async Task<TableEntity> RecordKnownAsync(GrantSnapshot original, TableEntity attempt, KnownGitHubToken token, CancellationToken ct)
     {
         PayloadClock.RequireAttempt(attempt);
         var grant = await SnapshotAsync(original.Partition, original.DeviceId, ct);
         BindAttempt(grant, attempt, Text(attempt, "Purpose"));
         if (Text(attempt, "State") != "sending") throw new IssuanceDenied();
-        attempt["ProtectedToken"] = secrets.Protect(TokenPurpose(grant, attempt), token.Token);
-        attempt["ExpiresAt"] = token.ExpiresAt;
+        attempt["ProtectedToken"] = secrets.Protect(TokenPurpose(grant, attempt), token.Token.Value);
+        attempt["ExpiresAt"] = token.Token.ExpiresAt;
         attempt["ScopeValid"] = token.ScopeValid;
         attempt["State"] = "known";
         await CommitAsync(grant, [Update(attempt)], ct);

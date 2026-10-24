@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using Azure;
 using Azure.Core;
 using Azure.Data.Tables;
 using Xunit;
@@ -22,7 +23,7 @@ public sealed partial class CapacityReclamationTests
             if (ObservedTransport.IsBatch(message) && ++count == boundary) throw new HttpRequestException("Lost committed retirement phase " + boundary);
             return Task.CompletedTask;
         }};
-        await Assert.ThrowsAsync<HttpRequestException>(() => Retirement(f, ledger, f.Storage.CreateClient(fault)));
+        await Assert.ThrowsAsync<RequestFailedException>(() => Retirement(f, ledger, f.Storage.CreateClient(fault)));
         Assert.Equal(boundary < 5 ? 1L : 0L, (await Read(f, ledger.PartitionKey, "quota")).GetInt64(RetainedCounter(enrollment)));
         if (boundary < 2) _ = await Read(f, RevocationFixture.Partition, Target(ledger, enrollment));
         else await AssertAbsent(f, RevocationFixture.Partition, Target(ledger, enrollment));
@@ -53,7 +54,7 @@ public sealed partial class CapacityReclamationTests
             if (ObservedTransport.IsBatch(message) && ++count == boundary) throw new HttpRequestException("Before retirement commit " + boundary);
             return Task.CompletedTask;
         }};
-        await Assert.ThrowsAsync<HttpRequestException>(() => Retirement(f, ledger, f.Storage.CreateClient(fault)));
+        await Assert.ThrowsAsync<RequestFailedException>(() => Retirement(f, ledger, f.Storage.CreateClient(fault)));
         Assert.Equal(1L, (await Read(f, ledger.PartitionKey, "quota")).GetInt64("RetainedIssuanceCount"));
         await Retirement(f, ledger);
         await RetirementGone(f, ledger, false);

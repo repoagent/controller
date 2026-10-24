@@ -37,14 +37,11 @@ public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
     public string Marker => TableValues.Text(Device, "Marker");
     public string Partition => Gate.PartitionKey;
     public string Epoch => TableValues.Text(Gate, "Epoch");
+    internal RepositoryIdentity BoundRepository => new(IssuancePolicy.Id(RepositoryId), Repository);
     // The approval GitHub must still show for this enrollment.
-    internal ControllerApproval BoundApproval()
-    {
-        var repository = new RepositoryIdentity(IssuancePolicy.Id(RepositoryId), Repository);
-        return Approval == ApprovalContract.Legacy
-            ? new(Approval, repository, InstallationId, Profile, Variable, Marker, Environment, EnvironmentId)
-            : new(Approval, repository, InstallationId, Profile, Variable, Marker);
-    }
+    internal ControllerApproval BoundApproval() => Approval == ApprovalContract.Legacy
+        ? new(Approval, BoundRepository, InstallationId, Profile, Variable, Marker, Environment, EnvironmentId)
+        : new(Approval, BoundRepository, InstallationId, Profile, Variable, Marker);
     public void RequireActive(DateTimeOffset now)
     {
         PayloadClock.RequirePayload(Device);
@@ -73,5 +70,4 @@ public sealed record GrantSnapshot(TableEntity Gate, TableEntity Device)
     }
 }
 
-public sealed record IssuedToken(string Token, DateTimeOffset ExpiresAt, bool ScopeValid);
 public sealed record IssuanceResult(int Status, object? Body = null);
