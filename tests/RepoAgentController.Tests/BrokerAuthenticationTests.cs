@@ -595,7 +595,7 @@ public sealed class BrokerAuthenticationTests
         readonly bool clone;
         readonly string wrapper;
 
-        // The CLI's explicit --repository-settings selection; it defaults to the enrolled family.
+        // The CLI's explicit --repository-settings selection; it defaults to whether the enrolled profile is a repository-settings profile.
         public bool RepositorySettings { get; set; }
 
         public Fixture(bool webhooks = false, bool clone = false, string clonePolicy = "repository-agent-clone-approval-v2", bool settings = false)

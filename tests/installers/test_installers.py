@@ -369,7 +369,7 @@ class ContainerConfigurationTests(unittest.TestCase):
             bridge = runtime.bridge_args(config)
             self.assertIn('--repository-settings', bridge)
             self.assertEqual(bridge[bridge.index('--enrollment-file') + 1], '/data/enrollment/enrollment.json')
-            # The enrollment family is fixed for the instance in both directions.
+            # Whether the instance uses a repository-settings profile is fixed in both directions.
             frozen = argparse.Namespace(**dict(vars(broker), repository_settings=False))
             saved = runtime.CONFIG.read_bytes()
             with self.assertRaisesRegex(ValueError, 'fresh instance and enrollment'):

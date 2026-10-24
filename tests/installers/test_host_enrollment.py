@@ -34,7 +34,7 @@ class EnrollmentJourney:
     def __init__(self, case, *, variable='TEAM_CONTROLLER_APPROVAL', fault=None, profile='polling', location='actions'):
         self.case, self.variable, self.fault, self.profile = case, variable, fault, profile
         self.clone = '-clone' in profile
-        # Repository-settings profiles are the explicit runtime v3 family under Actions approval.
+        # Repository-settings profiles use runtime v3 and require Actions approval.
         self.settings = profile.endswith('-settings')
         self.runtime = 3 if self.settings else 2 if self.clone else 1
         # Setup v3 approves through direct repository Actions variables; setup v2 Agent
