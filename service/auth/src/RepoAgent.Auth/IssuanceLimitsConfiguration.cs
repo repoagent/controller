@@ -1,6 +1,7 @@
 namespace RepoAgent.Auth;
 
-// Reads the issuance limit overrides from the Broker:Issuance configuration section.
+// Reads the issuance limit overrides from the Broker:Issuance configuration section. The core's defaults are the
+// ceilings: an override may only lower them.
 internal static class IssuanceLimitsConfiguration
 {
     extension(IssuanceLimits)
@@ -8,11 +9,17 @@ internal static class IssuanceLimitsConfiguration
         public static IssuanceLimits Read(IConfiguration configuration)
         {
             var section = configuration.GetSection("Broker:Issuance");
-            return new(Limit(section, nameof(IssuanceLimits.RepositoryAdmissions), 12), Limit(section, nameof(IssuanceLimits.GlobalAdmissions), 120),
-                Limit(section, nameof(IssuanceLimits.RepositoryReads), 60), Limit(section, nameof(IssuanceLimits.GlobalReads), 600),
-                Limit(section, nameof(IssuanceLimits.RepositorySigns), 2), Limit(section, nameof(IssuanceLimits.GlobalSigns), 20),
-                Limit(section, nameof(IssuanceLimits.RepositoryMints), 2), Limit(section, nameof(IssuanceLimits.GlobalMints), 20),
-                Limit(section, nameof(IssuanceLimits.RepositoryAttempts), 8), Limit(section, nameof(IssuanceLimits.GlobalAttempts), 128));
+            var ceiling = new IssuanceLimits();
+            return new(Limit(section, nameof(ceiling.RepositoryAdmissions), ceiling.RepositoryAdmissions),
+                Limit(section, nameof(ceiling.GlobalAdmissions), ceiling.GlobalAdmissions),
+                Limit(section, nameof(ceiling.RepositoryReads), ceiling.RepositoryReads),
+                Limit(section, nameof(ceiling.GlobalReads), ceiling.GlobalReads),
+                Limit(section, nameof(ceiling.RepositorySigns), ceiling.RepositorySigns),
+                Limit(section, nameof(ceiling.GlobalSigns), ceiling.GlobalSigns),
+                Limit(section, nameof(ceiling.RepositoryMints), ceiling.RepositoryMints),
+                Limit(section, nameof(ceiling.GlobalMints), ceiling.GlobalMints),
+                Limit(section, nameof(ceiling.RepositoryAttempts), ceiling.RepositoryAttempts),
+                Limit(section, nameof(ceiling.GlobalAttempts), ceiling.GlobalAttempts));
         }
     }
 

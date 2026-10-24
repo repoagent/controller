@@ -255,6 +255,9 @@ public sealed class EnrollmentStore(TableClient table, BrokerOptions options, IS
     }
     internal Task<TableEntity?> ReadAsync(string partition, string row, CancellationToken ct) => BrokerTable.ReadAsync(table, partition, row, ct);
     internal static TableTransactionAction Action(TableEntity entity, bool add = false) => new(add ? TableTransactionActionType.Add : TableTransactionActionType.UpdateReplace, entity, entity.ETag);
+    // Enrollment creates its repository quota row and charges both quota rows as TableEntity. Issuance does the same
+    // through the core ChargedQuota (RepositoryQuota.New and ChargedQuota.Charge) over IBrokerState; Quota and Charge
+    // duplicate it, writing the same rows, until slice 1c moves enrollment to the core.
     private static TableEntity Quota(string partition) => new(partition, "quota")
     { ["Window"] = 0L, ["Admissions"] = 0L, ["Reads"] = 0L, ["Signs"] = 0L, ["Mints"] = 0L, ["Slots"] = 0L };
     private static void Charge(TableEntity q, DateTimeOffset now, int admissions, int reads, int signs, int mints, bool mint)
