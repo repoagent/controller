@@ -247,7 +247,7 @@ public sealed class CategoryEnrollmentTests
         }
 
         string[] Arguments(params string[] options) => ["--repo", "owner/repository", "--app-id", "123", "--private-key", privateKey,
-            "--state", state, "--workspace", Directory, "--repository-settings", .. options];
+            "--state", state, "--workspace", Directory, "--repository-settings", "--status-port", ControllerHarness.FreePort().ToString(), .. options];
 
         public async Task<int> RunOnce(params string[] options)
         {

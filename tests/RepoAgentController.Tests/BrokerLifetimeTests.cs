@@ -69,7 +69,7 @@ public sealed class BrokerLifetimeTests
             {
                 "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
                 "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
-                "--workspace", fixture.Directory, "--interval", "3600"
+                "--workspace", fixture.Directory, "--interval", "3600", "--status-port", ControllerHarness.FreePort().ToString()
             };
             if (stage == "teardown") args.Add("--once");
             if (webhooks)

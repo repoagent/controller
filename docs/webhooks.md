@@ -1,6 +1,6 @@
 # Repository webhooks with a fixed HTTPS URL
 
-Polling remains the default. Fixed-URL mode adds an HTTP listener and registers a repository-specific webhook; it does not change the GitHub App's shared callback URL. Each deployment owns its endpoint and private signing secret.
+Polling remains the default. Fixed-URL mode adds the webhook receiver, `POST /github/webhook` on the listener port, and registers a repository-specific webhook; it does not change the GitHub App's shared callback URL. Each deployment owns its endpoint and private signing secret.
 
 ## Configure and run
 
@@ -22,7 +22,7 @@ Provide external HTTPS ingress that forwards `/github/webhook` to the container'
 
 The setup wizard offers the same deployment choice. Existing account configuration, optional skills and the CLI update choice still apply. For dedicated live verification, use an isolated instance, empty `--mention-user ''` and explicit `--tool-updates pinned` as described in the acceptance catalog.
 
-The local Docker wrapper publishes the selected listener port on **127.0.0.1 only**, for an external HTTPS reverse proxy. It does not create that proxy or a public endpoint. For a proxy in another container, connect both containers to an appropriate private Docker network and forward to the agent's container port. Polling mode creates no listener or published port.
+The local Docker wrapper publishes the selected listener port on **127.0.0.1 only**, for an external HTTPS reverse proxy. It does not create that proxy or a public endpoint. For a proxy in another container, connect both containers to an appropriate private Docker network and forward to the agent's container port. Polling mode publishes no port; its only listener is the loopback [status endpoint](../README.md#status-endpoint).
 
 The native invocation inside an already configured container is:
 
@@ -39,11 +39,13 @@ RepoAgentController --repo OWNER/REPO --app-id APP_ID \
 
 The bridge subscribes to `discussion` and `discussion_comment`. It verifies the HMAC-SHA256 over the original request bytes, checks the configured repository, handles ping, and queues an observation of the affected Discussion. HTTP acknowledgement is asynchronous and is **not** a native acceptance receipt. EYES still follows actual native acceptance.
 
+The receiver answers with an empty body: `202` when it queues an observation (or, in clone mode, a checkout refresh for a push to the default branch), `204` for ping, the App's own comments, the controller dashboard and events or branches it ignores, `400` for a malformed payload, delivery ID, action or Discussion number, `401` for a missing or wrong signature, `403` for another repository, `404` for another path, `405` for another method, `408` when the body does not arrive within five seconds or the controller is stopping, `413` above 2 MiB and `503` while 16 deliveries are already being read. It runs on ASP.NET Core Kestrel ([ADR 0009](adr/0009-keep-hosting-lifecycle-out-of-the-controller.md)).
+
 One worker serializes targeted observations and reconciliation through the existing JSON checkpoint and native-session path. Redelivery can schedule another read, but unchanged accepted source versions are not deliberately sent again. Routine comments from this App are ignored by the receiver; existing source checkpoints also suppress own output and receipts. Delivery IDs, event/actions, scheduled Discussions, forwarding and errors appear in timestamped stdout without the secret or token.
 
 The generated secret and returned hook ID live in private persistent state, separate from public settings. Keep the state, native history, credentials and workspace volumes when replacing the container. Restart reconfigures the same hook with the same secret. To change the public hostname, stop, repeat configuration with the new origin, then start; the saved hook is updated rather than another being created. Run one worker/replica for each state file.
 
-Webhook mode reconciles once at startup and then at the configured interval, default five minutes. Reconciliation covers missed notifications and emoji reactions, for which GitHub documents no Discussion reaction webhook. Activity removed between observations can still be missed. The in-memory scheduling queue is not a durable event history. Failed or unacknowledged native delivery is retried with backoff and redelivered with a marker, as in polling mode (see the [README](../README.md#checkpoints-and-manual-recovery)). A targeted observation that GitHub answers with its typed `NOT_FOUND` for the Discussion forgets that Discussion's stored state (`discussion-forgotten`); other failures only log `observation-error` and wait for the next delivery or reconciliation. See [deleted Discussions in durable work](azure-durable-work.md).
+Webhook mode reconciles once at startup and then at the configured interval, default five minutes. Reconciliation covers missed notifications and emoji reactions, for which GitHub documents no Discussion reaction webhook. Activity removed between observations can still be missed. The in-memory scheduling queue is not a durable event history. Failed or unacknowledged native delivery is retried with backoff and redelivered with a marker, as in polling mode (see the [README](../README.md#checkpoints-and-manual-recovery)). A targeted observation that GitHub answers with its typed `NOT_FOUND` for the Discussion forgets that Discussion's stored state (`discussion-forgotten`). A turn the agent still runs for it keeps its active-session slot and counts as `running` in status until the agent ends it. Other failures only log `observation-error` and wait for the next delivery or reconciliation.
 
 If the first registration is interrupted after GitHub creates the hook but before its ID is saved locally, inspect repository Webhooks before retrying. Remove only that deployment’s orphan hook (verify its endpoint and creation time), then retry with the retained private state. Registration is not an atomic transaction across GitHub and the local filesystem.
 
@@ -57,12 +59,12 @@ Deleting local storage does not disable or delete the remote hook. For permanent
 
 | Choice | Status | Public endpoint |
 | --- | --- | --- |
-| Polling | Available | None; no inbound listener |
+| Polling | Available | None; only the loopback status endpoint |
 | Fixed URL | Available | Operator-provided HTTPS ingress, independent of Cloudflare |
 | [Quick Tunnel](quick-tunnel.md) | Available | Temporary hostname for local testing, no Cloudflare account/domain |
 | Named tunnel | Planned in [#22](https://github.com/repoagent/controller/issues/22) | Stable hostname with operator-managed Cloudflare configuration |
 
-The same image can run behind external HTTP ingress in Azure Container Apps or another host. Set the public origin to that deployment's HTTPS hostname and the ingress target port to the configured listener port. Run image command `start`; provide the selected key at `/run/secrets/github-app.pem`, container-owned Codex authentication, public configuration, and persistent storage at the paths in the container guide. Keep configuration read-only during agent work. Use one replica and persistent storage for the JSON state/native history; do not rely on an ephemeral container filesystem for conversation continuity. Provisioning the cloud resources and HTTPS ingress is operator-owned.
+The same image can run behind external HTTP ingress in Azure Container Apps or another host. Set the public origin to that deployment's HTTPS hostname and the ingress target port to the configured listener port. Run image command `start`; provide the selected key at `/run/secrets/github-app.pem`, container-owned Codex authentication, public configuration, and persistent storage at the paths in the container guide. Keep configuration read-only during agent work. Use one replica and persistent storage for the JSON state/native history; do not rely on an ephemeral container filesystem for conversation continuity. Provisioning the cloud resources and HTTPS ingress is operator-owned. The controller does not keep its host running: a host that stops idle replicas, such as one scaling to zero, must not stop a controller while its [status endpoint](../README.md#status-endpoint) reports `busy` ([ADR 0009](adr/0009-keep-hosting-lifecycle-out-of-the-controller.md)).
 
 ## Manual verification catalog
 
@@ -76,7 +78,7 @@ Use authorized disposable Discussions and separate human participant credentials
 | W04 | Send an invalid signature; separately sign a wrong-repository payload using the test deployment's secret. | HTTP401/403 respectively; neither schedules agent work. Never put the secret in a command argument or log. |
 | W05 | Restart; then change the externally supplied origin and start again. | One saved hook ID/secret is reused, URL changes in GitHub, and a real continuation keeps the same agent session/context. |
 | W06 | Add a human reaction on App output. | A scheduled reconciliation observes it and native feedback is accepted, without requiring a reaction webhook. |
-| W07 | Select polling in a separate clean instance. | Authentication and ordinary polling still work without hook permission, listener or published port. |
+| W07 | Select polling in a separate clean instance. | Authentication and ordinary polling still work without hook permission, webhook listener or published port. |
 
 Successful disposable fixtures can be deleted after snapshots are retained. Failed fixtures stay until diagnosis is complete. Preserve only redacted conversation/log evidence; do not copy App credential caches, hook secrets, Codex auth files or the PEM into artifacts.
 

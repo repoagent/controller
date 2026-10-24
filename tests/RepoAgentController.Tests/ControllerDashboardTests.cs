@@ -605,7 +605,7 @@ public sealed class ControllerDashboardTests
             "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
             .. direct ? ["--private-key", Path.Combine(fixture.Directory, "app.pem")]
                 : new[] { "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile },
-            "--workspace", fixture.Directory, "--interval", "3600", "--enroll", First
+            "--workspace", fixture.Directory, "--interval", "3600", "--enroll", First, "--status-port", ControllerHarness.FreePort().ToString()
         ];
 
         /// <summary>The single Discussion the App authored in the dashboard category, as GitHub holds it.</summary>

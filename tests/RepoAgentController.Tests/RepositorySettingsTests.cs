@@ -159,7 +159,7 @@ public sealed class RepositorySettingsTests
         }
 
         string[] Arguments() => ["--repo", "owner/repository", "--app-id", "123", "--private-key", privateKey,
-            "--state", Path.Combine(Directory, "bridge.json"), "--workspace", Directory];
+            "--state", Path.Combine(Directory, "bridge.json"), "--workspace", Directory, "--status-port", ControllerHarness.FreePort().ToString()];
 
         public IReadOnlyList<GitHubRequest> GitHubRequests() => File.Exists(requests)
             ? File.ReadAllLines(requests).Select(line => JsonSerializer.Deserialize<GitHubRequest>(line, JsonSerializerOptions.Web)!).ToList()
@@ -204,6 +204,8 @@ public sealed class RepositorySettingsTests
     {
         public List<JsonNode> TokenRequests { get; } = [];
         public string? VariablesPermission { get; set; } = "read";
+        /// <summary>The installation's Webhooks permission; webhook mode requires write.</summary>
+        public string? HooksPermission { get; set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -215,6 +217,7 @@ public sealed class RepositorySettingsTests
                 case "/repos/owner/repository/installation":
                     var permissions = new Dictionary<string, string> { ["discussions"] = "write" };
                     if (VariablesPermission is not null) permissions["actions_variables"] = VariablesPermission;
+                    if (HooksPermission is not null) permissions["repository_hooks"] = HooksPermission;
                     result = new { id = 42, app_id = 123, permissions }; break;
                 case "/app/installations/42/access_tokens":
                     TokenRequests.Add(JsonNode.Parse(await request.Content!.ReadAsStringAsync(ct))!);

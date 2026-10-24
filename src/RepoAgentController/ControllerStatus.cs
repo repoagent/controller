@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace RepoAgentController;
@@ -14,7 +15,7 @@ sealed class ControllerStatus : IDisposable
     const int MaximumFailures = 20, MaximumMessage = 2000;
     // Events that report failed or blocked work. New failure events become visible by adding their kind here.
     static readonly HashSet<string> FailureKinds = ["fatal", "poll-error", "observation-error", "dispatch-error", "delivery-retry", "receipt-error", "outbox-error",
-        "app-refresh-error", "native-request-blocked", "refresh-blocked", "durable-work-lost", "webhook-error", "webhook-disable-error", "dashboard-error",
+        "app-refresh-error", "native-request-blocked", "refresh-blocked", "webhook-error", "webhook-disable-error", "dashboard-error",
         "codex-auth-failed", "codex-auth-invalid", "codex-auth-error", "selection-error", "label-read-error"];
     static readonly HashSet<string> ActivityKinds = ["session-created", "forwarded"];
     // Events after which the state file holds different work, such as input now waiting for its session.
@@ -100,6 +101,25 @@ sealed class ControllerStatus : IDisposable
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// Records the agent sessions running a turn in this lifetime. GitHub's deletion of a Discussion forgets its record while
+    /// the agent still runs its turn, so work counts that turn by its session until the agent ends it. Each call replaces the
+    /// last, so calls must arrive in the order the sessions changed.
+    /// </summary>
+    public void Running(string[] sessions)
+    {
+        lock (gate)
+        {
+            var current = sessions.Order(StringComparer.Ordinal).ToArray();
+            if (closed || ((runtime["runningSessions"] as JsonArray)?.Select(session => session.OptionalText()) ?? []).SequenceEqual(current)) return;
+            // Recorded only while a turn runs. Status output copies named fields only, so this stays internal.
+            if (current.Length == 0) runtime.Remove("runningSessions");
+            else runtime["runningSessions"] = new JsonArray(current.Select(session => (JsonNode?)JsonValue.Create(session)).ToArray());
+            Save();
+        }
+        Changed?.Invoke();
+    }
+
     /// <summary>A detached snapshot for in-process consumers such as status publication.</summary>
     public JsonObject Snapshot()
     {
@@ -129,12 +149,13 @@ sealed class ControllerStatus : IDisposable
         // Turns end with their lifetime, so only a running controller can report one.
         var live = recorded?["controller"]?.Text("state") is "starting" or "running";
         var sessions = new JsonArray();
+        var held = new HashSet<string>(StringComparer.Ordinal);
         int pending = 0, retrying = 0, running = 0, started = 0, waiting = 0;
         foreach (var (_, value) in state?["discussions"] as JsonObject ?? new JsonObject())
         {
             if (value is not JsonObject discussion) continue;
             var session = discussion.Text("sessionId");
-            if (session.Length != 0) started++;
+            if (session.Length != 0) { started++; held.Add(session); }
             var marker = discussion["pending"];
             // A failed or unacknowledged delivery waiting for its next attempt.
             var retry = discussion["waiting"]?["retry"];
@@ -152,6 +173,8 @@ sealed class ControllerStatus : IDisposable
             if (discussion["waiting"]?["inputs"] is JsonArray inputs && inputs.Count != 0) { item["waiting"] = inputs.Count; waiting += inputs.Count; }
             sessions.Add((JsonNode)item);
         }
+        // A turn whose Discussion record was forgotten still runs, and holds its slot, until the agent ends it.
+        if (live && recorded?["runningSessions"] is JsonArray turns) running += turns.Count(turn => turn.OptionalText() is { } session && !held.Contains(session));
         return new JsonObject
         {
             ["version"] = 1,
@@ -211,3 +234,29 @@ sealed class ControllerStatus : IDisposable
         }
     }
 }
+
+/// <summary>
+/// What GET /status reports (ADR 0009): busy while an agent turn runs or input is pending, retrying or waiting, else idle,
+/// with the work counts of the operator status. A hosting environment decides what busy means for it.
+/// </summary>
+sealed record StatusSnapshot(string State, WorkCounts Work)
+{
+    public static StatusSnapshot From(JsonObject status)
+    {
+        var work = status["work"]!;
+        var counts = new WorkCounts(Count("sessions"), Count("pending"), Count("retrying"), Count("waiting"), Count("running"), Count("limit"),
+            work["admissionBlocked"] is JsonValue blocked && blocked.TryGetValue<bool>(out var held) ? held : null);
+        var busy = counts.Running + counts.Pending + counts.Retrying + counts.Waiting > 0;
+        return new(busy ? "busy" : "idle", counts);
+
+        int Count(string name) => work[name]!.GetValue<int>();
+    }
+}
+
+/// <summary>The operator status's work counts, by the same names.</summary>
+sealed record WorkCounts(int Sessions, int Pending, int Retrying, int Waiting, int Running, int Limit, bool? AdmissionBlocked);
+
+// Native AOT: the status endpoint serializes through generated metadata, never reflection.
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(StatusSnapshot))]
+sealed partial class StatusJson : JsonSerializerContext;

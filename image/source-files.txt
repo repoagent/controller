@@ -10,7 +10,6 @@ src/RepoAgentController/BrokerTokenSource.cs
 src/RepoAgentController/Codex.cs
 src/RepoAgentController/DirectAppTokenSource.cs
 src/RepoAgentController/DiscussionWebhooks.cs
-src/RepoAgentController/DurableWebhookWork.cs
 src/RepoAgentController/ExclusiveFileLease.cs
 src/RepoAgentController/GitHub.cs
 src/RepoAgentController/GitHubAppCredentials.cs
@@ -21,6 +20,7 @@ src/RepoAgentController/CredentialHandoff.cs
 src/RepoAgentController/CodexCredentials.cs
 src/RepoAgentController/ControllerStatus.cs
 src/RepoAgentController/ControllerDashboard.cs
+src/RepoAgentController/ControllerHttpServer.cs
 src/RepoAgentController/GitHubBaselineReleases.cs
 src/RepoAgentController/ImageInventory.cs
 src/RepoAgentController/MentionUser.cs
