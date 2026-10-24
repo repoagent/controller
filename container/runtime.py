@@ -89,6 +89,8 @@ def bridge_args(config, *, check_auth=False, injected=False):
                  '--reconcile-interval', str(config.get('reconcileInterval', 300))]
         if config['mode'] == 'fixed-url':
             args += ['--webhook-url', config['publicUrl']]
+    # The controller refuses a status port equal to its listener, so a listener configured on 8081 keeps starting.
+    args += ['--status-port', '8082' if config.get('listenPort', 8080) == 8081 else '8081']
     if config.get('dashboardCategory') and not check_auth:
         # The dashboard compares this image with published baseline releases; startup tool updates make that uncertain.
         args += ['--dashboard-category', config['dashboardCategory'], '--image-inventory', INVENTORY]
