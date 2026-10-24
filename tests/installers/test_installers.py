@@ -172,6 +172,15 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(state['settings']['toolUpdates'], 'latest', 'An existing opt-in is not silently changed')
 
+    def test_rerun_keeps_startup_updates_of_a_configuration_saved_before_the_choice_existed(self):
+        # Container settings saved before the choice existed carry no toolUpdates and always updated
+        # tools at startup. PowerShell launch records always carry the choice, so only setup reads this.
+        initial = {'settings': {'repository': 'example/project', 'appId': '123456', 'mode': 'polling', 'model': 'operator-model'},
+                   'events': [], 'authenticated': True, 'running': False}
+        result, state, _ = self.run_installer('bash', arguments=['--no-start'], state=initial)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(state['settings']['toolUpdates'], 'latest', 'An existing instance is not silently changed')
+
     def test_failed_app_verification_never_starts_agent(self):
         for shell in self.shells():
             with self.subTest(shell=shell):
@@ -378,7 +387,8 @@ class ContainerConfigurationTests(unittest.TestCase):
         configure = ['runtime.py', 'configure', '--repository', 'example/project', '--app-id', '123456',
                      '--key-path', '/private/key.pem']
         for name, choice, updated in [('default', [], False), ('explicit pinned', ['--tool-updates', 'pinned'], False),
-                                      ('explicit opt-in', ['--tool-updates', 'latest'], True)]:
+                                      ('explicit opt-in', ['--tool-updates', 'latest'], True),
+                                      ('default with other optional choices', ['--dashboard-category', 'Status'], False)]:
             with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
                 runtime.CONFIG = Path(directory) / 'config/settings.json'
                 runtime.CODEX = Path(directory) / 'codex'
@@ -396,6 +406,42 @@ class ContainerConfigurationTests(unittest.TestCase):
                 self.assertEqual(tools[0] == '/data/tools/bin', updated)
                 self.assertEqual('/data/tools/bin' in tools, updated)
                 controller.assert_called_once()
+                self.assertEqual(json.loads(runtime.CONFIG.read_text())['toolUpdates'], 'latest' if updated else 'pinned',
+                                 'A new configuration records its tool-update choice explicitly')
+
+    def test_a_configuration_saved_before_the_tool_update_choice_keeps_startup_updates(self):
+        runtime = load_runtime()
+        # Saved by a runtime that always updated tools at startup and recorded no choice.
+        legacy = {'repository': 'example/project', 'appId': '123456', 'keyPath': '/private/key.pem', 'mentionUser': '',
+                  'model': 'test-model', 'webSearch': 'live', 'dashboardCategory': 'Controller status'}
+        with tempfile.TemporaryDirectory() as directory:
+            runtime.CONFIG = Path(directory) / 'config/settings.json'
+            runtime.CODEX = Path(directory) / 'codex'
+            runtime.CONFIG.parent.mkdir()
+            runtime.CONFIG.write_text(json.dumps(legacy))
+            with patch.dict(os.environ, PATH='/data/tools/bin:/opt/repoagent/tools/bin:/usr/bin'):
+                with patch.object(sys, 'argv', ['runtime.py', 'start']), \
+                     patch.object(runtime.update_tools, 'update') as download, \
+                     patch.object(runtime.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)), \
+                     patch.object(runtime.os, 'execve') as controller:
+                    runtime.main()
+                self.assertTrue(download.called, 'The saved configuration keeps its startup tool updates')
+                self.assertEqual(os.environ['PATH'].split(os.pathsep)[0], '/data/tools/bin')
+            self.assertIn('--startup-tool-updates', controller.call_args.args[1],
+                          'The dashboard reports release identity as uncertain for startup-updated tools')
+            # Reconfiguring without choosing keeps the saved behavior, now recorded explicitly.
+            with patch.object(sys, 'argv', ['runtime.py', 'configure', '--repository', 'example/project',
+                                            '--app-id', '123456', '--key-path', '/private/key.pem']):
+                runtime.main()
+            self.assertEqual(json.loads(runtime.CONFIG.read_text())['toolUpdates'], 'latest')
+            # An explicit choice still applies, and is then kept by later reconfiguration.
+            for arguments, expected in ((['--tool-updates', 'pinned'], 'pinned'), ([], 'pinned'),
+                                        (['--tool-updates', 'latest'], 'latest'), ([], 'latest')):
+                with self.subTest(arguments=arguments), patch.object(sys, 'argv', [
+                        'runtime.py', 'configure', '--repository', 'example/project', '--app-id', '123456',
+                        '--key-path', '/private/key.pem', *arguments]):
+                    runtime.main()
+                    self.assertEqual(json.loads(runtime.CONFIG.read_text())['toolUpdates'], expected)
 
     def test_status_and_retained_logs_are_read_by_the_controller_from_the_runtime_state(self):
         runtime = load_runtime()

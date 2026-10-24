@@ -59,6 +59,13 @@ def save(value):
     temporary.replace(CONFIG)
 
 
+def tool_updates(config):
+    """The startup tool-update choice. New configurations record it, by default pinned (the image's
+    tools); a configuration saved before the choice existed always updated tools at startup and keeps
+    doing so until its operator chooses."""
+    return config.get('toolUpdates', 'latest' if config else 'pinned')
+
+
 def bridge_args(config, *, check_auth=False, injected=False):
     args = ['--repo', config['repository'], '--app-id', config['appId'],
             '--workspace', '/workspace', '--state', STATE]
@@ -87,7 +94,7 @@ def bridge_args(config, *, check_auth=False, injected=False):
     if config.get('dashboardCategory') and not check_auth:
         # The dashboard compares this image with published baseline releases; startup tool updates make that uncertain.
         args += ['--dashboard-category', config['dashboardCategory'], '--image-inventory', INVENTORY]
-        if config.get('toolUpdates') == 'latest':
+        if tool_updates(config) == 'latest':
             args += ['--startup-tool-updates']
     for url in config.get('enroll', []):
         args += ['--enroll', url]
@@ -117,7 +124,7 @@ def supply_codex_auth(source):
 
 def select_tools(config):
     paths = [p for p in os.environ['PATH'].split(os.pathsep) if p != '/data/tools/bin']
-    if config.get('toolUpdates') == 'latest':
+    if tool_updates(config) == 'latest':
         paths.insert(0, '/data/tools/bin')
     os.environ['PATH'] = os.pathsep.join(paths)
 
@@ -139,6 +146,8 @@ def prepare_codex_home():
 
 def configure(args, *, persist=True):
     config = settings() if CONFIG.exists() else {}
+    # Without an explicit choice an instance keeps its saved one; every written configuration records it.
+    startup_updates = getattr(args, 'tool_updates', None) or tool_updates(config)
     if not re.fullmatch(r'[\w.-]+/[\w.-]+', args.repository):
         raise ValueError('Repository must be OWNER/REPO.')
     if not re.fullmatch(r'(?:[0-9]+|Iv[A-Za-z0-9.]+)', args.app_id):
@@ -217,7 +226,7 @@ def configure(args, *, persist=True):
     config.update(clone=clone, repository=args.repository, appId=args.app_id, keyPath=args.key_path,
                   brokerUrl=broker_url,
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
-                  toolUpdates=args.tool_updates, mode=args.mode, publicUrl=args.public_url,
+                  toolUpdates=startup_updates, mode=args.mode, publicUrl=args.public_url,
                   listenPort=args.listen_port, reconcileInterval=args.reconcile_interval)
     prepare_codex_home()
     if persist:
@@ -377,7 +386,8 @@ def configure_arguments(configure_parser):
     configure_parser.add_argument('--mention-user', default='repoagent')
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
     configure_parser.add_argument('--web-search', choices=['live', 'cached', 'disabled'], default='live')
-    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'], default='pinned')
+    # Default: the instance's saved choice, or pinned for a new configuration (see tool_updates).
+    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'])
     configure_parser.add_argument('--mode', choices=['polling', 'fixed-url', 'quick-tunnel'], default='polling')
     configure_parser.add_argument('--public-url', default='')
     configure_parser.add_argument('--listen-port', type=int, default=8080)
@@ -443,7 +453,7 @@ def main():
         external = injected is not None
         # Only the controller receives the injected credential; it removes it before starting children.
         controller = os.environ | ({ENROLLMENT_VARIABLE: injected} if external else {})
-        if args.command == 'start' and config.get('toolUpdates') == 'latest':
+        if args.command == 'start' and tool_updates(config) == 'latest':
             update_tools.update()
         if not CODEX_SUPPLY.is_file():  # Otherwise the controller validates and installs the supply before native use.
             run(['codex', 'login', 'status'])
