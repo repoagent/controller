@@ -89,7 +89,7 @@ Repository-settings profiles reuse the same App permission. Their order of opera
 3. Deploy the matching controller image. An older controller rejects a v3 enrollment file before contacting the broker.
 4. Re-enroll each controller that should read settings: revoke, wait for settlement, and enroll a new instance with the settings profile. Existing grants are never widened.
 
-To roll back, re-enroll with a frozen profile. Rolling the broker back below runtime v3 makes settings controllers fail closed until they are re-enrolled. See [migration and rollback](repository-settings.md#broker-enrollments).
+To roll back, re-enroll with a frozen profile. Rolling the broker back below runtime v3 makes controllers with a repository-settings profile fail closed until they are re-enrolled. See [migration and rollback](repository-settings.md#broker-enrollments).
 
 This change modifies no deployment resources, workflow, OIDC trust or live variable; hosted acceptance remains required. See [the approval contract](auth-repository-approval.md).
 

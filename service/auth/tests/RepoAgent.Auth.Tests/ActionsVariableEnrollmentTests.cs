@@ -352,7 +352,7 @@ public sealed class ActionsVariableEnrollmentTests
                         }, HttpStatusCode.Created);
                     }
                     // Runtime credentials never write variables or read other approval locations; only
-                    // the explicit settings family may add Actions variables read (asserted per test).
+                    // the explicit repository-settings profiles may add Actions variables read (asserted per test).
                     Assert.DoesNotContain(names, name => name is "actions" or "environments" or "variables" or "secrets" or "agent_variables");
                     if (permissions.TryGetProperty("actions_variables", out var variables)) Assert.Equal("read", variables.GetString());
                     Assert.Equal("write", permissions.GetProperty("discussions").GetString());

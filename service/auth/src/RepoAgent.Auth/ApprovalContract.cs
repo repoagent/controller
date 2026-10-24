@@ -15,8 +15,8 @@ internal sealed record ApprovalContract(string Kind, long SetupVersion, string P
     // kind and policy: v2 Agent grants are never reinterpreted as, or migrated to, v3.
     public static readonly ApprovalContract Actions = new("repository-actions-variable", 3, "repository-actions-approval-v3", "actions-variable-verification");
     public static readonly ApprovalContract ActionsClone = new("repository-actions-variable", 3, "repository-actions-clone-approval-v3", "actions-variable-verification");
-    // The repository-settings family (runtime v3) adds exactly Actions variables read to a frozen
-    // profile. It exists only under setup v3 Actions approval; frozen families never gain it.
+    // Each repository-settings profile (runtime v3) adds exactly Actions variables read to a frozen
+    // profile. They exist only under setup v3 Actions approval; frozen profiles never gain it.
     public static readonly ApprovalContract ActionsSettings = new("repository-actions-variable", 3, "repository-actions-settings-approval-v3", "actions-variable-verification");
     public bool IsAgent => this == Agent || this == AgentClone;
     public bool IsActions => this == Actions || this == ActionsClone || this == ActionsSettings;

@@ -24,7 +24,7 @@ public static class IssuancePolicy
         "webhook-clone" => new Dictionary<string, string> { ["discussions"] = "write", ["contents"] = "read", ["repository_hooks"] = "write" },
         "polling" => new Dictionary<string, string> { ["discussions"] = "write" },
         "webhook" => new Dictionary<string, string> { ["discussions"] = "write", ["repository_hooks"] = "write" },
-        // Repository-settings family: the frozen profile above plus exactly Actions variables read.
+        // Repository-settings profiles: the frozen profile above plus exactly Actions variables read.
         "polling-settings" or "webhook-settings" or "polling-clone-settings" or "webhook-clone-settings" =>
             new Dictionary<string, string>(Permissions(profile[..^"-settings".Length])) { ["actions_variables"] = "read" },
         "agent-variable-verification" => new Dictionary<string, string> { ["agent_variables"] = "read" },

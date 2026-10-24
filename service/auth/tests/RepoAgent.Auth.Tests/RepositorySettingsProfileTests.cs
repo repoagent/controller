@@ -7,8 +7,8 @@ using Xunit;
 namespace RepoAgent.Auth.Tests;
 
 // Public broker HTTP, real pinned Azurite Table and Data Protection; GitHub is the controlled
-// Actions/Agent-variable transport. The repository-settings runtime family is a separate,
-// explicitly versioned authority: its grants are the frozen profile's plus Variables read.
+// Actions/Agent-variable transport. The repository-settings profiles are a separate, explicitly
+// versioned runtime authority: each grants its frozen profile's permissions plus Variables read.
 public sealed class RepositorySettingsProfileTests
 {
     private static CancellationToken Token => TestContext.Current.CancellationToken;
@@ -39,7 +39,7 @@ public sealed class RepositorySettingsProfileTests
             active.Enrollment.GetProperty("profile").GetString(), active.Enrollment.GetProperty("policyVersion").GetString()));
         Assert.Equal(expected, Map(active.Enrollment.GetProperty("permissions")));
 
-        // Frozen runtime routes never serve this family, and refusing them costs no mint.
+        // Frozen runtime routes never serve these profiles, and refusing them costs no mint.
         var mints = f.GitHub.Mints;
         foreach (var frozen in new[] { 1, 2 })
         {
@@ -58,7 +58,7 @@ public sealed class RepositorySettingsProfileTests
         // Approval verification stays a separate broker-internal capability.
         Assert.Equal((1, "actions_variables"), (github.VerifierMints, github.VerifierPermission));
 
-        // Observed approval withdrawal closes this family like any other grant.
+        // Observed approval withdrawal closes a repository-settings profile like any other grant.
         github.Actions.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         using var removed = await f.Send($"/v3/devices/{active.Device}/installation-token", secret: active.Secret);
@@ -147,7 +147,7 @@ public sealed class RepositorySettingsProfileTests
     [InlineData("Profile", "webhook-settings")]
     [InlineData("PolicyVersion", "repository-actions-approval-v3")]
     [InlineData("PolicyVersion", "repository-actions-clone-approval-v3")]
-    public async Task Durable_settings_family_is_never_reinterpreted_and_denies_before_reservation_or_provider(string field, string value)
+    public async Task Durable_repository_settings_profile_is_never_reinterpreted_and_denies_before_reservation_or_provider(string field, string value)
     {
         await using var f = await EnrollmentFixture.CreateAsync();
         var github = ActionsVariableEnrollmentTests.Repository.Configure(f);

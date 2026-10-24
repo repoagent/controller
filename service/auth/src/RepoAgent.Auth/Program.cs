@@ -47,7 +47,7 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
         return Task.CompletedTask;
     }
 }).DisableRateLimiting().DisableRequestTimeout();
-// Runtime v1: frozen non-clone, v2: frozen clone, v3: repository-settings family.
+// Runtime v1: frozen non-clone, v2: frozen clone, v3: repository-settings profiles.
 foreach (var runtimeVersion in new[] { 1, 2, 3 })
 {
 app.MapDelete($"/v{runtimeVersion}/devices/{{deviceId}}", async (string deviceId, HttpContext context, DeviceRevocation revocation) =>
