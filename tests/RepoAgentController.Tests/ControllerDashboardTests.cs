@@ -851,7 +851,12 @@ public sealed class ControllerDashboardTests
              print(json.dumps(data if rest else {'data':data}));sys.exit(0)
             class Peer(http.server.BaseHTTPRequestHandler):
              def do_POST(self):
-              self.rfile.read(int(self.headers.get('Content-Length','0')))
+              # gh streams --input - as a chunked body. Read all of it before answering: closing with request bytes unread
+              # resets the connection, and gh then reports a broken pipe or loses the response it already received.
+              if self.headers.get('Transfer-Encoding','').lower()=='chunked':
+               while (size:=int(self.rfile.readline().split(b';')[0],16)):self.rfile.read(size+2)
+               while self.rfile.readline() not in (b'\r\n',b'\n',b''):pass
+              else:self.rfile.read(int(self.headers.get('Content-Length','0')))
               self.send_response(relay['status'])
               for name,value in relay.get('headers',{}).items():self.send_header(name,value)
               self.send_header('Content-Type','application/json; charset=utf-8');self.end_headers()
