@@ -1,12 +1,14 @@
 # Verification, controller releases and auth-service delivery
 
-`Verify controller` runs on pull requests and pushes to `main`, with read-only permissions and no persisted checkout credentials. It uses the root `global.json` (.NET 11 RC), executes the actual xUnit runner, checks nonzero discovery, runs installer and delivery process tests, then builds Native AOT and executes native help plus NativeSmoke. The controller project runs the trim and AOT analyzers on every build and treats all warnings as errors, and the Native AOT packaging uses the same warning policy as the image build, so code that would fail image publication (for example IL2026/IL3050) fails this gate first. The broker independently pins .NET 10 LTS.
+`Verify controller` runs on pull requests and pushes to `main`, with read-only permissions and no persisted checkout credentials. It uses the root `global.json` (.NET 11 RC), executes the actual xUnit runner, checks nonzero discovery, runs the controller process tests in `tests/installers` and the delivery tests, then builds Native AOT and executes native help plus NativeSmoke. The controller project runs the trim and AOT analyzers on every build and treats all warnings as errors, and the Native AOT packaging uses the same warning policy as the image build, so code that would fail image publication (for example IL2026/IL3050) fails this gate first. The broker independently pins .NET 10 LTS.
 
 ```sh
 bash scripts/delivery/verify.sh /tmp/controller-verification
 ```
 
-Local prerequisites are the pinned SDK, Python 3, PowerShell 7, clang and zlib development headers. The separate installer workflow runs the expanded Linux suite and native Windows PowerShell revocation checks. These process tests use controlled GitHub/Docker boundaries; they do not establish a complete Windows Docker Desktop installation.
+Local prerequisites are the pinned SDK, Python 3, Docker, clang and zlib development headers.
+
+The installer (`install.*`, `repoagent*`, `scripts/*.ps1`) and the container runtime (`container/`) have no automated tests ([ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)). They are tested manually against the local AppHost ([#204](https://github.com/repoagent/controller/issues/204)) when they change.
 
 ## Controller releases
 

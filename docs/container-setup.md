@@ -278,12 +278,6 @@ Instances managed by `repoagent.ps1` or `install.ps1 -Action Install` keep their
 
 ## Installer verification
 
-Run the host orchestration checks without Docker or account credentials:
-
-```sh
-python3 -m unittest discover -s tests/installers -v
-```
-
-These tests execute the real Bash installer and, when `pwsh` is installed, the PowerShell installer with a controlled Docker executable at the external process boundary. They cover prompted/argument-based setup, paths containing spaces, instance isolation, auth import, noninteractive failure, and stopping before work when verification fails. A focused configuration check exercises real Windows bind-source validation. This is local orchestration evidence, not live proof of Docker Desktop file sharing, GitHub permissions or Codex OAuth on Windows.
+The installer and the container runtime have no automated tests. They are tested manually against the local AppHost ([#204](https://github.com/repoagent/controller/issues/204)) when they change.
 
 For a temporary local HTTPS endpoint without a Cloudflare account/domain or host tools, choose `--mode quick-tunnel`; see [Quick Tunnel setup and lifecycle](quick-tunnel.md). It publishes no host port and owns cloudflared inside the agent container. Fixed-URL and polling modes do not start a tunnel.
