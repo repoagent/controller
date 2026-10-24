@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -10,10 +9,6 @@ namespace RepoAgentController;
 sealed class GitHubBaselineReleases(GitHub github) : IBaselineReleases
 {
     const string Marker = "<!-- repoagent.baseline-release/v1 -->";
-
-    /// <summary>The SHA-256 of the image inventory at <paramref name="inventory"/>, read at every check; null without one.</summary>
-    public static Func<CancellationToken, Task<string?>> InventorySha256(string? inventory) => async ct =>
-        inventory is null ? null : Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(inventory, ct)));
 
     public async Task<IReadOnlyList<BaselineRelease>> Published(CancellationToken ct)
     {

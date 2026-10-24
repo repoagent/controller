@@ -18,7 +18,7 @@ public sealed record ReleaseNotice(DateTimeOffset CheckedAt, BaselineRelease? Ru
 /// It only reads: adopting a newer release is an operator's deliberate recreation of the controller, never a self-update.
 /// </summary>
 /// <param name="inventorySha256">The SHA-256 of this controller's image inventory, read at every check; null when the
-/// controller was started without one.</param>
+/// controller was started without one. A delegate rather than a port: it is one local file read, not a provider.</param>
 /// <param name="redact">Removes the secrets the controller knows from a failure's message. A failure is kept redacted, so
 /// failures that differ only in a secret are the same outcome.</param>
 public sealed class BaselineReleases(IBaselineReleases published, Func<CancellationToken, Task<string?>> inventorySha256, bool startupToolUpdates,

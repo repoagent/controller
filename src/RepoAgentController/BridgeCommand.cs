@@ -166,7 +166,7 @@ public static class BridgeCommand
                     // Disposed before the outbox: a stop this lifetime handles is published, then delivery drains within a bound.
                     await using var dashboard = result.GetValue(dashboardCategory) is { } category
                         ? new ControllerDashboard(category, status, outbox,
-                            new BaselineReleases(new GitHubBaselineReleases(github), GitHubBaselineReleases.InventorySha256(result.GetValue(imageInventory)?.FullName), result.GetValue(startupToolUpdates), time, new ControllerLog(), Log.Redact),
+                            new BaselineReleases(new GitHubBaselineReleases(github), ImageInventory.Sha256(result.GetValue(imageInventory)?.FullName), result.GetValue(startupToolUpdates), time, new ControllerLog(), Log.Redact),
                             time) : null;
                     using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(startToken, credentials.BrokerCredentialLost);
                     var runtimeToken = refreshCancellation.Token;
