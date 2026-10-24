@@ -1,32 +1,51 @@
-"""Own a temporary, accountless tunnel and the bridge for one container lifetime."""
+"""Own a temporary, accountless tunnel and the bridge for one container lifetime.
+
+The first tunnel must connect before startup continues. Afterwards an unexpected
+cloudflared exit stops the bridge, which deactivates its saved hook, and a
+replacement tunnel is requested with capped exponential backoff. The bridge then
+restarts with the replacement URL, updating that same saved hook; recovery is
+reported only after the bridge reports readiness.
+"""
 import datetime
 import os
 import queue
 import re
 import signal
 import subprocess
+import sys
 import threading
 import time
 
+CONNECT_SECONDS = 90
+RETRY_FIRST_SECONDS = 5
+# Also the time a recovered tunnel must keep serving before backoff starts over.
+RETRY_MAX_SECONDS = 300
+OUTPUT = threading.Lock()
+
 
 def log(event, message):
-    print(datetime.datetime.now(datetime.timezone.utc).isoformat() + ' ' + event + ' ' + message, flush=True)
+    with OUTPUT:
+        print(datetime.datetime.now(datetime.timezone.utc).isoformat() + ' ' + event + ' ' + message, flush=True)
+
+
+class TunnelUnavailable(Exception):
+    """The owned tunnel did not provide a connected public URL."""
 
 
 def run(bridge, port, environment=None):
-    """Discover a connected tunnel, then launch the existing receiver with its origin.
+    """Discover a connected tunnel, launch the existing receiver with its origin and keep both available.
 
     Only the receiver gets ``environment``; the tunnel inherits the ordinary process environment.
     """
     stopping = threading.Event()
     previous = {}
-    processes = []
-    messages = queue.SimpleQueue()
+    owned = {}
+    launched = False
 
     def stop(signum, frame):
         stopping.set()
 
-    def output(process):
+    def tunnel_output(process, messages):
         for line in process.stdout:
             url = re.search(r'https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com(?=[\s/]|$)', line)
             if url:
@@ -36,8 +55,19 @@ def run(bridge, port, environment=None):
             if ' ERR ' in line or ' WRN ' in line:
                 log('tunnel-diagnostic', line.strip()[:800])
 
-    def terminate(process, grace):
-        # Signal only the bridge first: it must disable its hook before ingress stops.
+    def bridge_output(process, ready):
+        for line in process.stdout:
+            with OUTPUT:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            if line.split(' ', 2)[1:2] == ['ready']:
+                ready.set()
+
+    def terminate(label, grace):
+        # Callers stop the bridge first: it must disable its hook before ingress stops.
+        if label not in owned:
+            return
+        process, reader = owned.pop(label)
         if process.poll() is None:
             process.terminate()
         try:
@@ -50,27 +80,33 @@ def run(bridge, port, environment=None):
             except ProcessLookupError:
                 pass
             process.wait(timeout=1)
+            reader.join(timeout=2)
+        log('tunnel-process-stopped', 'process=' + label + ' exit-code=' + str(process.returncode))
 
-    try:
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            previous[signum] = signal.signal(signum, stop)
-        tunnel = subprocess.Popen([
-            'cloudflared', 'tunnel', '--no-autoupdate', '--protocol', 'http2',
-            '--url', 'http://127.0.0.1:' + str(port)
-        ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
-        processes.append(tunnel)
-        reader = threading.Thread(target=output, args=(tunnel,), daemon=True)
+    def connect():
+        """Start one tunnel; return its connected origin, or None when stopping."""
+        nonlocal launched
+        messages = queue.SimpleQueue()
+        try:
+            tunnel = subprocess.Popen([
+                'cloudflared', 'tunnel', '--no-autoupdate', '--protocol', 'http2',
+                '--url', 'http://127.0.0.1:' + str(port)
+            ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', start_new_session=True)
+        except OSError as error:
+            raise TunnelUnavailable('cloudflared could not start: ' + str(error)) from None
+        reader = threading.Thread(target=tunnel_output, args=(tunnel, messages), daemon=True)
         reader.start()
+        owned['cloudflared'] = (tunnel, reader)
+        launched = True
         origin, connected = None, False
-        deadline = time.monotonic() + 90
-        log('tunnel-starting', 'mode=quick-tunnel temporary-hostname=true')
+        deadline = time.monotonic() + CONNECT_SECONDS
         while not (origin and connected):
             if stopping.is_set():
-                return 0
+                return None
             if tunnel.poll() is not None:
-                raise RuntimeError('cloudflared exited before a connected public URL was available; check network access and Cloudflare availability, then restart.')
+                raise TunnelUnavailable('cloudflared exited before a connected public URL was available')
             if time.monotonic() >= deadline:
-                raise RuntimeError('No connected Quick Tunnel URL within 90 seconds; check network access and Cloudflare availability, then restart.')
+                raise TunnelUnavailable('No connected Quick Tunnel URL within ' + str(CONNECT_SECONDS) + ' seconds')
             try:
                 kind, value = messages.get(timeout=0.2)
                 if kind == 'url':
@@ -80,25 +116,74 @@ def run(bridge, port, environment=None):
             except queue.Empty:
                 pass
         if stopping.is_set():
-            return 0
+            return None
         log('tunnel-connected', 'mode=quick-tunnel public-url=' + origin)
-        agent = subprocess.Popen(bridge + ['--webhook-url', origin], start_new_session=True, env=environment)
-        processes.append(agent)
+        return origin
+
+    def launch(origin):
+        ready = threading.Event()
+        agent = subprocess.Popen(bridge + ['--webhook-url', origin], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, errors='replace', start_new_session=True, env=environment)
+        reader = threading.Thread(target=bridge_output, args=(agent, ready), daemon=True)
+        reader.start()
+        owned['bridge'] = (agent, reader)
+        return ready
+
+    def recover(attempt):
+        """Replace a lost tunnel with capped backoff; return (origin, attempt), origin None when stopping."""
+        while True:
+            attempt += 1
+            delay = min(RETRY_MAX_SECONDS, RETRY_FIRST_SECONDS * 2 ** (attempt - 1))
+            log('tunnel-recovering', 'attempt=' + str(attempt) + ' delay-seconds=' + format(delay, 'g') + ' receiver=stopped')
+            if stopping.wait(delay):
+                return None, attempt
+            try:
+                return connect(), attempt
+            except TunnelUnavailable as error:
+                log('tunnel-recovery-failed', 'attempt=' + str(attempt) + ' receiver=stopped reason=' + str(error)
+                    + '; retrying with capped backoff')
+                terminate('cloudflared', 3)
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.signal(signum, stop)
+        log('tunnel-starting', 'mode=quick-tunnel temporary-hostname=true')
+        try:
+            origin = connect()
+        except TunnelUnavailable as error:
+            raise RuntimeError(str(error) + '; check network access and Cloudflare availability, then restart.') from None
+        if origin is None:
+            return 0
+        ready = launch(origin)
+        attempt, serving_since = 0, None
         while not stopping.wait(0.2):
-            if tunnel.poll() is not None:
-                raise RuntimeError('cloudflared exited; stopping the bridge. Restart to obtain a new URL and update the saved hook.')
+            agent, tunnel = owned['bridge'][0], owned['cloudflared'][0]
             if agent.poll() is not None:
+                owned['bridge'][1].join(timeout=2)
                 raise RuntimeError('Bridge exited with status ' + str(agent.returncode) + '; stopping its Quick Tunnel. Inspect the preceding bridge error before restarting.')
+            if serving_since is None and ready.is_set():
+                serving_since = time.monotonic()
+                if attempt:
+                    log('tunnel-recovered', 'attempts=' + str(attempt) + ' public-url=' + origin + ' receiver=ready')
+            if tunnel.poll() is not None:
+                if serving_since is not None and time.monotonic() - serving_since >= RETRY_MAX_SECONDS:
+                    attempt = 0
+                log('tunnel-lost', 'exit-code=' + str(tunnel.returncode)
+                    + '; stopping the bridge so it deactivates the saved hook, then requesting a replacement URL')
+                terminate('bridge', 12)
+                terminate('cloudflared', 3)
+                origin, attempt = recover(attempt)
+                if origin is None:
+                    return 0
+                ready, serving_since = launch(origin), None
         return 0
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         log('tunnel-error', str(error))
         return 1
     finally:
-        for process in reversed(processes):
-            terminate(process, 12 if process is not processes[0] else 3)
-            label = "bridge" if process is not processes[0] else "cloudflared"
-            log("tunnel-process-stopped", "process=" + label + " exit-code=" + str(process.returncode))
+        terminate('bridge', 12)
+        terminate('cloudflared', 3)
         for signum, handler in previous.items():
             signal.signal(signum, handler)
-        if processes:
+        if launched:
             log('tunnel-stopped', 'bridge-and-tunnel-cleaned-up=true')
