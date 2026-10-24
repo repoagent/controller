@@ -39,14 +39,22 @@ static class ModelSelection
 
     /// <summary>
     /// Without a model label each part falls back from the repository default to the native configuration, and then to
-    /// the catalogue's default model and that model's default effort.
+    /// the catalogue's default model and that model's default effort. A repository default that is set but unusable, with no
+    /// earlier value, is not replaced by a native default.
     /// </summary>
-    public static ModelChoice Resolve(IReadOnlyCollection<string> labels, string? defaultModel, string? defaultReasoning,
+    public static ModelChoice Resolve(IReadOnlyCollection<string> labels, SettingValue modelSetting, SettingValue reasoningSetting,
         string? nativeModel, string? nativeReasoning, IReadOnlyList<NativeModel> catalogue)
     {
         var selected = labels.Where(IsLabel).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal).ToArray();
         if (selected.Length > 1)
             throw new ModelSelectionException($"conflicting model labels {string.Join(", ", selected)}; keep one {LabelPrefix}<model>:<reasoning> label");
+        if (selected.Length == 0)
+            foreach (var (name, setting) in new[] { (ModelSetting, modelSetting), (ReasoningSetting, reasoningSetting) })
+                if (setting is { Value: null, State: "invalid" or "read-failed" })
+                    throw new ModelSelectionException(setting.State == "invalid"
+                        ? $"{name} is invalid ({setting.Reason}) and no earlier value is known; correct or clear the variable"
+                        : $"{name} could not be read ({setting.Reason}) and no earlier value is known; the input waits for a successful settings read");
+        var (defaultModel, defaultReasoning) = (modelSetting.Value, reasoningSetting.Value);
         string? model, reasoning;
         string modelOrigin, reasoningOrigin, source;
         if (selected.Length == 1)
@@ -61,9 +69,9 @@ static class ModelSelection
         {
             model = defaultModel ?? nativeModel ?? catalogue.FirstOrDefault(candidate => candidate.IsDefault)?.Model
                 ?? throw new ModelSelectionException("the Codex model catalogue has no default model; set REPOAGENT_MODEL");
-            modelOrigin = defaultModel is not null ? "REPOAGENT_MODEL" : nativeModel is not null ? "native configuration" : "the model catalogue";
+            modelOrigin = defaultModel is not null ? ModelSetting : nativeModel is not null ? "native configuration" : "the model catalogue";
             reasoning = defaultReasoning ?? nativeReasoning;
-            reasoningOrigin = defaultReasoning is not null ? "REPOAGENT_REASONING" : "native configuration";
+            reasoningOrigin = defaultReasoning is not null ? ReasoningSetting : "native configuration";
             source = "default";
         }
         var entry = catalogue.FirstOrDefault(candidate => string.Equals(candidate.Model, model, StringComparison.OrdinalIgnoreCase) ||
