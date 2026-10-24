@@ -1,7 +1,9 @@
 name: Refresh baseline tools
-# Daily check for newer stable gh and Codex releases. A supported update is verified with the
-# selected tools before it is pinned on main and published as a new baseline image; an
-# incompatible update fails here, changes nothing on main and publishes nothing.
+# Daily check for newer stable gh and Codex releases. Each tool is refreshed on its own
+# (refresh-baseline-tool.yml): a supported update is verified with the selected version before it
+# is pinned on main and published as a new baseline image, and an unusable or incompatible release
+# fails only its own tool's refresh. Refreshes run one at a time, each from the then-current main,
+# so every pin lands on exactly the commit it was verified on.
 on:
   schedule:
     - cron: '41 5 * * *'
@@ -12,89 +14,17 @@ concurrency:
   group: baseline-tool-refresh
   cancel-in-progress: false
 jobs:
-  select:
+  refresh:
     if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    outputs:
-      changed: ${{ steps.select.outputs.changed }}
-      selection: ${{ steps.archive.outputs.artifact-id }}
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - name: Select supported upstream gh and Codex releases
-        id: select
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/delivery/tool-refresh.py select "$RUNNER_TEMP/tool-selection"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        id: archive
-        if: steps.select.outputs.changed == 'true'
-        with:
-          name: tool-selection-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/tool-selection/
-          if-no-files-found: error
-          retention-days: 7
-  verify:
-    needs: select
-    if: needs.select.outputs.changed == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      IMAGE: repoagent-controller:tool-refresh
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
-        with:
-          global-json-file: global.json
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ needs.select.outputs.selection }}
-          path: ${{ runner.temp }}/tool-selection
-      - name: Pin the selected versions in this checkout
-        run: python3 scripts/delivery/tool-refresh.py apply "$RUNNER_TEMP/tool-selection/selection.json"
-      - name: Verify the controller with the selected Codex
-        run: bash scripts/delivery/verify.sh "$RUNNER_TEMP/controller-package"
-      - name: Build and smoke the image with the selected tools
-        run: |
-          set -euo pipefail
-          python3 scripts/compose-image.py --source . --manifest image/default.json --output "$RUNNER_TEMP/context"
-          docker build --platform linux/amd64 --target runtime --tag "$IMAGE" \
-            --file "$RUNNER_TEMP/context/container/Containerfile" "$RUNNER_TEMP/context"
-          mkdir "$RUNNER_TEMP/controller-image"
-          cd "$RUNNER_TEMP/controller-image"
-          docker run --rm --network none "$IMAGE" versions | tee versions.txt
-          docker run --rm --network none --entrypoint cat "$IMAGE" /opt/repoagent/image-inventory.json > image-inventory.json
-          docker run --rm --network none --entrypoint /opt/repoagent/native-smoke/NativeSmoke "$IMAGE"
-          python3 "$GITHUB_WORKSPACE/scripts/delivery/image-release.py" check .
-  commit:
-    needs: [select, verify]
-    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && needs.select.outputs.changed == 'true'
-    environment: controller-release
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        tool: [gh, codex]
+    uses: ./.github/workflows/refresh-baseline-tool.yml
+    with:
+      tool: ${{ matrix.tool }}
+    # The ceiling for the called refresh; only its main-only commit job uses the write permissions.
     permissions:
       contents: write
       actions: write
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ needs.select.outputs.selection }}
-          path: ${{ runner.temp }}/tool-selection
-      - name: Pin the verified versions on main and publish a baseline
-        # A GITHUB_TOKEN commit starts no push workflow, so publication is dispatched explicitly.
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          python3 scripts/delivery/tool-refresh.py commit "$RUNNER_TEMP/tool-selection/selection.json"
-          gh workflow run publish-controller-image.yml --ref main || {
-            echo '::error::The verified pin is on main, but publication was not dispatched. Run: gh workflow run publish-controller-image.yml --ref main' >&2
-            exit 1
-          }
