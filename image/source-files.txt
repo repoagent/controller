@@ -29,6 +29,7 @@ src/RepoAgentController/RepositorySettings.cs
 src/RepoAgentController/repository-settings.json
 src/RepoAgentController/RepoAgentController.csproj
 src/RepoAgentController/RetainedLog.cs
+src/RepoAgentController/RuntimeProfile.cs
 src/RepoAgentController/StateStore.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs

@@ -5,7 +5,7 @@ using RepoAgentController;
 using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
 var clock = new Clock();
 using var credentials = GitHubAppCredentials.FromBroker(http, "https://broker.fixture", args[0],
-    "123", "owner/project", args[1], clock, clone: true);
+    "123", "owner/project", args[1], new RuntimeProfile(ManagedClone: true), clock);
 await credentials.Initialize(null, CancellationToken.None);
 Console.WriteLine("initialized");
 while (Console.ReadLine() is { } command)

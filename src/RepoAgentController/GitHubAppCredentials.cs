@@ -20,9 +20,9 @@ public sealed class GitHubAppCredentials : IDisposable
     internal long? RepositoryId => source.RepositoryId;
 
     public GitHubAppCredentials(HttpClient http, string appId, string privateKeyPath, string repository,
-        string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false, bool repositorySettings = false)
+        string credentialDirectory, TimeProvider? clock = null, RuntimeProfile profile = default)
         : this(credentialDirectory, clock ?? TimeProvider.System,
-            time => new DirectAppTokenSource(http, appId, privateKeyPath, repository, time, repositoryWebhooks, clone, repositorySettings)) { }
+            time => new DirectAppTokenSource(http, appId, privateKeyPath, repository, time, profile)) { }
 
     GitHubAppCredentials(string credentialDirectory, TimeProvider clock, Func<TimeProvider, IInstallationTokenSource> createSource)
     {
@@ -36,17 +36,17 @@ public sealed class GitHubAppCredentials : IDisposable
     }
 
     public static GitHubAppCredentials FromBroker(HttpClient http, string brokerOrigin, string enrollmentFile,
-        string appId, string repository, string credentialDirectory, TimeProvider? clock = null, bool repositoryWebhooks = false, bool clone = false,
-        long? expectedRepositoryId = null, long? expectedInstallationId = null, bool repositorySettings = false) =>
-        new(credentialDirectory, clock ?? TimeProvider.System, time => new BrokerTokenSource(http, brokerOrigin, enrollmentFile, appId, repository,
-            time, repositoryWebhooks, clone, expectedRepositoryId, expectedInstallationId, repositorySettings));
+        string appId, string repository, string credentialDirectory, RuntimeProfile profile, TimeProvider? clock = null,
+        long? expectedRepositoryId = null, long? expectedInstallationId = null) =>
+        FromBroker(http, brokerOrigin, BrokerTokenSource.EnrollmentFile(enrollmentFile), appId, repository, credentialDirectory, profile, clock,
+            expectedRepositoryId, expectedInstallationId);
 
-    /// <summary>Uses an enrollment supplied without a file, such as one injected through the environment.</summary>
+    /// <summary>Uses an enrollment from any reader, such as one injected through the environment.</summary>
     internal static GitHubAppCredentials FromBroker(HttpClient http, string brokerOrigin, Func<ReadOnlyMemory<byte>> readEnrollment,
-        string appId, string repository, string credentialDirectory, TimeProvider? clock, bool repositoryWebhooks, bool clone,
-        long? expectedRepositoryId, long? expectedInstallationId, bool repositorySettings = false) =>
+        string appId, string repository, string credentialDirectory, RuntimeProfile profile, TimeProvider? clock = null,
+        long? expectedRepositoryId = null, long? expectedInstallationId = null) =>
         new(credentialDirectory, clock ?? TimeProvider.System, time => new BrokerTokenSource(http, brokerOrigin, readEnrollment, appId, repository,
-            time, repositoryWebhooks, clone, expectedRepositoryId, expectedInstallationId, repositorySettings));
+            time, profile, expectedRepositoryId, expectedInstallationId));
 
     public async Task Initialize(long? expectedInstallation, CancellationToken ct)
     {

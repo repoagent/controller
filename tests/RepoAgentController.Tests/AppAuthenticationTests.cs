@@ -342,7 +342,7 @@ public sealed class AppAuthenticationTests
         public GitHubAppCredentials Credentials(bool repositoryWebhooks = false, bool clone = false)
         {
             Provider.CloneScope = clone;
-            return new(http, "Iv-test-client", privateKey, "egil/gh-discussion-agent-bridge", Path.Combine(Directory, "credentials"), Clock, repositoryWebhooks, clone);
+            return new(http, "Iv-test-client", privateKey, "egil/gh-discussion-agent-bridge", Path.Combine(Directory, "credentials"), Clock, new RuntimeProfile(repositoryWebhooks, clone));
         }
 
         // Issued installation tokens are canaries: no file under the controller's directories may contain one.

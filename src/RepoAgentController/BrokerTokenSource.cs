@@ -15,9 +15,9 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
     readonly Uri origin;
     readonly JsonDocument enrollment;
     readonly TimeProvider clock;
-    readonly bool repositoryWebhooks;
-    readonly bool clone;
-    readonly bool settings;
+    readonly RuntimeProfile profile;
+    bool clone => profile.ManagedClone;
+    bool settings => profile.Settings;
     readonly int version;
     // Clone (v2) and repository-settings (v3) files and leases name their profile and approval policy.
     bool NamesProfile => clone || settings;
@@ -29,22 +29,14 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
     readonly string secret;
     public string AppSlug => enrollment.RootElement.GetProperty("appSlug").GetString()!;
 
-    public BrokerTokenSource(HttpClient http, string brokerOrigin, string enrollmentFile, string appId, string repository,
-        TimeProvider clock, bool repositoryWebhooks, bool clone = false, long? expectedRepositoryId = null, long? expectedInstallationId = null,
-        bool repositorySettings = false)
-        : this(http, brokerOrigin, () => ReadFile(enrollmentFile), appId, repository, clock, repositoryWebhooks, clone, expectedRepositoryId, expectedInstallationId,
-            repositorySettings) { }
-
-    /// <param name="readEnrollment">Supplies the protected enrollment document; every source gets the same validation.</param>
+    /// <param name="readEnrollment">Supplies the protected enrollment document, from <see cref="EnrollmentFile"/> or
+    /// <see cref="Injected"/>; every source gets the same validation.</param>
     internal BrokerTokenSource(HttpClient http, string brokerOrigin, Func<ReadOnlyMemory<byte>> readEnrollment, string appId, string repository,
-        TimeProvider clock, bool repositoryWebhooks, bool clone = false, long? expectedRepositoryId = null, long? expectedInstallationId = null,
-        bool repositorySettings = false)
+        TimeProvider clock, RuntimeProfile profile, long? expectedRepositoryId = null, long? expectedInstallationId = null)
     {
         this.http = http;
         this.clock = clock;
-        this.repositoryWebhooks = repositoryWebhooks;
-        this.clone = clone;
-        settings = repositorySettings;
+        this.profile = profile;
         origin = ParseOrigin(brokerOrigin);
         if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Broker credentials require the Linux or macOS controller runtime");
         enrollment = Parse(readEnrollment());
@@ -56,7 +48,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
             // settings file is never consumed as a frozen profile.
             if (settings && version != 3) throw Invalid("--repository-settings requires a repository-settings enrollment (runtime v3); frozen profiles are not widened");
             if (!settings && version == 3) throw Invalid("a repository-settings enrollment requires --repository-settings");
-            if (version != (settings ? 3 : clone ? 2 : 1)) throw Invalid("explicit runtime selection differs from enrollment version");
+            if (version != profile.Version) throw Invalid("explicit runtime selection differs from enrollment version");
             CheckFields(root, [.. Fields, "brokerOrigin", "githubHost", "deviceId", "deviceSecret"]);
             CheckBinding(root);
             if (Text(root, "githubHost") != "github.com") throw Invalid("only github.com is supported");
@@ -75,6 +67,9 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         }
         catch { enrollment.Dispose(); throw; }
     }
+
+    /// <summary>Reads a protected enrollment file.</summary>
+    internal static Func<ReadOnlyMemory<byte>> EnrollmentFile(string enrollmentFile) => () => ReadFile(enrollmentFile);
 
     static ReadOnlyMemory<byte> ReadFile(string enrollmentFile)
     {
@@ -192,21 +187,16 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         if (!Name(Text(value, "appSlug"))) throw Invalid("invalid App slug");
         var parts = Text(value, "repository").Split('/');
         if (parts.Length != 2 || !parts.All(Name)) throw Invalid("invalid repository name");
-        if (settings && (Text(value, "profile") != (repositoryWebhooks ? "webhook" : "polling") + (clone ? "-clone" : "") + "-settings" ||
+        if (settings && (Text(value, "profile") != profile.Name ||
             Text(value, "policyVersion") != "repository-actions-settings-approval-v3"))
             throw Invalid("repository-settings policy differs");
-        if (clone && !settings && (Text(value, "profile") != (repositoryWebhooks ? "webhook-clone" : "polling-clone") ||
+        if (clone && !settings && (Text(value, "profile") != profile.Name ||
             Text(value, "policyVersion") is not ("repository-actions-clone-approval-v3" or "repository-agent-clone-approval-v2")))
             throw Invalid("clone policy differs");
         var permissions = value.GetProperty("permissions");
-        var required = new List<string> { "discussions" };
-        if (repositoryWebhooks) required.Add("repository_hooks");
-        if (clone) required.Add("contents");
-        if (settings) required.Add("actions_variables");
-        CheckFields(permissions, required.ToArray(), ["metadata"]);
-        if (Text(permissions, "discussions") != "write" || (clone && Text(permissions, "contents") != "read") ||
-            (settings && Text(permissions, "actions_variables") != "read") ||
-            (repositoryWebhooks && Text(permissions, "repository_hooks") != "write") ||
+        var required = profile.Permissions();
+        CheckFields(permissions, [.. required.Select(permission => permission.Key)], ["metadata"]);
+        if (required.Any(permission => Text(permissions, permission.Key) != permission.Value!.GetValue<string>()) ||
             (permissions.TryGetProperty("metadata", out var metadata) && (metadata.ValueKind != JsonValueKind.String || metadata.GetString() != "read")))
             throw Invalid("permission profile differs from runtime");
     }

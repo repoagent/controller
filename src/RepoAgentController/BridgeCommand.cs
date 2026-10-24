@@ -138,14 +138,11 @@ public static class BridgeCommand
                     var agentCredentials = result.GetValue(codexAuth) is { } supplied ? CodexCredentials.Open(supplied.FullName) : null;
                     using var ownedHttp = transport is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(60) } : null;
                     var http = transport ?? ownedHttp!;
+                    var profile = new RuntimeProfile(publicUrl is not null, result.GetValue(clone), result.GetValue(repositorySettings));
                     using var credentials = broker is null
-                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, time, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone),
-                            repositorySettings: result.GetValue(repositorySettings))
-                        : injected is null
-                            ? GitHubAppCredentials.FromBroker(http, broker, enrollment!.FullName, result.GetValue(appId)!, repo, credentialDirectory, time, repositoryWebhooks: publicUrl is not null, clone: result.GetValue(clone), expectedRepositoryId: result.GetValue(repositoryId), expectedInstallationId: result.GetValue(installationId),
-                                repositorySettings: result.GetValue(repositorySettings))
-                            : GitHubAppCredentials.FromBroker(http, broker, BrokerTokenSource.Injected(injected, injectedEnrollment), result.GetValue(appId)!, repo, credentialDirectory, time, publicUrl is not null, result.GetValue(clone), result.GetValue(repositoryId), result.GetValue(installationId),
-                                result.GetValue(repositorySettings));
+                        ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, time, profile)
+                        : GitHubAppCredentials.FromBroker(http, broker, injected is null ? BrokerTokenSource.EnrollmentFile(enrollment!.FullName) : BrokerTokenSource.Injected(injected, injectedEnrollment),
+                            result.GetValue(appId)!, repo, credentialDirectory, profile, time, result.GetValue(repositoryId), result.GetValue(installationId));
                     await using var durable = queue is null ? null : new DurableWebhookWork(queue, repo, result.GetValue(repositoryId)!.Value,
                         result.GetValue(appId)!, result.GetValue(installationId)!.Value, BrokerTokenSource.ParseOrigin(broker!));
                     if (durable is not null) await durable.Start(cancellationToken);

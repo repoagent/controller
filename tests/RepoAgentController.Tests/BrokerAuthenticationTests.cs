@@ -650,8 +650,8 @@ public sealed class BrokerAuthenticationTests
 
         public HttpClient Http => http;
 
-        public GitHubAppCredentials Credentials() => GitHubAppCredentials.FromBroker(http, "https://credentials.example.org/", EnrollmentFile, "123", "OWNER/Repository", CredentialDirectory, Clock, webhooks, clone,
-            repositorySettings: RepositorySettings);
+        public GitHubAppCredentials Credentials() => GitHubAppCredentials.FromBroker(http, "https://credentials.example.org/", EnrollmentFile, "123", "OWNER/Repository", CredentialDirectory,
+            new RuntimeProfile(webhooks, clone, RepositorySettings), Clock);
 
         public Task<int> Start(string? option = null, string? value = null, bool keepFile = false)
         {
