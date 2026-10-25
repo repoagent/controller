@@ -13,12 +13,20 @@ sealed class GitHubBaselineReleases(GitHub github) : IBaselineReleases
     public async Task<IReadOnlyList<BaselineRelease>> Published(CancellationToken ct)
     {
         var (status, body) = await github.Get($"repos/{BaselineReleases.Repository}/releases?per_page=100", "releases", ct);
-        if (status != 200) throw GitHubRequestException.Rejected(status);
+        if (status != 200) throw Rejected(status);
         JsonArray releases;
         try { releases = JsonNode.Parse(body) as JsonArray ?? throw new IOException("Malformed GitHub releases response"); }
         catch (JsonException) { throw new IOException("Malformed GitHub releases response"); }
         return releases.OfType<JsonObject>().Select(Parse).OfType<BaselineRelease>().ToArray();
     }
+
+    /// <summary>The releases read answered with an unexpected HTTP status.</summary>
+    static GitHubRequestException Rejected(int status) => new(status switch
+    {
+        429 => GitHubFailure.RateLimited,
+        400 or 403 or 404 or 410 or 422 => GitHubFailure.Permanent,
+        _ => GitHubFailure.Transient
+    }, $"GitHub returned HTTP {status}");
 
     /// <summary>A supported release: a published baseline tag whose v1 metadata describes the public linux/amd64 image.</summary>
     static BaselineRelease? Parse(JsonObject release)
