@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Http.Timeouts;
 using Microsoft.AspNetCore.RateLimiting;
@@ -39,9 +38,8 @@ internal static class RequestProtection
             limiter.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             limiter.OnRejected = (context, _) =>
             {
-                var seconds = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var delay)
-                    ? Math.Max(1, (int)Math.Ceiling(delay.TotalSeconds)) : 1;
-                context.HttpContext.Response.Headers.RetryAfter = seconds.ToString(CultureInfo.InvariantCulture);
+                context.HttpContext.Response.Headers.RetryAfter = BrokerRoutes.RetryAfter(
+                    context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var delay) ? delay : null);
                 return ValueTask.CompletedTask;
             };
         });
