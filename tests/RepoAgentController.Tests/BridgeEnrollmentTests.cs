@@ -263,7 +263,7 @@ public sealed class BridgeEnrollmentTests
 
         // Never observed as new: no session starts for it and its input is not sent again; the other Discussion continues.
         Assert.Equal(["S1", "S2", "S2"], world.Turns.Select(turn => turn.SessionId));
-        Assert.StartsWith(BridgeWorld.Url(1) + ": ", Assert.Single(world.Logged("observation-error")));
+        Assert.Equal(BridgeWorld.Url(1) + ": An element of type 'Number' cannot be converted to a 'System.String'.", Assert.Single(world.Logged("observation-error")));
         Assert.Equal(damaged, world.Record(1)!.ToJsonString());
     }
 }

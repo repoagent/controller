@@ -395,6 +395,52 @@ public sealed class BridgeInputTests
     }
 
     [Fact]
+    public async Task A_delivery_a_controller_from_before_the_waiting_queue_left_pending_ends_at_the_next_start_and_its_input_is_observed_again()
+    {
+        await using var world = Enrolled();
+        await world.Begin(1);
+        await world.Poll();
+        await world.Deliver();
+        world.Finish(1);
+        await world.End();
+        // That controller kept no waiting input and no input count, and checkpointed a source only once its delivery was accepted.
+        world.GitHub.Comment(1, "C1", "please answer", Alice);
+        var state = JsonNode.Parse(File.ReadAllText(world.StatePath))!;
+        state["discussions"]!["D1"]!["pending"] = new JsonObject { ["operation"] = "send", ["since"] = "2026-10-24T09:59:00.0000000+00:00", ["sourceIds"] = new JsonArray("C1") };
+        File.WriteAllText(world.StatePath, state.ToJsonString());
+
+        await world.Begin(1);
+        Assert.Null(world.Record(1)!["pending"]);
+        Assert.True(await world.Poll());
+
+        var observed = world.Envelope(1);
+        Assert.Null(observed["_bridge"]!["redelivery"]);
+        Assert.Equal(["C1"], BridgeWorld.Subjects(observed));
+    }
+
+    [Fact]
+    public async Task A_checkpoint_holding_a_key_no_writer_writes_is_kept_until_the_next_observation_rewrites_it_without_input()
+    {
+        await using var world = Enrolled();
+        await world.Begin(1);
+        await world.Poll();
+        world.Finish(1);
+        await world.End();
+        var state = JsonNode.Parse(File.ReadAllText(world.StatePath))!;
+        state["discussions"]!["D1"]!["sources"]!["D1"]!["later"] = "checkpoint";
+        File.WriteAllText(world.StatePath, state.ToJsonString());
+
+        // The next start saves as it ends the earlier lifetime's turn, keeping the key; the next observation finds no change.
+        await world.Begin(1);
+        Assert.Null(world.Record(1)!["running"]);
+        Assert.Equal("checkpoint", world.Record(1)!["sources"]!["D1"]!["later"]!.GetValue<string>());
+        Assert.True(await world.Poll());
+
+        Assert.Single(world.Turns);
+        Assert.Null(world.Record(1)!["sources"]!["D1"]!["later"]);
+    }
+
+    [Fact]
     public async Task A_receipt_superseded_by_new_input_during_a_rate_limit_is_written_once_without_dropping_the_others()
     {
         await using var world = Enrolled();
