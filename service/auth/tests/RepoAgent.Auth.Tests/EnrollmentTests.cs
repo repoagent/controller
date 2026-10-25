@@ -112,7 +112,7 @@ internal sealed class EnrollmentFixture : IAsyncDisposable
             services.AddSingleton<IAppInstallations>(GitHub);
             services.AddSingleton<IControllerApprovals>(GitHub);
             services.AddSingleton(IssuanceServices.CreateStore); services.AddSingleton<InstallationTokenIssuer>();
-            services.AddSingleton<EnrollmentStore>(); services.AddSingleton<EnrollmentService>();
+            services.AddSingleton(IssuanceServices.CreateEnrollmentService);
         }));
         client = host.CreateClient();
     }

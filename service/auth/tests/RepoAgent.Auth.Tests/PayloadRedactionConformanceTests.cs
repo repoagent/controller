@@ -169,7 +169,7 @@ public sealed partial class PayloadRedactionTests
         await f.Storage.Table.UpdateEntityAsync(gate, gate.ETag, TableUpdateMode.Replace, Token);
         f.Clock.Advance(ledger.GetDateTimeOffset("PayloadPurgeAt")!.Value - f.Clock.GetUtcNow());
         var before = await Inventory(f);
-        await Cleanup(f, "new-deployment").RedactIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
+        await Cleanup(f).RedactIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
         var redacted = await Read(f, attempt.PartitionKey, attempt.RowKey);
         Assert.False(redacted.ContainsKey("ProtectedToken"));
         Assert.Equal(attempt.GetString("State"), redacted.GetString("State"));
@@ -205,11 +205,10 @@ public sealed partial class PayloadRedactionTests
         Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
         return j;
     }
-    private static BrokerPayloadRedaction Cleanup(EnrollmentFixture f, string epoch = RevocationFixture.Epoch, TableClient? table = null) =>
-        new(table ?? f.Storage.CreateClient(), new(new Uri("https://example.table.core.windows.net"), f.Storage.TableName, epoch, null, 120, 8, 15), f.Clock);
+    private static BrokerPayloadRedaction Cleanup(EnrollmentFixture f, TableClient? table = null) => new(table ?? f.Storage.CreateClient(), f.Clock);
     private static Task<TableEntity> EnrollmentLedger(EnrollmentFixture f, string id) => Read(f, "global:enrollment-v1", "pending:" + id);
-    private static Task RedactEnrollment(EnrollmentFixture f, TableEntity ledger, string epoch = RevocationFixture.Epoch) =>
-        Cleanup(f, epoch).RedactEnrollmentAsync(ledger.RowKey["pending:".Length..], ledger.GetString("Generation")!, Token);
+    private static Task RedactEnrollment(EnrollmentFixture f, TableEntity ledger) =>
+        Cleanup(f).RedactEnrollmentAsync(ledger.RowKey["pending:".Length..], ledger.GetString("Generation")!, Token);
     private static async Task<TableEntity> Read(EnrollmentFixture f, string partition, string key) =>
         (await f.Storage.CreateClient().GetEntityAsync<TableEntity>(partition, key, cancellationToken: Token)).Value;
     private static async Task<List<TableEntity>> Inventory(EnrollmentFixture f)

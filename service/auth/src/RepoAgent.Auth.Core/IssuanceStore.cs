@@ -259,8 +259,10 @@ public sealed partial class IssuanceStore(IBrokerState state, string epoch, long
     }
 
     // The App authorization window a still-reserved attempt reserved. Only such an attempt may be signed.
-    public static AppAuthorizationWindow ReservedWindow(StoredAttempt attempt) => Text(attempt.Value.State) == "reserved"
-        ? AppAuthorizationWindow.Reserved(Date(attempt.Value.ReservedAt), Date(attempt.Value.JwtIssuedAt), Date(attempt.Value.JwtExpiresAt))
+    public static AppAuthorizationWindow ReservedWindow(StoredAttempt attempt) => ReservedWindow(attempt.Value);
+
+    public static AppAuthorizationWindow ReservedWindow(IssuanceAttempt attempt) => Text(attempt.State) == "reserved"
+        ? AppAuthorizationWindow.Reserved(Date(attempt.ReservedAt), Date(attempt.JwtIssuedAt), Date(attempt.JwtExpiresAt))
         : throw new IssuanceDenied();
 
     private async Task<StoredAttempt?> AttemptAsync(GrantSnapshot grant, string operation, CancellationToken ct)
@@ -298,7 +300,7 @@ public sealed partial class IssuanceStore(IBrokerState state, string epoch, long
     }
 
     // A redacted attempt's payload is gone. Retention needs a purge time, or a reservation time to fall back to.
-    private static void RequireAttemptPayload(IssuanceAttempt attempt)
+    internal static void RequireAttemptPayload(IssuanceAttempt attempt)
     {
         if (attempt.PayloadRedacted == true || attempt.State == "redacted") throw new IssuanceDenied();
         if (Usable(attempt.PayloadPurgeAt) is null

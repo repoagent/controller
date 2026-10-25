@@ -61,9 +61,8 @@ public sealed class EnrollmentFaultTests
         var injected = false;
         var transport = new ObservedTransport { After = message =>
         {
-            var target = locator
-                ? message.Request.Method.ToString() == "POST" && !ObservedTransport.IsBatch(message)
-                : ObservedTransport.IsBatch(message) && ++batches == 4;
+            // Work claim, global charge, repository charge, the completion commit, then the locator's own transaction.
+            var target = ObservedTransport.IsBatch(message) && ++batches == (locator ? 5 : 4);
             if (target && !injected)
             {
                 injected = true;
