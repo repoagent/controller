@@ -293,7 +293,19 @@
     "D_kwDOAbc4": {
       "url": "https://github.com/owner/repository/discussions/4",
       "sources": {},
-      "sessionId": 4
+      "sessionId": 4,
+      "waiting": {
+        "inputs": [
+          {
+            "observedAt": "2026-10-25T09:00:00Z",
+            "change": {}
+          }
+        ],
+        "discussion": {},
+        "retry": {
+          "attempts": 1
+        }
+      }
     }
   },
   "agentLogin": "test-app[bot]",

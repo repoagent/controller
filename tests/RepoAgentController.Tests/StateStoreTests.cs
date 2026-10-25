@@ -111,16 +111,6 @@ public sealed class StateStoreTests : IDisposable
         Assert.Equal(7, JsonNode.Parse(File.ReadAllText(State))!["discussions"]!["D7"]!.GetValue<int>()); // Saved as read.
     }
 
-    [Fact]
-    public void A_waiting_input_time_and_a_retry_in_a_form_no_writer_leaves_are_written_back_as_read()
-    {
-        const string Waiting = """{"inputs":[{"observedAt":"2026-10-25T09:00:00Z","change":{}}],"discussion":{},"retry":{"attempts":1}}""";
-
-        Assert.Null(Open("""{"version":1,"repository":"owner/repository","discussions":{"D1":{"url":"u1","sources":{},"waiting":""" + Waiting + "}}}"));
-
-        Assert.Equal(Waiting, JsonNode.Parse(File.ReadAllText(State))!["discussions"]!["D1"]!["waiting"]!.ToJsonString());
-    }
-
     // What the BCL reports for this read, so its wording is not pinned here.
     static string Reported(Action read) => Assert.IsType<InvalidOperationException>(Record.Exception(read)).Message;
 

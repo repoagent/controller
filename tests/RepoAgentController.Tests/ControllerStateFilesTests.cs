@@ -188,7 +188,7 @@ public sealed class ControllerStateFilesTests : IDisposable
     // As the bridge, the identity check and category enrollment wrote it before the Discussion records were typed. Each record's
     // keys are in the order its history added them, and every object a key of its own could be added to carries one ("later").
     // Agent input the bridge keeps (a change, the Discussion, the bootstrap context) is the text it sends. D_kwDOAbc4's session ID
-    // is not text, as no writer leaves it.
+    // is not text, its input's time is not in the writers' form and its retry has no time, as no writer leaves them.
     const string RecordedState = """
         {
           "version": 1,
@@ -263,7 +263,12 @@ public sealed class ControllerStateFilesTests : IDisposable
                 "discussion": { "id": "D_kwDOAbc3", "url": "https://github.com/owner/repository/discussions/3", "body": "Third, edited", "createdAt": "2026-10-24T09:20:00Z", "updatedAt": "2026-10-24T09:44:00Z", "author": { "__typename": "User", "login": "participant" }, "number": 3, "title": "Third", "closed": false, "locked": false, "answer": null, "category": null }
               }
             },
-            "D_kwDOAbc4": { "url": "https://github.com/owner/repository/discussions/4", "sources": {}, "sessionId": 4 }
+            "D_kwDOAbc4": {
+              "url": "https://github.com/owner/repository/discussions/4",
+              "sources": {},
+              "sessionId": 4,
+              "waiting": { "inputs": [ { "observedAt": "2026-10-25T09:00:00Z", "change": {} } ], "discussion": {}, "retry": { "attempts": 1 } }
+            }
           },
           "agentLogin": "test-app[bot]",
           "enrollmentCategories": { "Agents": "2026-10-24T08:00:00Z", "Q&A": "2026-10-24T08:30:00Z" },
