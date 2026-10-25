@@ -111,6 +111,24 @@ public sealed class BridgeAdmissionTests
         Assert.Empty(world.Waiting());
     }
 
+    [Theory]
+    [InlineData("completed", "completed")]
+    [InlineData("interrupted", "interrupted")]
+    [InlineData("failed", "failed")]
+    [InlineData("", "")] // Reported without a status.
+    public async Task An_ended_turn_is_logged_with_the_status_its_runtime_reported(string reported, string logged)
+    {
+        await using var world = Mentioned(1);
+        await world.Begin();
+        await world.Poll();
+        world.Runtime.Report("S1", AgentSessionStatus.Idle);
+        world.Runtime.Completed("S1", "T1", reported);
+
+        await world.Dispatch();
+
+        Assert.Equal($"{BridgeWorld.Url(1)} session=S1 turn=T1 status={logged}", Assert.Single(world.Logged("turn-ended")));
+    }
+
     [Fact]
     public async Task A_failed_turn_leaves_its_session_ready_for_the_next_input_without_a_restart()
     {
