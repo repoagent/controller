@@ -9,6 +9,8 @@ public sealed class GitHubOutboxDeliveryTests
 {
     const string Repository = "owner/repository", Category = "Controller status";
     const string Url = "https://github.com/owner/repository/discussions/1", Comment = Url + "#discussioncomment-7";
+    // Every dashboard body the controller publishes carries the marker.
+    const string Marked = AppIdentity.DashboardMarker + "\n";
     static readonly DateTimeOffset Start = new(2026, 10, 24, 10, 0, 0, TimeSpan.Zero);
     readonly FakeTimeProvider clock = new(Start);
     readonly InMemoryDiscussions github = new();
@@ -126,22 +128,22 @@ public sealed class GitHubOutboxDeliveryTests
         var category = github.Category(Category);
         await using (var outbox = Lifetime())
         {
-            outbox.Dashboard(Category, "Status", "first");
+            outbox.Dashboard(Category, "Status", Marked + "first");
             Assert.True(await outbox.Flush(ct));
-            outbox.Dashboard(Category, "Status", "second");
+            outbox.Dashboard(Category, "Status", Marked + "second");
             Assert.True(await outbox.Flush(ct));
         }
         var dashboard = Assert.Single(github.Dashboards);
-        Assert.Equal(("Status", "second"), (dashboard.Title, dashboard.Body));
+        Assert.Equal(("Status", Marked + "second"), (dashboard.Title, dashboard.Body));
         Assert.Equal([$"discussionCategories {Category}", $"discussions {category}", $"createDiscussion {category}", $"updateDiscussion {dashboard.Id}"], github.Calls);
         Assert.Equal([("dashboard-created", dashboard.Url)], log.Entries); // A routine update is not logged.
 
         await using (var outbox = Lifetime())
         {
-            outbox.Dashboard(Category, "Attention", "third");
+            outbox.Dashboard(Category, "Attention", Marked + "third");
             Assert.True(await outbox.Flush(ct));
         }
-        Assert.Equal(dashboard with { Title = "Attention", Body = "third" }, Assert.Single(github.Dashboards));
+        Assert.Equal(dashboard with { Title = "Attention", Body = Marked + "third" }, Assert.Single(github.Dashboards));
         Assert.Equal([$"discussionCategories {Category}", $"discussions {category}", $"updateDiscussion {dashboard.Id}"], github.Calls.Skip(4));
         Assert.Equal(("dashboard", dashboard.Url), log.Entries[^1]);
     }
@@ -153,7 +155,7 @@ public sealed class GitHubOutboxDeliveryTests
         github.Category(Category);
         github.Fail(new(GitHubFailure.Transient, "dashboard creation returned no Discussion", uncertain: true), applied: true);
         await using var outbox = Lifetime();
-        outbox.Dashboard(Category, "Status", "first");
+        outbox.Dashboard(Category, "Status", Marked + "first");
         Assert.False(await outbox.Flush(ct));
 
         clock.Advance(TimeSpan.FromSeconds(15));
