@@ -65,20 +65,17 @@ public sealed class BrokerLifetimeTests
         try
         {
             foreach (var pair in environment) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
+            var statusPort = ControllerHarness.FreePort();
             var args = new List<string>
             {
                 "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
                 "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
-                "--workspace", fixture.Directory, "--interval", "3600", "--status-port", ControllerHarness.FreePort().ToString()
+                "--workspace", fixture.Directory, "--interval", "3600", "--status-port", statusPort.ToString()
             };
             if (stage == "teardown") args.Add("--once");
             if (webhooks)
-            {
-                using var port = new TcpListener(IPAddress.Loopback, 0);
-                port.Start();
                 args.AddRange(["--webhook-url", "https://controller.example.org", "--listen-port",
-                    ((IPEndPoint)port.LocalEndpoint).Port.ToString()]);
-            }
+                    ControllerHarness.FreePort(statusPort).ToString()]);
             run = BridgeCommand.Run(args.ToArray(), fixture.Http, fixture.Gh, fixture.Clock, shutdown.Token);
             using var connection = await ready.AcceptTcpClientAsync(TestContext.Current.CancellationToken)
                 .AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);

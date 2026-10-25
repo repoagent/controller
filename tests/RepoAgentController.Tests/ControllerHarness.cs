@@ -26,7 +26,7 @@ static class ControllerHarness
 
     /// <summary>
     /// A loopback port that was free just now and is none of <paramref name="taken"/>, for a controller listener in a test.
-    /// A probe that lands on a taken port stays open until the end, so the next probe can't be given it again.
+    /// A probe that lands on a taken port stays open until this returns, so the next probe can't be given it again.
     /// </summary>
     public static int FreePort(params int[] taken)
     {
