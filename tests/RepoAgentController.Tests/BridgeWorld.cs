@@ -30,8 +30,8 @@ sealed class BridgeWorld : IAsyncDisposable
     /// <summary>Whether lifetimes read the REPOAGENT_ variables, as <c>--repository-settings</c> selects.</summary>
     public bool RepositorySettings { get; set; } = true;
     public string StatePath { get; }
-    /// <summary>Prepares each lifetime's runtime before the bridge uses it, as the agent's catalogue and configuration.</summary>
-    public Action<FakeAgentRuntime>? Native { get; set; }
+    /// <summary>Prepares each lifetime's agent runtime before the bridge uses it, as the agent's catalogue and configuration.</summary>
+    public Action<FakeAgentRuntime>? PrepareRuntime { get; set; }
 
     /// <summary>Observes the controller log in the creating test's async flow; create it in the test method.</summary>
     public BridgeWorld()
@@ -76,7 +76,7 @@ sealed class BridgeWorld : IAsyncDisposable
         await End();
         var stop = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var runtime = new FakeAgentRuntime(counts.Sessions, counts.Turns);
-        Native?.Invoke(runtime);
+        PrepareRuntime?.Invoke(runtime);
         while (answers.TryDequeue(out var answer)) runtime.Answer(answer);
         var current = new Lifetime(stop, new StateStore(StatePath, Repository), new ControllerStatus(StatePath, Repository, "polling"),
             new RepositorySettings(RepositorySettingsCatalogue.Settings, RepositorySettings ? Variables : null, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
@@ -160,6 +160,9 @@ sealed class BridgeWorld : IAsyncDisposable
     public IReadOnlyList<AgentTurnRequest> Turns => [.. ended, .. lifetime?.Runtime.Requests ?? []];
 
     public JsonNode Envelope(int turn) => JsonNode.Parse(Turns[turn].Input)!;
+
+    /// <summary>The subject ID of each change an agent input carries, in order.</summary>
+    public static string[] Subjects(JsonNode envelope) => [.. envelope["changes"]!.AsArray().Select(change => change!["subject"]!["id"]!.GetValue<string>())];
 
     /// <summary>The most agent sessions that ran a turn at once.</summary>
     public int MostActive { get { lock (log) return mostActive; } }

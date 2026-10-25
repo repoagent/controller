@@ -88,7 +88,7 @@ sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
     // Conversations by Discussion number, in the order they were opened; comments in the order they were written.
     readonly SortedList<int, Held> conversations = [];
     readonly Dictionary<string, Exception> readFailures = [];
-    DateTimeOffset Now => (clock ?? TimeProvider.System).GetUtcNow();
+    DateTimeOffset Now => (clock ?? throw new InvalidOperationException("Writing a conversation needs the test's clock")).GetUtcNow();
 
     /// <summary>A Discussion in a category, as GitHub holds it now.</summary>
     public sealed record Posted(string Id, string Url, string CategoryId, Actor? Author, string Title, string Body);

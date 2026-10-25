@@ -85,7 +85,7 @@ public sealed class BridgeAdmissionTests
         world.Finish(3);
         await world.Dispatch();
         Assert.Equal(1, Discussion(world.Turns[3]));
-        Assert.Equal("C1", world.Envelope(3)["changes"]![0]!["subject"]!["id"]!.GetValue<string>());
+        Assert.Equal(["C1"], BridgeWorld.Subjects(world.Envelope(3)));
     }
 
     [Theory]
@@ -126,7 +126,7 @@ public sealed class BridgeAdmissionTests
 
         Assert.Equal(["S1", "S1"], world.Turns.Select(turn => turn.SessionId));
         Assert.Equal("continue", world.Envelope(1)["_bridge"]!["mode"]!.GetValue<string>());
-        Assert.Equal(["C1", "C2"], world.Envelope(1)["changes"]!.AsArray().Select(change => change!["subject"]!["id"]!.GetValue<string>()));
+        Assert.Equal(["C1", "C2"], BridgeWorld.Subjects(world.Envelope(1)));
         Assert.Empty(world.Waiting());
         await world.Deliver();
         Assert.True(world.GitHub.HasEyes("C1") && world.GitHub.HasEyes("C2"));
@@ -209,7 +209,7 @@ public sealed class BridgeAdmissionTests
         Assert.Equal((2, 2), (world.Status()["work"]!["waiting"]!.GetValue<int>(), world.Status()["sessions"]![0]!["waiting"]!.GetValue<int>()));
 
         // A restarted runtime has not loaded S1: the bridge loads it and uses only the status it reports.
-        world.Native = runtime => runtime.Resumes = resumed;
+        world.PrepareRuntime = runtime => runtime.Resumes = resumed;
         await world.Begin();
         for (var pass = 0; pass < 2; pass++)
         {
@@ -219,7 +219,7 @@ public sealed class BridgeAdmissionTests
         Assert.Single(world.Turns);
         world.Runtime.Report("S1", AgentSessionStatus.Idle);
         await world.Dispatch();
-        Assert.Equal(["C1", "C2"], world.Envelope(1)["changes"]!.AsArray().Select(change => change!["subject"]!["id"]!.GetValue<string>()));
+        Assert.Equal(["C1", "C2"], BridgeWorld.Subjects(world.Envelope(1)));
         Assert.Equal("continue", world.Envelope(1)["_bridge"]!["mode"]!.GetValue<string>());
         Assert.False(world.GitHub.HasEyes("C1")); // EYES follow acceptance, through the outbox.
         await world.Deliver();
@@ -279,7 +279,7 @@ public sealed class BridgeAdmissionTests
         await world.Poll();
         world.Finish(1);
         await world.WhenLogged("forwarded", 3);
-        Assert.Equal("C1", world.Envelope(world.Turns.Count - 1)["changes"]![0]!["subject"]!["id"]!.GetValue<string>());
+        Assert.Equal(["C1"], BridgeWorld.Subjects(world.Envelope(world.Turns.Count - 1)));
         await stop.CancelAsync();
         await loop;
 
@@ -296,7 +296,7 @@ public sealed class BridgeAdmissionTests
         world.Variables.Set(Setting, "2");
         await world.Refresh();
         await world.WhenLogged("forwarded", 5);
-        Assert.Equal("C3", world.Envelope(world.Turns.Count - 1)["changes"]![0]!["subject"]!["id"]!.GetValue<string>());
+        Assert.Equal(["C3"], BridgeWorld.Subjects(world.Envelope(world.Turns.Count - 1)));
         await next.CancelAsync();
         await loop;
     }
@@ -335,11 +335,11 @@ public sealed class BridgeAdmissionTests
         await world.Dispatch();
         Assert.Equal(["S1"], world.Runtime.Resumed);
         Assert.True(world.Envelope(2)["_bridge"]!["redelivery"]!.GetValue<bool>());
-        Assert.Equal(["C1"], world.Envelope(2)["changes"]!.AsArray().Select(change => change!["subject"]!["id"]!.GetValue<string>()));
+        Assert.Equal(["C1"], BridgeWorld.Subjects(world.Envelope(2)));
         world.Finish(1);
         await world.Dispatch();
         Assert.Null(world.Envelope(3)["_bridge"]!["redelivery"]);
-        Assert.Equal(["C2", "C3"], world.Envelope(3)["changes"]!.AsArray().Select(change => change!["subject"]!["id"]!.GetValue<string>()));
+        Assert.Equal(["C2", "C3"], BridgeWorld.Subjects(world.Envelope(3)));
         Assert.Equal(["S1", "S1", "S1", "S1"], world.Turns.Select(turn => turn.SessionId));
         Assert.Equal("healthy", world.Status()["codexAuthentication"]!["state"]!.GetValue<string>());
         await world.Deliver();

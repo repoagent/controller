@@ -11,7 +11,7 @@ public sealed class BridgeModelSelectionTests
     {
         var world = new BridgeWorld
         {
-            Native = runtime => runtime.Catalogue =
+            PrepareRuntime = runtime => runtime.Catalogue =
             [
                 new("gpt-6.1-sol", true, "low", ["low", "medium", "high", "xhigh", "max", "ultra"]),
                 new("gpt-6-luna", false, "medium", ["low", "medium", "high", "xhigh", "max"]),

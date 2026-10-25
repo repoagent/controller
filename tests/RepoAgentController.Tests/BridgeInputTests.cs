@@ -28,8 +28,6 @@ public sealed class BridgeInputTests
         change!["kind"]!.GetValue<string>(), change["subject"]!["id"]!.GetValue<string>(), change["subject"]!["author"]!["login"]!.GetValue<string>(),
         change["subject"]!["replyTo"]?["id"]?.GetValue<string>(), change["replyTarget"]!["replyToId"]?.GetValue<string>()))];
 
-    static string[] Subjects(JsonNode envelope) => [.. envelope["changes"]!.AsArray().Select(change => change!["subject"]!["id"]!.GetValue<string>())];
-
     [Fact]
     public async Task Agent_input_and_checkpoints_are_the_bytes_ec1ccf7_sent_and_saved_for_the_golden_conversation()
     {
@@ -273,7 +271,7 @@ public sealed class BridgeInputTests
         });
         world.Finish(1);
         await world.Dispatch();
-        Assert.Equal(["C1", "C2"], Subjects(world.Envelope(1)));
+        Assert.Equal(["C1", "C2"], BridgeWorld.Subjects(world.Envelope(1)));
         Assert.Empty(retained!); // No receipt was retained before the agent accepted the batch carrying its source.
         await world.Deliver();
         Assert.True(world.GitHub.HasEyes("C1") && world.GitHub.HasEyes("C2"));
@@ -330,7 +328,7 @@ public sealed class BridgeInputTests
         await world.Dispatch();
         var retried = world.Envelope(2);
         Assert.True(retried["_bridge"]!["redelivery"]!.GetValue<bool>());
-        Assert.Equal(["C1"], Subjects(retried));
+        Assert.Equal(["C1"], BridgeWorld.Subjects(retried));
         await world.Deliver();
         Assert.True(world.GitHub.HasEyes("C1"));
 
@@ -338,7 +336,7 @@ public sealed class BridgeInputTests
         world.GitHub.Comment(1, "C2", "follow-up", Bob);
         await world.Poll();
         Assert.Null(world.Envelope(3)["_bridge"]!["redelivery"]);
-        Assert.Equal(["C2"], Subjects(world.Envelope(3)));
+        Assert.Equal(["C2"], BridgeWorld.Subjects(world.Envelope(3)));
         Assert.Null(world.Record(1)!["pending"]);
         Assert.Null(world.Record(1)!["waiting"]);
     }
@@ -366,7 +364,7 @@ public sealed class BridgeInputTests
         await world.Poll();
         var redelivered = world.Envelope(2);
         Assert.True(redelivered["_bridge"]!["redelivery"]!.GetValue<bool>());
-        Assert.Equal(["C1"], Subjects(redelivered));
+        Assert.Equal(["C1"], BridgeWorld.Subjects(redelivered));
         Assert.False(await world.Deliver());
         var failure = Assert.Single(world.Logged("receipt-error"));
         Assert.StartsWith(BridgeWorld.Url(1) + "#discussioncomment-C1 subject=C1 attempt=1 Permanent: FORBIDDEN: Resource not accessible by integration;", failure);
