@@ -132,14 +132,17 @@ public sealed class GitHubOutbox : IAsyncDisposable
         var key = operation.Key;
         var attempt = operation.Attempts + 1;
         var publication = operation is DashboardOperation;
-        // How the operation's log lines name its kind, target and subject.
+        // How the operation's log lines name its kind, target and subject. A dashboard is named by the one found or created during
+        // this lifetime, or else by its category.
         var (kind, url, subject) = operation switch
         {
             ReceiptOperation receipt => ("receipt", receipt.Url, receipt.SubjectId),
-            DashboardOperation update => ("dashboard", dashboard?.Url ?? $"dashboard category '{update.Category}'", ""),
+            DashboardOperation update => ("dashboard", DashboardTarget(update.Category), ""),
+            UnsupportedOperation { Kind: "dashboard" } other => ("dashboard", DashboardTarget(other.Category), other.SubjectId),
             UnsupportedOperation other => (other.Kind, other.Url, other.SubjectId),
             _ => throw new UnreachableException()
         };
+        string DashboardTarget(string? category) => dashboard?.Url ?? $"dashboard category '{category}'";
         (string Kind, string Url)? outcome;
         try { outcome = await Execute(operation, kind, attempt, operation.Uncertain, ct); }
         catch (OperationCanceledException)
@@ -166,9 +169,9 @@ public sealed class GitHubOutbox : IAsyncDisposable
                     dashboardRejected |= publication;
                     Save();
                 }
-                log.Write(kind + "-error", context + (publication
-                    ? "; permanent failure removed from retry; dashboard updates stop until the controller restarts"
-                    : "; permanent failure removed from retry; accepted input is not replayed"));
+                var consequence = publication ? "dashboard updates stop until the controller restarts"
+                    : kind == "dashboard" ? "later dashboard updates are unaffected" : "accepted input is not replayed";
+                log.Write(kind + "-error", $"{context}; permanent failure removed from retry; {consequence}");
                 return false;
             }
             var now = clock.GetUtcNow();
