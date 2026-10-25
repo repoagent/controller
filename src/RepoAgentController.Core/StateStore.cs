@@ -3,19 +3,19 @@ namespace RepoAgentController;
 /// <summary>The controller's Discussion state, held in memory by the one controller that leases it, and saved whole.</summary>
 public sealed class StateStore
 {
-    readonly IDiscussionStore files;
+    readonly IDiscussionStore store;
     public DiscussionState State { get; }
 
     /// <summary>Throws as reading the untyped file's records threw when they are unreadable (<see cref="DiscussionState.Unreadable"/>).</summary>
     public OrderedDictionary<string, DiscussionRecord> Discussions =>
         State.Unreadable is { } problem ? throw new InvalidDataException(problem) : State.Discussions;
 
-    /// <summary>Reads the state <paramref name="files"/> keep for <paramref name="repository"/>; the caller holds their lease.</summary>
-    public StateStore(IDiscussionStore files, string repository) => (this.files, State) = (files, Read(files, repository));
+    /// <summary>Reads the state <paramref name="store"/> keeps for <paramref name="repository"/>; the caller holds its lease.</summary>
+    public StateStore(IDiscussionStore store, string repository) => (this.store, State) = (store, Read(store, repository));
 
-    static DiscussionState Read(IDiscussionStore files, string repository)
+    static DiscussionState Read(IDiscussionStore store, string repository)
     {
-        var state = files.ReadDiscussions() ?? new DiscussionState(repository);
+        var state = store.ReadDiscussions() ?? new DiscussionState(repository);
         if (!string.Equals(state.Repository, repository, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("State belongs to a different repository or unsupported version");
         return state;
@@ -43,5 +43,5 @@ public sealed class StateStore
         }
     }
 
-    public void Save() => files.WriteDiscussions(State);
+    public void Save() => store.WriteDiscussions(State);
 }

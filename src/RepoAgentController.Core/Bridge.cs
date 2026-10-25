@@ -9,7 +9,7 @@ namespace RepoAgentController;
 /// have reached the native is sent again marked as a redelivery, accepting possible duplicate processing.
 /// </summary>
 public sealed class Bridge(string repository, IDiscussions discussions, AppIdentity identity, AgentSessions sessions, StateStore store, GitHubOutbox outbox,
-    HashSet<int> enroll, RepositorySettings settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? refresh = null)
+    HashSet<int> enroll, RepositorySettings settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? admission = null)
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
@@ -205,7 +205,8 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     {
         await gate.WaitAsync(ct);
         try { categories.Reconcile(); }
-        // The starts stay reconciled in memory and are saved with the next state change; settings refresh continues.
+        // The starts stay reconciled in memory and are saved with the next state change; settings refresh continues. These are
+        // the failures the Discussion store reports for a save that fails.
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             log.Write("repository-settings-error", $"the category enrollment starts could not be saved: {error.Message}");
@@ -360,13 +361,13 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         var latest = inputs[count - 1].ChangeJson;
         var receipts = inputs.Take(count).Select(input => input.Receipt).OfType<EyesReceipt>().DistinctBy(receipt => receipt.SubjectId).ToArray();
         // Global admission: checkout refresh exclusion; the active-session limit was checked above.
-        using var admission = refresh is null ? null : await refresh.Admit(ct);
+        using var checkout = admission is null ? null : await admission.Admit(ct);
         // Selected after admission applied any due checkout refresh, so the refreshed project configuration counts.
         // Its native queries are read-only, so a failure or unusable selection releases the admission.
         ModelChoice? selection;
         try { selection = await Select(record, ct); }
-        catch { admission?.Abandon(); throw; }
-        if (selection is null) { admission?.Abandon(); return false; }
+        catch { checkout?.Abandon(); throw; }
+        if (selection is null) { checkout?.Abandon(); return false; }
         // Durable while the native outcome is unknown; an interrupted lifetime leaves it for redelivery at the next start.
         var pending = new PendingDelivery(create ? "create-and-send" : "send", clock.GetUtcNow(), [.. receipts.Select(receipt => receipt.SubjectId)], count);
         var offered = false;
@@ -378,32 +379,32 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
                 record.Pending = pending;
                 store.Save();
                 record.SessionId = session = await sessions.Start(ct);
-                admission?.Bind(session);
+                checkout?.Bind(session);
                 store.Save();
                 log.Write("session-created", $"{record.Url} session={session}");
             }
             else
             {
-                admission?.Bind(session);
+                checkout?.Bind(session);
                 await sessions.Load(session, ct);
             }
             if (!AgentSessions.Admits(sessions.Status(session)))
             {
                 // Unknown, unloaded or active native status is never assumed idle.
                 if (record.Pending is not null) { record.Pending = null; store.Save(); }
-                admission?.Abandon();
+                checkout?.Abandon();
                 return false;
             }
             if (!create) { record.Pending = pending; store.Save(); }
             offered = true;
-            turn = await sessions.Accept(session, turnInput, selection, admission is null ? null : admission.Accepted, ct);
+            turn = await sessions.Accept(session, turnInput, selection, checkout is null ? null : checkout.Accepted, ct);
         }
         // A failure while this lifetime stops leaves pending; the next start retries it as an interrupted delivery. Credential
         // loss kills the native before the lifetime token is cancelled, so it is checked directly.
         catch (Exception error) when (!ct.IsCancellationRequested && !sessions.CredentialLost)
         {
             // Nothing offered or refused: no native turn holds this input. Otherwise one may, so the checkout stays excluded.
-            try { if (!offered || AgentSessions.Refused(error)) admission?.Abandon(); else admission?.Unconfirmed(); }
+            try { if (!offered || AgentSessions.Refused(error)) checkout?.Abandon(); else checkout?.Unconfirmed(); }
             finally { Retry(record, count, offered, error.Message); }
             return false;
         }
@@ -417,7 +418,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         // Status reports the running turn in every mode until the native reports it completed.
         record.Running = new(turn, clock.GetUtcNow());
         store.Save();
-        admission?.Confirm();
+        checkout?.Confirm();
         log.Write("forwarded", $"{record.Url} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.SubjectId))} waiting={inputs.Count} latest={input.SubjectUrl(latest)}" + (redelivery ? " redelivery=true" : ""));
         foreach (var source in receipts) outbox.Receipt(source.SubjectId, source.Url, DiscussionMessage.HasEyes(source.ReactionGroups));
         return true;
