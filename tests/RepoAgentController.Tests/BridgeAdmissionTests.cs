@@ -24,17 +24,20 @@ public sealed class BridgeAdmissionTests
     [Fact]
     public async Task Concurrent_Discussions_never_exceed_the_configured_limit_and_finished_turns_admit_waiting_ones()
     {
-        await using var world = Mentioned(4);
+        await using var world = Mentioned(3);
         world.Variables.Set(Setting, "2");
         await world.Begin();
-        await world.Poll(); // All four Discussions arrive in one observation.
+        await world.Poll(); // Three Discussions arrive in one observation, and a fourth a minute later.
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        world.GitHub.Open(4, "@test-app[bot] please look at fixture 4");
+        await world.Poll();
 
         Assert.Equal([1, 2], world.Turns.Select(Discussion));
         Assert.Equal([3, 4], world.Waiting());
         HeldAt(world, 3, 2, 2);
         HeldAt(world, 4, 2, 2);
 
-        // A completed turn releases its slot to one waiting Discussion; the other keeps waiting.
+        // A completed turn releases its slot to the Discussion waiting longest; the other keeps waiting.
         world.Finish(1);
         await world.Dispatch();
         await world.Poll();
@@ -247,8 +250,10 @@ public sealed class BridgeAdmissionTests
         Assert.False(world.GitHub.HasEyes("C1"));
     }
 
+    // DispatchWhenIdle subscribes and starts waiting before it returns, and only a wake ends its wait. A step that follows one
+    // wake can pass on a wake left over from earlier, so the raised limit runs in a lifetime whose loop has had none.
     [Fact]
-    public async Task The_dispatch_loop_wakes_for_a_due_retry_a_finished_turn_and_a_raised_limit()
+    public async Task The_dispatch_loop_wakes_for_a_due_retry_a_scheduled_retry_a_finished_turn_and_a_raised_limit()
     {
         await using var world = Mentioned(1);
         world.Answer(_ => throw new AgentRequestRejected("fixture rejection"));
@@ -261,20 +266,38 @@ public sealed class BridgeAdmissionTests
         world.Clock.Advance(TimeSpan.FromSeconds(5));
         await world.WhenLogged("forwarded", 1);
 
-        world.Variables.Set(Setting, "1");
-        await world.Refresh();
+        // A delivery that fails during an observation wakes the waiting loop, which then waits for that retry.
+        world.Answer(_ => throw new AgentRequestRejected("fixture rejection"));
+        world.GitHub.Open(2, "@test-app[bot] retried by the loop.");
+        await world.Poll();
+        await world.Clock.Armed();
+        world.Clock.Advance(TimeSpan.FromSeconds(5));
+        await world.WhenLogged("forwarded", 2);
+        Assert.Equal(2, Discussion(world.Turns[^1]));
+
         world.GitHub.Comment(1, "C1", "Waits for the running turn.");
-        world.GitHub.Open(2, "@test-app[bot] waits for a free slot.");
         await world.Poll();
         world.Finish(1);
-        await world.WhenLogged("forwarded", 2);
-        Assert.Equal(1, Discussion(world.Turns[2]));
+        await world.WhenLogged("forwarded", 3);
+        Assert.Equal("C1", world.Envelope(world.Turns.Count - 1)["changes"]![0]!["subject"]!["id"]!.GetValue<string>());
+        await stop.CancelAsync();
+        await loop;
 
+        // The next lifetime's turns end with its start. Input set up before its loop starts takes the only slot or waits for it.
+        world.Variables.Set(Setting, "1");
+        await world.Begin();
+        Assert.Equal(0, world.Status()["work"]!["running"]!.GetValue<int>());
+        world.GitHub.Comment(1, "C2", "Takes the only slot.");
+        world.GitHub.Comment(2, "C3", "Waits for a free slot.");
+        await world.Poll();
+        Assert.Equal([2], world.Waiting());
+        using var next = CancellationTokenSource.CreateLinkedTokenSource(world.Token);
+        loop = world.Bridge.DispatchWhenIdle(next.Token, world.Token);
         world.Variables.Set(Setting, "2");
         await world.Refresh();
-        await world.WhenLogged("forwarded", 3);
-        Assert.Equal(2, Discussion(world.Turns[3]));
-        await stop.CancelAsync();
+        await world.WhenLogged("forwarded", 5);
+        Assert.Equal("C3", world.Envelope(world.Turns.Count - 1)["changes"]![0]!["subject"]!["id"]!.GetValue<string>());
+        await next.CancelAsync();
         await loop;
     }
 
@@ -287,38 +310,40 @@ public sealed class BridgeAdmissionTests
         world.Finish(1);
         world.GitHub.Comment(1, "C1", "first comment after expiry");
         await world.Poll();
+        world.GitHub.Comment(1, "C2", "second comment while that turn runs"); // Waits behind the turn, not yet known rejected.
+        await world.Poll();
         world.Finish("S1", "T2", failed: true, rejection: "unexpected status 401 Unauthorized");
-        await world.Dispatch(); // Settles the rejected turn: its input goes back first in line, and is held.
+        await world.Dispatch(); // Settles the rejected turn: its input goes back first in line, ahead of C2, and is held.
         Assert.Contains(world.Logged("input-requeued"), line => line.Contains(" turn=T2 inputs=1 sources=C1:"));
         Assert.Equal("failed", world.Status()["codexAuthentication"]!["state"]!.GetValue<string>());
         Assert.Contains(world.Status()["failures"]!.AsArray(), failure => failure!["kind"]!.GetValue<string>() == "codex-auth-failed");
 
         // Later input is held instead of being accepted into a turn that cannot authenticate: no turn, no EYES.
-        world.GitHub.Comment(1, "C2", "second comment while credentials are rejected");
+        world.GitHub.Comment(1, "C3", "third comment while credentials are rejected");
         await world.Poll();
         await world.Dispatch();
         await world.Deliver();
         Assert.Equal(2, world.Turns.Count);
-        Assert.StartsWith(BridgeWorld.Url(1) + " waiting=1: Codex account credentials were rejected", Assert.Single(world.Logged("input-held")));
-        Assert.False(world.GitHub.HasEyes("C2"));
+        Assert.StartsWith(BridgeWorld.Url(1) + " waiting=2: Codex account credentials were rejected", Assert.Single(world.Logged("input-held")));
+        Assert.False(world.GitHub.HasEyes("C2") || world.GitHub.HasEyes("C3"));
 
         // Replacement credentials apply at an idle restart, between dispatches. The same session resumes and receives the
-        // rejected turn's input first, as a redelivery, then the input held meanwhile.
+        // rejected turn's input first, as a redelivery, then the input that waited meanwhile.
         var prepared = false;
         Assert.True(await world.Bridge.ExcludingDispatch(() => world.Sessions.RestartWhenIdle(() => prepared = true, world.Token), world.Token));
         Assert.True(prepared);
         await world.Dispatch();
         Assert.Equal(["S1"], world.Runtime.Resumed);
         Assert.True(world.Envelope(2)["_bridge"]!["redelivery"]!.GetValue<bool>());
-        Assert.Equal("C1", world.Envelope(2)["changes"]![0]!["subject"]!["id"]!.GetValue<string>());
+        Assert.Equal(["C1"], world.Envelope(2)["changes"]!.AsArray().Select(change => change!["subject"]!["id"]!.GetValue<string>()));
         world.Finish(1);
         await world.Dispatch();
         Assert.Null(world.Envelope(3)["_bridge"]!["redelivery"]);
-        Assert.Equal("C2", world.Envelope(3)["changes"]![0]!["subject"]!["id"]!.GetValue<string>());
+        Assert.Equal(["C2", "C3"], world.Envelope(3)["changes"]!.AsArray().Select(change => change!["subject"]!["id"]!.GetValue<string>()));
         Assert.Equal(["S1", "S1", "S1", "S1"], world.Turns.Select(turn => turn.SessionId));
         Assert.Equal("healthy", world.Status()["codexAuthentication"]!["state"]!.GetValue<string>());
         await world.Deliver();
-        Assert.True(world.GitHub.HasEyes("C2"));
+        Assert.True(world.GitHub.HasEyes("C2") && world.GitHub.HasEyes("C3"));
     }
 
     [Fact]
