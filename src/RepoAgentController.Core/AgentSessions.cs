@@ -52,7 +52,7 @@ public sealed class AgentSessions
     /// </summary>
     public event Action<string[]>? TurnsChanged;
 
-    /// <summary>A turn the native reported completed with its status as reported, and whether the provider rejected the Codex account credentials for it.</summary>
+    /// <summary>A turn the agent runtime reported ended, with its status as reported, and whether the provider rejected the Codex account credentials for it.</summary>
     public sealed record TurnOutcome(string Session, string Turn, string Status, bool CredentialsRejected);
 
     public AgentSessions(IAgentRuntime runtime, IControllerLog log, IAgentTurnJournal? journal = null, CancellationToken credentialLost = default,
