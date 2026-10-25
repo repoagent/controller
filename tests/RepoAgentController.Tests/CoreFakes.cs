@@ -155,8 +155,23 @@ sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
         else held.Comments[index] = held.Comments[index] with { Reactions = [.. held.Comments[index].Reactions, reaction] };
     });
 
+    /// <summary>Removes a reaction from the Discussion or one of its comments.</summary>
+    public void Unreact(int number, string id) => Change(number, held =>
+    {
+        held.Reactions.RemoveAll(reaction => reaction.Id == id);
+        for (var index = 0; index < held.Comments.Count; index++)
+            held.Comments[index] = held.Comments[index] with { Reactions = [.. held.Comments[index].Reactions.Where(reaction => reaction.Id != id)] };
+    });
+
     public void Answer(int number, string? comment) => Change(number, held => held.Discussion = held.Discussion with { AnswerId = comment });
     public void Edit(int number, string body) => Change(number, held => held.Discussion = held.Discussion with { Body = body, UpdatedAt = Now });
+
+    /// <summary>Renames the Discussion and moves it to <paramref name="category"/>.</summary>
+    public void Move(int number, string title, string category)
+    {
+        var moved = new DiscussionCategory(Category(category), category);
+        Change(number, held => held.Discussion = held.Discussion with { Title = title, Category = moved });
+    }
 
     /// <summary>Replaces the Discussion's labels; names are GitHub's, unvalidated.</summary>
     public void Labels(int number, params string[] names) => Change(number, held => held.Labels = names);

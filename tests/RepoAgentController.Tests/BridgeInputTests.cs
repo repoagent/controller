@@ -349,6 +349,98 @@ public sealed class BridgeInputTests
     }
 
     [Fact]
+    public async Task A_renamed_Discussion_moved_to_another_category_sends_one_state_change_with_its_new_title_and_category()
+    {
+        await using var world = Enrolled();
+        await world.Begin(1);
+        await world.Poll();
+        world.Finish(1);
+        world.GitHub.Move(1, "Renamed", "Q&A");
+
+        await world.Poll();
+
+        var change = Assert.Single(world.Envelope(1)["changes"]!.AsArray())!;
+        Assert.Equal("discussion.stateChanged", change["kind"]!.GetValue<string>());
+        Assert.Equal("""{"id":"D1","url":"https://github.com/owner/repository/discussions/1","author":{"__typename":"User","login":"participant"},"title":"Renamed","category":{"id":"DIC_Q\u0026A","name":"Q\u0026A"}}""",
+            change["subject"]!.ToJsonString());
+    }
+
+    [Fact]
+    public async Task Reactions_are_told_apart_by_ID_so_one_removed_and_one_added_of_the_same_content_are_both_sent()
+    {
+        await using var world = Enrolled();
+        world.GitHub.React(1, "D1", "R1", "HEART", "alice");
+        await world.Begin(1);
+        await world.Poll();
+        world.Finish(1);
+        world.GitHub.Unreact(1, "R1");
+        world.GitHub.React(1, "D1", "R2", "HEART", "bob");
+
+        await world.Poll();
+
+        Assert.Equal([("reaction.added", "R2"), ("reaction.removed", "R1")], world.Envelope(1)["changes"]!.AsArray()
+            .Select(change => (change!["kind"]!.GetValue<string>(), change["reaction"]!["id"]!.GetValue<string>())));
+    }
+
+    [Fact]
+    public async Task The_App_s_own_reply_is_checkpointed_without_input_so_its_deletion_reaches_the_session()
+    {
+        await using var world = Enrolled();
+        await world.Begin(1);
+        await world.Poll();
+        world.Finish(1);
+        world.GitHub.Comment(1, "C9", "An answer.", InMemoryDiscussions.AppAccount);
+        Assert.True(await world.Poll());
+        Assert.Single(world.Turns);
+        world.GitHub.Delete(1, "C9");
+
+        await world.Poll();
+
+        Assert.Equal("comment.deleted", world.Envelope(1)["changes"]![0]!["kind"]!.GetValue<string>());
+        Assert.Equal(["C9"], BridgeWorld.Subjects(world.Envelope(1)));
+    }
+
+    [Fact]
+    public async Task A_bootstrap_waiting_for_its_retry_carries_the_Discussion_as_last_observed()
+    {
+        await using var world = Enrolled();
+        await world.Begin(1);
+        world.Answer(_ => throw new AgentRequestRejected("fixture rejection"));
+        await world.Poll();
+        world.GitHub.Edit(1, "Edited while the bootstrap waited");
+        await world.Poll();
+
+        world.Clock.Advance(TimeSpan.FromSeconds(5));
+        await world.Dispatch();
+
+        var retried = world.Envelope(1);
+        Assert.Equal("bootstrap", retried["_bridge"]!["mode"]!.GetValue<string>());
+        Assert.Equal("Edited while the bootstrap waited", retried["discussion"]!["body"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task A_retried_delivery_once_accepted_leaves_no_retry_on_the_input_still_waiting()
+    {
+        await using var world = Enrolled();
+        await world.Begin(1);
+        await world.Poll();
+        world.Finish(1);
+        world.GitHub.Comment(1, "C1", "please answer", Alice);
+        world.Answer(_ => throw new AgentRequestRejected("fixture rejection"));
+        await world.Poll();
+        world.GitHub.Comment(1, "C2", "follow-up", Bob);
+        await world.Poll();
+
+        world.Clock.Advance(TimeSpan.FromSeconds(5));
+        await world.Dispatch();
+
+        Assert.Equal(["C1"], BridgeWorld.Subjects(world.Envelope(2)));
+        var waiting = world.Record(1)!["waiting"]!;
+        Assert.Equal(["C2"], waiting["inputs"]!.AsArray().Select(input => input!["change"]!["subject"]!["id"]!.GetValue<string>()));
+        Assert.Null(waiting["retry"]);
+    }
+
+    [Fact]
     public async Task A_delivery_interrupted_by_a_restart_is_redelivered_and_once_accepted_never_resent_though_its_receipt_failed()
     {
         await using var world = Enrolled();

@@ -84,6 +84,16 @@ public sealed class StateStoreTests : IDisposable
         Assert.True(saved["later"]!.GetValue<bool>());
     }
 
+    [Fact]
+    public void Category_enrollment_starts_that_are_not_all_text_are_kept_as_they_were()
+    {
+        const string Recorded = """{"version":1,"repository":"owner/repository","discussions":{},"enrollmentCategories":{"Agents":"2026-10-24T08:00:00Z","Q&A":7}}""";
+
+        Assert.Null(Open(Recorded));
+
+        Assert.Equal("""{"Agents":"2026-10-24T08:00:00Z","Q\u0026A":7}""", JsonNode.Parse(File.ReadAllText(State))!["enrollmentCategories"]!.ToJsonString());
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(directory)) Directory.Delete(directory, true);
