@@ -44,7 +44,7 @@ sealed class Codex : IAgentRuntime, IAsyncDisposable
         {
             "disconnect" => new AgentRuntimeDisconnected(source),
             "thread/status/changed" when thread.Length != 0 => new AgentSessionStatusChanged(source, thread, Parse(parameters!["status"])),
-            "turn/started" => new AgentTurnStarted(source, thread, turn?["id"].OptionalText() ?? ""),
+            "turn/started" => new AgentTurnStarted(source, thread, turn?["id"].OptionalText()),
             "turn/completed" => Completed(source, thread, turn),
             _ => null
         };
@@ -54,7 +54,7 @@ sealed class Codex : IAgentRuntime, IAsyncDisposable
     static AgentTurnCompleted Completed(int source, string thread, JsonObject? turn)
     {
         var status = turn?["status"].OptionalText() ?? "";
-        return new(source, thread, turn?["id"].OptionalText(), status, status == "failed" ? Rejection(turn!["error"]) : null);
+        return new(source, thread, turn?["id"].OptionalText(), status, Rejection(turn?["error"] as JsonObject));
     }
 
     static AgentSessionStatus Parse(JsonNode? status) =>
@@ -65,11 +65,12 @@ sealed class Codex : IAgentRuntime, IAsyncDisposable
         } : AgentSessionStatus.Unknown;
 
     // Pinned native: a rejected account is codexErrorInfo "unauthorized", or an HTTP 401 forwarded from the model provider.
-    static string? Rejection(JsonNode? error)
+    static string? Rejection(JsonObject? error)
     {
         var info = error?["codexErrorInfo"];
         var rejected = info is JsonValue ? info.OptionalText() == "unauthorized" :
-            info is JsonObject variants && variants.Any(variant => variant.Value?["httpStatusCode"] is JsonValue code && code.TryGetValue<int>(out var status) && status == 401);
+            info is JsonObject variants && variants.Any(variant => variant.Value is JsonObject details && details["httpStatusCode"] is JsonValue code &&
+                code.TryGetValue<int>(out var status) && status == 401);
         return !rejected ? null : error?["message"].OptionalText() ?? "unauthorized";
     }
 

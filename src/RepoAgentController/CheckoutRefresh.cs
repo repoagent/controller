@@ -317,7 +317,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, IAsyncDisposable
                 if (change is AgentRuntimeDisconnected) { Fault("Native transport disconnected; completion unknown"); return; }
                 string thread, turn;
                 bool completed;
-                if (change is AgentTurnStarted started) (thread, turn, completed) = (started.SessionId, started.TurnId, false);
+                if (change is AgentTurnStarted started) (thread, turn, completed) = (started.SessionId, started.TurnId ?? "", false);
                 else if (change is AgentTurnCompleted ended) (thread, turn, completed) = (ended.SessionId, ended.TurnId ?? "", true);
                 else return;
                 var key = (thread, turn);
