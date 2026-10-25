@@ -222,9 +222,9 @@ public sealed class EnrollmentDecisionTests
     public async Task Resumed_unsent_verifier_is_not_sent_once_its_window_closes_during_discovery()
     {
         var f = new InMemoryBroker();
-        var commits = 0;
-        // Admission, repository state, work claim, global work, then the persisted mint attempt, whose response is lost.
-        f.State.AfterCommit = _ => ++commits == 5 ? Lost("Lost reserved verifier response") : Task.CompletedTask;
+        // The first commit that adds the verifier attempt is the persisted mint reservation; its response is lost.
+        f.State.AfterCommit = transaction => transaction.Writes.Any(write => write.Kind == StateWriteKind.Add
+            && write.Key.Name.StartsWith("attempt:", StringComparison.Ordinal)) ? Lost("Lost reserved verifier response") : Task.CompletedTask;
         var request = InMemoryBroker.Request();
         Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Start(request)).StatusCode);
         f.State.AfterCommit = null;
@@ -248,8 +248,9 @@ public sealed class EnrollmentDecisionTests
     public async Task Expired_unsent_verifier_window_is_never_charged_again()
     {
         var f = new InMemoryBroker();
-        var commits = 0;
-        f.State.AfterCommit = _ => ++commits == 5 ? Lost("Lost reserved verifier response") : Task.CompletedTask;
+        // The first commit that adds the verifier attempt is the persisted mint reservation; its response is lost.
+        f.State.AfterCommit = transaction => transaction.Writes.Any(write => write.Kind == StateWriteKind.Add
+            && write.Key.Name.StartsWith("attempt:", StringComparison.Ordinal)) ? Lost("Lost reserved verifier response") : Task.CompletedTask;
         var request = InMemoryBroker.Request();
         Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Start(request)).StatusCode);
         f.State.AfterCommit = null;
@@ -267,8 +268,9 @@ public sealed class EnrollmentDecisionTests
     public async Task Only_a_definitely_unsent_settled_verifier_frees_the_pending_enrollment_for_a_new_one(string settlement, HttpStatusCode expected)
     {
         var f = new InMemoryBroker();
-        var commits = 0;
-        f.State.AfterCommit = _ => ++commits == 5 ? Lost("Lost reserved verifier response") : Task.CompletedTask;
+        // The first commit that adds the verifier attempt is the persisted mint reservation; its response is lost.
+        f.State.AfterCommit = transaction => transaction.Writes.Any(write => write.Kind == StateWriteKind.Add
+            && write.Key.Name.StartsWith("attempt:", StringComparison.Ordinal)) ? Lost("Lost reserved verifier response") : Task.CompletedTask;
         var request = InMemoryBroker.Request();
         Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Start(request)).StatusCode);
         f.State.AfterCommit = null;
