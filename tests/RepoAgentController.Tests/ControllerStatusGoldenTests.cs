@@ -129,41 +129,41 @@ public sealed class ControllerStatusGoldenTests : IDisposable
     // Each damaged form that 1f36818's lenient JSON readers read differently from the typed readers that replaced them, and the
     // status record forms it read as they are still read: (file
     // beside the state file, dotted path in it, JSON put there or null to remove it, whether a running lifetime reads it, the
-    // status parts it changes, those parts as status now reports them). The pull request body lists what 1f36818 reported.
+    // status parts it changes, only those parts as status now reports them). The pull request body lists what 1f36818 reported.
     public static TheoryData<string, string, string?, bool, string, string> DamagedForms => new()
     {
         // A state the controller cannot start from reports none of its sessions or its App login.
-        { "", "version", "2", false, "repository actor sessions", """ "owner/repository" null [] """ },
+        { "", "version", "2", false, "actor sessions", """ null [] """ },
         { "", "repository", "5", false, "repository actor sessions", """ "owner/repository" null [] """ },
-        { "", "agentLogin", "5", false, "repository actor sessions", """ "owner/repository" null [] """ },
-        { "", "repository", null, false, "repository actor work.sessions", """ "" "test-app[bot]" 5 """ },
+        { "", "agentLogin", "5", false, "actor sessions", """ null [] """ },
+        { "", "repository", null, false, "repository", """ "" """ },
         // A record or key that once failed status reads.
         { "", "discussions.D1", """{"url":"x","url":"y","sources":{}}""", false, "work.sessions sessions.0.discussion", """ 4 "https://github.com/owner/repository/discussions/2" """ },
-        { "", "discussions.D1.url", "5", false, "work.sessions sessions.0", """ 5 {"discussion":"","session":"S1","state":"idle"} """ },
-        { "", "discussions.D1.sessionId", "4", false, "work.sessions sessions.0", """ 4 {"discussion":"https://github.com/owner/repository/discussions/1","session":null,"state":"idle"} """ },
-        { "", "discussions.D6.sessionId", "4", false, "work sessions.5", """ {"sessions":4,"pending":1,"retrying":1,"waiting":5,"running":0,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/6","session":null,"state":"idle"} """ },
-        { "", "discussions.D2.pending", "5", false, "work sessions.1", """ {"sessions":5,"pending":1,"retrying":1,"waiting":5,"running":0,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/2","session":"S2","state":"pending","since":null,"operation":null,"waiting":1} """ },
-        { "", "discussions.D2.pending", """{"operation":"send","operation":"send"}""", false, "work sessions.1", """ {"sessions":5,"pending":1,"retrying":1,"waiting":5,"running":0,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/2","session":"S2","state":"pending","since":null,"operation":null,"waiting":1} """ },
-        { "", "discussions.D3.waiting", "5", false, "work sessions.2", """ {"sessions":5,"pending":1,"retrying":0,"waiting":3,"running":0,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/3","session":"S3","state":"idle"} """ },
-        { "", "discussions.D3.waiting", "[]", false, "work sessions.2", """ {"sessions":5,"pending":1,"retrying":0,"waiting":3,"running":0,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/3","session":"S3","state":"idle"} """ },
-        { "", "discussions.D3.waiting.retry", "5", false, "work sessions.2", """ {"sessions":5,"pending":1,"retrying":0,"waiting":3,"running":0,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/3","session":"S3","state":"idle"} """ },
+        { "", "discussions.D1.url", "5", false, "sessions.0.discussion", """ "" """ },
+        { "", "discussions.D1.sessionId", "4", false, "sessions.0.session", """ null """ },
+        { "", "discussions.D6.sessionId", "4", false, "work.sessions sessions.5.session", """ 4 null """ },
+        { "", "discussions.D2.pending", "5", false, "sessions.1.state sessions.1.since sessions.1.operation", """ "pending" null null """ },
+        { "", "discussions.D2.pending", """{"operation":"send","operation":"send"}""", false, "sessions.1.state sessions.1.since sessions.1.operation", """ "pending" null null """ },
+        { "", "discussions.D3.waiting", "5", false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
+        { "", "discussions.D3.waiting", "[]", false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
+        { "", "discussions.D3.waiting.retry", "5", false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
         // A delivery, retry or turn in a form no writer leaves reports none of its times or counts.
-        { "", "discussions.D2.pending", """{"operation":5}""", false, "sessions.1", """ {"discussion":"https://github.com/owner/repository/discussions/2","session":"S2","state":"pending","since":null,"operation":null,"waiting":1} """ },
-        { "", "discussions.D2.pending", """{"since":"soon","operation":"send"}""", false, "sessions.1", """ {"discussion":"https://github.com/owner/repository/discussions/2","session":"S2","state":"pending","since":null,"operation":null,"waiting":1} """ },
-        { "", "discussions.D3.waiting.retry", """{"attempts":"x"}""", false, "sessions.2", """ {"discussion":"https://github.com/owner/repository/discussions/3","session":"S3","state":"retrying","attempts":null,"retryAt":null,"waiting":2} """ },
-        { "", "discussions.D3.waiting.retry", """{"attempts":1}""", false, "sessions.2", """ {"discussion":"https://github.com/owner/repository/discussions/3","session":"S3","state":"retrying","attempts":null,"retryAt":null,"waiting":2} """ },
-        { "", "discussions.D4.running", """{"turn":"T4","since":"soon"}""", true, "sessions.3", """ {"discussion":"https://github.com/owner/repository/discussions/4","session":"S4","state":"running","waiting":1} """ },
+        { "", "discussions.D2.pending", """{"operation":5}""", false, "sessions.1.operation", """ null """ },
+        { "", "discussions.D2.pending", """{"since":"soon","operation":"send"}""", false, "sessions.1.since sessions.1.operation", """ null null """ },
+        { "", "discussions.D3.waiting.retry", """{"attempts":"x"}""", false, "sessions.2.attempts", """ null """ },
+        { "", "discussions.D3.waiting.retry", """{"attempts":1}""", false, "sessions.2.attempts", """ null """ },
+        { "", "discussions.D4.running", """{"turn":"T4","since":"soon"}""", true, "sessions.3.since", """ null """ },
         // Waiting input that cannot be read, such as a retry with no time, holds no retry and no inputs.
-        { "", "discussions.D3.waiting.retry", """{"attempts":1,"after":"soon"}""", false, "work sessions.2", """ {"sessions":5,"pending":1,"retrying":0,"waiting":3,"running":0,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/3","session":"S3","state":"idle"} """ },
-        { "", "discussions.D3.waiting.inputs", "5", false, "work sessions.2", """ {"sessions":5,"pending":1,"retrying":0,"waiting":3,"running":0,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/3","session":"S3","state":"idle"} """ },
-        { "", "discussions.D3.waiting.inputs", null, false, "work sessions.2", """ {"sessions":5,"pending":1,"retrying":0,"waiting":3,"running":0,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/3","session":"S3","state":"idle"} """ },
-        { "", "discussions.D3.waiting.inputs.0", "5", false, "work sessions.2", """ {"sessions":5,"pending":1,"retrying":0,"waiting":3,"running":0,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/3","session":"S3","state":"idle"} """ },
-        { "", "discussions.D3.waiting.inputs.0.change", null, false, "work sessions.2", """ {"sessions":5,"pending":1,"retrying":0,"waiting":3,"running":0,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/3","session":"S3","state":"idle"} """ },
+        { "", "discussions.D3.waiting.retry", """{"attempts":1,"after":"soon"}""", false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
+        { "", "discussions.D3.waiting.inputs", "5", false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
+        { "", "discussions.D3.waiting.inputs", null, false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
+        { "", "discussions.D3.waiting.inputs.0", "5", false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
+        { "", "discussions.D3.waiting.inputs.0.change", null, false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
         // A delivery time in another form is reported in the form a writer leaves.
-        { "", "discussions.D2.pending.since", "\"2026-10-25T09:01:00Z\"", false, "sessions.1", """ {"discussion":"https://github.com/owner/repository/discussions/2","session":"S2","state":"pending","since":"2026-10-25T09:01:00.0000000\u002B00:00","operation":"send","waiting":1} """ },
+        { "", "discussions.D2.pending.since", "\"2026-10-25T09:01:00Z\"", false, "sessions.1.since", """ "2026-10-25T09:01:00.0000000\u002B00:00" """ },
         // A recorded controller that once failed status is reported as read.
         { ".status.json", "controller", "5", false, "controller", """ 5 """ },
-        { ".status.json", "controller.state", "5", false, "controller", """ {"state":5,"mode":"polling","startedAt":"2026-10-25T09:00:00.0000000\u002B00:00","updatedAt":"2026-10-25T09:00:00.0000000\u002B00:00","stoppedAt":"2026-10-25T09:00:00.0000000\u002B00:00"} """ },
+        { ".status.json", "controller.state", "5", false, "controller.state", """ 5 """ },
         // A record with a repeated key reads as none, so the next lifetime starts; 1f36818 failed that start.
         { ".status.json", "", """{"version":1,"controller":{"state":"running"},"controller":{"state":"stopped"}}""", true, "controller.state failures", """ "running" [] """ },
         // Read as 1f36818 read them: recorded parts in a form no writer leaves are reported as read.
@@ -171,20 +171,20 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         { ".status.json", "failures", "5", false, "failures", """ 5 """ },
         { ".status.json", "failures", "[5]", false, "failures", """ [5] """ },
         { ".status.json", "failures.0", "null", false, "failures", """ [null] """ },
-        { ".status.json", "failures.0.extra", "1", false, "failures", """ [{"at":"2026-10-25T09:00:06.0000000\u002B00:00","kind":"delivery-retry","message":"https://github.com/owner/repository/discussions/3 attempt=2: native refused","extra":1}] """ },
+        { ".status.json", "failures.0.extra", "1", false, "failures.0.extra", """ 1 """ },
         { ".status.json", "latestActivity", "5", false, "latestActivity", """ 5 """ },
         // Settings are reported as the typed reader reads them, and the limit from that.
         { ".settings.json", "", "5", false, "settings work.limit", """ null 4 """ },
-        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS", "5", false, "settings work.limit", """ {"REPOAGENT_MODEL":{"state":"invalid","reason":"must be a model name"}} 4 """ },
-        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.since", null, false, "settings work.limit", """ {"REPOAGENT_MODEL":{"state":"invalid","reason":"must be a model name"}} 4 """ },
-        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.state", "\"weird\"", false, "settings work.limit", """ {"REPOAGENT_MAX_ACTIVE_SESSIONS":{"state":"pending","value":"3","since":"2026-10-25T09:00:00.0000000\u002B00:00"},"REPOAGENT_MODEL":{"state":"invalid","reason":"must be a model name"}} 3 """ },
-        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.value", "3", false, "settings work.limit", """ {"REPOAGENT_MAX_ACTIVE_SESSIONS":{"state":"configured"},"REPOAGENT_MODEL":{"state":"invalid","reason":"must be a model name"}} 4 """ },
-        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.extra", "1", false, "settings work.limit", """ {"REPOAGENT_MAX_ACTIVE_SESSIONS":{"state":"configured","value":"3","since":"2026-10-25T09:00:00.0000000\u002B00:00"},"REPOAGENT_MODEL":{"state":"invalid","reason":"must be a model name"}} 3 """ },
-        { ".settings.json", "settings.REPOAGENT_MODEL.reason", "5", false, "settings work.limit", """ {"REPOAGENT_MAX_ACTIVE_SESSIONS":{"state":"configured","value":"3","since":"2026-10-25T09:00:00.0000000\u002B00:00"},"REPOAGENT_MODEL":{"state":"invalid"}} 3 """ },
+        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS", "5", false, "settings.REPOAGENT_MAX_ACTIVE_SESSIONS work.limit", """ null 4 """ },
+        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.since", null, false, "settings.REPOAGENT_MAX_ACTIVE_SESSIONS work.limit", """ null 4 """ },
+        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.state", "\"weird\"", false, "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.state", """ "pending" """ },
+        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.value", "3", false, "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.value", """ null """ },
+        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.extra", "1", false, "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.extra", """ null """ },
+        { ".settings.json", "settings.REPOAGENT_MODEL.reason", "5", false, "settings.REPOAGENT_MODEL.reason", """ null """ },
         // A journal entry that cannot be read records no turn; admission that is not true or false is not reported.
-        { ".refresh.json", "active.6f1c2a9e0b7d4e5f8a3c1d2e4f6a8b0c", "5", true, "work sessions.5", """ {"sessions":5,"pending":1,"retrying":1,"waiting":5,"running":1,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/6","session":"S6","state":"idle"} """ },
-        { ".refresh.json", "active.6f1c2a9e0b7d4e5f8a3c1d2e4f6a8b0c.thread", "5", true, "work sessions.5", """ {"sessions":5,"pending":1,"retrying":1,"waiting":5,"running":1,"limit":3,"admissionBlocked":true} {"discussion":"https://github.com/owner/repository/discussions/6","session":"S6","state":"idle"} """ },
-        { ".refresh.json", "blocked", "\"yes\"", true, "work", """ {"sessions":5,"pending":1,"retrying":1,"waiting":5,"running":2,"limit":3,"admissionBlocked":null} """ },
+        { ".refresh.json", "active.6f1c2a9e0b7d4e5f8a3c1d2e4f6a8b0c", "5", true, "work.running sessions.5.state", """ 1 "idle" """ },
+        { ".refresh.json", "active.6f1c2a9e0b7d4e5f8a3c1d2e4f6a8b0c.thread", "5", true, "work.running sessions.5.state", """ 1 "idle" """ },
+        { ".refresh.json", "blocked", "\"yes\"", true, "work.admissionBlocked", """ null """ },
     };
 
     [Theory]
