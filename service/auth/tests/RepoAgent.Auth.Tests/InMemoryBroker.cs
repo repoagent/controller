@@ -60,7 +60,7 @@ internal sealed class InMemoryBroker
         Answer.From(await BrokerRoutes.AcknowledgeAsync(Request(secret, new { completionId }), enrollmentId, Enrollment, setupVersion));
     // POST /v{runtimeVersion}/devices/{id}/installation-token.
     public async Task<Answer> Issue(string enrollmentId, string secret, int runtimeVersion = 1) =>
-        Answer.From(await BrokerRoutes.IssueAsync(Request(secret), enrollmentId, Issuer, runtimeVersion));
+        Answer.From(await BrokerRoutes.IssueAsync(Request(secret), enrollmentId, () => Issuer().IssueAsync, runtimeVersion));
     // DELETE /v{runtimeVersion}/devices/{id}.
     public async Task<Answer> Revoke(string enrollmentId, string secret, int runtimeVersion = 1) =>
         Answer.From(await BrokerRoutes.RevokeAsync(Request(secret), enrollmentId, new DeviceRevocation(State, DeploymentEpoch, Clock), runtimeVersion));
@@ -68,7 +68,10 @@ internal sealed class InMemoryBroker
     // A request as the HTTP adapter hands it to a route: one Bearer credential and, when there is one, a web JSON body.
     public static BrokerRequest Request(string? secret, object? body = null) => new(
         secret is null ? [] : [new("Bearer ".Length + secret.Length, "Bearer", secret)], body is not null,
-        new MemoryStream(body is null ? [] : JsonSerializer.SerializeToUtf8Bytes(body, JsonSerializerOptions.Web)), Token);
+        Body(body is null ? [] : JsonSerializer.SerializeToUtf8Bytes(body, JsonSerializerOptions.Web)), Token);
+
+    // A request body as the adapter reads it: at most the count of bytes the route asks for.
+    public static Func<int, Task<byte[]>> Body(byte[] body) => count => Task.FromResult(body.Length > count ? body[..count] : body);
 
     // The cleanup command's allocations, constructed with no provider, signing or key dependency.
     public CapacityReclamation Reclamation(IBrokerState? state = null) => new(state ?? State, DeploymentEpoch, Clock);

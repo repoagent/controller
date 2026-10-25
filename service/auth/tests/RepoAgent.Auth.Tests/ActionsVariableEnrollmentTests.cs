@@ -51,7 +51,7 @@ public sealed class ActionsVariableEnrollmentTests
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var runtime = await f.Issue(device, secret);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
-        // The issuer's exact v1 body; EnrollmentRouteTests checks the route answers it uncached.
+        // The issuer's exact v1 body. The adapter's no-store header is untested until #204.
         Assert.Equal(9, runtime.Json.EnumerateObject().Count());
         Assert.Contains("read variable actions owner/project REPOAGENT_APPROVAL", f.GitHub.Requests);
         Assert.DoesNotContain(f.GitHub.Requests, r => r.Contains(" agents ", StringComparison.Ordinal));

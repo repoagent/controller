@@ -7,15 +7,21 @@ namespace RepoAgent.Auth;
 // the value isn't a credential.
 public sealed record PresentedAuthorization(int Length, string? Scheme, string? Parameter);
 
-// A request to a public route: its Authorization values, whether it can carry a body, the body and the caller's
-// cancellation.
-public sealed record BrokerRequest(IReadOnlyList<PresentedAuthorization> Authorization, bool CanHaveBody, Stream Body,
-    CancellationToken Aborted);
+// A request to a public route: its Authorization values, whether it can carry a body, how to read the body and the
+// caller's cancellation. Body(count) is the adapter's read of at most count bytes, on the caller's cancellation; the core
+// asks for it only when the route takes a body, and decides what the bytes are.
+public sealed record BrokerRequest(IReadOnlyList<PresentedAuthorization> Authorization, bool CanHaveBody,
+    Func<int, Task<byte[]>> Body, CancellationToken Aborted);
+
+// The installation-token operation of a composed issuer: InstallationTokenIssuer.IssueAsync.
+public delegate Task<IssuanceResult> TokenIssuance(string enrollmentId, string? secret, CancellationToken caller, int runtimeVersion);
 
 // What each public route decides around the operation it calls: the credential and body it accepts, in the order it
 // checks them, and which answers carry a body. The routes write every answer uncached, and its body as web JSON.
 public static class BrokerRoutes
 {
+    private const int BodyLimit = 8192;
+
     // DELETE /v{runtimeVersion}/devices/{enrollmentId}. A body is refused before the credential is read.
     public static async Task<IssuanceResult> RevokeAsync(BrokerRequest request, string enrollmentId, DeviceRevocation revocation,
         int runtimeVersion)
@@ -27,12 +33,12 @@ public static class BrokerRoutes
 
     // POST /v{runtimeVersion}/devices/{enrollmentId}/installation-token. Only a 200 carries the issuer's body.
     public static async Task<IssuanceResult> IssueAsync(BrokerRequest request, string enrollmentId,
-        Func<InstallationTokenIssuer?> issuer, int runtimeVersion)
+        Func<TokenIssuance?> issuer, int runtimeVersion)
     {
         if (request.CanHaveBody) return new(400);
         if (!Bearer(request, out var secret)) return new(401);
-        if (issuer() is not { } composed) return new(503);
-        var result = await composed.IssueAsync(enrollmentId, secret, request.Aborted, runtimeVersion);
+        if (issuer() is not { } issue) return new(503);
+        var result = await issue(enrollmentId, secret, request.Aborted, runtimeVersion);
         return result.Status == 200 ? result : new(result.Status);
     }
 
@@ -102,19 +108,13 @@ public static class BrokerRoutes
     private static string? Secret(BrokerRequest request) =>
         Bearer(request, out var credential) && DeviceSecret.Hash(credential) is not null ? credential : null;
 
-    // At most 8 KiB of JSON at most 4 deep, whose root is an object that names no property twice in any case.
+    // At most 8 KiB of JSON at most 4 deep, whose root is an object that names no property twice in any case. The adapter
+    // reads one byte past the limit, so a longer body is known to be too large without reading it all.
     private static async Task<JsonDocument> BodyAsync(BrokerRequest request)
     {
-        using var buffer = new MemoryStream();
-        var bytes = new byte[4096];
-        while (true)
-        {
-            var count = await request.Body.ReadAsync(bytes, request.Aborted);
-            if (count == 0) break;
-            if (buffer.Length + count > 8192) throw new InvalidDataException();
-            buffer.Write(bytes, 0, count);
-        }
-        var document = JsonDocument.Parse(buffer.ToArray(), new JsonDocumentOptions { MaxDepth = 4 });
+        var body = await request.Body(BodyLimit + 1);
+        if (body.Length > BodyLimit) throw new InvalidDataException();
+        var document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 4 });
         try
         {
             if (document.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException();
