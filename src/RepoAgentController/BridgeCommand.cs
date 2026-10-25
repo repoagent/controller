@@ -169,15 +169,16 @@ public static class BridgeCommand
                         var reconciliation = checkout is null ? null : new CheckoutRefresh(checkout, statePath,
                             store.Discussions.Any(entry => entry.Value!.Text("sessionId").Length != 0),
                             store.Discussions.Any(entry => entry.Value?["pending"] is not null));
-                        await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, reconciliation, credentials.BrokerCredentialLost,
+                        await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, credentials.BrokerCredentialLost,
                             suppliedCredentials: agentCredentials is not null);
+                        var sessions = new AgentSessions(codex, new ControllerLog(), reconciliation, credentials.BrokerCredentialLost, agentCredentials is not null);
                         // Status counts a turn by its session too, so it stays running after its Discussion record is forgotten.
-                        codex.TurnsChanged += status.Running;
+                        sessions.TurnsChanged += status.Running;
                         await using var managedRefresh = reconciliation;
                         await codex.Initialize(runtimeToken);
-                        if (reconciliation is not null) await reconciliation.Start(codex,
+                        if (reconciliation is not null) await reconciliation.Start(sessions,
                             TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)), runtimeToken);
-                        var bridge = new Bridge(github, codex, store, outbox, numbers, settings, reconciliation, time);
+                        var bridge = new Bridge(github, sessions, store, outbox, numbers, settings, reconciliation, time);
                         bridge.ResumeInterrupted();
                         settingsRefresh = settings.RefreshUntilCancelled(bridge.ReconcileCategoryEnrollment, runtimeToken);
                         dashboard?.Start(runtimeToken);
@@ -185,9 +186,9 @@ public static class BridgeCommand
                         // clone mode, else the native's. Dispatch holds its gate before refresh admission, so this order matches.
                         await using var agentRefresh = agentCredentials?.Watch((install, ct) => bridge.ExcludingDispatch(async () =>
                         {
-                            if (reconciliation is null) return await codex.RestartWhenIdle(install, ct);
+                            if (reconciliation is null) return await sessions.RestartWhenIdle(install, ct);
                             var restarted = false;
-                            return await reconciliation.CommitAtIdle(async idle => restarted = await codex.RestartWhenIdle(install, idle), ct) && restarted;
+                            return await reconciliation.CommitAtIdle(async idle => restarted = await sessions.RestartWhenIdle(install, idle), ct) && restarted;
                         }, ct), time, refreshCancellation.Cancel, runtimeToken);
                         if (!result.GetValue(once)) outbox.Start(runtimeToken);
                         using var dispatchStop = CancellationTokenSource.CreateLinkedTokenSource(runtimeToken);
