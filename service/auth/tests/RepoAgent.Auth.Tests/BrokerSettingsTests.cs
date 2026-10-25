@@ -9,11 +9,13 @@ public sealed class BrokerSettingsTests
 {
     private const string Emulated = "http://127.0.0.1:10000/devstoreaccount1/data-protection/keyring.xml";
     private const string EmulatedTable = "http://127.0.0.1:10002/devstoreaccount1/readiness";
+    // The table a remote account's connection string names: the configured endpoint's, so only the loopback guard refuses it.
+    private const string RemoteTable = "https://readiness.table.core.windows.net/readiness";
 
     public enum Startup { Ready, NotReady, Refused }
 
     // The whole startup sequence, for what only it shows: readiness (/health/ready answers 200 when ready, 503 when not),
-    // the table endpoint Development storage allows, and the emulator's table. Each malformed setting has its own theory.
+    // and Development storage only on a loopback table endpoint. Each malformed setting has its own theory.
     [Theory]
     [InlineData(null, Startup.Ready)]
     [InlineData("missing-signing", Startup.NotReady)]
@@ -33,7 +35,9 @@ public sealed class BrokerSettingsTests
             var issuance = BrokerSettings.Issuance(Setting, environment);
             issuance?.RequireEmulatedKeyRing(new(Emulated));
             var options = BrokerSettings.Options(Setting, environment);
-            if (BrokerSettings.DevelopmentConnection(Setting, environment) is not null) options.RequireEmulatedTable(new(EmulatedTable));
+            // The table the Development connection's client names; the adapter reads it from the TableClient.
+            if (BrokerSettings.DevelopmentConnection(Setting, environment) is not null)
+                options.RequireEmulatedTable(new(scenario == "remote-development-storage" ? RemoteTable : EmulatedTable));
             return BrokerSettings.Ready(issuance);
         }
 
@@ -278,7 +282,8 @@ public sealed class BrokerSettingsTests
         if (scenario is "remote-development-storage" or "local-development-storage")
         {
             environment = "Development";
-            settings["Broker:DevelopmentConnectionString"] = "UseDevelopmentStorage=true";
+            settings["Broker:DevelopmentConnectionString"] = scenario == "local-development-storage"
+                ? "UseDevelopmentStorage=true" : "DefaultEndpointsProtocol=https;AccountName=readiness;AccountKey=cmVhZGluZXNz";
             if (scenario == "local-development-storage") settings["Auth:DataProtectionBlobUri"] = Emulated;
         }
         if (scenario == "local-vault-development")
