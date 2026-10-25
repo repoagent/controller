@@ -284,12 +284,15 @@ public sealed class BridgeInputTests
         await using var world = Enrolled();
         await world.Begin(1);
         await world.Poll();
+        await world.Deliver();
         // Five maximum-size GitHub comment bodies exceed one batch.
         var bodies = Enumerable.Range(1, 5).Select(number => number + ":" + new string('x', 65_534)).ToArray();
         for (var number = 1; number <= 5; number++) world.GitHub.Comment(1, "C" + number, bodies[number - 1], new("author" + number, "User"));
         await world.Poll();
+        string[] sources = ["D1", "C1", "C2", "C3", "C4", "C5"];
 
         var delivered = new List<string>();
+        List<string> received = ["D1"];
         while (delivered.Count < bodies.Length)
         {
             var turns = world.Turns.Count;
@@ -302,6 +305,10 @@ public sealed class BridgeInputTests
             var batch = JsonNode.Parse(turn.Input)!["changes"]!.AsArray().Select(change => change!["subject"]!["body"]!.GetValue<string>()).ToArray();
             Assert.NotEmpty(batch);
             delivered.AddRange(batch);
+            // EYES follow each batch: exactly the sources accepted so far, none of those still waiting.
+            received.AddRange(BridgeWorld.Subjects(world.Envelope(turns)));
+            await world.Deliver();
+            Assert.Equal(received, sources.Where(world.GitHub.HasEyes));
         }
         Assert.Equal(bodies, delivered);
         Assert.InRange(world.Turns.Count - 1, 2, 5);
