@@ -3,44 +3,57 @@ using Xunit;
 namespace RepoAgent.Auth.Tests;
 
 // The production guards over the broker's settings, in the order the host applies them at startup: the local settings
-// file, the issuance composition (with the broker options), the broker options and the emulator's key ring.
+// file, the issuance composition (with the broker options), the emulator's key ring, the broker options and the
+// emulator's table.
 public sealed class BrokerSettingsTests
 {
     private const string Emulated = "http://127.0.0.1:10000/devstoreaccount1/data-protection/keyring.xml";
+    private const string EmulatedTable = "http://127.0.0.1:10002/devstoreaccount1/readiness";
 
-    // A host that starts and is ready answers 200 on /health/ready; one without issuance or enrollment answers 503; one
-    // whose settings are malformed doesn't start (0).
+    public enum Startup { Ready, NotReady, Refused }
+
+    // The whole startup sequence, for what only it shows: readiness (/health/ready answers 200 when ready, 503 when not),
+    // the table endpoint Development storage allows, and the emulator's table. Each malformed setting has its own theory.
     [Theory]
-    [InlineData(null, 200)]
-    [InlineData("missing-signing", 503)]
-    [InlineData("missing-origin", 503)]
-    [InlineData("revoke-only", 503)]
-    [InlineData("bad-origin", 0)]
-    [InlineData("bad-signing", 0)]
-    [InlineData("bad-partial-wrapping", 0)]
-    [InlineData("local-storage-production", 0)]
-    [InlineData("local-vault-production", 0)]
-    [InlineData("local-settings-production", 0)]
-    [InlineData("remote-development-storage", 0)]
-    [InlineData("local-key-ring-production", 0)]
-    [InlineData("local-table-production", 0)]
-    [InlineData("local-development-storage", 200)]
-    [InlineData("local-vault-development", 200)]
-    public void Incomplete_settings_are_not_ready_and_malformed_ones_do_not_start(string? scenario, int ready)
+    [InlineData(null, Startup.Ready)]
+    [InlineData("missing-signing", Startup.NotReady)]
+    [InlineData("missing-origin", Startup.NotReady)]
+    [InlineData("revoke-only", Startup.NotReady)]
+    [InlineData("local-table-production", Startup.Refused)]
+    [InlineData("remote-development-storage", Startup.Refused)]
+    [InlineData("local-development-storage", Startup.Ready)]
+    [InlineData("local-vault-development", Startup.Ready)]
+    public void Only_a_broker_that_issues_and_enrolls_is_ready(string? scenario, Startup expected)
     {
         var (settings, environment) = Scenario(scenario);
         string? Setting(string name) => settings.GetValueOrDefault(name);
-        int Start()
+        bool Start()
         {
             _ = BrokerSettings.DevelopmentSettingsFile(Setting, environment);
             var issuance = BrokerSettings.Issuance(Setting, environment);
             issuance?.RequireEmulatedKeyRing(new(Emulated));
             var options = BrokerSettings.Options(Setting, environment);
-            return issuance is not null && options.BrokerOrigin is not null ? 200 : 503;
+            if (BrokerSettings.DevelopmentConnection(Setting, environment) is not null) options.RequireEmulatedTable(new(EmulatedTable));
+            return BrokerSettings.Ready(issuance);
         }
 
-        if (ready == 0) Assert.ThrowsAny<Exception>(() => Start());
-        else Assert.Equal(ready, Start());
+        if (expected == Startup.Refused) Assert.Throws<InvalidOperationException>(() => Start());
+        else Assert.Equal(expected == Startup.Ready, Start());
+    }
+
+    // Uri equality ignores user information and fragments, so the emulator's table is also checked for them.
+    [Theory]
+    [InlineData(EmulatedTable, true)]
+    [InlineData("http://127.0.0.1:10002/devstoreaccount1/other", false)]
+    [InlineData("http://user:secret@127.0.0.1:10002/devstoreaccount1/readiness", false)]
+    [InlineData(EmulatedTable + "?sv=private", false)]
+    [InlineData(EmulatedTable + "#fragment", false)]
+    public void The_emulators_table_must_be_the_configured_one(string table, bool accepted)
+    {
+        var (settings, environment) = Scenario("local-development-storage");
+        var options = BrokerSettings.Options(settings.GetValueOrDefault, environment);
+        if (accepted) options.RequireEmulatedTable(new(table));
+        else Assert.Throws<InvalidOperationException>(() => options.RequireEmulatedTable(new(table)));
     }
 
     // Uri equality ignores user information and fragments, so the emulator's key ring is also checked for them.
@@ -255,17 +268,11 @@ public sealed class BrokerSettingsTests
         };
         var environment = "Production";
         if (scenario is "missing-signing") settings.Remove("Auth:SigningKeyUri");
-        if (scenario is "revoke-only" or "bad-partial-wrapping")
+        // remote-development-storage only revokes, so the key ring's guard can't refuse it before the table's.
+        if (scenario is "revoke-only" or "remote-development-storage")
             foreach (var name in new[] { "SigningKeyUri", "DataProtectionKeyUri", "DataProtectionBlobUri", "DataProtectionApplicationName" })
                 settings.Remove("Auth:" + name);
         if (scenario is "missing-origin" or "revoke-only") settings.Remove("Broker:BrokerOrigin");
-        if (scenario == "bad-origin") settings["Broker:BrokerOrigin"] = "https://user:secret@broker.example.test/path";
-        if (scenario == "bad-signing") settings["Auth:SigningKeyUri"] = "https://vault.example.test/keys/unversioned";
-        if (scenario == "bad-partial-wrapping") settings["Auth:DataProtectionKeyUri"] = "http://invalid.test";
-        if (scenario == "local-storage-production") settings["Broker:DevelopmentConnectionString"] = "UseDevelopmentStorage=true";
-        if (scenario == "local-vault-production") settings["Auth:DevelopmentVaultUri"] = "https://localhost:4997";
-        if (scenario == "local-settings-production") settings["Broker:DevelopmentSettingsFile"] = "does-not-exist.json";
-        if (scenario == "local-key-ring-production") settings["Auth:DevelopmentBlobConnectionString"] = "UseDevelopmentStorage=true";
         if (scenario is "local-table-production" or "local-development-storage")
             settings["Broker:TableEndpoint"] = "http://127.0.0.1:10002/devstoreaccount1";
         if (scenario is "remote-development-storage" or "local-development-storage")

@@ -6,7 +6,7 @@ internal static class BrokerCleanupCommand
 {
     internal static async Task<int> RunAsync(string[] args)
     {
-        if (args is ["cleanup", "--watch"] && Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") == "Development")
+        if (CleanupCommand.Watches(args, Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")))
         {
             using var stop = new CancellationTokenSource();
             Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };

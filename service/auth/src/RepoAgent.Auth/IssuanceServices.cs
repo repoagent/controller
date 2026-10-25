@@ -8,10 +8,11 @@ namespace RepoAgent.Auth;
 
 public static class IssuanceServices
 {
-    public static void Add(WebApplicationBuilder builder)
+    // Composes issuance, and enrollment when it has the broker's origin; returns the issuance settings, null without them.
+    public static IssuanceSettings? Add(WebApplicationBuilder builder)
     {
         // Incomplete composition is supported; malformed supplied settings are not.
-        if (BrokerSettings.Issuance(name => builder.Configuration[name], builder.Environment.EnvironmentName) is not { } settings) return;
+        if (BrokerSettings.Issuance(name => builder.Configuration[name], builder.Environment.EnvironmentName) is not { } settings) return null;
         var identity = settings.Options.ManagedIdentityClientId is { } clientId
             ? ManagedIdentityId.FromUserAssignedClientId(clientId) : ManagedIdentityId.SystemAssigned;
         TokenCredential credential = new ManagedIdentityCredential(identity);
@@ -48,7 +49,8 @@ public static class IssuanceServices
         builder.Services.AddSingleton<IControllerApprovals, GitHubControllerApprovals>();
         builder.Services.AddSingleton<IGitHubTokens, GitHubTokens>();
         builder.Services.AddSingleton<InstallationTokenIssuer>();
-        if (settings.Options.BrokerOrigin is not null) builder.Services.AddSingleton(CreateEnrollmentService);
+        if (settings.Enrolls) builder.Services.AddSingleton(CreateEnrollmentService);
+        return settings;
     }
     // The issuance store over the broker state, for this deployment's epoch and retained-ledger ceiling.
     public static IssuanceStore CreateStore(IServiceProvider services)

@@ -27,6 +27,12 @@ public static class BrokerSettings
     public static BrokerOptions Options(Func<string, string?> setting, string? environment) =>
         BrokerOptions.Read(setting, DevelopmentConnection(setting, environment) is not null);
 
+    // Ready only when the broker both issues and enrolls; a broker that only revokes isn't.
+    public static bool Ready(IssuanceSettings? issuance) => issuance?.Enrolls == true;
+
+    // A settings URI names its resource and nothing else: no user information, query or fragment.
+    public static bool IsBare(Uri uri) => uri.UserInfo.Length == 0 && uri.Query.Length == 0 && uri.Fragment.Length == 0;
+
     // The issuance composition: null without a signing key, the supported incomplete composition that only revokes. Every
     // supplied setting must still be well formed.
     public static IssuanceSettings? Issuance(Func<string, string?> setting, string? environment)
@@ -78,14 +84,12 @@ public static class BrokerSettings
             || !fields.TryGetValue("IngestionEndpoint", out var endpoint)
             || !Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) || uri.Scheme != "https"
             || !uri.Host.EndsWith(".in.applicationinsights.azure.com", StringComparison.OrdinalIgnoreCase)
-            || !uri.IsDefaultPort || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0
-            || uri.AbsolutePath != "/" || !Guid.TryParse(clientId, out _))
+            || !uri.IsDefaultPort || !IsBare(uri) || uri.AbsolutePath != "/" || !Guid.TryParse(clientId, out _))
             throw new InvalidOperationException("Invalid monitoring configuration.");
         return new(connection, clientId);
     }
 
-    private static Uri HttpsUri(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri)
-        && uri.Scheme == "https" && string.IsNullOrEmpty(uri.UserInfo) && uri.Query.Length == 0 && uri.Fragment.Length == 0
+    private static Uri HttpsUri(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == "https" && IsBare(uri)
         ? uri : throw new InvalidOperationException("Auth resource settings must be HTTPS resource URIs without credentials.");
 
     private static Uri KeyUri(string? value)
@@ -103,11 +107,13 @@ public static class BrokerSettings
 public sealed record IssuanceSettings(Uri SigningKey, Uri WrappingKey, Uri KeyRing, string ApplicationName, Uri? DevelopmentVault,
     string? DevelopmentStorage, BrokerOptions Options)
 {
+    // Enrollment needs the broker's public origin as well.
+    public bool Enrolls => Options.BrokerOrigin is not null;
+
     // With the storage emulator, the key ring the emulator names must be the configured one, on loopback.
     public void RequireEmulatedKeyRing(Uri emulated)
     {
-        if (DevelopmentStorage is not null && (KeyRing != emulated || !KeyRing.IsLoopback
-            || KeyRing.UserInfo.Length != 0 || KeyRing.Query.Length != 0 || KeyRing.Fragment.Length != 0))
+        if (DevelopmentStorage is not null && (KeyRing != emulated || !KeyRing.IsLoopback || !BrokerSettings.IsBare(KeyRing)))
             throw new InvalidOperationException("Development key ring must use the local storage emulator.");
     }
 }

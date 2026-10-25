@@ -22,6 +22,10 @@ public sealed record CleanupObservation(string Metric, double Value);
 // configuration exit 2 before the store is opened; optional telemetry never changes the result.
 public sealed class CleanupCommand(ICleanupHost host, TextWriter output, TextWriter error, TimeProvider clock)
 {
+    // `cleanup --watch` repeats the run every minute, and only in the Development environment.
+    public static bool Watches(IReadOnlyList<string> args, string? environment) =>
+        args is ["cleanup", "--watch"] && environment == "Development";
+
     public async Task<int> RunAsync(IReadOnlyList<string> args, CancellationToken ct)
     {
         if (args is not ["cleanup", "--once"])

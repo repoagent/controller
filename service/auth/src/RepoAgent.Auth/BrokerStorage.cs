@@ -14,13 +14,8 @@ internal static class BrokerStorage
         var options = Options(configuration, environment);
         if (connection is not null)
         {
-            if (!BrokerOptions.IsDevelopmentTableEndpoint(options.TableEndpoint))
-                throw new InvalidOperationException("Development storage requires a loopback endpoint.");
             var table = new TableClient(connection, options.TableName, clientOptions);
-            var expected = new Uri(options.TableEndpoint.AbsoluteUri.TrimEnd('/') + "/" + options.TableName);
-            if (table.Uri != expected || !table.Uri.IsLoopback || table.Uri.UserInfo.Length != 0
-                || table.Uri.Query.Length != 0 || table.Uri.Fragment.Length != 0)
-                throw new InvalidOperationException("Development storage destination does not match.");
+            options.RequireEmulatedTable(table.Uri);
             return table;
         }
         var identity = options.ManagedIdentityClientId is { } clientId

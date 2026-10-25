@@ -25,6 +25,17 @@ public sealed class CleanupCommandTests
         Assert.Equal((0, 0), (host.Opened, host.Exported));
     }
 
+    // Only Development runs the command on a timer; everything else is the one run, or the usage.
+    [Theory]
+    [InlineData("cleanup --watch", "Development", true)]
+    [InlineData("cleanup --watch", "development", false)]
+    [InlineData("cleanup --watch", "Production", false)]
+    [InlineData("cleanup --watch", null, false)]
+    [InlineData("cleanup --once", "Development", false)]
+    [InlineData("cleanup --watch --once", "Development", false)]
+    public void Only_Development_watches(string args, string? environment, bool watches) =>
+        Assert.Equal(watches, CleanupCommand.Watches(args.Split(' '), environment));
+
     [Theory]
     [InlineData("argument")]
     [InlineData("operation")]
@@ -34,12 +45,12 @@ public sealed class CleanupCommandTests
         var f = new InMemoryBroker();
         var host = new Host(f)
         {
-            Opening = () => throw (failure switch
+            OpenFails = failure switch
             {
                 "argument" => new ArgumentException("Secret-bearing detail"),
                 "operation" => new InvalidOperationException("Secret-bearing detail"),
-                _ => (Exception)new FormatException("Secret-bearing detail"),
-            })
+                _ => new FormatException("Secret-bearing detail"),
+            }
         };
         var run = await host.RunAsync(["cleanup", "--once"]);
         Assert.Equal((2, "", "Invalid cleanup configuration." + Environment.NewLine), (run.Exit, run.Output, run.Error));
@@ -50,33 +61,24 @@ public sealed class CleanupCommandTests
     [Fact]
     public async Task Another_failure_to_open_is_not_reported_as_invalid_configuration()
     {
-        var host = new Host(new InMemoryBroker()) { Opening = () => throw new IOException("Missing settings file.") };
+        var host = new Host(new InMemoryBroker()) { OpenFails = new IOException("Missing settings file.") };
         await Assert.ThrowsAsync<IOException>(() => host.RunAsync(["cleanup", "--once"]));
         Assert.Equal("", host.Error.ToString());
     }
 
-    // Disabled telemetry exports nothing; malformed or failing telemetry throws. None of them changes the exit code or the
-    // one summary line, and none writes to stderr. The export always gets the observations of the printed summary.
+    // The export returns when monitoring is disabled, and when the export fails: the adapter's ExportCleanupOnce swallows
+    // its own failures. It throws when monitoring is malformed. Neither changes the exit code or the one summary line, and
+    // neither writes to stderr. The export always gets the observations of the printed summary.
     [Theory]
-    [InlineData("disabled", false)]
-    [InlineData("malformed", false)]
-    [InlineData("failing", false)]
-    [InlineData("disabled", true)]
-    [InlineData("malformed", true)]
-    [InlineData("failing", true)]
-    public async Task A_run_prints_its_summary_as_the_only_line_whatever_telemetry_does(string telemetry, bool storeFails)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task A_run_prints_its_summary_as_the_only_line_whether_or_not_its_export_throws(bool exportThrows, bool storeFails)
     {
         var f = new InMemoryBroker();
         if (storeFails) f.State.BeforeRead = _ => throw new BrokerStateUnavailable("Store unavailable.");
-        var host = new Host(f)
-        {
-            Exporting = telemetry switch
-            {
-                "malformed" => _ => throw new InvalidOperationException("Invalid monitoring configuration."),
-                "failing" => _ => throw new TaskCanceledException("Ingestion timed out."),
-                _ => _ => { },
-            }
-        };
+        var host = new Host(f) { ExportFails = exportThrows ? new InvalidOperationException("Invalid monitoring configuration.") : null };
         var run = await host.RunAsync(["cleanup", "--once"]);
         Assert.Equal(storeFails ? 1 : 0, run.Exit);
         Assert.Equal("", run.Error);
@@ -121,30 +123,32 @@ public sealed class CleanupCommandTests
     }
 
     // The command's host over the in-memory broker: opening returns its state, epoch and a cleanup budget, and the export
-    // keeps what it was given.
+    // keeps what it was given. Each call decides whether it fails before it is counted.
     private sealed class Host(InMemoryBroker f) : ICleanupHost
     {
         public int Opened { get; private set; }
         public int Exported { get; private set; }
         public IReadOnlyList<CleanupObservation>? Observations { get; private set; }
-        public Func<CleanupComposition>? Opening { get; init; }
-        public Action<IReadOnlyList<CleanupObservation>> Exporting { get; init; } = _ => { };
+        public Exception? OpenFails { get; init; }
+        public Exception? ExportFails { get; init; }
         public StringWriter Output { get; } = new();
         public StringWriter Error { get; } = new();
 
         public CleanupComposition Open()
         {
+            var failure = OpenFails;
             Opened++;
-            if (Opening is { } opening) return opening();
+            if (failure is not null) throw failure;
             var budget = new CleanupBudget(f.State);
             return new(budget, f.DeploymentEpoch, budget);
         }
 
         public void Export(IReadOnlyList<CleanupObservation> observations)
         {
+            var failure = ExportFails;
             Exported++;
             Observations = observations;
-            Exporting(observations);
+            if (failure is not null) throw failure;
         }
 
         public async Task<(int Exit, string Output, string Error)> RunAsync(string[] args)
