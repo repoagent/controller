@@ -186,6 +186,7 @@ public sealed class BridgeInputTests
             ("comment.deleted", "R1", "bob", "C1", "C1"),
             ("comment.deleted", "R2", "erin", "C2", null) // Its thread root is gone too, so a response goes top-level.
         ], Deletions(envelope));
+        Assert.EndsWith(" latest=", world.Logged("forwarded")[^1]); // A deletion names no subject URL.
         Assert.Equal(receipts, Receipts()); // A deleted source cannot carry an EYES receipt.
 
         Assert.True(await world.RunOnce(1));
