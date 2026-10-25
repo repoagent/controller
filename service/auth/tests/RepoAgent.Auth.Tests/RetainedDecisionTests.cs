@@ -305,9 +305,10 @@ public sealed class RetainedDecisionTests
         Assert.Equal(1L, f.State.Get(CleanupCursor.Payload)!.Enrollment.Cycle);
     }
 
-    // When a lane's last turn of the run failed, its cursor is not reported: the failed checkpoint is not progress.
+    // When the run's last turn failed, that turn's lane reports no cursor ages: the failed checkpoint is not progress.
+    // Each turn rereads both cursors, so a lane whose failed turn came earlier reports its stored ages.
     [Fact]
-    public async Task Lane_whose_last_turn_failed_reports_unknown_cursor_and_cycle_ages()
+    public async Task Lane_of_the_failed_last_turn_reports_unknown_cursor_and_cycle_ages()
     {
         var f = new InMemoryBroker();
         Assert.Equal(0, (await f.CleanupAsync()).Exit);
