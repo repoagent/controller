@@ -41,7 +41,7 @@ public sealed partial class CapacityReclamationTests
         f.Clock.Advance(ledger.GetDateTimeOffset("PayloadPurgeAt")!.Value - f.Clock.GetUtcNow());
 
         // This is the real #78 absent-target tombstone, not a test-authored approximation.
-        await new BrokerPayloadRedaction(table, options, f.Clock)
+        await new BrokerPayloadRedaction(table, f.Clock)
             .RedactEnrollmentAsync(id, ledger.GetString("Generation")!, ct);
         var tombstone = (await table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, key, cancellationToken: ct)).Value;
         var gate = (await table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "gate", cancellationToken: ct)).Value;

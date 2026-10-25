@@ -5,9 +5,9 @@ using static RepoAgent.Auth.TableValues;
 namespace RepoAgent.Auth;
 
 // One charged identity per call. No provider/key dependency, scans, refunds or settlement.
-public sealed class BrokerPayloadRedaction(TableClient table, BrokerOptions options, TimeProvider clock)
+public sealed class BrokerPayloadRedaction(TableClient table, TimeProvider clock)
 {
-    private readonly RetainedState retained = new(table, options);
+    private readonly RetainedState retained = new(table);
 
     public async Task RedactEnrollmentAsync(string idempotencyId, string generation, CancellationToken ct)
     {

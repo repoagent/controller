@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace RepoAgent.Auth;
 
@@ -21,6 +23,15 @@ public static class IssuancePolicy
     public static readonly TimeSpan PendingLifetime = TimeSpan.FromMinutes(15);
     public static long Id(string s) => long.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n > 0 && n.ToString(CultureInfo.InvariantCulture) == s ? n : throw new IssuanceDenied();
     public static bool IsBearer(string s) => s.Length is > 0 and <= 8192 && s.All(c => c is >= '!' and <= '~');
+
+    // What an issuance or enrollment operation may fail with and still answer: a denial, a confirmed approval change, an
+    // unavailable or unknown broker state, a conflict after observation, unreadable durable data or JSON, a protection
+    // failure or GitHub's unavailability. The adapters wrap their providers' exceptions into these, so no Azure exception
+    // reaches the core. Any other exception is a defect and answers 500.
+    public static bool Answerable(Exception ex) => ex is IssuanceDenied or ApprovalChanged or BrokerStateUnavailable or BrokerRecordUnreadable
+        or StateConflict or IOException or InvalidDataException or InvalidCastException or FormatException or JsonException
+        or OverflowException or OperationCanceledException or CryptographicException or KeyNotFoundException or InvalidOperationException or ArgumentException
+        or SecretProtectionFailed or GitHubUnavailable;
 
     // A repository full name GitHub can hold: owner/name, each 1-100 ASCII letters, digits, '-', '_' or '.', never "." or "..".
     public static bool IsRepositoryName(string? repository) => repository?.Split('/') is [var owner, var name] && Segment(owner) && Segment(name);

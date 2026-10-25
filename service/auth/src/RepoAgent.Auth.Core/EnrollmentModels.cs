@@ -1,9 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Azure.Data.Tables;
 using static RepoAgent.Auth.IssuancePolicy;
-using static RepoAgent.Auth.TableValues;
 
 namespace RepoAgent.Auth;
 
@@ -56,27 +54,6 @@ internal sealed record EnrollmentInput(string IdempotencyId, long RepositoryId, 
         var digest = approval.IsActions ? request.Digest("repository-actions-variable/setup-v3") : request.Digest();
         return new(request.IdempotencyId, request.RepositoryId, request.Repository, null,
             request.Variable, request.Profile, digest, approval);
-    }
-}
-
-internal sealed record EnrollmentSnapshot(TableEntity Gate, TableEntity Pending)
-{
-    public string Partition => Gate.PartitionKey;
-    public string RepositoryId => Text(Pending, "RepositoryId");
-    public string Id => Text(Pending, "PendingId");
-    public string DeviceId => Text(Pending, "DeviceId");
-    public ApprovalContract Approval => ApprovalContract.Read(Pending);
-
-    // What the pending enrollment asked for and has bound so far, for GitHub to confirm.
-    public ApprovalRequest ApprovalRequest()
-    {
-        var p = Pending;
-        return new(Approval, IssuancePolicy.Id(RepositoryId), Text(p, "RequestedRepository"), Text(p, "Profile"), Text(p, "Variable"),
-            Approval == ApprovalContract.Legacy ? Text(p, "Environment") : null,
-            p.ContainsKey("InstallationId") ? Number(p, "InstallationId") : null,
-            p.ContainsKey("EnvironmentId") ? Number(p, "EnvironmentId") : null,
-            p.ContainsKey("Repository") ? Text(p, "Repository") : null,
-            p.ContainsKey("Marker") ? Text(p, "Marker") : null);
     }
 }
 

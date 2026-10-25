@@ -110,6 +110,14 @@ internal sealed class InMemoryBrokerState : IBrokerState
                 .Select(stored => (stored.Key.Name, new Dictionary<string, object>(stored.Value.Row)))];
     }
 
+    // Every stored row with its version, in ordinal scope and name order.
+    public IReadOnlyList<(string Scope, string Name, Dictionary<string, object> Row, StateVersion Version)> All()
+    {
+        lock (sync)
+            return [.. rows.OrderBy(stored => stored.Key.Scope, StringComparer.Ordinal).ThenBy(stored => stored.Key.Name, StringComparer.Ordinal)
+                .Select(stored => (stored.Key.Scope, stored.Key.Name, new Dictionary<string, object>(stored.Value.Row), stored.Value.Version))];
+    }
+
     public StateVersion? Version(StateKey key) => Version(key.Scope, key.Name);
 
     public StateVersion? Version(string scope, string name)

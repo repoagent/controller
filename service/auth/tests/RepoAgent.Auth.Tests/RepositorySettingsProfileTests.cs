@@ -1,17 +1,14 @@
 using System.Net;
-using System.Net.Http.Json;
 using System.Text.Json;
-using Azure.Data.Tables;
 using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-// Public broker HTTP, real pinned Azurite Table and Data Protection; GitHub is the controlled
-// Actions/Agent-variable transport. The repository-settings profiles are a separate, explicitly
-// versioned runtime authority: each grants its frozen profile's permissions plus Variables read.
+// The broker's enrollment, issuance and revocation over the in-memory broker state; GitHub is the in-memory
+// Actions/Agent-variable fake. The repository-settings profiles are a separate, explicitly versioned runtime
+// authority: each grants its frozen profile's permissions plus Variables read.
 public sealed class RepositorySettingsProfileTests
 {
-    private static CancellationToken Token => TestContext.Current.CancellationToken;
     private const string Policy = "repository-actions-settings-approval-v3";
 
     public static TheoryData<string, string[]> SettingsProfiles => new()
@@ -26,8 +23,8 @@ public sealed class RepositorySettingsProfileTests
     [MemberData(nameof(SettingsProfiles))]
     public async Task Settings_profile_enrolled_under_v3_Actions_approval_issues_exactly_the_frozen_grants_plus_Variables_read(string profile, string[] grants)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var github = ActionsVariableEnrollmentTests.Repository.Configure(f);
+        var f = new InMemoryBroker();
+        var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
         var active = await ActionsVariableEnrollmentTests.Active(f, github, profile: profile);
         var expected = grants.Select(g => g.Split(':')).ToDictionary(g => g[0], g => g[1]);
 
@@ -43,14 +40,14 @@ public sealed class RepositorySettingsProfileTests
         var mints = f.GitHub.Mints;
         foreach (var frozen in new[] { 1, 2 })
         {
-            using var refused = await f.Send($"/v{frozen}/devices/{active.Device}/installation-token", secret: active.Secret);
+            var refused = await f.Issue(active.Device, active.Secret, frozen);
             Assert.Equal(HttpStatusCode.Unauthorized, refused.StatusCode);
         }
         Assert.Equal(mints, f.GitHub.Mints);
 
-        using var runtime = await f.Send($"/v3/devices/{active.Device}/installation-token", secret: active.Secret);
+        var runtime = await f.Issue(active.Device, active.Secret, 3);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
-        var lease = await Json(runtime);
+        var lease = runtime.Json;
         Assert.Equal((3, profile, Policy), (lease.GetProperty("protocolVersion").GetInt32(),
             lease.GetProperty("profile").GetString(), lease.GetProperty("policyVersion").GetString()));
         Assert.Equal(expected, Map(lease.GetProperty("permissions")));
@@ -61,7 +58,7 @@ public sealed class RepositorySettingsProfileTests
         // Observed approval withdrawal closes a repository-settings profile like any other grant.
         github.Actions.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var removed = await f.Send($"/v3/devices/{active.Device}/installation-token", secret: active.Secret);
+        var removed = await f.Issue(active.Device, active.Secret, 3);
         Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
     }
 
@@ -71,13 +68,11 @@ public sealed class RepositorySettingsProfileTests
     [InlineData(2, "webhook-clone-settings")]
     public async Task Settings_profiles_are_refused_without_a_v3_Actions_approval(int setupVersion, string profile)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        ActionsVariableEnrollmentTests.Repository.Configure(f);
-        object request = setupVersion == 1
-            ? f.Request() with { Profile = profile }
-            : ActionsVariableEnrollmentTests.Request(profile) with { Variable = "APPROVAL" };
-
-        using var start = await f.Send($"/v{setupVersion}/enrollments", request);
+        var f = new InMemoryBroker();
+        ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
+        var start = setupVersion == 1
+            ? await f.Start(InMemoryBroker.Request() with { Profile = profile })
+            : await f.Start(ActionsVariableEnrollmentTests.Request(profile) with { Variable = "APPROVAL" }, setupVersion);
 
         Assert.Equal(HttpStatusCode.BadRequest, start.StatusCode);
         Assert.Empty(f.GitHub.Requests);
@@ -92,8 +87,8 @@ public sealed class RepositorySettingsProfileTests
     [InlineData(2, "webhook-clone", 2)]
     public async Task Frozen_profiles_keep_their_exact_grants_and_never_reach_Variables_through_the_settings_route(int setupVersion, string profile, int runtimeVersion)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var github = ActionsVariableEnrollmentTests.Repository.Configure(f);
+        var f = new InMemoryBroker();
+        var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
         var active = await ActionsVariableEnrollmentTests.Active(f, github, setupVersion, profile);
         var expected = new Dictionary<string, string> { ["discussions"] = "write" };
         if (profile.StartsWith("webhook", StringComparison.Ordinal)) expected["repository_hooks"] = "write";
@@ -102,15 +97,15 @@ public sealed class RepositorySettingsProfileTests
         Assert.Equal(expected, Map(active.Enrollment.GetProperty("permissions")));
 
         var mints = f.GitHub.Mints;
-        using var settingsRoute = await f.Send($"/v3/devices/{active.Device}/installation-token", secret: active.Secret);
+        var settingsRoute = await f.Issue(active.Device, active.Secret, 3);
         Assert.Equal(HttpStatusCode.Unauthorized, settingsRoute.StatusCode);
-        using var settingsRevoke = await f.Send($"/v3/devices/{active.Device}", secret: active.Secret, method: HttpMethod.Delete);
+        var settingsRevoke = await f.Revoke(active.Device, active.Secret, 3);
         Assert.Equal(HttpStatusCode.Unauthorized, settingsRevoke.StatusCode);
         Assert.Equal(mints, f.GitHub.Mints);
 
-        using var runtime = await f.Send($"/v{runtimeVersion}/devices/{active.Device}/installation-token", secret: active.Secret);
+        var runtime = await f.Issue(active.Device, active.Secret, runtimeVersion);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
-        Assert.Equal(expected, Map((await Json(runtime)).GetProperty("permissions")));
+        Assert.Equal(expected, Map(runtime.Json.GetProperty("permissions")));
         Assert.Equal(expected, Assert.Single(github.RuntimePermissions));
     }
 
@@ -121,20 +116,17 @@ public sealed class RepositorySettingsProfileTests
     [InlineData("PolicyVersion", "repository-actions-clone-approval-v3")]
     public async Task Durable_repository_settings_profile_is_never_reinterpreted_and_denies_before_reservation_or_provider(string field, string value)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var github = ActionsVariableEnrollmentTests.Repository.Configure(f);
+        var f = new InMemoryBroker();
+        var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
         var active = await ActionsVariableEnrollmentTests.Active(f, github, profile: "polling-settings");
-        var row = (await f.Storage.Table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "device:" + active.Device, cancellationToken: Token)).Value;
-        row[field] = value;
-        await f.Storage.Table.UpdateEntityAsync(row, row.ETag, TableUpdateMode.Replace, Token);
-        await f.RestartAsync();
+        f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, active.Device), row => row[field] = value);
         var requests = f.GitHub.Requests.Count;
 
         foreach (var route in new[] { 1, 2, 3 })
         {
-            using var denied = await f.Send($"/v{route}/devices/{active.Device}/installation-token", secret: active.Secret);
+            var denied = await f.Issue(active.Device, active.Secret, route);
             Assert.NotEqual(HttpStatusCode.OK, denied.StatusCode);
-            Assert.Equal("", await denied.Content.ReadAsStringAsync(Token));
+            Assert.Equal("", denied.Text);
         }
         Assert.Equal(requests, f.GitHub.Requests.Count);
         Assert.Empty(github.RuntimePermissions);
@@ -143,23 +135,22 @@ public sealed class RepositorySettingsProfileTests
     [Fact]
     public async Task Settings_device_self_revokes_only_through_its_own_runtime_route()
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var github = ActionsVariableEnrollmentTests.Repository.Configure(f);
+        var f = new InMemoryBroker();
+        var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
         var active = await ActionsVariableEnrollmentTests.Active(f, github, profile: "webhook-settings");
 
         foreach (var frozen in new[] { 1, 2 })
         {
-            using var refused = await f.Send($"/v{frozen}/devices/{active.Device}", secret: active.Secret, method: HttpMethod.Delete);
+            var refused = await f.Revoke(active.Device, active.Secret, frozen);
             Assert.Equal(HttpStatusCode.Unauthorized, refused.StatusCode);
         }
-        using var revoke = await f.Send($"/v3/devices/{active.Device}", secret: active.Secret, method: HttpMethod.Delete);
+        var revoke = await f.Revoke(active.Device, active.Secret, 3);
         Assert.Equal(HttpStatusCode.NoContent, revoke.StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var after = await f.Send($"/v3/devices/{active.Device}/installation-token", secret: active.Secret);
+        var after = await f.Issue(active.Device, active.Secret, 3);
         Assert.Equal(HttpStatusCode.Unauthorized, after.StatusCode);
     }
 
     private static Dictionary<string, string> Map(JsonElement permissions) =>
         permissions.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString()!);
-    private static Task<JsonElement> Json(HttpResponseMessage response) => response.Content.ReadFromJsonAsync<JsonElement>(Token);
 }

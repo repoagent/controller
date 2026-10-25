@@ -8,7 +8,7 @@ namespace RepoAgent.Auth;
 internal sealed class BrokerCleanup(TableClient table, BrokerOptions options, CleanupRequestBudget budget, TimeProvider clock)
 {
     private const string Partition = RetainedState.Enrollment;
-    private readonly BrokerPayloadRedaction redaction = new(table, options, clock);
+    private readonly BrokerPayloadRedaction redaction = new(table, clock);
     private readonly BrokerCapacityReclamation reclamation = new(table, options, clock);
     private readonly bool[,] unavailable = new bool[2, 2];
     private readonly bool[,] completed = new bool[2, 2];
@@ -22,7 +22,7 @@ internal sealed class BrokerCleanup(TableClient table, BrokerOptions options, Cl
     {
         try
         {
-            _ = await new RetainedState(table, options).SchemaAsync(ct);
+            _ = await new RetainedState(table).SchemaAsync(ct);
             for (var lane = 0; lane < 2; lane++) cursors[lane] = await ReadCursorAsync(lane, true, ct);
             while (unavailable.Cast<bool>().Any(value => !value))
             {

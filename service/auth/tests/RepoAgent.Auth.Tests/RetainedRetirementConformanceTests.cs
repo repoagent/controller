@@ -124,7 +124,7 @@ public sealed partial class CapacityReclamationTests
                 { entered.TrySetResult(); await release.Task.WaitAsync(TimeSpan.FromSeconds(12), Token); }
             }
         };
-        var redactor = new BrokerPayloadRedaction(f.Storage.CreateClient(transport), Options(f), f.Clock);
+        var redactor = new BrokerPayloadRedaction(f.Storage.CreateClient(transport), f.Clock);
         var stale = enrollment ? redactor.RedactEnrollmentAsync(ledger.RowKey[8..], ledger.GetString("Generation")!, Token)
             : redactor.RedactIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
         try
@@ -217,7 +217,7 @@ public sealed partial class CapacityReclamationTests
             f.Clock.Advance(ledger.GetDateTimeOffset("Deadline")!.Value - f.Clock.GetUtcNow());
             await Retirement(f, ledger);
             f.Clock.Advance(TimeSpan.FromDays(30));
-            await new BrokerPayloadRedaction(f.Storage.Table, Options(f), f.Clock).RedactEnrollmentAsync(id, ledger.GetString("Generation")!, Token);
+            await new BrokerPayloadRedaction(f.Storage.Table, f.Clock).RedactEnrollmentAsync(id, ledger.GetString("Generation")!, Token);
             await Retirement(f, ledger);
             if (mintWins)
             {
@@ -316,7 +316,8 @@ public sealed partial class CapacityReclamationTests
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await f.RestartAsync(new ObservedTransport { Before = async message =>
         {
-            if (ObservedTransport.IsBatch(message) || !((await Body(message)).Contains("\"PartitionKey\":\"locator:", StringComparison.Ordinal))) return;
+            // Locator publication is a one-write transaction of its own partition.
+            if (!ObservedTransport.IsBatch(message) || !(await Body(message)).Contains("\"PartitionKey\":\"locator:", StringComparison.Ordinal)) return;
             entered.TrySetResult();
             await release.Task.WaitAsync(TimeSpan.FromSeconds(12), Token);
         }});
@@ -356,7 +357,7 @@ public sealed partial class CapacityReclamationTests
         else { attempt["State"] = state; attempt.Remove("ExpiresAt"); }
         await f.Storage.Table.UpdateEntityAsync(attempt, attempt.ETag, TableUpdateMode.Replace, Token);
         f.Clock.Advance(TimeSpan.FromDays(90));
-        await new BrokerPayloadRedaction(f.Storage.Table, Options(f), f.Clock).RedactIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
+        await new BrokerPayloadRedaction(f.Storage.Table, f.Clock).RedactIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
         await Retirement(f, ledger);
         await Retirement(f, ledger);
         Assert.Equal(1L, (await Read(f, ledger.PartitionKey, "quota")).GetInt64("RetainedIssuanceCount"));
@@ -451,7 +452,7 @@ public sealed partial class CapacityReclamationTests
         var pending = await Read(f, RevocationFixture.Partition, old.RowKey);
         Assert.NotEqual(old.GetString("Generation"), current.GetString("Generation"));
         await Assert.ThrowsAsync<IssuanceDenied>(() => Retirement(f, old));
-        await Assert.ThrowsAsync<IssuanceDenied>(() => new BrokerPayloadRedaction(f.Storage.Table, Options(f), f.Clock)
+        await Assert.ThrowsAsync<IssuanceDenied>(() => new BrokerPayloadRedaction(f.Storage.Table, f.Clock)
             .RedactEnrollmentAsync(old.RowKey[8..], old.GetString("Generation")!, Token));
         Assert.Equal(current.ETag, (await Read(f, current.PartitionKey, current.RowKey)).ETag);
         Assert.Equal(pending.ETag, (await Read(f, pending.PartitionKey, pending.RowKey)).ETag);

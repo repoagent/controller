@@ -9,8 +9,8 @@ namespace RepoAgentController;
 /// A failed or unacknowledged delivery keeps its batch first in line and retries it with backoff; input that may already
 /// have reached the native is sent again marked as a redelivery, accepting possible duplicate processing.
 /// </summary>
-sealed class Bridge(string repository, IDiscussions discussions, AppIdentity identity, Codex codex, StateStore store, GitHubOutbox outbox, HashSet<int> enroll,
-    RepositorySettings settings, CheckoutRefresh? refresh = null, TimeProvider? time = null)
+sealed class Bridge(string repository, IDiscussions discussions, AppIdentity identity, AgentSessions sessions, StateStore store, GitHubOutbox outbox,
+    HashSet<int> enroll, RepositorySettings settings, CheckoutRefresh? refresh = null, TimeProvider? time = null)
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
@@ -184,7 +184,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                 else if (!JsonNode.DeepEquals(previous, current)) { record["sources"] = current; store.Save(); }
                 if (record["waiting"] is not JsonObject waiting) continue;
                 if (!await Dispatch(record, ct) && changes.Count != 0)
-                    Log.Write("input-waiting", $"{discussion.Url} session={record.Text("sessionId")} status={(record.Text("sessionId") is { Length: > 0 } session ? codex.Status(session).ToString() : "none")} waiting={waiting["inputs"]!.AsArray().Count} sources={string.Join(',', receipts.OfType<string>().Distinct())} active={codex.ActiveTurns} limit={ActiveSessionLimit}");
+                    Log.Write("input-waiting", $"{discussion.Url} session={record.Text("sessionId")} status={(record.Text("sessionId") is { Length: > 0 } session ? sessions.Status(session).ToString() : "none")} waiting={waiting["inputs"]!.AsArray().Count} sources={string.Join(',', receipts.OfType<string>().Distinct())} active={sessions.ActiveTurns} limit={ActiveSessionLimit}");
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
@@ -228,7 +228,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     /// <remarks>An in-flight dispatch finishes on <paramref name="ct"/>; <paramref name="stop"/> only ends waiting.</remarks>
     public async Task DispatchWhenIdle(CancellationToken stop, CancellationToken ct)
     {
-        codex.StatusChanged += Wake;
+        sessions.StatusChanged += Wake;
         settings.Changed += Wake; // A raised active-session limit admits waiting input without another native event.
         try
         {
@@ -260,7 +260,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
         finally
         {
-            codex.StatusChanged -= Wake;
+            sessions.StatusChanged -= Wake;
             settings.Changed -= Wake;
         }
     }
@@ -334,7 +334,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         var waiting = record["waiting"]!.AsObject();
         var session = record.Text("sessionId");
         var create = session.Length == 0;
-        if (codex.AuthenticationFailure is not null)
+        if (sessions.AuthenticationFailure is not null)
         {
             // A turn would fail after its EYES receipt; queued input waits for replacement credentials.
             if (held.Add(record.Text("url"))) Log.Write("input-held", $"{record.Text("url")} waiting={waiting["inputs"]!.AsArray().Count}: Codex account credentials were rejected; input waits for replacement credentials");
@@ -343,11 +343,11 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         held.Clear();
         // An active or unrecognized loaded session keeps its input here without taking global admission. The session of a
         // failed turn (systemError) takes its next input without a restart.
-        if (!create && codex.Loaded(session) && !Codex.Admits(codex.Status(session))) return false;
+        if (!create && sessions.Loaded(session) && !AgentSessions.Admits(sessions.Status(session))) return false;
         // After a failed attempt the batch waits for its backoff.
         if (RetryAt(waiting) > clock.GetUtcNow()) return false;
         // Global capacity counts running native turns only; stored idle sessions and retrying deliveries take no slot.
-        if (codex.ActiveTurns >= ActiveSessionLimit) return false;
+        if (sessions.ActiveTurns >= ActiveSessionLimit) return false;
         var inputs = waiting["inputs"]!.AsArray();
         var bootstrap = waiting["context"] is not null;
         // Bootstrap supplies the initial Discussion; a continuation shares only its identity, once per batch.
@@ -383,7 +383,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             {
                 record["pending"] = pending;
                 store.Save();
-                record["sessionId"] = session = await codex.Start(ct);
+                record["sessionId"] = session = await sessions.Start(ct);
                 admission?.Bind(session);
                 store.Save();
                 Log.Write("session-created", $"{record.Text("url")} session={session}");
@@ -391,9 +391,9 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             else
             {
                 admission?.Bind(session);
-                await codex.Load(session, ct);
+                await sessions.Load(session, ct);
             }
-            if (!Codex.Admits(codex.Status(session)))
+            if (!AgentSessions.Admits(sessions.Status(session)))
             {
                 // Unknown, unloaded or active native status is never assumed idle.
                 if (record.Remove("pending")) store.Save();
@@ -402,14 +402,14 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             }
             if (!create) { record["pending"] = pending; store.Save(); }
             offered = true;
-            turn = await codex.Accept(session, envelope, selection, ct, admission);
+            turn = await sessions.Accept(session, envelope.ToJsonString(), selection, admission is null ? null : admission.Accepted, ct);
         }
         // A failure while this lifetime stops leaves pending; the next start retries it as an interrupted delivery. Credential
         // loss kills the native before the lifetime token is cancelled, so it is checked directly.
-        catch (Exception error) when (!ct.IsCancellationRequested && !codex.CredentialLost)
+        catch (Exception error) when (!ct.IsCancellationRequested && !sessions.CredentialLost)
         {
             // Nothing offered or refused: no native turn holds this input. Otherwise one may, so the checkout stays excluded.
-            try { if (!offered || error is Codex.RequestRejected) admission?.Abandon(); else admission?.Unconfirmed(); }
+            try { if (!offered || AgentSessions.Refused(error)) admission?.Abandon(); else admission?.Unconfirmed(); }
             finally { Retry(record, count, offered, error.Message); }
             return false;
         }
@@ -437,7 +437,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     // since the rejection holds all dispatch.
     void Settle()
     {
-        var (ended, active) = codex.TakeTurns();
+        var (ended, active) = sessions.TakeTurns();
         var events = new List<(string Kind, string Message)>();
         foreach (var outcome in ended)
         {
@@ -519,8 +519,8 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     async Task<ModelChoice?> Select(JsonObject record, CancellationToken ct)
     {
         var labels = record["labels"]?.AsArray().Select(label => label!.GetValue<string>()).ToArray() ?? [];
-        var (nativeModel, nativeReasoning) = await codex.ConfiguredModel(ct);
-        var catalogue = await codex.Models(ct);
+        var (nativeModel, nativeReasoning) = await sessions.ConfiguredModel(ct);
+        var catalogue = await sessions.Models(ct);
         try
         {
             var selection = ModelSelection.Resolve(labels, settings[ModelSelection.ModelSetting], settings[ModelSelection.ReasoningSetting],

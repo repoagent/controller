@@ -277,7 +277,7 @@ public sealed partial class CapacityReclamationTests
             var a = Assert.Single(await IssuanceLedgers(f));
             Assert.False((await f.Storage.Table.GetEntityIfExistsAsync<TableEntity>(RevocationFixture.Partition, a.GetString("AttemptRowKey")!, cancellationToken: Token)).HasValue);
             f.Clock.Advance(a.GetDateTimeOffset("PayloadPurgeAt")!.Value - f.Clock.GetUtcNow());
-            await new BrokerPayloadRedaction(f.Storage.Table, Options(f), f.Clock)
+            await new BrokerPayloadRedaction(f.Storage.Table, f.Clock)
                 .RedactIssuanceAsync(a.GetString("OperationId")!, a.GetString("Generation")!, Token);
             var tombstone = await Read(f, RevocationFixture.Partition, a.GetString("AttemptRowKey")!);
             Assert.Equal("redacted", tombstone.GetString("State"));
@@ -356,7 +356,7 @@ public sealed partial class CapacityReclamationTests
         // #71's duplicate settlement remains inert. After #81's audit horizon,
         // the resolved runtime allocation retires independently of its enrollment.
         f.Clock.Advance(TimeSpan.FromDays(31));
-        await new BrokerPayloadRedaction(f.Storage.Table, Options(f), f.Clock)
+        await new BrokerPayloadRedaction(f.Storage.Table, f.Clock)
             .RedactIssuanceAsync(runtime.GetString("OperationId")!, runtime.GetString("Generation")!, Token);
         await Reclaim(f, runtime);
         await AssertAbsent(f, obligation.PartitionKey, obligation.RowKey);

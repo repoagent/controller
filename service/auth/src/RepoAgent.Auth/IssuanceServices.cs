@@ -85,11 +85,7 @@ public static class IssuanceServices
         builder.Services.AddSingleton<IControllerApprovals, GitHubControllerApprovals>();
         builder.Services.AddSingleton<IGitHubTokens, GitHubTokens>();
         builder.Services.AddSingleton<InstallationTokenIssuer>();
-        if (options.BrokerOrigin is not null)
-        {
-            builder.Services.AddSingleton<EnrollmentStore>();
-            builder.Services.AddSingleton<EnrollmentService>();
-        }
+        if (options.BrokerOrigin is not null) builder.Services.AddSingleton(CreateEnrollmentService);
     }
     // The issuance store over the broker state, for this deployment's epoch and retained-ledger ceiling.
     public static IssuanceStore CreateStore(IServiceProvider services)
@@ -98,6 +94,17 @@ public static class IssuanceServices
         return new(services.GetRequiredService<IBrokerState>(), options.DeploymentEpoch, options.RetainedIssuanceLimit,
             services.GetRequiredService<ISecretProtection>(), services.GetRequiredService<TimeProvider>(),
             services.GetRequiredService<IssuanceLimits>());
+    }
+    // Enrollment over the broker state, for this deployment's epoch, retained ceilings and public origin.
+    public static EnrollmentService CreateEnrollmentService(IServiceProvider services)
+    {
+        var options = services.GetRequiredService<BrokerOptions>();
+        var clock = services.GetRequiredService<TimeProvider>();
+        var store = new EnrollmentStore(services.GetRequiredService<IBrokerState>(), options.DeploymentEpoch,
+            new(options.CandidateRepositoryLimit, options.RetainedEnrollmentLimit, options.RetainedIssuanceLimit),
+            services.GetRequiredService<ISecretProtection>(), clock, services.GetRequiredService<IssuanceLimits>());
+        return new(store, services.GetRequiredService<IGitHubTokens>(), services.GetRequiredService<IAppInstallations>(),
+            services.GetRequiredService<IControllerApprovals>(), options.BrokerOrigin, clock);
     }
     private static Uri HttpsUri(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri)
         && uri.Scheme == "https" && string.IsNullOrEmpty(uri.UserInfo) && uri.Query.Length == 0 && uri.Fragment.Length == 0
