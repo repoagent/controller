@@ -73,11 +73,23 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
             return new(state.Text("repository"), state["pausedUntil"] is { } paused ? Time(paused) : null, [.. operations.Select(item =>
             {
                 var operation = item!.AsObject();
-                var key = operation.Text("key");
+                var (key, kind, subject, url) = (operation.Text("key"), operation.Text("kind"), operation.Text("subjectId"), operation.Text("url"));
                 _ = key[0];
-                return new OutboxOperation(key, operation.Text("kind"), operation.Text("subjectId"), operation.Text("url"), Optional(operation, "category"),
-                    Optional(operation, "title"), Optional(operation, "body"), operation["attempts"]!.GetValue<int>(), operation["dueAt"] is { } due ? Time(due) : DateTimeOffset.MinValue,
-                    operation["uncertain"]!.GetValue<bool>(), operation["lastError"].OptionalText());
+                var (category, title, body) = (Optional(operation, "category"), Optional(operation, "title"), Optional(operation, "body"));
+                // Each kind as GitHubOutbox writes it; any other shape of a known kind is unreadable rather than changed on the next write.
+                OutboxOperation read = kind switch
+                {
+                    "receipt" when key == "receipt:" + subject && (category, title, body) is (null, null, null) => new ReceiptOperation(subject, url),
+                    "dashboard" when key == "dashboard" && (subject, url) is ("", "") && category is not null && title is not null && body is not null =>
+                        new DashboardOperation(category, title, body),
+                    "receipt" or "dashboard" => throw new InvalidDataException($"outbox operation '{key}' is not a {kind} as the controller writes it"),
+                    _ => new UnsupportedOperation(key, kind, subject, url, category, title, body)
+                };
+                return read with
+                {
+                    Attempts = operation["attempts"]!.GetValue<int>(), DueAt = operation["dueAt"] is { } due ? Time(due) : DateTimeOffset.MinValue,
+                    Uncertain = operation["uncertain"]!.GetValue<bool>(), LastError = operation["lastError"].OptionalText()
+                };
             })]);
         }
         catch (Exception error) { throw new InvalidOperationException("GitHub outbox contains an unreadable operation; preserve it for manual inspection", error); }
@@ -91,10 +103,17 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
         var operations = new JsonArray();
         foreach (var retained in outbox.Operations)
         {
-            var operation = Json.Object(("key", retained.Key), ("kind", retained.Kind), ("subjectId", retained.SubjectId), ("url", retained.Url));
-            if (retained.Category is not null) operation["category"] = retained.Category;
-            if (retained.Title is not null) operation["title"] = retained.Title;
-            if (retained.Body is not null) operation["body"] = retained.Body;
+            var (kind, subject, url, category, title, body) = retained switch
+            {
+                ReceiptOperation receipt => ("receipt", receipt.SubjectId, receipt.Url, null, null, null),
+                DashboardOperation update => ("dashboard", "", "", update.Category, update.Title, update.Body),
+                UnsupportedOperation other => (other.Kind, other.SubjectId, other.Url, other.Category, other.Title, other.Body),
+                _ => throw new ArgumentOutOfRangeException(nameof(outbox), $"outbox operation '{retained.Key}' has no file form")
+            };
+            var operation = Json.Object(("key", retained.Key), ("kind", kind), ("subjectId", subject), ("url", url));
+            if (category is not null) operation["category"] = category;
+            if (title is not null) operation["title"] = title;
+            if (body is not null) operation["body"] = body;
             operation["attempts"] = retained.Attempts;
             operation["dueAt"] = retained.DueAt.ToString("O", CultureInfo.InvariantCulture);
             operation["uncertain"] = retained.Uncertain;

@@ -34,7 +34,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
         clock);
 
     // What the dashboard last handed the outbox; delivery is the outbox's.
-    OutboxOperation Published() => state.Outbox!.Operations.Single(operation => operation.Kind == "dashboard");
+    DashboardOperation Published() => state.Outbox!.Operations.OfType<DashboardOperation>().Single();
 
     string Started => Time(DateTimeOffset.Parse(status.Snapshot()["controller"]!["startedAt"]!.GetValue<string>(), CultureInfo.InvariantCulture));
 

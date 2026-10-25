@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace RepoAgentController;
 
 /// <summary>
@@ -47,7 +49,7 @@ public sealed class GitHubOutbox : IAsyncDisposable
             log.Write("receipt-reused", url);
             return;
         }
-        Enqueue(new("receipt:" + subjectId, "receipt", subjectId, url, null, null, null, 0, default, false, null));
+        Enqueue(new ReceiptOperation(subjectId, url));
     }
 
     /// <summary>
@@ -57,7 +59,7 @@ public sealed class GitHubOutbox : IAsyncDisposable
     public void Dashboard(string category, string title, string body)
     {
         lock (sync) if (dashboardRejected) return;
-        Enqueue(new("dashboard", "dashboard", "", "", category, title, body, 0, default, false, null));
+        Enqueue(new DashboardOperation(category, title, body));
     }
 
     /// <summary>
@@ -127,11 +129,19 @@ public sealed class GitHubOutbox : IAsyncDisposable
 
     async Task<bool> Attempt(OutboxOperation operation, CancellationToken ct)
     {
-        var (key, kind, subject, url) = (operation.Key, operation.Kind, operation.SubjectId, operation.Url);
+        var key = operation.Key;
         var attempt = operation.Attempts + 1;
-        if (kind == "dashboard") url = dashboard?.Url ?? $"dashboard category '{operation.Category}'";
+        var publication = operation is DashboardOperation;
+        // How the operation's log lines name its kind, target and subject.
+        var (kind, url, subject) = operation switch
+        {
+            ReceiptOperation receipt => ("receipt", receipt.Url, receipt.SubjectId),
+            DashboardOperation update => ("dashboard", dashboard?.Url ?? $"dashboard category '{update.Category}'", ""),
+            UnsupportedOperation other => (other.Kind, other.Url, other.SubjectId),
+            _ => throw new UnreachableException()
+        };
         (string Kind, string Url)? outcome;
-        try { outcome = await Execute(operation, attempt, operation.Uncertain, ct); }
+        try { outcome = await Execute(operation, kind, attempt, operation.Uncertain, ct); }
         catch (OperationCanceledException)
         {
             // An interrupted request may have reached GitHub: reconcile it before writing again.
@@ -152,11 +162,11 @@ public sealed class GitHubOutbox : IAsyncDisposable
                 {
                     if (ReferenceEquals(Find(key), operation)) operations.Remove(operation);
                     // Configuration or permission must change first; republishing every heartbeat would never succeed.
-                    if (kind == "dashboard" && Find(key) is { } superseding) operations.Remove(superseding);
-                    dashboardRejected |= kind == "dashboard";
+                    if (publication && Find(key) is { } superseding) operations.Remove(superseding);
+                    dashboardRejected |= publication;
                     Save();
                 }
-                log.Write(kind + "-error", context + (kind == "dashboard"
+                log.Write(kind + "-error", context + (publication
                     ? "; permanent failure removed from retry; dashboard updates stop until the controller restarts"
                     : "; permanent failure removed from retry; accepted input is not replayed"));
                 return false;
@@ -190,17 +200,16 @@ public sealed class GitHubOutbox : IAsyncDisposable
     }
 
     // Each kind owns how an uncertain earlier attempt is reconciled before it writes again. Returns what to log, if anything.
-    async Task<(string Kind, string Url)?> Execute(OutboxOperation operation, int attempt, bool uncertain, CancellationToken ct)
+    async Task<(string Kind, string Url)?> Execute(OutboxOperation operation, string kind, int attempt, bool uncertain, CancellationToken ct)
     {
-        switch (operation.Kind)
+        switch (operation)
         {
-            case "receipt":
+            case ReceiptOperation receipt:
                 // A lost response is resolved by reading the App's actual reaction, not by request identifiers.
-                if (uncertain && await discussions.HasEyesReceipt(operation.SubjectId, ct)) return ("receipt-reconciled", operation.Url);
-                await discussions.AddEyesReceipt(operation.SubjectId, ct);
-                return ("receipt", operation.Url);
-            case "dashboard":
-                var (category, title, body) = (operation.Category ?? "", operation.Title ?? "", operation.Body ?? "");
+                if (uncertain && await discussions.HasEyesReceipt(receipt.SubjectId, ct)) return ("receipt-reconciled", receipt.Url);
+                await discussions.AddEyesReceipt(receipt.SubjectId, ct);
+                return ("receipt", receipt.Url);
+            case DashboardOperation (var category, var title, var body):
                 if (dashboard is { } known && dashboardCategory == category)
                 {
                     await discussions.UpdateDashboard(known.Id, title, body, ct);
@@ -214,7 +223,7 @@ public sealed class GitHubOutbox : IAsyncDisposable
                 (dashboard, dashboardCategory) = (owned, category);
                 return (found is null ? "dashboard-created" : "dashboard", owned.Url);
             default:
-                throw new GitHubRequestException(GitHubFailure.Permanent, $"unsupported outbox operation kind '{operation.Kind}'");
+                throw new GitHubRequestException(GitHubFailure.Permanent, $"unsupported outbox operation kind '{kind}'");
         }
     }
 

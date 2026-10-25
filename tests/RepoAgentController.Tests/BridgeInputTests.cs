@@ -266,7 +266,7 @@ public sealed class BridgeInputTests
         string[]? retained = null;
         world.Answer(request =>
         {
-            retained = [.. new ControllerStateFiles(world.StatePath).ReadOutbox()!.Operations.Select(operation => operation.SubjectId)];
+            retained = [.. new ControllerStateFiles(world.StatePath).ReadOutbox()!.Operations.Cast<ReceiptOperation>().Select(operation => operation.SubjectId)];
             return new("T2", false);
         });
         world.Finish(1);

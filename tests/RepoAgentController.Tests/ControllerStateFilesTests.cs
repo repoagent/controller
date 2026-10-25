@@ -5,7 +5,7 @@ namespace RepoAgentController.Tests;
 // The one golden round trip per persisted format (owner decision): a recorded file is read and written back unchanged, except
 // that a settings entry of a state this controller does not know keeps its value and reads as pending. Status reports this record under
 // "settings" verbatim, so an unchanged file also keeps that part of status unchanged. An outbox operation of a kind this controller
-// does not deliver is kept as read.
+// does not deliver is kept as read, and a receipt or dashboard in any form the controller never writes is unreadable.
 public sealed class ControllerStateFilesTests : IDisposable
 {
     readonly string directory = Path.Combine(Path.GetTempPath(), "controller-state-files-" + Guid.NewGuid().ToString("N"));
@@ -133,10 +133,10 @@ public sealed class ControllerStateFilesTests : IDisposable
         files.WriteOutbox(usual);
         Assert.Equal(Usual, File.ReadAllText(ControllerStateFiles.OutboxPath(statePath)));
         Assert.Equal(("owner/repository", (DateTimeOffset?)null), (usual.Repository, usual.PausedUntil));
-        Assert.Equal(new OutboxOperation("receipt:D_kwDOAbc", "receipt", "D_kwDOAbc", "https://github.com/owner/repository/discussions/2", null, null, null, 1,
-            new DateTimeOffset(2026, 10, 24, 11, 0, 15, TimeSpan.Zero), false, "HTTP 401: Bad credentials"), usual.Operations[0]);
-        Assert.Equal(new OutboxOperation("dashboard", "dashboard", "", "", "Controller status", "RepoAgent controller status", "<!-- repoagent:controller-dashboard -->\nHeartbeat\n", 0,
-            new DateTimeOffset(2026, 10, 24, 11, 0, 3, TimeSpan.Zero), false, null), usual.Operations[1]);
+        Assert.Equal(new ReceiptOperation("D_kwDOAbc", "https://github.com/owner/repository/discussions/2")
+            { Attempts = 1, DueAt = new(2026, 10, 24, 11, 0, 15, TimeSpan.Zero), LastError = "HTTP 401: Bad credentials" }, usual.Operations[0]);
+        Assert.Equal(new DashboardOperation("Controller status", "RepoAgent controller status", "<!-- repoagent:controller-dashboard -->\nHeartbeat\n")
+            { DueAt = new(2026, 10, 24, 11, 0, 3, TimeSpan.Zero) }, usual.Operations[1]);
 
         File.WriteAllText(ControllerStateFiles.OutboxPath(statePath), Paused);
         var outbox = files.ReadOutbox()!;
@@ -144,16 +144,33 @@ public sealed class ControllerStateFilesTests : IDisposable
 
         var paused = new DateTimeOffset(2026, 10, 24, 10, 1, 1, 500, TimeSpan.Zero);
         Assert.Equal(new OutboxState("owner/repository", paused, outbox.Operations), outbox);
-        Assert.Equal(new OutboxOperation("receipt:DC_kwDOAbc", "receipt", "DC_kwDOAbc", "https://github.com/owner/repository/discussions/1#discussioncomment-7",
-            null, null, null, 2, paused, true, "HTTP 502: <html>Bad gateway</html> & retry's \"later\""), outbox.Operations[0]);
-        Assert.Equal(("dashboard", "Controller status", "Attention: RepoAgent controller authentication failed", 0, new DateTimeOffset(2026, 10, 24, 10, 0, 30, 250, TimeSpan.Zero), false, (string?)null),
-            (outbox.Operations[1].Kind, outbox.Operations[1].Category, outbox.Operations[1].Title, outbox.Operations[1].Attempts, outbox.Operations[1].DueAt, outbox.Operations[1].Uncertain, outbox.Operations[1].LastError));
-        Assert.EndsWith("1 inputs waiting \u2014 caf\u00e9\n", outbox.Operations[1].Body);
+        Assert.Equal(new ReceiptOperation("DC_kwDOAbc", "https://github.com/owner/repository/discussions/1#discussioncomment-7")
+            { Attempts = 2, DueAt = paused, Uncertain = true, LastError = "HTTP 502: <html>Bad gateway</html> & retry's \"later\"" }, outbox.Operations[0]);
+        var publication = Assert.IsType<DashboardOperation>(outbox.Operations[1]);
+        Assert.Equal(("Controller status", "Attention: RepoAgent controller authentication failed", 0, new DateTimeOffset(2026, 10, 24, 10, 0, 30, 250, TimeSpan.Zero), false, (string?)null),
+            (publication.Category, publication.Title, publication.Attempts, publication.DueAt, publication.Uncertain, publication.LastError));
+        Assert.EndsWith("1 inputs waiting \u2014 caf\u00e9\n", publication.Body);
         Assert.Equal(Paused, File.ReadAllText(ControllerStateFiles.OutboxPath(statePath)));
 
         File.WriteAllText(ControllerStateFiles.OutboxPath(statePath), Later);
         files.WriteOutbox(files.ReadOutbox()!);
         Assert.Equal(Later, File.ReadAllText(ControllerStateFiles.OutboxPath(statePath)));
+
+        // Another key, subject or set of fields than GitHubOutbox writes for the kind: the next write would change it.
+        string[] unwritten =
+        [
+            """{"key":"receipt:D1","kind":"receipt","subjectId":"D2","url":"u","attempts":0,"uncertain":false}""",
+            """{"key":"receipt:D1","kind":"receipt","subjectId":"D1","url":"u","body":"b","attempts":0,"uncertain":false}""",
+            """{"key":"dashboard:2","kind":"dashboard","subjectId":"","url":"","category":"c","title":"t","body":"b","attempts":0,"uncertain":false}""",
+            """{"key":"dashboard","kind":"dashboard","subjectId":"D1","url":"","category":"c","title":"t","body":"b","attempts":0,"uncertain":false}""",
+            """{"key":"dashboard","kind":"dashboard","subjectId":"","url":"","category":"c","title":"t","attempts":0,"uncertain":false}"""
+        ];
+        foreach (var operation in unwritten)
+        {
+            File.WriteAllText(ControllerStateFiles.OutboxPath(statePath), $$"""{"version":1,"repository":"owner/repository","pausedUntil":null,"operations":[{{operation}}]}""");
+            Assert.Equal("GitHub outbox contains an unreadable operation; preserve it for manual inspection",
+                Assert.Throws<InvalidOperationException>(files.ReadOutbox).Message);
+        }
     }
 
     public void Dispose() => Directory.Delete(directory, true);
