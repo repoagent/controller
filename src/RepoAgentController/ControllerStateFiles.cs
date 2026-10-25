@@ -9,8 +9,11 @@ namespace RepoAgentController;
 sealed class ControllerStateFiles(string statePath) : IControllerState
 {
     static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+    // The order a record's keys are written in.
+    static readonly RecordKey[] RecordOrder =
+        [RecordKey.Url, RecordKey.Sources, RecordKey.Labels, RecordKey.SessionId, RecordKey.Waiting, RecordKey.Pending, RecordKey.Running];
     static readonly string[] StateKeys = ["version", "repository", "discussions", "agentLogin", "enrollmentCategories"],
-        RecordKeys = [.. Enum.GetValues<RecordKey>().Select(Name)], WaitingKeys = ["inputs", "discussion", "context", "retry"],
+        RecordKeys = [.. RecordOrder.Select(Name)], WaitingKeys = ["inputs", "discussion", "context", "retry"],
         InputKeys = ["observedAt", "change", "receipt", "redelivery"], RetryKeys = ["attempts", "after"],
         PendingKeys = ["operation", "since", "sourceIds", "inputs"], RunningKeys = ["turn", "since"];
 
@@ -84,7 +87,7 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
                     .Select(checkpoint => KeyValuePair.Create(checkpoint.Key, ReadCheckpoint(checkpoint.Value!.AsObject())))), required: true) ?? [],
                 Labels = Read<IReadOnlyList<string>>(RecordKey.Labels, labels => [.. labels.AsArray().Select(label => label?.GetValue<string>() ?? throw Missing("labels"))]),
                 SessionId = Read(RecordKey.SessionId, session => session.GetValue<string>()), Waiting = Read(RecordKey.Waiting, waiting => Waiting(waiting.AsObject())),
-                Pending = item["pending"] is { } pending ? Pending(pending) : null,
+                Pending = item[Name(RecordKey.Pending)] is { } pending ? Pending(pending) : null,
                 Running = Read(RecordKey.Running, node =>
                 {
                     var running = node.AsObject();
@@ -120,7 +123,7 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
     {
         if (record.Unreadable is { } unreadable) return JsonNode.Parse(unreadable.Json);
         var item = new JsonObject();
-        foreach (var key in Enum.GetValues<RecordKey>())
+        foreach (var key in RecordOrder)
             if ((record.UnreadableKeys.TryGetValue(key, out var kept) ? JsonNode.Parse(kept.Json) : Written(record, key)) is { } value) item[Name(key)] = value;
         return Kept(item, record.Unknown);
     }
