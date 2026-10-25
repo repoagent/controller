@@ -16,7 +16,7 @@ public sealed class DiscussionJsonGoldenTests
 {
     const string Root = "D_kwDOGolden7";
     static readonly AppIdentity App = new("test-app");
-    static readonly JsonNode Golden = Load();
+    internal static readonly JsonNode Golden = Load();
 
     [Fact]
     public void Agent_input_carries_the_Discussion_its_comments_and_each_change_subject_as_ec1ccf7_sent_them()
@@ -101,7 +101,7 @@ public sealed class DiscussionJsonGoldenTests
 
     // The records GitHubDiscussions reads from the observation's nodes: the Discussion, its top-level comments in order, then
     // the replies to each, each with its reactions. No mention user is configured.
-    static DiscussionConversation Observe(string observation)
+    internal static DiscussionConversation Observe(string observation)
     {
         var world = Golden["github"]![observation]!;
         IReadOnlyList<Reaction> Reactions(string id) => [.. world["reactions"]![id]?.AsArray().Select(node => DiscussionJson.ReadReaction(node!)) ?? []];
