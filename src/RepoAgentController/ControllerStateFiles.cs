@@ -286,10 +286,14 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
             { ["content"] = group.Content, ["viewerHasReacted"] = group.ViewerHasReacted })])
     };
 
+    // As delivery read it before the records were typed: a missing ID or URL is empty, reaction groups that are not an array
+    // are none, a group that is not an object is skipped, and one without a true viewerHasReacted has no reaction of the App's.
+    // Controllers before d83a284 copied the groups as GitHub reported them, which may be null.
     internal static EyesReceipt ReadReceipt(JsonObject receipt)
     {
-        var read = new EyesReceipt(Required(receipt, "id"), Required(receipt, "url"), [.. Part<JsonArray>(receipt, "reactionGroups")
-            .Select(node => node as JsonObject ?? throw Missing("reactionGroups")).Select(group => new ReactionGroup(Required(group, "content"), Flag(group, "viewerHasReacted")))]);
+        var read = new EyesReceipt(receipt["id"]?.GetValue<string>() ?? "", receipt["url"].OptionalText() ?? "", [.. (receipt["reactionGroups"] as JsonArray ?? [])
+            .OfType<JsonObject>().Select(group => new ReactionGroup(group["content"].OptionalText() ?? "", group["viewerHasReacted"] is JsonValue reacted &&
+                reacted.TryGetValue<bool>(out var flag) && flag))]);
         return JsonNode.DeepEquals(Receipt(read), receipt) ? read : read with { AsRead = receipt.ToJsonString() };
     }
 

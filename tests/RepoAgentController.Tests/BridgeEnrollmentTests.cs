@@ -354,6 +354,9 @@ public sealed class BridgeEnrollmentTests
     [InlineData("waiting.context", "5", "comment.created,comment.created", true)]
     [InlineData("waiting.inputs.0.observedAt", "5", "comment.created,comment.created", true)]
     [InlineData("waiting.retry", """{"attempts":"x"}""", "comment.created,comment.created", true)]
+    [InlineData("waiting.inputs.0.receipt.reactionGroups", "null", "comment.created,comment.created", true)] // As an earlier controller copied it.
+    [InlineData("waiting.inputs.0.receipt.reactionGroups", """[{"content":"EYES"}]""", "comment.created,comment.created", true)]
+    [InlineData("waiting.inputs.0.receipt.url", null, "comment.created,comment.created", true)]
     public async Task A_Discussion_record_key_that_observation_replaces_or_a_start_ends_is_replaced_and_its_Discussion_continues(string path, string? json, string kinds,
         bool waiting = false)
     {
