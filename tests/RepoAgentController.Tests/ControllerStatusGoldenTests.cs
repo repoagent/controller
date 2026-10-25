@@ -86,8 +86,11 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         actual["stopped"] = ControllerStatus.Render(ControllerStatus.Read(State, clock)!);
 
         var second = new ControllerStatus(State, Repository, "webhook", clock);
+        clock.Advance(TimeSpan.FromSeconds(10));
         Log(second, 40, "app-refresh-error", "GitHub App installation token refresh failed: HTTP 401");
+        clock.Advance(TimeSpan.FromSeconds(1));
         Log(second, 41, "codex-auth-failed", "turn failed: unexpected status 401 Unauthorized");
+        clock.Advance(TimeSpan.FromSeconds(1));
         Log(second, 42, "fatal", "GitHub App installation token refresh failed: HTTP 401");
         actual["restarted"] = ControllerStatus.Render(second.Snapshot());
         second.Dispose();

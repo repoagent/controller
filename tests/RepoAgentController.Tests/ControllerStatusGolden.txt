@@ -228,7 +228,7 @@
 --- restarted ---
 {
   "version": 1,
-  "generatedAt": "2026-10-25T09:00:30.0000000+00:00",
+  "generatedAt": "2026-10-25T09:00:42.0000000+00:00",
   "repository": "owner/repository",
   "actor": "test-app[bot]",
   "controller": {
@@ -344,8 +344,8 @@
     "state": "failed",
     "mode": "webhook",
     "startedAt": "2026-10-25T09:00:30.0000000+00:00",
-    "updatedAt": "2026-10-25T09:00:30.0000000+00:00",
-    "stoppedAt": "2026-10-25T09:00:30.0000000+00:00"
+    "updatedAt": "2026-10-25T09:00:42.0000000+00:00",
+    "stoppedAt": "2026-10-25T09:00:42.0000000+00:00"
   },
   "authentication": {
     "state": "failed",
