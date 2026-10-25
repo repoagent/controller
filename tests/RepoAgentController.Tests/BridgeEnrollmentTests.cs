@@ -14,11 +14,6 @@ public sealed class BridgeEnrollmentTests
     // Discussion IDs in the order their input reached agent turns.
     static string[] Delivered(BridgeWorld world) => [.. world.Turns.Select(turn => System.Text.Json.Nodes.JsonNode.Parse(turn.Input)!["discussion"]!["id"]!.GetValue<string>())];
 
-    // What a record keeps: its session, checkpoints, waiting input and delivery markers.
-    static string Kept(DiscussionRecord record) => string.Join(' ', record.Url, record.SessionId,
-        string.Join(',', record.Sources.Select(source => $"{source.Key}:{source.Value.Content}:{source.Value.State}:{string.Join('+', source.Value.Reactions)}")),
-        string.Join(',', record.Waiting?.Inputs.Select(input => input.ChangeJson) ?? []), record.Pending?.Operation, record.Running);
-
     static Discussion Agents(BridgeWorld world, int number, DateTimeOffset? created = null) =>
         world.GitHub.Open(number, $"Discussion {number} needs no mention.", "Agents", created: created);
 
@@ -232,11 +227,11 @@ public sealed class BridgeEnrollmentTests
 
         // A later lifetime, as when the deployed Discussion was deleted: a failed lookup is not a deletion and keeps its state.
         await world.Begin();
-        var retained = Kept(world.Saved(1)!);
-        var unrelated = Kept(world.Saved(2)!);
+        var retained = world.Saved(1)!;
+        var unrelated = world.Saved(2)!;
         world.GitHub.FailReads("Find", new GitHubRequestException(GitHubFailure.Permanent, "FORBIDDEN: Resource not accessible by integration"));
         Assert.False(await world.Observe(1));
-        Assert.Equal(retained, Kept(world.Saved(1)!));
+        Assert.Equivalent(retained, world.Saved(1), strict: true);
 
         // GitHub confirms the deletion: the whole record goes, and the other Discussion's session and checkpoints stay.
         world.GitHub.FailReads("Find", null);
@@ -244,7 +239,7 @@ public sealed class BridgeEnrollmentTests
         Assert.True(await world.Observe(1));
         Assert.Equal(BridgeWorld.Url(1) + " reason=not-found session=S1", Assert.Single(world.Logged("discussion-forgotten")));
         Assert.Null(world.Saved(1));
-        Assert.Equal(unrelated, Kept(world.Saved(2)!));
+        Assert.Equivalent(unrelated, world.Saved(2), strict: true);
 
         // A duplicate deletion notification ahead of new live input is harmless.
         world.GitHub.Edit(2, Mention + " behind a stale notification");
@@ -269,12 +264,12 @@ public sealed class BridgeEnrollmentTests
         Assert.True(await world.Observe(1));
         Assert.Equal("T1", world.Saved(1)!.Running!.Turn);
         Assert.Single(world.Saved(1)!.Waiting!.Inputs);
-        var unrelated = Kept(world.Saved(2)!);
+        var unrelated = world.Saved(2)!;
 
         world.GitHub.Remove(1);
         Assert.True(await world.Observe(1));
         Assert.Equal(["D2"], world.WithSessions); // Its waiting input, running turn and checkpoints are forgotten.
-        Assert.Equal(unrelated, Kept(world.Saved(2)!));
+        Assert.Equivalent(unrelated, world.Saved(2), strict: true);
         Assert.Equal(1, world.Status()["work"]!["running"]!.GetValue<int>()); // Counted while the agent still runs it.
 
         // The agent ends the turn: its slot frees and the forgotten input is never sent.
