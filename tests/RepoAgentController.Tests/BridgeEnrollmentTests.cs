@@ -238,6 +238,21 @@ public sealed class BridgeEnrollmentTests
         Assert.Equal(["S1", "S2", "S2"], world.Turns.Select(turn => turn.SessionId));
     }
 
+    [Fact]
+    public async Task Model_labels_that_cannot_be_read_hold_delivery_until_observation_replaces_them()
+    {
+        await using var world = new BridgeWorld();
+        await Damage(world, "labels", "[4]", waiting: true);
+
+        await world.Begin();
+        await world.Dispatch(); // Before any observation.
+        Assert.StartsWith(BridgeWorld.Url(1) + ": ", Assert.Single(world.Logged("dispatch-error")));
+        Assert.Equal(2, world.Turns.Count);
+        Assert.True(await world.Poll());
+
+        Assert.Equal(["S1", "S2", "S1"], world.Turns.Select(turn => turn.SessionId));
+    }
+
     // Discussion 1 has a session that took its first input and is idle, or with waiting input while that turn ran; a hand edit
     // then changes its record at this dotted path: the JSON text replaces the value there, or null removes it.
     static async Task Damage(BridgeWorld world, string path, string? json, bool waiting = false)
@@ -270,12 +285,13 @@ public sealed class BridgeEnrollmentTests
     [Theory]
     [InlineData("sessionId", "4")]
     [InlineData("url", "5")]
+    [InlineData("sources", null)]
     [InlineData("sources", "5")]
     [InlineData("sources.D1", """{"content":{"body":"one"},"content":{"body":"two"},"state":{},"reactions":{}}""")]
     [InlineData("sources.D1.reactions", "5")]
     [InlineData("sessionId", "4", true)] // Its waiting input fails delivery too, and starts no session.
     [InlineData("waiting.inputs", "5", true)]
-    public async Task A_Discussion_record_that_observation_cannot_read_is_kept_as_it_was_and_only_its_Discussion_fails_observation(string path, string json,
+    public async Task A_Discussion_record_that_observation_cannot_read_is_kept_as_it_was_and_only_its_Discussion_fails_observation(string path, string? json,
         bool waiting = false)
     {
         await using var world = new BridgeWorld();
@@ -300,6 +316,7 @@ public sealed class BridgeEnrollmentTests
     [InlineData("labels", "[4]", "comment.created")]
     [InlineData("running", """{"turn":5}""", "comment.created")]
     [InlineData("pending", """{"operation":5}""", "comment.created")]
+    [InlineData("pending", """{"operation":5,"inputs":1}""", "comment.created", true)] // Its input is redelivered alone.
     [InlineData("url", null, "comment.created")]
     [InlineData("sources.D1", "null", "discussion.created,reaction.added,comment.created")]
     [InlineData("sources.D1.content.body", "5", "discussion.changed,comment.created")]

@@ -71,12 +71,12 @@ public sealed class DiscussionRecord(string url)
 
     /// <summary>
     /// Why the bridge leaves the Discussion alone: the first unreadable key other than the model labels, which observation
-    /// replaces, and the running turn, which every start ends; null when there is none. The reason is what reading the key
-    /// reported.
+    /// replaces; null when there is none. The reason is what reading the key reported. An unreadable running turn ends at
+    /// every start, before any observation.
     /// </summary>
     public string? Problem => Unreadable?.Reason ?? UnreadableKeys.Where(key => key.Key switch
     {
-        "labels" or "running" => false,
+        "labels" => false,
         // Waiting input that is not an object: observation of a Discussion with a session replaces it with what it observes.
         "waiting" => string.IsNullOrEmpty(SessionId) || key.Value.Json.StartsWith('{'),
         _ => true
