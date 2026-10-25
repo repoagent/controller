@@ -378,20 +378,12 @@ public sealed class CapacityReclamation(IBrokerState state, string deploymentEpo
         return PayloadClock.Add(expiry, TimeSpan.FromMinutes(5)) is { } due && clock.GetUtcNow() >= due ? "expired" : null;
     }
 
-    // The repository gate, once both global quotas and the candidate repository check out. A repository that has never
-    // had a gate gets a vacant one, which only an Add can write.
+    // The repository gate, once both global quotas and the candidate repository check out.
     private async Task<Tracked<RepositoryGate>> GateAsync(string repository, string? epoch, CancellationToken ct)
     {
         _ = await capacity.SchemaAsync(ct);
         _ = await capacity.CandidateAsync(repository, ct) ?? throw new IssuanceDenied();
-        var key = RepositoryGate.Key(repository);
-        if (await state.ReadAsync(key, ct) is { } read)
-        {
-            if (Text(read.Value.RepositoryId) != repository) throw new IssuanceDenied();
-            _ = Number(read.Value.Sequence);
-            return new(key, read.Value, read.Version);
-        }
-        return new(key, new() { RepositoryId = repository, Epoch = Text(epoch), State = "vacant", Sequence = 0, OutstandingTokenCount = 0, PendingCount = 0 }, null);
+        return await RetainedGate.ReadAsync(state, repository, epoch, ct);
     }
 
     private async Task<Tracked<ControllerEnrollment>?> EnrollmentAsync(string repository, string enrollmentId, CancellationToken ct)

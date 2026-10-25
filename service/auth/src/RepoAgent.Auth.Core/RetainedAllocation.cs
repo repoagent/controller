@@ -92,6 +92,21 @@ internal static class RetainedLedgers
     }
 }
 
+// The repository gate reclamation and redaction write with every repository transaction: the stored gate, which must
+// be the repository's and carry a sequence, or for a repository that has never had one a vacant gate of the
+// allocation's epoch. An existing gate's epoch, owner and counters are never reset, so old-epoch payloads remain due.
+internal static class RetainedGate
+{
+    public static async Task<Tracked<RepositoryGate>> ReadAsync(IBrokerState state, string repository, string? epoch, CancellationToken ct)
+    {
+        var key = RepositoryGate.Key(repository);
+        if (await state.ReadAsync(key, ct) is not { } read) return new(key, RepositoryGate.Vacant(repository, Text(epoch)), null);
+        if (Text(read.Value.RepositoryId) != repository) throw new IssuanceDenied();
+        _ = Number(read.Value.Sequence);
+        return new(key, read.Value, read.Version);
+    }
+}
+
 // The rows cleanup writes for an allocation whose repository row is missing, built from the ledger's stored properties
 // so that they keep the ledger's stored values and types.
 internal static class RetainedRows

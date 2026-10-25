@@ -15,7 +15,7 @@ public sealed class PayloadRedaction(IBrokerState state, TimeProvider clock)
         var read = await LedgerAsync(RetainedLedgers.EnrollmentAsync(state, idempotencyId, generation, ct), ct);
         if (read is null) return;
         var repository = Text(read.Value.RepositoryId);
-        var gate = await GateAsync(repository, read.Value.Epoch, ct);
+        var gate = await RetainedGate.ReadAsync(state, repository, read.Value.Epoch, ct);
         read = await LedgerAsync(RetainedLedgers.EnrollmentAsync(state, idempotencyId, generation, ct), ct);
         if (read is null || read.Value.RetirementState is not null) return;
         var ledger = read.Value;
@@ -114,7 +114,7 @@ public sealed class PayloadRedaction(IBrokerState state, TimeProvider clock)
     {
         var read = await LedgerAsync(RetainedLedgers.IssuanceAsync(state, operationId, generation, ct), ct);
         if (read is null) return;
-        var gate = await GateAsync(Text(read.Value.RepositoryId), read.Value.Epoch, ct);
+        var gate = await RetainedGate.ReadAsync(state, Text(read.Value.RepositoryId), read.Value.Epoch, ct);
         read = await LedgerAsync(RetainedLedgers.IssuanceAsync(state, operationId, generation, ct), ct);
         if (read is null || read.Value.RetirementState is not null) return;
         var ledger = read.Value;
@@ -174,20 +174,6 @@ public sealed class PayloadRedaction(IBrokerState state, TimeProvider clock)
         _ = await capacity.SchemaAsync(ct);
         _ = await capacity.CandidateAsync(Text(RetainedAllocation.Of(read.Value).RepositoryId), ct) ?? throw new IssuanceDenied();
         return read;
-    }
-
-    // The repository gate. Old-epoch payloads remain due: an existing gate's epoch, owner and counters are never reset,
-    // and a repository that has never had one gets a vacant gate, which only an Add can write.
-    private async Task<Tracked<RepositoryGate>> GateAsync(string repository, string? epoch, CancellationToken ct)
-    {
-        var key = RepositoryGate.Key(repository);
-        if (await state.ReadAsync(key, ct) is { } read)
-        {
-            if (Text(read.Value.RepositoryId) != repository) throw new IssuanceDenied();
-            _ = Number(read.Value.Sequence);
-            return new(key, read.Value, read.Version);
-        }
-        return new(key, new() { RepositoryId = repository, Epoch = Text(epoch), State = "vacant", Sequence = 0, OutstandingTokenCount = 0, PendingCount = 0 }, null);
     }
 
     // Redaction's binding is identity only: the same repository, enrollment and epoch, and for a row of the allocation
