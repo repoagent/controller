@@ -45,7 +45,7 @@ public sealed partial class PayloadRedactionTests(ITestOutputHelper output)
 
         f.Clock.Advance(purgeAt.AddTicks(1) - f.Clock.GetUtcNow());
         // Cleanup is constructed without any signing, provider or Data Protection dependency.
-        await new BrokerPayloadRedaction(table, f.Clock)
+        await new PayloadRedaction(new TableBrokerState(table), f.Clock)
             .RedactEnrollmentAsync(idempotencyId, generation, Token);
 
         var fresh = f.Storage.CreateClient();

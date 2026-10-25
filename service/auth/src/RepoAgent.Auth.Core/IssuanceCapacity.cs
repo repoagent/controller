@@ -5,7 +5,7 @@ namespace RepoAgent.Auth;
 
 // Global capacity: the retention schema both global quotas carry, the candidate repositories and pending enrollments
 // enrollment admits, the 128 fixed slots and the retained ledgers. Quotas are initialized offline. Reclamation,
-// redaction and cleanup still use the Table version of these rules (RetainedState) until their own slice moves them here.
+// redaction and cleanup check the same rules before they release or redact anything.
 public sealed class IssuanceCapacity(IBrokerState state, long retainedIssuanceLimit)
 {
     public const string Scope = "global:issuance-v1", EnrollmentScope = "global:enrollment-v1";
@@ -69,12 +69,13 @@ public sealed class IssuanceCapacity(IBrokerState state, long retainedIssuanceLi
         throw new IssuanceDenied(429);
     }
 
-    // The attempt's ledger and slot exist, are still charged and bind exactly this operation.
-    public async Task RequireIssuanceAsync(string operation, string generation, string repository,
+    // The attempt's ledger and slot exist, are still charged and bind exactly this operation. Returns the slot.
+    public async Task<Versioned<IssuanceSlot>> RequireIssuanceAsync(string operation, string generation, string repository,
         string enrollmentId, string purpose, string epoch, long index, CancellationToken ct)
     {
         var ledger = (await state.ReadAsync(IssuanceLedger.Key(operation), ct) ?? throw new IssuanceDenied()).Value;
-        var slot = (await state.ReadAsync(IssuanceSlot.Key(index), ct) ?? throw new IssuanceDenied()).Value;
+        var slotRead = await state.ReadAsync(IssuanceSlot.Key(index), ct) ?? throw new IssuanceDenied();
+        var slot = slotRead.Value;
         if (ledger.RetirementState is not null || ledger.CapacityState is not null && ledger.CapacityState != "charged"
             || Text(ledger.EnrollmentId) != enrollmentId || Number(ledger.RowCredits) != 4
             || Text(ledger.AttemptRowKey) != "attempt:" + operation) throw new IssuanceDenied();
@@ -91,6 +92,7 @@ public sealed class IssuanceCapacity(IBrokerState state, long retainedIssuanceLi
                 || Text(rowPurpose) != purpose || Text(rowEpoch) != epoch || Number(globalSlot) != index
                 || ApprovalContract.Stored(kind, setupVersion, policy, false) != approval) throw new IssuanceDenied();
         }
+        return slotRead;
     }
 
     // Charges one retained ledger for the slot's attempt. 429 at the retained ceiling.

@@ -8,13 +8,16 @@ namespace RepoAgent.Auth;
 // The retained global record of one admitted enrollment request, keyed by its idempotency ID. It charges the global
 // pending capacity until reclamation releases it, and later retires it; redaction removes the setup secret's hash and
 // the request's body hash.
-public sealed class EnrollmentLedger : BrokerRecord
+public sealed class EnrollmentLedger : BrokerRecord, IRetiredLedger
 {
     public string? RepositoryId, PendingId, SetupSecretHash, BodyHash, Epoch, Generation, EnrollmentId, Challenge;
     public string? ApprovalKind, PolicyVersion, RetirementState;
     public long? RowCredits, ReclamationVersion, SetupVersion;
     public bool? PendingCapacityReleased, PayloadRedacted;
     public DateTimeOffset? CreatedAt, Deadline, PayloadPurgeAt, RetirementAuditAt;
+
+    string? IRetiredLedger.RetirementState { get => RetirementState; set => RetirementState = value; }
+    DateTimeOffset? IRetiredLedger.RetirementAuditAt { get => RetirementAuditAt; set => RetirementAuditAt = value; }
 
     public static StateKey<EnrollmentLedger> Key(string idempotencyId) => new(IssuanceCapacity.EnrollmentScope, "pending:" + idempotencyId);
 

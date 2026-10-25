@@ -55,9 +55,8 @@ internal static class BrokerCleanupCommand
             return 2;
         }
 
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        var cleanup = new BrokerCleanup(table, options, budget, TimeProvider.System);
-        var exitCode = await cleanup.RunAsync(deadline.Token);
+        var cleanup = new BrokerCleanup(new TableBrokerState(table), options.DeploymentEpoch, budget, TimeProvider.System);
+        var exitCode = await cleanup.RunAsync(CancellationToken.None);
         var summary = JsonSerializer.SerializeToElement(cleanup.Summary());
         Console.WriteLine(summary.GetRawText());
         try

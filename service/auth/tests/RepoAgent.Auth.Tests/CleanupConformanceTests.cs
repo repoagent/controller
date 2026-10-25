@@ -19,8 +19,7 @@ public sealed partial class CleanupProcessTests
     }
     private static Task<HttpResponseMessage> Start(EnrollmentFixture f, string id, string profile = "polling") =>
         f.Send("/v2/enrollments", new { idempotencyId = id, repositoryId = 123456, repository = "owner/project", variable = "APPROVAL", profile });
-    private static BrokerCapacityReclamation Reclaim(EnrollmentFixture f) => new(f.Storage.Table,
-        new(new Uri("https://example.table.core.windows.net"), f.Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15), f.Clock);
+    private static CapacityReclamation Reclaim(EnrollmentFixture f) => new(new TableBrokerState(f.Storage.Table), RevocationFixture.Epoch, f.Clock);
     private static void AssertSdkAccounting(JsonElement summary)
     {
         var dispatches = summary.GetProperty("sdkTableDispatches").GetInt32();
@@ -399,8 +398,9 @@ public sealed partial class CleanupProcessTests
         var issuance = Assert.Single(await Rows(f.Storage, "global:issuance-v1", "operation:"));
         await f.StopHttpAsync();
         await using var proxy = new CleanupTableProxy(f.Storage);
+        // Every audit checkpoint (a conditional replace) fails; creating the cursor is a one-row transaction too, so it may.
         proxy.Before = r => Task.FromResult(!r.Path.EndsWith("/$batch", StringComparison.Ordinal)
-            || !r.Body.Contains("cleanup:audit-v1", StringComparison.Ordinal));
+            || !r.Body.Contains("cleanup:audit-v1", StringComparison.Ordinal) || !r.Body.Contains("If-Match:", StringComparison.OrdinalIgnoreCase));
         var result = await CleanupProcessFixture.RunAsync(f.Storage, proxy.Endpoint);
         Assert.Equal(1, result.Exit);
         AssertBudget(result.Summary, proxy);

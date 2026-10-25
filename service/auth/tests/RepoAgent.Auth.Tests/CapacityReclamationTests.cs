@@ -41,7 +41,7 @@ public sealed partial class CapacityReclamationTests
         f.Clock.Advance(ledger.GetDateTimeOffset("PayloadPurgeAt")!.Value - f.Clock.GetUtcNow());
 
         // This is the real #78 absent-target tombstone, not a test-authored approximation.
-        await new BrokerPayloadRedaction(table, f.Clock)
+        await new PayloadRedaction(new TableBrokerState(table), f.Clock)
             .RedactEnrollmentAsync(id, ledger.GetString("Generation")!, ct);
         var tombstone = (await table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, key, cancellationToken: ct)).Value;
         var gate = (await table.GetEntityAsync<TableEntity>(RevocationFixture.Partition, "gate", cancellationToken: ct)).Value;
@@ -50,7 +50,7 @@ public sealed partial class CapacityReclamationTests
         Assert.False(tombstone.ContainsKey("RepositoryCharged"));
         Assert.Equal(0L, gate.GetInt64("PendingCount"));
         Assert.Equal(0L, gate.GetInt64("OutstandingTokenCount"));
-        var cleanup = new BrokerCapacityReclamation(table, options, f.Clock);
+        var cleanup = new CapacityReclamation(new TableBrokerState(table), options.DeploymentEpoch, f.Clock);
 
         await cleanup.ReclaimEnrollmentAsync(id, ledger.GetString("Generation")!, ct);
         await cleanup.ReclaimEnrollmentAsync(id, ledger.GetString("Generation")!, ct);
@@ -100,7 +100,7 @@ public sealed partial class CapacityReclamationTests
         var options = new BrokerOptions(new Uri("https://example.table.core.windows.net"),
             f.Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15,
             new Uri("https://broker.example"));
-        var reclamation = new BrokerCapacityReclamation(table, options, f.Clock);
+        var reclamation = new CapacityReclamation(new TableBrokerState(table), options.DeploymentEpoch, f.Clock);
 
         await reclamation.ReclaimEnrollmentAsync(request.idempotencyId, ledger.GetString("Generation")!, ct);
 

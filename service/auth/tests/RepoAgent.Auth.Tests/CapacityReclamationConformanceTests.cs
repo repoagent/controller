@@ -73,13 +73,13 @@ public sealed partial class CapacityReclamationTests
             var replacement = await Read(f, "global:issuance-v1", "slot:000");
             Assert.NotEqual(old.GetString("Generation"), replacement.GetString("Generation"));
             pause.Release.TrySetResult();
-            await Assert.ThrowsAsync<TableTransactionFailedException>(() => stale);
+            await Assert.ThrowsAsync<StateConflict>(() => stale);
             Assert.Equal(replacement.ETag, (await Read(f, replacement.PartitionKey, replacement.RowKey)).ETag);
             Assert.Equal(1L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("Slots"));
             Assert.Equal(2L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("RetainedIssuanceCount"));
             Assert.Equal(obligation.ETag, (await Read(f, obligation.PartitionKey, obligation.RowKey)).ETag);
         }
-        finally { pause.Release.TrySetResult(); try { await stale; } catch (TableTransactionFailedException) { } }
+        finally { pause.Release.TrySetResult(); try { await stale; } catch (Exception ex) when (ex is StateConflict or BrokerStateUnavailable) { } }
     }
 
     [Fact]
@@ -192,7 +192,7 @@ public sealed partial class CapacityReclamationTests
                 return Task.CompletedTask;
             }
         };
-        await Assert.ThrowsAsync<RequestFailedException>(() => Cleanup(f, f.Storage.CreateClient(transport))
+        await Assert.ThrowsAsync<BrokerStateUnavailable>(() => Cleanup(f, f.Storage.CreateClient(transport))
             .ReclaimEnrollmentAsync(active.Id, ledger.GetString("Generation")!, Token));
         await Cleanup(f).ReclaimEnrollmentAsync(active.Id, ledger.GetString("Generation")!, Token);
         var released = await Read(f, RevocationFixture.Partition, ledger.RowKey);
@@ -277,7 +277,7 @@ public sealed partial class CapacityReclamationTests
             var a = Assert.Single(await IssuanceLedgers(f));
             Assert.False((await f.Storage.Table.GetEntityIfExistsAsync<TableEntity>(RevocationFixture.Partition, a.GetString("AttemptRowKey")!, cancellationToken: Token)).HasValue);
             f.Clock.Advance(a.GetDateTimeOffset("PayloadPurgeAt")!.Value - f.Clock.GetUtcNow());
-            await new BrokerPayloadRedaction(f.Storage.Table, f.Clock)
+            await new PayloadRedaction(new TableBrokerState(f.Storage.Table), f.Clock)
                 .RedactIssuanceAsync(a.GetString("OperationId")!, a.GetString("Generation")!, Token);
             var tombstone = await Read(f, RevocationFixture.Partition, a.GetString("AttemptRowKey")!);
             Assert.Equal("redacted", tombstone.GetString("State"));
@@ -348,7 +348,7 @@ public sealed partial class CapacityReclamationTests
             if (ObservedTransport.IsBatch(message) && ++batches == lostBatch) throw new HttpRequestException("Lost runtime settlement response");
             return Task.CompletedTask;
         }};
-        await Assert.ThrowsAsync<RequestFailedException>(() => Reclaim(f, runtime, f.Storage.CreateClient(fault)));
+        await Assert.ThrowsAsync<BrokerStateUnavailable>(() => Reclaim(f, runtime, f.Storage.CreateClient(fault)));
         await Reclaim(f, runtime);
         var obligation = await Read(f, RevocationFixture.Partition, "release:" + runtime.GetString("OperationId"));
         await Reclaim(f, runtime);
@@ -356,7 +356,7 @@ public sealed partial class CapacityReclamationTests
         // #71's duplicate settlement remains inert. After #81's audit horizon,
         // the resolved runtime allocation retires independently of its enrollment.
         f.Clock.Advance(TimeSpan.FromDays(31));
-        await new BrokerPayloadRedaction(f.Storage.Table, f.Clock)
+        await new PayloadRedaction(new TableBrokerState(f.Storage.Table), f.Clock)
             .RedactIssuanceAsync(runtime.GetString("OperationId")!, runtime.GetString("Generation")!, Token);
         await Reclaim(f, runtime);
         await AssertAbsent(f, obligation.PartitionKey, obligation.RowKey);
@@ -436,7 +436,7 @@ public sealed partial class CapacityReclamationTests
         return (id, json.GetProperty("pendingId").GetString()!);
     }
     private static BrokerOptions Options(EnrollmentFixture f) => new(new Uri("https://example.table.core.windows.net"), f.Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15);
-    private static BrokerCapacityReclamation Cleanup(EnrollmentFixture f, TableClient? table = null) => new(table ?? f.Storage.CreateClient(), Options(f), f.Clock);
+    private static CapacityReclamation Cleanup(EnrollmentFixture f, TableClient? table = null) => new(new TableBrokerState(table ?? f.Storage.CreateClient()), Options(f).DeploymentEpoch, f.Clock);
     private static Task Reclaim(EnrollmentFixture f, TableEntity ledger, TableClient? table = null) => Cleanup(f, table).ReclaimIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
     private static async Task<TableEntity> Read(EnrollmentFixture f, string partition, string key) => (await f.Storage.CreateClient().GetEntityAsync<TableEntity>(partition, key, cancellationToken: Token)).Value;
     private static async Task<List<TableEntity>> Rows(EnrollmentFixture f)

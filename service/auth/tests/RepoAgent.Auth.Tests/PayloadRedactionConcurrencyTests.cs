@@ -173,8 +173,7 @@ public sealed partial class PayloadRedactionTests
             using var result = await writer;
             Assert.Equal(HttpStatusCode.OK, result.StatusCode);
             cleanupFence.Release.TrySetResult();
-            var conflict = await Assert.ThrowsAsync<TableTransactionFailedException>(() => cleanup);
-            Assert.Contains(conflict.Status, new[] { 409, 412 });
+            await Assert.ThrowsAsync<StateConflict>(() => cleanup);
             var renewed = await Read(f, device.PartitionKey, device.RowKey);
             Assert.True(renewed.GetDateTimeOffset("ExpiresAt") > f.Clock.GetUtcNow());
             Assert.Equal(device["SecretHash"], renewed["SecretHash"]);
@@ -188,7 +187,7 @@ public sealed partial class PayloadRedactionTests
             if (cleanup is not null)
             {
                 try { await cleanup; }
-                catch (TableTransactionFailedException) { }
+                catch (Exception ex) when (ex is StateConflict or BrokerStateUnavailable) { }
             }
         }
     }

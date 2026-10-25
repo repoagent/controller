@@ -113,7 +113,7 @@ public sealed partial class CapacityReclamationTests
         if (barrier == "epoch")
         {
             var ledger = await Read(f, "global:enrollment-v1", "pending:" + old.Id);
-            await new BrokerCapacityReclamation(f.Storage.Table, Options(f) with { DeploymentEpoch = "restored-epoch" }, f.Clock)
+            await new CapacityReclamation(new TableBrokerState(f.Storage.Table), (Options(f) with { DeploymentEpoch = "restored-epoch" }).DeploymentEpoch, f.Clock)
                 .ReclaimEnrollmentAsync(old.Id, ledger.GetString("Generation")!, Token);
         }
         else if (barrier is "pending-binding" or "missing-device" or "missing-release" or "app-binding")
@@ -143,7 +143,7 @@ public sealed partial class CapacityReclamationTests
             var gate = await Read(f, RevocationFixture.Partition, "gate");
             pause.Release.TrySetResult();
 
-            await Assert.ThrowsAsync<TableTransactionFailedException>(() => stale);
+            await Assert.ThrowsAsync<StateConflict>(() => stale);
 
             Assert.Equal(gate.ETag, (await Read(f, gate.PartitionKey, gate.RowKey)).ETag);
             Assert.Equal(replacement.Device, (await Read(f, gate.PartitionKey, gate.RowKey)).GetString("OwnerDeviceId"));
@@ -153,7 +153,7 @@ public sealed partial class CapacityReclamationTests
         finally
         {
             pause.Release.TrySetResult();
-            try { await stale; } catch (TableTransactionFailedException) { }
+            try { await stale; } catch (Exception ex) when (ex is StateConflict or BrokerStateUnavailable) { }
         }
     }
 

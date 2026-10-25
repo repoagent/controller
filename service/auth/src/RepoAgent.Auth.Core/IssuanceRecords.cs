@@ -151,12 +151,15 @@ public sealed class CandidateRepository : BrokerRecord
 
 // The retained global record of one charged issuance attempt, written with its slot. Reclamation releases its
 // capacity and retires it; it is never removed by issuance.
-public sealed class IssuanceLedger : BrokerRecord
+public sealed class IssuanceLedger : BrokerRecord, IRetiredLedger
 {
     public string? OperationId, Generation, RepositoryId, EnrollmentId, Purpose, Epoch, AttemptRowKey, PendingId;
     public string? ApprovalKind, PolicyVersion, CapacityState, RetirementState;
     public long? GlobalSlot, RowCredits, SetupVersion;
     public DateTimeOffset? ReservedAt, PayloadPurgeAt, RetirementAuditAt;
+
+    string? IRetiredLedger.RetirementState { get => RetirementState; set => RetirementState = value; }
+    DateTimeOffset? IRetiredLedger.RetirementAuditAt { get => RetirementAuditAt; set => RetirementAuditAt = value; }
 
     public static StateKey<IssuanceLedger> Key(string operationId) => new(IssuanceCapacity.Scope, "operation:" + operationId);
 

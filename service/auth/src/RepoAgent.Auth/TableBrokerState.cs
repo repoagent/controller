@@ -68,11 +68,6 @@ internal sealed class TableBrokerState(TableClient table) : IBrokerState
                 entity, new ETag(write.Version!.Token));
     }
 
-    // A row the adapter's Table code read, as the record it stores and the version it was read at. For the cleanup paths
-    // (reclamation) that still read TableEntity rows until their slice moves them to the core.
-    internal static Versioned<T> Versioned<T>(TableEntity row) where T : BrokerRecord, new() =>
-        new(BrokerRecord.Read<T>(Properties(row)), new(row.ETag.ToString()));
-
     // The stored properties, without Table's keys and system properties.
     private static Dictionary<string, object> Properties(TableEntity row) => row
         .Where(property => property.Key is not ("PartitionKey" or "RowKey" or "Timestamp" or "odata.etag"))

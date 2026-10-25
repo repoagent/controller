@@ -8,7 +8,7 @@ public sealed record StoredAttempt(StateKey<IssuanceAttempt> Key, IssuanceAttemp
 
 // The two-part conservative reservation (a global charge, then the repository transaction) and every repository
 // transaction of GitHub token issuance. A global charge is never compensated, and no transaction is compensated after an
-// unknown outcome. Capacity release is owned by BrokerCapacityReclamation after repository settlement.
+// unknown outcome. Capacity release is owned by CapacityReclamation after repository settlement.
 public sealed partial class IssuanceStore(IBrokerState state, string epoch, long retainedIssuanceLimit, ISecretProtection secrets,
     TimeProvider clock, IssuanceLimits? configuredLimits = null)
 {

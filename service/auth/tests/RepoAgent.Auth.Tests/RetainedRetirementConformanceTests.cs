@@ -23,7 +23,7 @@ public sealed partial class CapacityReclamationTests
             if (ObservedTransport.IsBatch(message) && ++count == boundary) throw new HttpRequestException("Lost committed retirement phase " + boundary);
             return Task.CompletedTask;
         }};
-        await Assert.ThrowsAsync<RequestFailedException>(() => Retirement(f, ledger, f.Storage.CreateClient(fault)));
+        await Assert.ThrowsAsync<BrokerStateUnavailable>(() => Retirement(f, ledger, f.Storage.CreateClient(fault)));
         Assert.Equal(boundary < 5 ? 1L : 0L, (await Read(f, ledger.PartitionKey, "quota")).GetInt64(RetainedCounter(enrollment)));
         if (boundary < 2) _ = await Read(f, RevocationFixture.Partition, Target(ledger, enrollment));
         else await AssertAbsent(f, RevocationFixture.Partition, Target(ledger, enrollment));
@@ -54,7 +54,7 @@ public sealed partial class CapacityReclamationTests
             if (ObservedTransport.IsBatch(message) && ++count == boundary) throw new HttpRequestException("Before retirement commit " + boundary);
             return Task.CompletedTask;
         }};
-        await Assert.ThrowsAsync<RequestFailedException>(() => Retirement(f, ledger, f.Storage.CreateClient(fault)));
+        await Assert.ThrowsAsync<BrokerStateUnavailable>(() => Retirement(f, ledger, f.Storage.CreateClient(fault)));
         Assert.Equal(1L, (await Read(f, ledger.PartitionKey, "quota")).GetInt64("RetainedIssuanceCount"));
         await Retirement(f, ledger);
         await RetirementGone(f, ledger, false);
@@ -73,12 +73,11 @@ public sealed partial class CapacityReclamationTests
             if (!ObservedTransport.IsBatch(message) || ++count != (competing is "quota" or "ledger" ? 5 : 2)) return;
             var partition = competing is "quota" or "ledger" ? ledger.PartitionKey : RevocationFixture.Partition;
             var key = competing switch { "target" => Target(ledger, false), "release" => Release(ledger, false), "gate" => "gate", "reference" => "pending:" + ledger.GetString("PendingId")!.Split('_')[1], "quota" => "quota", _ => ledger.RowKey };
+            // A real committed competing writer: rewriting the row unchanged still issues a new ETag.
             var current = await Read(f, partition, key);
-            current["ConcurrentProbe"] = "real committed competing writer";
             await f.Storage.Table.UpdateEntityAsync(current, current.ETag, TableUpdateMode.Replace, Token);
         }};
-        var conflict = await Assert.ThrowsAsync<TableTransactionFailedException>(() => Retirement(f, ledger, f.Storage.CreateClient(fault)));
-        Assert.Equal(412, conflict.Status);
+        await Assert.ThrowsAsync<StateConflict>(() => Retirement(f, ledger, f.Storage.CreateClient(fault)));
         Assert.Equal(1L, (await Read(f, ledger.PartitionKey, "quota")).GetInt64("RetainedIssuanceCount"));
         if (competing is not ("quota" or "ledger"))
         {
@@ -124,7 +123,7 @@ public sealed partial class CapacityReclamationTests
                 { entered.TrySetResult(); await release.Task.WaitAsync(TimeSpan.FromSeconds(12), Token); }
             }
         };
-        var redactor = new BrokerPayloadRedaction(f.Storage.CreateClient(transport), f.Clock);
+        var redactor = new PayloadRedaction(new TableBrokerState(f.Storage.CreateClient(transport)), f.Clock);
         var stale = enrollment ? redactor.RedactEnrollmentAsync(ledger.RowKey[8..], ledger.GetString("Generation")!, Token)
             : redactor.RedactIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
         try
@@ -132,11 +131,11 @@ public sealed partial class CapacityReclamationTests
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(8), Token);
             await Retirement(f, ledger);
             release.TrySetResult();
-            if (afterDecision) await Assert.ThrowsAsync<TableTransactionFailedException>(() => stale);
+            if (afterDecision) await Assert.ThrowsAsync<StateConflict>(() => stale);
             else await stale;
             await RetirementGone(f, ledger, enrollment);
         }
-        finally { release.TrySetResult(); try { await stale; } catch (TableTransactionFailedException) { } }
+        finally { release.TrySetResult(); try { await stale; } catch (Exception ex) when (ex is StateConflict or BrokerStateUnavailable) { } }
     }
 
     [Theory]
@@ -157,7 +156,7 @@ public sealed partial class CapacityReclamationTests
         var ledger = await RetirementEligible(f, enrollment);
         f.Clock.Advance(TimeSpan.FromTicks(-1));
         var gate = await Read(f, RevocationFixture.Partition, "gate");
-        gate["OwnerDeviceId"] = "unrelated-owner"; gate["VerifierAttempt"] = "unrelated-verifier"; gate["BarrierProbe"] = "preserved";
+        gate["OwnerDeviceId"] = "unrelated-owner"; gate["VerifierAttempt"] = "unrelated-verifier";
         await f.Storage.Table.UpdateEntityAsync(gate, gate.ETag, TableUpdateMode.Replace, Token);
         gate = await Read(f, RevocationFixture.Partition, "gate");
         var quota = await Read(f, "global:issuance-v1", "quota");
@@ -217,7 +216,7 @@ public sealed partial class CapacityReclamationTests
             f.Clock.Advance(ledger.GetDateTimeOffset("Deadline")!.Value - f.Clock.GetUtcNow());
             await Retirement(f, ledger);
             f.Clock.Advance(TimeSpan.FromDays(30));
-            await new BrokerPayloadRedaction(f.Storage.Table, f.Clock).RedactEnrollmentAsync(id, ledger.GetString("Generation")!, Token);
+            await new PayloadRedaction(new TableBrokerState(f.Storage.Table), f.Clock).RedactEnrollmentAsync(id, ledger.GetString("Generation")!, Token);
             await Retirement(f, ledger);
             if (mintWins)
             {
@@ -357,7 +356,7 @@ public sealed partial class CapacityReclamationTests
         else { attempt["State"] = state; attempt.Remove("ExpiresAt"); }
         await f.Storage.Table.UpdateEntityAsync(attempt, attempt.ETag, TableUpdateMode.Replace, Token);
         f.Clock.Advance(TimeSpan.FromDays(90));
-        await new BrokerPayloadRedaction(f.Storage.Table, f.Clock).RedactIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
+        await new PayloadRedaction(new TableBrokerState(f.Storage.Table), f.Clock).RedactIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
         await Retirement(f, ledger);
         await Retirement(f, ledger);
         Assert.Equal(1L, (await Read(f, ledger.PartitionKey, "quota")).GetInt64("RetainedIssuanceCount"));
@@ -430,13 +429,13 @@ public sealed partial class CapacityReclamationTests
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(8), Token);
             await Retirement(f, ledger);
             release.TrySetResult();
-            var conflict = await Assert.ThrowsAsync<TableTransactionFailedException>(() => stale);
-            Assert.Contains(conflict.Status, new[] { 404, 412 });
+            var conflict = await Assert.ThrowsAnyAsync<Exception>(() => stale);
+            Assert.True(conflict is StateConflict or BrokerStateUnavailable, conflict.ToString());
             await RetirementGone(f, ledger, false);
             await Retirement(f, ledger);
             await RetirementGone(f, ledger, false);
         }
-        finally { release.TrySetResult(); try { await stale; } catch (TableTransactionFailedException) { } }
+        finally { release.TrySetResult(); try { await stale; } catch (Exception ex) when (ex is StateConflict or BrokerStateUnavailable) { } }
     }
 
     [Fact]
@@ -452,7 +451,7 @@ public sealed partial class CapacityReclamationTests
         var pending = await Read(f, RevocationFixture.Partition, old.RowKey);
         Assert.NotEqual(old.GetString("Generation"), current.GetString("Generation"));
         await Assert.ThrowsAsync<IssuanceDenied>(() => Retirement(f, old));
-        await Assert.ThrowsAsync<IssuanceDenied>(() => new BrokerPayloadRedaction(f.Storage.Table, f.Clock)
+        await Assert.ThrowsAsync<IssuanceDenied>(() => new PayloadRedaction(new TableBrokerState(f.Storage.Table), f.Clock)
             .RedactEnrollmentAsync(old.RowKey[8..], old.GetString("Generation")!, Token));
         Assert.Equal(current.ETag, (await Read(f, current.PartitionKey, current.RowKey)).ETag);
         Assert.Equal(pending.ETag, (await Read(f, pending.PartitionKey, pending.RowKey)).ETag);

@@ -205,7 +205,7 @@ public sealed partial class PayloadRedactionTests
         Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
         return j;
     }
-    private static BrokerPayloadRedaction Cleanup(EnrollmentFixture f, TableClient? table = null) => new(table ?? f.Storage.CreateClient(), f.Clock);
+    private static PayloadRedaction Cleanup(EnrollmentFixture f, TableClient? table = null) => new(new TableBrokerState(table ?? f.Storage.CreateClient()), f.Clock);
     private static Task<TableEntity> EnrollmentLedger(EnrollmentFixture f, string id) => Read(f, "global:enrollment-v1", "pending:" + id);
     private static Task RedactEnrollment(EnrollmentFixture f, TableEntity ledger) =>
         Cleanup(f).RedactEnrollmentAsync(ledger.RowKey["pending:".Length..], ledger.GetString("Generation")!, Token);
