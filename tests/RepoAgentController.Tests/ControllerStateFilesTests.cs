@@ -185,100 +185,115 @@ public sealed class ControllerStateFilesTests : IDisposable
         }
     }
 
+    // As the bridge, the identity check and category enrollment wrote it before the Discussion records were typed. Each record's
+    // keys are in the order its history added them, and every object a key of its own could be added to carries one ("later").
+    // Agent input the bridge keeps (a change, the Discussion, the bootstrap context) is the text it sends. D_kwDOAbc4's session ID
+    // is not text, as no writer leaves it.
+    const string RecordedState = """
+        {
+          "version": 1,
+          "repository": "owner/repository",
+          "discussions": {
+            "D_kwDOAbc1": {
+              "url": "https://github.com/owner/repository/discussions/1",
+              "sources": {
+                "D_kwDOAbc1": {
+                  "content": { "body": "@test-app[bot] the deploy is flaky — café <b>", "author": { "login": "participant" } },
+                  "state": { "title": "Flaky deploy", "closed": false, "locked": false, "answer": null, "category": { "id": "DIC_kwDOAgents", "name": "Agents" } },
+                  "reactions": {
+                    "REA_kwDOAbc1": { "id": "REA_kwDOAbc1", "content": "HEART", "user": { "__typename": "User", "login": "participant" }, "createdAt": "2026-10-23T08:20:00Z" },
+                    "REA_kwDOAbc2": { "id": "REA_kwDOAbc2", "content": "ROCKET", "user": null, "createdAt": "2026-10-23T08:22:00Z" }
+                  },
+                  "later": "checkpoint"
+                },
+                "DC_kwDOAbc11": { "content": { "body": "Posted from a deleted account.", "author": null }, "state": {}, "reactions": {} },
+                "DC_kwDOAbc12": { "content": { "body": "A reply.", "author": { "login": "reviewer" } }, "state": {}, "reactions": {}, "replyTo": "DC_kwDOAbc11" }
+              },
+              "labels": [ "model:gpt-5.5", "reasoning:high" ],
+              "sessionId": "S1",
+              "running": { "turn": "T1", "since": "2026-10-24T09:30:00.0000000+00:00", "later": "running" },
+              "later": "record"
+            },
+            "D_kwDOAbc2": {
+              "url": "https://github.com/owner/repository/discussions/2",
+              "sources": {
+                "D_kwDOAbc2": {
+                  "content": { "body": "Second question", "author": { "login": "participant" } },
+                  "state": { "title": "Question", "closed": true, "locked": true, "answer": { "id": "DC_kwDOAbc21" }, "category": { "id": "DIC_kwDOQA", "name": "Q&A" } },
+                  "reactions": {}
+                },
+                "DC_kwDOAbc21": { "content": { "body": "The answer.", "author": { "login": "reviewer" } }, "state": {}, "reactions": {} }
+              },
+              "waiting": {
+                "inputs": [
+                  {
+                    "observedAt": "2026-10-24T09:58:00.0000000+00:00",
+                    "change": { "kind": "discussion.created", "subject": { "id": "D_kwDOAbc2", "url": "https://github.com/owner/repository/discussions/2", "author": { "__typename": "User", "login": "participant" } }, "replyTarget": { "replyToId": null } },
+                    "receipt": {
+                      "id": "D_kwDOAbc2",
+                      "url": "https://github.com/owner/repository/discussions/2",
+                      "reactionGroups": [ { "content": "THUMBS_UP", "viewerHasReacted": false }, { "content": "EYES", "viewerHasReacted": true } ],
+                      "later": "receipt"
+                    },
+                    "redelivery": true,
+                    "later": "input"
+                  },
+                  {
+                    "observedAt": "2026-10-24T09:59:30.2500000+00:00",
+                    "change": { "kind": "comment.deleted", "subject": { "id": "DC_kwDOAbc22", "author": { "login": "reviewer" }, "replyTo": { "id": "DC_kwDOAbc21" } }, "replyTarget": { "replyToId": "DC_kwDOAbc21" } }
+                  }
+                ],
+                "discussion": { "id": "D_kwDOAbc2", "url": "https://github.com/owner/repository/discussions/2", "body": "Second question", "createdAt": "2026-10-24T09:00:00Z", "updatedAt": "2026-10-24T09:00:00Z", "author": { "__typename": "User", "login": "participant" }, "number": 2, "title": "Question", "closed": true, "locked": true, "answer": { "id": "DC_kwDOAbc21" }, "category": { "id": "DIC_kwDOQA", "name": "Q&A" } },
+                "context": {
+                  "existingComments": [ { "id": "DC_kwDOAbc21", "url": "https://github.com/owner/repository/discussions/2#discussioncomment-21", "body": "The answer.", "createdAt": "2026-10-24T09:10:00Z", "updatedAt": "2026-10-24T09:10:00Z", "author": { "__typename": "User", "login": "reviewer" }, "replyTo": null, "reactions": [] } ],
+                  "laterComments": 2
+                },
+                "retry": { "attempts": 2, "after": "2026-10-24T10:05:00.0000000+00:00", "later": "retry" },
+                "later": "waiting"
+              },
+              "pending": { "operation": "create-and-send", "since": "2026-10-24T10:04:00.0000000+00:00", "sourceIds": [ "D_kwDOAbc2" ], "inputs": 1, "later": "pending" }
+            },
+            "D_kwDOAbc3": {
+              "url": "https://github.com/owner/repository/discussions/3",
+              "sources": { "D_kwDOAbc3": { "content": { "body": "Third", "author": { "login": "participant" } }, "state": { "title": "Third", "closed": false, "locked": false, "answer": null, "category": null }, "reactions": {} } },
+              "sessionId": "S3",
+              "running": { "turn": "T3", "since": "2026-10-24T09:40:00.0000000+00:00" },
+              "waiting": {
+                "inputs": [ { "observedAt": "2026-10-24T09:45:00.0000000+00:00", "change": { "kind": "discussion.changed", "subject": { "id": "D_kwDOAbc3", "url": "https://github.com/owner/repository/discussions/3", "author": { "__typename": "User", "login": "participant" }, "body": "Third, edited" }, "replyTarget": { "replyToId": null } }, "receipt": { "id": "D_kwDOAbc3", "url": "https://github.com/owner/repository/discussions/3", "reactionGroups": [] } } ],
+                "discussion": { "id": "D_kwDOAbc3", "url": "https://github.com/owner/repository/discussions/3", "body": "Third, edited", "createdAt": "2026-10-24T09:20:00Z", "updatedAt": "2026-10-24T09:44:00Z", "author": { "__typename": "User", "login": "participant" }, "number": 3, "title": "Third", "closed": false, "locked": false, "answer": null, "category": null }
+              }
+            },
+            "D_kwDOAbc4": { "url": "https://github.com/owner/repository/discussions/4", "sources": {}, "sessionId": 4 }
+          },
+          "agentLogin": "test-app[bot]",
+          "enrollmentCategories": { "Agents": "2026-10-24T08:00:00Z", "Q&A": "2026-10-24T08:30:00Z" },
+          "later": { "version": 2 }
+        }
+        """;
     [Fact]
     public void The_state_file_round_trips_every_key_its_writers_produce_and_keeps_keys_this_controller_does_not_write()
     {
-        // As the bridge, the identity check and category enrollment wrote it before the Discussion records were typed. Each record's
-        // keys are in the order its history added them, and every object a key of its own could be added to carries one ("later").
-        // Agent input the bridge keeps (a change, the Discussion, the bootstrap context) is the text it sends. D_kwDOAbc4's session ID
-        // is not text, as no writer leaves it.
-        const string Recorded = """
-            {
-              "version": 1,
-              "repository": "owner/repository",
-              "discussions": {
-                "D_kwDOAbc1": {
-                  "url": "https://github.com/owner/repository/discussions/1",
-                  "sources": {
-                    "D_kwDOAbc1": {
-                      "content": { "body": "@test-app[bot] the deploy is flaky — café <b>", "author": { "login": "participant" } },
-                      "state": { "title": "Flaky deploy", "closed": false, "locked": false, "answer": null, "category": { "id": "DIC_kwDOAgents", "name": "Agents" } },
-                      "reactions": {
-                        "REA_kwDOAbc1": { "id": "REA_kwDOAbc1", "content": "HEART", "user": { "__typename": "User", "login": "participant" }, "createdAt": "2026-10-23T08:20:00Z" },
-                        "REA_kwDOAbc2": { "id": "REA_kwDOAbc2", "content": "ROCKET", "user": null, "createdAt": "2026-10-23T08:22:00Z" }
-                      },
-                      "later": "checkpoint"
-                    },
-                    "DC_kwDOAbc11": { "content": { "body": "Posted from a deleted account.", "author": null }, "state": {}, "reactions": {} },
-                    "DC_kwDOAbc12": { "content": { "body": "A reply.", "author": { "login": "reviewer" } }, "state": {}, "reactions": {}, "replyTo": "DC_kwDOAbc11" }
-                  },
-                  "labels": [ "model:gpt-5.5", "reasoning:high" ],
-                  "sessionId": "S1",
-                  "running": { "turn": "T1", "since": "2026-10-24T09:30:00.0000000+00:00", "later": "running" },
-                  "later": "record"
-                },
-                "D_kwDOAbc2": {
-                  "url": "https://github.com/owner/repository/discussions/2",
-                  "sources": {
-                    "D_kwDOAbc2": {
-                      "content": { "body": "Second question", "author": { "login": "participant" } },
-                      "state": { "title": "Question", "closed": true, "locked": true, "answer": { "id": "DC_kwDOAbc21" }, "category": { "id": "DIC_kwDOQA", "name": "Q&A" } },
-                      "reactions": {}
-                    },
-                    "DC_kwDOAbc21": { "content": { "body": "The answer.", "author": { "login": "reviewer" } }, "state": {}, "reactions": {} }
-                  },
-                  "waiting": {
-                    "inputs": [
-                      {
-                        "observedAt": "2026-10-24T09:58:00.0000000+00:00",
-                        "change": { "kind": "discussion.created", "subject": { "id": "D_kwDOAbc2", "url": "https://github.com/owner/repository/discussions/2", "author": { "__typename": "User", "login": "participant" } }, "replyTarget": { "replyToId": null } },
-                        "receipt": {
-                          "id": "D_kwDOAbc2",
-                          "url": "https://github.com/owner/repository/discussions/2",
-                          "reactionGroups": [ { "content": "THUMBS_UP", "viewerHasReacted": false }, { "content": "EYES", "viewerHasReacted": true } ],
-                          "later": "receipt"
-                        },
-                        "redelivery": true,
-                        "later": "input"
-                      },
-                      {
-                        "observedAt": "2026-10-24T09:59:30.2500000+00:00",
-                        "change": { "kind": "comment.deleted", "subject": { "id": "DC_kwDOAbc22", "author": { "login": "reviewer" }, "replyTo": { "id": "DC_kwDOAbc21" } }, "replyTarget": { "replyToId": "DC_kwDOAbc21" } }
-                      }
-                    ],
-                    "discussion": { "id": "D_kwDOAbc2", "url": "https://github.com/owner/repository/discussions/2", "body": "Second question", "createdAt": "2026-10-24T09:00:00Z", "updatedAt": "2026-10-24T09:00:00Z", "author": { "__typename": "User", "login": "participant" }, "number": 2, "title": "Question", "closed": true, "locked": true, "answer": { "id": "DC_kwDOAbc21" }, "category": { "id": "DIC_kwDOQA", "name": "Q&A" } },
-                    "context": {
-                      "existingComments": [ { "id": "DC_kwDOAbc21", "url": "https://github.com/owner/repository/discussions/2#discussioncomment-21", "body": "The answer.", "createdAt": "2026-10-24T09:10:00Z", "updatedAt": "2026-10-24T09:10:00Z", "author": { "__typename": "User", "login": "reviewer" }, "replyTo": null, "reactions": [] } ],
-                      "laterComments": 2
-                    },
-                    "retry": { "attempts": 2, "after": "2026-10-24T10:05:00.0000000+00:00", "later": "retry" },
-                    "later": "waiting"
-                  },
-                  "pending": { "operation": "create-and-send", "since": "2026-10-24T10:04:00.0000000+00:00", "sourceIds": [ "D_kwDOAbc2" ], "inputs": 1, "later": "pending" }
-                },
-                "D_kwDOAbc3": {
-                  "url": "https://github.com/owner/repository/discussions/3",
-                  "sources": { "D_kwDOAbc3": { "content": { "body": "Third", "author": { "login": "participant" } }, "state": { "title": "Third", "closed": false, "locked": false, "answer": null, "category": null }, "reactions": {} } },
-                  "sessionId": "S3",
-                  "running": { "turn": "T3", "since": "2026-10-24T09:40:00.0000000+00:00" },
-                  "waiting": {
-                    "inputs": [ { "observedAt": "2026-10-24T09:45:00.0000000+00:00", "change": { "kind": "discussion.changed", "subject": { "id": "D_kwDOAbc3", "url": "https://github.com/owner/repository/discussions/3", "author": { "__typename": "User", "login": "participant" }, "body": "Third, edited" }, "replyTarget": { "replyToId": null } }, "receipt": { "id": "D_kwDOAbc3", "url": "https://github.com/owner/repository/discussions/3", "reactionGroups": [] } } ],
-                    "discussion": { "id": "D_kwDOAbc3", "url": "https://github.com/owner/repository/discussions/3", "body": "Third, edited", "createdAt": "2026-10-24T09:20:00Z", "updatedAt": "2026-10-24T09:44:00Z", "author": { "__typename": "User", "login": "participant" }, "number": 3, "title": "Third", "closed": false, "locked": false, "answer": null, "category": null }
-                  }
-                },
-                "D_kwDOAbc4": { "url": "https://github.com/owner/repository/discussions/4", "sources": {}, "sessionId": 4 }
-              },
-              "agentLogin": "test-app[bot]",
-              "enrollmentCategories": { "Agents": "2026-10-24T08:00:00Z", "Q&A": "2026-10-24T08:30:00Z" },
-              "later": { "version": 2 }
-            }
-            """;
         var statePath = Path.Combine(directory, "bridge.json");
-        File.WriteAllText(statePath, Recorded);
+        File.WriteAllText(statePath, RecordedState);
 
         using (var store = new StateStore(statePath, "owner/repository")) store.Save();
 
-        Assert.Equal(Canonical(JsonNode.Parse(Recorded)), Canonical(JsonNode.Parse(File.ReadAllText(statePath))));
+        Assert.Equal(Canonical(JsonNode.Parse(RecordedState)), Canonical(JsonNode.Parse(File.ReadAllText(statePath))));
+    }
+
+    [Fact]
+    public void The_state_file_is_written_with_the_keys_of_each_object_in_one_order_then_the_keys_this_controller_does_not_write()
+    {
+        // StateFileWritten.json is what the typed writer made of the recorded state: indented, with the keys of every object
+        // in the order its writer adds them, and a key this controller does not write after them. A checkpoint, a receipt or
+        // a Discussion record in a form no writer leaves is written as read.
+        var statePath = Path.Combine(directory, "bridge.json");
+        File.WriteAllText(statePath, RecordedState);
+        using var written = typeof(ControllerStateFilesTests).Assembly.GetManifestResourceStream("StateFileWritten.json")!;
+
+        using (var store = new StateStore(statePath, "owner/repository")) store.Save();
+
+        Assert.Equal(new StreamReader(written).ReadToEnd(), File.ReadAllText(statePath));
     }
 
     // Keys in ordinal order at every level, so two documents compare by their keys and values alone.
