@@ -239,22 +239,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             while (true)
             {
                 await Sleep(delay, stop);
-                await gate.WaitAsync(stop);
-                try
-                {
-                    Settle();
-                    var ready = store.Discussions.Select(entry => entry.Value!.AsObject())
-                        .Where(record => record["waiting"] is not null && record["pending"] is null)
-                        .OrderBy(record => record["waiting"]!["inputs"]![0]!.Text("observedAt"), StringComparer.Ordinal).ToArray();
-                    foreach (var record in ready)
-                    {
-                        try { await Dispatch(record, ct); }
-                        catch (Exception error) when (error is not OperationCanceledException)
-                        { Log.Write("dispatch-error", $"{record.Text("url")}: {error.Message}"); }
-                    }
-                    delay = NextRetry();
-                }
-                finally { gate.Release(); }
+                delay = await DispatchReady(stop, ct);
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
@@ -263,6 +248,32 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             sessions.StatusChanged -= Wake;
             settings.Changed -= Wake;
         }
+    }
+
+    /// <summary>
+    /// One pass of <see cref="DispatchWhenIdle"/>: settles ended turns, then dispatches waiting input, oldest first. Returns the
+    /// time until the earliest scheduled delivery retry, or <see cref="Timeout.InfiniteTimeSpan"/> when none is scheduled.
+    /// </summary>
+    public Task<TimeSpan> DispatchReady(CancellationToken ct) => DispatchReady(ct, ct);
+
+    async Task<TimeSpan> DispatchReady(CancellationToken stop, CancellationToken ct)
+    {
+        await gate.WaitAsync(stop);
+        try
+        {
+            Settle();
+            var ready = store.Discussions.Select(entry => entry.Value!.AsObject())
+                .Where(record => record["waiting"] is not null && record["pending"] is null)
+                .OrderBy(record => record["waiting"]!["inputs"]![0]!.Text("observedAt"), StringComparer.Ordinal).ToArray();
+            foreach (var record in ready)
+            {
+                try { await Dispatch(record, ct); }
+                catch (Exception error) when (error is not OperationCanceledException)
+                { Log.Write("dispatch-error", $"{record.Text("url")}: {error.Message}"); }
+            }
+            return NextRetry();
+        }
+        finally { gate.Release(); }
     }
 
     void Wake() { if (wake.CurrentCount == 0) try { wake.Release(); } catch (SemaphoreFullException) { } }

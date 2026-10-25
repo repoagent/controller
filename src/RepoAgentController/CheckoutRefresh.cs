@@ -273,6 +273,21 @@ sealed class CheckoutRefresh : IAgentTurnJournal, IAsyncDisposable
     }
 
     static bool Valid(string id) => id.Length is > 0 and <= 256 && !id.Any(char.IsControl);
+
+    /// <summary>The native thread and turn a turn lifecycle event names, and whether it completed the turn; null for any other
+    /// event. A missing turn ID maps to "", which no valid identity is.</summary>
+    internal static (string Thread, string Turn, bool Completed)? Lifecycle(AgentRuntimeEvent change)
+    {
+        (string Thread, string Turn, bool Completed)? identity = change switch
+        {
+            AgentTurnStarted started => (started.SessionId, started.TurnId ?? "", false),
+            AgentTurnCompleted ended => (ended.SessionId, ended.TurnId ?? "", true),
+            _ => null
+        };
+        if (identity is (var thread, var turn, _) && (!Valid(thread) || !Valid(turn))) throw new IOException("Malformed native lifecycle identity");
+        return identity;
+    }
+
     void Track((string Thread, string Turn) key, bool done, long observed)
     {
         if (!turns.ContainsKey(key) && turns.Count >= 256)
@@ -315,13 +330,8 @@ sealed class CheckoutRefresh : IAgentTurnJournal, IAsyncDisposable
             try
             {
                 if (change is AgentRuntimeDisconnected) { Fault("Native transport disconnected; completion unknown"); return; }
-                string thread, turn;
-                bool completed;
-                if (change is AgentTurnStarted started) (thread, turn, completed) = (started.SessionId, started.TurnId ?? "", false);
-                else if (change is AgentTurnCompleted ended) (thread, turn, completed) = (ended.SessionId, ended.TurnId ?? "", true);
-                else return;
+                if (Lifecycle(change) is not (var thread, var turn, var completed)) return;
                 var key = (thread, turn);
-                if (!Valid(thread) || !Valid(turn)) throw new IOException("Malformed native lifecycle identity");
                 var known = turns.TryGetValue(key, out var previous);
                 var awaiting = active.Any(item => item.Value!.Text("thread") == thread && item.Value!.Text("turn") == "");
                 if (!known && !awaiting) throw new IOException("Unmatched native lifecycle event");

@@ -22,11 +22,10 @@ sealed class CodexCredentials
     CodexCredentials(string source, string home, byte[] content) { this.source = source; this.home = home; this.content = content; }
 
     /// <summary>Validates the supplied file and the private native home before any effects.</summary>
-    public static CodexCredentials Open(string source)
-    {
-        var home = Codex.PrivateHome("--codex-auth");
-        return new(Path.GetFullPath(source), home, Read(source));
-    }
+    public static CodexCredentials Open(string source) => Open(source, Codex.PrivateHome("--codex-auth"));
+
+    /// <summary>Validates the supplied file for the already validated private native home <paramref name="home"/>.</summary>
+    internal static CodexCredentials Open(string source, string home) => new(Path.GetFullPath(source), home, Read(source));
 
     /// <summary>Installs the supplied credentials unless this exact supply is already installed. Call while no native runs.</summary>
     public void Install()
