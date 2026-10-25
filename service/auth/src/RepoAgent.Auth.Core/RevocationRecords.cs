@@ -28,6 +28,13 @@ public sealed class RepositoryGate : BrokerRecord
 
     public static StateKey<RepositoryGate> Key(string repositoryId) => new("repository:" + repositoryId, "gate");
 
+    // The gate of a repository that has never had one: vacant, of the epoch that creates it, with nothing counted. Only an
+    // Add can write it.
+    public static RepositoryGate Vacant(string repositoryId, string epoch) => new()
+    {
+        RepositoryId = repositoryId, Epoch = epoch, State = "vacant", Sequence = 0, OutstandingTokenCount = 0, PendingCount = 0
+    };
+
     protected override void Map(RecordMap map)
     {
         map.Text("RepositoryId", ref RepositoryId);

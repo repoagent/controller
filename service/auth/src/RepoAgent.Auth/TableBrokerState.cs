@@ -31,6 +31,38 @@ internal sealed class TableBrokerState(TableClient table) : IBrokerState
         catch (Exception ex) when (FromTable(ex, ct)) { throw new BrokerStateUnavailable("The broker table did not confirm a transaction.", ex); }
     }
 
+    // The Table query cleanup has always made: the range and `after` as a RowKey filter in one partition, at most 32 rows
+    // a page, resuming from the stored continuation. The caller checks the answer against the query. A row that breaks
+    // BrokerTable's bounds or has no ETag is listed without its row or version, so it fails only the caller that reads it.
+    public async Task<StatePage<T>> ListAsync<T>(StateRange<T> range, string after, string? continuation, CancellationToken ct)
+        where T : BrokerRecord, new()
+    {
+        Page<TableEntity>? page;
+        try
+        {
+            var filter = TableClient.CreateQueryFilter(
+                $"PartitionKey eq {range.Scope} and RowKey ge {range.From} and RowKey lt {range.To} and RowKey gt {after}");
+            await using var pages = table.QueryAsync<TableEntity>(filter, maxPerPage: 32, cancellationToken: ct)
+                .AsPages(continuation, pageSizeHint: 32).GetAsyncEnumerator(ct);
+            page = await pages.MoveNextAsync() ? pages.Current : null;
+        }
+        catch (Exception ex) when (FromTable(ex, ct)) { throw new BrokerStateUnavailable("The broker table did not answer a listing.", ex); }
+        return page is null ? new([], null) : new([.. page.Values.Select(Listed<T>)], page.ContinuationToken);
+    }
+
+    private static ListedRecord<T> Listed<T>(TableEntity row) where T : BrokerRecord, new()
+    {
+        Dictionary<string, object>? properties;
+        try
+        {
+            BrokerTable.Validate(row);
+            properties = Properties(row);
+        }
+        catch (InvalidDataException) { properties = null; }
+        var version = row.ETag == ETag.All || string.IsNullOrEmpty(row.ETag.ToString()) ? null : new StateVersion(row.ETag.ToString());
+        return new(new(row.PartitionKey, row.RowKey), properties, version);
+    }
+
     private static TableTransactionAction Action(StateWrite write)
     {
         var entity = new TableEntity(write.Key.Scope, write.Key.Name);
@@ -39,11 +71,6 @@ internal sealed class TableBrokerState(TableClient table) : IBrokerState
             : new(write.Kind == StateWriteKind.Replace ? TableTransactionActionType.UpdateReplace : TableTransactionActionType.Delete,
                 entity, new ETag(write.Version!.Token));
     }
-
-    // A row the adapter's Table code read, as the record it stores and the version it was read at. For the cleanup paths
-    // (reclamation) that still read TableEntity rows until their slice moves them to the core.
-    internal static Versioned<T> Versioned<T>(TableEntity row) where T : BrokerRecord, new() =>
-        new(BrokerRecord.Read<T>(Properties(row)), new(row.ETag.ToString()));
 
     // The stored properties, without Table's keys and system properties.
     private static Dictionary<string, object> Properties(TableEntity row) => row

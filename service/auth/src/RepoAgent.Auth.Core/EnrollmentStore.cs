@@ -141,10 +141,7 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
             var pendingKey = PendingControllerEnrollment.Key(repository, request.IdempotencyId);
             if (await state.ReadAsync(pendingKey, ct) is not null)
                 return await SnapshotAsync(Text(reservation.PendingId), hash, ct, request.Approval.SetupVersion);
-            var record = gate?.Value ?? new()
-            {
-                RepositoryId = repository, Epoch = epoch, State = "vacant", Sequence = 0, OutstandingTokenCount = 0, PendingCount = 0
-            };
+            var record = gate?.Value ?? RepositoryGate.Vacant(repository, epoch);
             if (Text(record.Epoch) != epoch || Text(record.RepositoryId) != repository) throw new IssuanceDenied();
             var count = record.PendingCount ?? 0;
             if (count >= RepositoryPending) throw new IssuanceDenied(429);

@@ -1,98 +1,92 @@
 using System.Net;
-using Azure.Data.Tables;
 using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed partial class CapacityReclamationTests
+// A retired allocation leaves no rows behind, and its retained charge is refunded once, so a later admission can use the
+// capacity it held: a positive issuance settled by revocation, and an enrollment admitted but never published or minted.
+public sealed class RetainedRetirementTests
 {
+    private static CancellationToken Token => TestContext.Current.CancellationToken;
+
     [Fact]
     public async Task Retired_positive_issuance_deletes_its_rows_and_reuses_retained_capacity()
     {
-        await using var f = await EnrollmentFixture.CreateAsync(settings: new() { ["Broker:RetainedIssuanceLimit"] = "1" });
-        AgentVariableEnrollmentTests.ConfigureGitHub(f);
+        var f = new InMemoryBroker { Retained = new(128, 256, 1) };
+        AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
         f.GitHub.MintAnswer = (_, token) => GitHubRead.Found(token with { Value = "invalid-scope-token", OnlyListedRepositories = false });
-        using var failedScope = await f.Send("/v2/enrollments", Request(Guid.NewGuid().ToString("N")));
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, failedScope.StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2)).StatusCode);
         Assert.Equal(1, f.GitHub.Revokes);
-        var ledger = Assert.Single(await IssuanceLedgers(f));
-        var attemptKey = ledger.GetString("AttemptRowKey")!;
-        var settled = await Read(f, RevocationFixture.Partition, attemptKey);
-        Assert.Equal("settled", settled.GetString("State"));
-        var resolvedAt = settled.GetDateTimeOffset("SettledAt")!.Value;
-        await Reclaim(f, ledger); // Settlement and retirement are deliberately separate invocations.
-        Assert.Equal("released", (await Read(f, ledger.PartitionKey, ledger.RowKey)).GetString("CapacityState"));
-        Assert.Equal(0L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("Slots"));
-        Assert.Equal(1L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("RetainedIssuanceCount"));
+        var ledger = Assert.Single(Retained.IssuanceLedgers(f)).Value;
+        var ledgerKey = IssuanceLedger.Key(ledger.OperationId!);
+        var attemptKey = Retained.Attempt(ledger);
+        var settled = f.State.Get(attemptKey);
+        Assert.NotNull(settled);
+        Assert.Equal("settled", settled.State);
+        var resolvedAt = settled.SettledAt!.Value;
+        await Retained.ReclaimIssuance(f, ledger); // Settlement and retirement are deliberately separate invocations.
+        Assert.Equal("released", f.State.Get(ledgerKey)!.CapacityState);
+        Assert.Equal(0L, f.State.Get(IssuanceQuota.Key)!.Slots);
+        Assert.Equal(1L, f.State.Get(IssuanceQuota.Key)!.RetainedIssuanceCount);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var full = await f.Send("/v2/enrollments", Request(Guid.NewGuid().ToString("N")));
-        Assert.Equal(HttpStatusCode.TooManyRequests, full.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2)).StatusCode);
         Assert.Equal(1, f.GitHub.Mints);
 
         f.Clock.Advance(resolvedAt.AddDays(30) - f.Clock.GetUtcNow());
-        await Reclaim(f, ledger);
+        await Retained.ReclaimIssuance(f, ledger);
 
-        await AssertAbsent(f, ledger.PartitionKey, ledger.RowKey);
-        await AssertAbsent(f, RevocationFixture.Partition, attemptKey);
-        await AssertAbsent(f, RevocationFixture.Partition, "release:" + ledger.GetString("OperationId"));
-        Assert.Equal(0L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("RetainedIssuanceCount"));
-        await Reclaim(f, ledger); // A duplicate cannot refund another allocation.
+        AssertAbsent(f, ledgerKey);
+        AssertAbsent(f, attemptKey);
+        AssertAbsent(f, ReleaseProof.Issuance(Retained.Repository, ledger.OperationId!));
+        Assert.Equal(0L, f.State.Get(IssuanceQuota.Key)!.RetainedIssuanceCount);
+        await Retained.ReclaimIssuance(f, ledger); // A duplicate cannot refund another allocation.
         f.GitHub.MintAnswer = null; // GitHub mints in scope again.
-        using var replacement = await f.Send("/v2/enrollments", Request(Guid.NewGuid().ToString("N")));
-        Assert.Equal(HttpStatusCode.OK, replacement.StatusCode);
-        Assert.Equal(1L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("RetainedIssuanceCount"));
+        Assert.Equal(HttpStatusCode.OK, (await f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2)).StatusCode);
+        Assert.Equal(1L, f.State.Get(IssuanceQuota.Key)!.RetainedIssuanceCount);
     }
 
     [Fact]
     public async Task Retired_new_never_minted_enrollment_deletes_its_rows_and_reuses_retained_capacity()
     {
+        var f = new InMemoryBroker { Retained = new(128, 1, 4096) };
         var committed = false;
-        var lostResponse = new ObservedTransport { After = message =>
+        f.State.AfterCommit = _ =>
         {
-            if (ObservedTransport.IsBatch(message) && !committed)
-            {
-                committed = true;
-                throw new HttpRequestException("Lost committed enrollment admission response before mint admission");
-            }
-            return Task.CompletedTask;
-        }};
-        await using var f = await EnrollmentFixture.CreateAsync(lostResponse,
-            settings: new() { ["Broker:RetainedEnrollmentLimit"] = "1" });
+            if (committed) return Task.CompletedTask;
+            committed = true;
+            throw new BrokerStateUnavailable("Lost committed enrollment admission response before mint admission");
+        };
         var id = Guid.NewGuid().ToString("N");
-        using var interrupted = await f.Send("/v2/enrollments", Request(id));
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, interrupted.StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Start(Retained.AgentRequest(id), 2)).StatusCode);
         Assert.True(committed);
-        var ledger = await Read(f, "global:enrollment-v1", "pending:" + id);
-        await AssertAbsent(f, RevocationFixture.Partition, ledger.RowKey);
-        Assert.Empty(await IssuanceLedgers(f));
+        f.State.AfterCommit = null;
+        var ledger = Retained.EnrollmentLedger(f, id).Value;
+        var pendingKey = PendingControllerEnrollment.Key(Retained.Repository, id);
+        AssertAbsent(f, pendingKey);
+        Assert.Empty(Retained.IssuanceLedgers(f));
         Assert.Equal(0, f.GitHub.Mints);
-        // This is a newly admitted allocation. Do not stamp legacy fixtures with the new version.
-        await f.RestartAsync();
-        f.Clock.Advance(ledger.GetDateTimeOffset("Deadline")!.Value - f.Clock.GetUtcNow());
-        await Cleanup(f).ReclaimEnrollmentAsync(id, ledger.GetString("Generation")!, Token);
-        Assert.Equal(0L, (await Read(f, "global:enrollment-v1", "quota")).GetInt64("Count"));
-        Assert.Equal(1L, (await Read(f, "global:enrollment-v1", "quota")).GetInt64("RetainedEnrollmentCount"));
-        using var full = await f.Send("/v2/enrollments", Request(Guid.NewGuid().ToString("N")));
-        Assert.Equal(HttpStatusCode.TooManyRequests, full.StatusCode);
+        f.Clock.Advance(ledger.Deadline!.Value - f.Clock.GetUtcNow());
+        await f.Reclamation().ReclaimEnrollmentAsync(id, ledger.Generation!, Token);
+        Assert.Equal(0L, f.State.Get(EnrollmentQuota.Key)!.Count);
+        Assert.Equal(1L, f.State.Get(EnrollmentQuota.Key)!.RetainedEnrollmentCount);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2)).StatusCode);
         Assert.Equal(0, f.GitHub.Mints);
         f.Clock.Advance(TimeSpan.FromDays(30));
 
-        await Cleanup(f).ReclaimEnrollmentAsync(id, ledger.GetString("Generation")!, Token);
+        await f.Reclamation().ReclaimEnrollmentAsync(id, ledger.Generation!, Token);
 
-        await AssertAbsent(f, ledger.PartitionKey, ledger.RowKey);
-        await AssertAbsent(f, RevocationFixture.Partition, ledger.RowKey);
-        await AssertAbsent(f, RevocationFixture.Partition, "release:" + ledger.RowKey);
-        var quota = await Read(f, "global:enrollment-v1", "quota");
-        Assert.Equal(0L, quota.GetInt64("RetainedEnrollmentCount"));
-        Assert.Equal(1L, quota.GetInt64("CandidateCount"));
-        await Cleanup(f).ReclaimEnrollmentAsync(id, ledger.GetString("Generation")!, Token);
-        AgentVariableEnrollmentTests.ConfigureGitHub(f);
-        using var replacement = await f.Send("/v2/enrollments", Request(Guid.NewGuid().ToString("N")));
-        Assert.Equal(HttpStatusCode.OK, replacement.StatusCode);
-        Assert.Equal(1L, (await Read(f, "global:enrollment-v1", "quota")).GetInt64("RetainedEnrollmentCount"));
+        AssertAbsent(f, EnrollmentLedger.Key(id));
+        AssertAbsent(f, pendingKey);
+        AssertAbsent(f, ReleaseProof.Enrollment(Retained.Repository, id));
+        var quota = f.State.Get(EnrollmentQuota.Key)!;
+        Assert.Equal(0L, quota.RetainedEnrollmentCount);
+        Assert.Equal(1L, quota.CandidateCount);
+        await f.Reclamation().ReclaimEnrollmentAsync(id, ledger.Generation!, Token);
+        AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
+        Assert.Equal(HttpStatusCode.OK, (await f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2)).StatusCode);
+        Assert.Equal(1L, f.State.Get(EnrollmentQuota.Key)!.RetainedEnrollmentCount);
     }
 
-    private static async Task AssertAbsent(EnrollmentFixture f, string partition, string rowKey) =>
-        Assert.False((await f.Storage.CreateClient().GetEntityIfExistsAsync<TableEntity>(partition, rowKey,
-            cancellationToken: Token)).HasValue, $"Retirement must physically delete {partition}/{rowKey}");
+    private static void AssertAbsent(InMemoryBroker f, StateKey key) =>
+        Assert.True(f.State.Row(key) is null, $"Retirement must physically delete {key}");
 }

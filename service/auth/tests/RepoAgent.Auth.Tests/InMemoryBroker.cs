@@ -66,6 +66,19 @@ internal sealed class InMemoryBroker
     public async Task<Answer> Revoke(string enrollmentId, string secret, int runtimeVersion = 1) =>
         new((HttpStatusCode)await new DeviceRevocation(State, DeploymentEpoch, Clock).RevokeAsync(enrollmentId, secret, Token, runtimeVersion), "");
 
+    // The cleanup command's allocations, constructed with no provider, signing or key dependency.
+    public CapacityReclamation Reclamation(IBrokerState? state = null) => new(state ?? State, DeploymentEpoch, Clock);
+    public PayloadRedaction Redaction(IBrokerState? state = null) => new(state ?? State, Clock);
+
+    // One `cleanup --once` run, as the command runs it, with the summary it prints.
+    public async Task<CleanupRun> CleanupAsync(TimeProvider? clock = null, int dispatches = 128, int batches = 32)
+    {
+        var budget = new CleanupBudget(State, dispatches, batches);
+        var cleanup = new BrokerCleanup(budget, DeploymentEpoch, budget, clock ?? Clock);
+        var exit = await cleanup.RunAsync(Token);
+        return new(exit, JsonSerializer.SerializeToElement(cleanup.Summary()), budget);
+    }
+
     public RepositoryGate Gate => State.Get(RepositoryGate.Key(RepositoryId))!;
     // The pending controller enrollment a pending ID ("{repository ID}_{idempotency ID}") names.
     public PendingControllerEnrollment Pending(string pendingId) => State.Get(PendingKey(pendingId))!;

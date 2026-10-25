@@ -20,9 +20,9 @@ concurrency:
 
 jobs:
   verify:
-    name: Auth HTTP and Table integration
+    name: Auth unit tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
     steps:
@@ -32,6 +32,6 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: service/auth/global.json
-      - name: Verify against pinned disposable Azurite
+      - name: Build and run the service tests
         working-directory: service/auth
         run: bash verify.sh

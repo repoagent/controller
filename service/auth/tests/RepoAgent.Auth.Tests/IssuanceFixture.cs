@@ -136,6 +136,8 @@ internal sealed class IssuanceFixture
     private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }
 
+public sealed record EnrolledDevice(string DeviceId, string Secret);
+
 internal sealed class IssuanceClock : TimeProvider
 {
     private DateTimeOffset current = DateTimeOffset.UtcNow;

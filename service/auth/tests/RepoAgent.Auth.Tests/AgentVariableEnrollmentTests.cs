@@ -57,8 +57,6 @@ public sealed class AgentVariableEnrollmentTests
         Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(device, secret)).StatusCode);
     }
 
-    internal static void ConfigureGitHub(EnrollmentFixture f) => ConfigureGitHub(f.GitHub);
-
     // Agent enrollments mint their verifier with exactly Agent variables read, and runtime tokens with Discussions
     // write plus, for webhook profiles, repository hooks write. The Agent variables hold github.Marker.
     internal static void ConfigureGitHub(InMemoryGitHub github) => github.BeforeMint = mint =>

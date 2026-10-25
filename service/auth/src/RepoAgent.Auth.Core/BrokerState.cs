@@ -12,6 +12,14 @@ public interface IBrokerState
     // precondition failed and nothing was written. Any other failure leaves the outcome unknown: the transaction may
     // have committed, so callers re-read and never compensate.
     Task<IReadOnlyList<StateVersion?>> CommitAsync(StateTransaction transaction, CancellationToken ct);
+
+    // One page of at most 32 records of a range, in ordinal name order, whose names sort after `after`. A page may be
+    // empty and still carry a continuation; only a null continuation ends the range. Throws BrokerStateUnavailable when
+    // the store does not answer. The answer is not checked against the query: each record carries the scope and name
+    // the store answered, for the caller to check. Each listed record is read on its own, so a row no record can read,
+    // that breaks the store's bounds or that has no version fails only the caller that reads it.
+    Task<StatePage<T>> ListAsync<T>(StateRange<T> range, string after, string? continuation, CancellationToken ct)
+        where T : BrokerRecord, new();
 }
 
 // Where one record lives: a scope, which a transaction never spans, and the record's name within it. Factories on the
@@ -24,6 +32,28 @@ public abstract class StateKey(string scope, string name)
 }
 
 public sealed class StateKey<T>(string scope, string name) : StateKey(scope, name) where T : BrokerRecord, new();
+
+// The records of one scope whose names sort ordinally from `From` (inclusive) to `To` (exclusive).
+public sealed class StateRange<T>(string scope, string from, string to) where T : BrokerRecord, new()
+{
+    public string Scope { get; } = scope;
+    public string From { get; } = from;
+    public string To { get; } = to;
+}
+
+public sealed record StatePage<T>(IReadOnlyList<ListedRecord<T>> Records, string? Continuation) where T : BrokerRecord, new();
+
+// A record a listing returned: the key the store answered, and the row and the version it was listed at. The row is
+// null when it broke the store's bounds, and the version when the store answered none. Read throws
+// BrokerRecordUnreadable then, and when the stored row is not exactly a record of this type.
+public sealed class ListedRecord<T>(StateKey<T> key, IReadOnlyDictionary<string, object>? row, StateVersion? version)
+    where T : BrokerRecord, new()
+{
+    public StateKey<T> Key { get; } = key;
+    public Versioned<T> Read() => row is null ? throw new BrokerRecordUnreadable("A listed row broke the store's bounds.")
+        : version is null ? throw new BrokerRecordUnreadable("A listed row has no version.")
+        : new(BrokerRecord.Read<T>(row), version);
+}
 
 public sealed record Versioned<T>(T Value, StateVersion Version) where T : BrokerRecord;
 

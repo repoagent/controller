@@ -5,20 +5,32 @@ namespace RepoAgent.Auth.Tests;
 // - a transaction is atomic: a conflict (Add of an existing record, or a version that is no longer current) writes nothing;
 // - Replace or Delete of a missing record fails as unavailable, as Table's 404 does, and is never a conflict to retry;
 // - rows are stored and read through the records' own mapping, and every read returns a fresh copy;
-// - nothing exists until a test seeds it, so quota rows exist only when seeded, as offline initialization does.
-// Hooks run outside the store's lock: BeforeRead and BeforeCommit may throw or commit competing writes re-entrantly, and
+// - nothing exists until a test seeds it, so quota rows exist only when seeded, as offline initialization does;
+// - listing is ordinal, at most 32 records a page, and can answer an empty page that still carries a continuation;
+//   a listed row is mapped only when the caller reads it, as the Table adapter does;
+// - a listing's answer is not checked against its query, as the Table adapter does not check it, so a test may change
+//   it (Answer) to a page the query could not have answered, or to rows without their row or version.
+// Hooks run outside the store's lock: BeforeRead, BeforeList and BeforeCommit may throw or commit competing writes re-entrantly, and
 // AfterCommit may throw to lose the response of a transaction that did commit.
 internal sealed class InMemoryBrokerState : IBrokerState
 {
     private readonly Lock sync = new();
     private readonly Dictionary<(string Scope, string Name), (Dictionary<string, object> Row, StateVersion Version)> rows = [];
     private long versions;
-    private int reads, commits, conflicts;
+    private int reads, commits, conflicts, lists;
 
     public Func<StateKey, Task>? BeforeRead { get; set; }
     public Func<StateTransaction, Task>? BeforeCommit { get; set; }
     public Func<StateTransaction, Task>? AfterCommit { get; set; }
+    // Called with the listed range's scope.
+    public Func<string, Task>? BeforeList { get; set; }
+    public int PageSize { get; set; } = 32;
+    // The next listing calls answer an empty page that carries a continuation to the same position.
+    public int EmptyPages { get; set; }
+    // Changes what a listing answers, before its records are typed.
+    public Func<ListingAnswer, ListingAnswer>? Answer { get; set; }
     public int Reads => reads;
+    public int Lists => lists;
     public int Commits => commits;
     // Transactions that failed with a StateConflict and wrote nothing.
     public int Conflicts => conflicts;
@@ -69,6 +81,38 @@ internal sealed class InMemoryBrokerState : IBrokerState
         }
         if (AfterCommit is { } after) await after(transaction);
         return result;
+    }
+
+    public async Task<StatePage<T>> ListAsync<T>(StateRange<T> range, string after, string? continuation, CancellationToken ct)
+        where T : BrokerRecord, new()
+    {
+        ct.ThrowIfCancellationRequested();
+        Interlocked.Increment(ref lists);
+        if (BeforeList is { } before) await before(range.Scope);
+        var start = continuation is null ? after : continuation.StartsWith("after:", StringComparison.Ordinal)
+            ? continuation["after:".Length..] : throw new BrokerStateUnavailable("Unknown continuation.");
+        ListingAnswer answer;
+        lock (sync)
+        {
+            if (EmptyPages > 0)
+            {
+                EmptyPages--;
+                answer = new(range.Scope, after, [], "after:" + start);
+            }
+            else
+            {
+                var listed = rows.Where(row => row.Key.Scope == range.Scope
+                        && string.CompareOrdinal(row.Key.Name, range.From) >= 0 && string.CompareOrdinal(row.Key.Name, range.To) < 0
+                        && string.CompareOrdinal(row.Key.Name, start) > 0)
+                    .OrderBy(row => row.Key.Name, StringComparer.Ordinal)
+                    .Select(row => new ListedRow(range.Scope, row.Key.Name, new Dictionary<string, object>(row.Value.Row), row.Value.Version))
+                    .ToList();
+                var page = listed.Take(Math.Min(PageSize, 32)).ToList();
+                answer = new(range.Scope, after, page, listed.Count > page.Count ? "after:" + page[^1].Name : null);
+            }
+        }
+        if (Answer is { } change) answer = change(answer);
+        return new([.. answer.Rows.Select(row => new ListedRecord<T>(new(row.Scope, row.Name), row.Row, row.Version))], answer.Continuation);
     }
 
     // Writes a record the way another writer would, with a new version.
@@ -132,3 +176,11 @@ internal sealed class InMemoryBrokerState : IBrokerState
 
     private StateVersion NextVersion() => new("v" + ++versions);
 }
+
+// What a listing answers before its records are typed: the query's scope and `after`, the listed rows in order, and the
+// continuation.
+internal sealed record ListingAnswer(string Scope, string After, IReadOnlyList<ListedRow> Rows, string? Continuation);
+
+// A listed row as the store answered it: its key, its row (null when it broke the store's bounds) and its version (null
+// when the store answered none).
+internal sealed record ListedRow(string Scope, string Name, IReadOnlyDictionary<string, object>? Row, StateVersion? Version);
