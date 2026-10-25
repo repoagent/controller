@@ -299,7 +299,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     static string Url(int number) => $"https://github.com/owner/repository/discussions/{number}";
 
     // The dashboard's session list, from the last publication handed to the outbox unless another body is given.
-    string Listed(string? body = null) => (body ?? Published().Body).Split("\n### Active and queued sessions\n")[1].Split("\n\n### Recent failures\n")[0];
+    string Listed(string? body = null) => (body ?? Published().Body!).Split("\n### Active and queued sessions\n")[1].Split("\n\n### Recent failures\n")[0];
 
     // Discussion records as the bridge keeps them in the state file the status reads.
     void Store(params (string Id, JsonObject Record)[] records)
