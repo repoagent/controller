@@ -165,12 +165,13 @@ sealed class BridgeWorld : IAsyncDisposable
         Finish(session, turn, failed);
     }
 
-    public (string Session, string Turn) Running(int number) => Files
-        ? (Record(number)!["sessionId"]!.GetValue<string>(), Record(number)!["running"]!["turn"]!.GetValue<string>())
-        : (Saved(number)!.SessionId!, Saved(number)!.Running!.Turn);
+    public (string Session, string Turn) Running(int number) => (Saved(number)!.SessionId!, Saved(number)!.Running!.Turn);
 
-    /// <summary>The Discussion's record as last saved in memory.</summary>
-    public DiscussionRecord? Saved(int number) => State.Saved?.Discussions.GetValueOrDefault("D" + number);
+    /// <summary>The Discussion state as last saved, in memory or, with <see cref="Files"/>, as the state file reads.</summary>
+    public DiscussionState? LastSaved => Files ? new ControllerStateFiles(StatePath).ReadDiscussions() : State.Saved;
+
+    /// <summary>The Discussion's record as last saved.</summary>
+    public DiscussionRecord? Saved(int number) => LastSaved?.Discussions.GetValueOrDefault("D" + number);
 
     /// <summary>Every turn request of every lifetime so far, in order.</summary>
     public IReadOnlyList<AgentTurnRequest> Turns => [.. ended, .. lifetime?.Runtime.Requests ?? []];
@@ -199,18 +200,16 @@ sealed class BridgeWorld : IAsyncDisposable
         }
     }
 
-    /// <summary>The Discussion's record as the state file holds it, or without <see cref="Files"/> as the file adapter writes the last save.</summary>
+    /// <summary>The Discussion's record as the state file holds it, for tests of how the file is read (<see cref="Files"/>).</summary>
     public JsonObject? Record(int number)
     {
-        Mirror();
+        Assert.True(Files, "Only the state file holds record JSON; read Saved instead.");
         return JsonNode.Parse(File.ReadAllText(StatePath))!["discussions"]!["D" + number] as JsonObject;
     }
 
     /// <summary>The Discussion IDs with an agent session, as last saved.</summary>
-    public IReadOnlyList<string> WithSessions => Files
-        ? [.. JsonNode.Parse(File.ReadAllText(StatePath))!["discussions"]!.AsObject()
-            .Where(entry => entry.Value!["sessionId"]?.GetValue<string>() is { Length: > 0 }).Select(entry => entry.Key).Order()]
-        : State.Saved is { } saved ? [.. saved.Discussions.Where(entry => entry.Value.SessionId is { Length: > 0 }).Select(entry => entry.Key).Order()] : [];
+    public IReadOnlyList<string> WithSessions =>
+        LastSaved is { } saved ? [.. saved.Discussions.Where(entry => entry.Value.SessionId is { Length: > 0 }).Select(entry => entry.Key).Order()] : [];
 
     /// <summary>The operator status of the running lifetime, or as the last one left it.</summary>
     public JsonObject Status()
@@ -219,8 +218,8 @@ sealed class BridgeWorld : IAsyncDisposable
         return lifetime?.Status.Snapshot() ?? ControllerStatus.Read(StatePath, Clock)!;
     }
 
-    // ControllerStatus reads the state file until it moves to the core, and the record assertions predate the fake, so without
-    // Files the last save is written there as the file adapter writes it. No lifetime reads it back.
+    // ControllerStatus reads the state file until it moves to the core, so without Files the last save is written there as the
+    // file adapter writes it before status is read. No lifetime reads it back.
     void Mirror()
     {
         if (!Files && State.Saved is { } saved) new ControllerStateFiles(StatePath).WriteDiscussions(saved);
