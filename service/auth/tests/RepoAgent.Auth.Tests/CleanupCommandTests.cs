@@ -7,6 +7,9 @@ namespace RepoAgent.Auth.Tests;
 // code, and the optional export of its observations.
 public sealed class CleanupCommandTests
 {
+    private const string MissingKey = "IngestionEndpoint=https://westeurope-5.in.applicationinsights.azure.com/";
+    private const string RepeatedKey = "InstrumentationKey=22222222-2222-2222-2222-222222222222;instrumentationkey=22222222-2222-2222-2222-222222222222";
+
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Theory]
@@ -66,19 +69,33 @@ public sealed class CleanupCommandTests
         Assert.Equal("", host.Error.ToString());
     }
 
-    // The export returns when monitoring is disabled, and when the export fails: the adapter's ExportCleanupOnce swallows
-    // its own failures. It throws when monitoring is malformed. Neither changes the exit code or the one summary line, and
-    // neither writes to stderr. The export always gets the observations of the printed summary.
+    // The export returns when monitoring is disabled, and when ingestion fails: the adapter's ExportCleanupOnce swallows
+    // its own failures. It throws whatever BrokerSettings.Monitoring throws for a malformed connection string, which it
+    // reads first, and a cancelled export throws too. None of these changes the exit code or the one summary line, and
+    // none writes to stderr. The export always gets the observations of the printed summary.
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    public async Task A_run_prints_its_summary_as_the_only_line_whether_or_not_its_export_throws(bool exportThrows, bool storeFails)
+    [InlineData(null, null, false)]
+    [InlineData(MissingKey, typeof(InvalidOperationException), false)]
+    [InlineData("private-malformed", typeof(IndexOutOfRangeException), false)]
+    [InlineData(RepeatedKey, typeof(ArgumentException), false)]
+    [InlineData("cancelled", typeof(TaskCanceledException), false)]
+    [InlineData(null, null, true)]
+    [InlineData(MissingKey, typeof(InvalidOperationException), true)]
+    [InlineData("private-malformed", typeof(IndexOutOfRangeException), true)]
+    [InlineData(RepeatedKey, typeof(ArgumentException), true)]
+    [InlineData("cancelled", typeof(TaskCanceledException), true)]
+    public async Task A_run_prints_its_summary_as_the_only_line_whatever_its_export_throws(string? export, Type? thrown, bool storeFails)
     {
         var f = new InMemoryBroker();
         if (storeFails) f.State.BeforeRead = _ => throw new BrokerStateUnavailable("Store unavailable.");
-        var host = new Host(f) { ExportFails = exportThrows ? new InvalidOperationException("Invalid monitoring configuration.") : null };
+        var failure = export switch
+        {
+            null => null,
+            "cancelled" => new TaskCanceledException("Ingestion timed out."),
+            _ => Record.Exception(() => BrokerSettings.Monitoring(export, "11111111-1111-1111-1111-111111111111")),
+        };
+        Assert.Equal(thrown, failure?.GetType());
+        var host = new Host(f) { ExportFails = failure };
         var run = await host.RunAsync(["cleanup", "--once"]);
         Assert.Equal(storeFails ? 1 : 0, run.Exit);
         Assert.Equal("", run.Error);
