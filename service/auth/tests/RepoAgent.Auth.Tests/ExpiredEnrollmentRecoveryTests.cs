@@ -1,74 +1,70 @@
 using System.Net;
-using System.Net.Http.Json;
-using System.Text.Json;
-using Azure.Data.Tables;
 using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed partial class AzuriteReclamationTests
+// Owner recovery for a controller enrollment that was completed but never acknowledged: once its deadline passed and
+// every GitHub token it could hold is positively settled, reclamation hands the repository gate back, and nothing less
+// releases it. Decided by the core over the in-memory broker state and a manual clock.
+public sealed class ExpiredEnrollmentRecoveryTests
 {
+    private static readonly StateKey<RepositoryGate> GateKey = RepositoryGate.Key(Retained.Repository);
+    private static CancellationToken Token => TestContext.Current.CancellationToken;
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Expired_unacknowledged_owner_allows_fresh_enrollment_after_positive_settlement(bool pendingAlreadyReleased)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var old = await Unacknowledged(f);
+        var f = new InMemoryBroker();
+        var old = await Retained.CompletedAgent(f);
         f.Clock.Advance(TimeSpan.FromMinutes(15));
-        if (pendingAlreadyReleased) await ReclaimPending(f, old.Id);
+        if (pendingAlreadyReleased) await Retained.ReclaimEnrollment(f, old.Id);
         await SettleVerifiers(f);
-        await f.RestartAsync();
 
-        await ReclaimPending(f, old.Id);
-        await ReclaimPending(f, old.Id);
+        await Retained.ReclaimEnrollment(f, old.Id);
+        await Retained.ReclaimEnrollment(f, old.Id);
 
-        // Exercise the consumer's actual recovery outcome, not just a vacant-row projection.
-        var replacement = await Active(f);
+        // Exercise the consumer's actual recovery outcome, not just a vacant-gate projection.
+        var replacement = await Retained.ActiveAgent(f);
         Assert.NotEqual(old.Device, replacement.Device);
         Assert.NotEqual(old.Secret, replacement.Secret);
-        using var runtime = await f.Send($"/v1/devices/{replacement.Device}/installation-token", secret: replacement.Secret);
-        Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
-        using var oldRuntime = await f.Send($"/v1/devices/{old.Device}/installation-token", secret: old.Secret);
-        Assert.Equal(HttpStatusCode.Unauthorized, oldRuntime.StatusCode);
-        using var oldAck = await f.Send($"/v2/devices/{old.Device}/acknowledgment", new { completionId = old.Completion }, old.Secret);
-        Assert.NotEqual(HttpStatusCode.OK, oldAck.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.Device, replacement.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.Device, old.Secret)).StatusCode);
+        Assert.NotEqual(HttpStatusCode.OK, (await f.Acknowledge(old.Device, old.Completion, old.Secret, 2)).StatusCode);
 
         // A delayed old cleanup visit must not close or release the replacement.
-        var gate = await Read(f, RevocationFixture.Partition, "gate");
-        await ReclaimPending(f, old.Id);
-        Assert.Equal(gate.ETag, (await Read(f, gate.PartitionKey, gate.RowKey)).ETag);
-        var retired = await Read(f, RevocationFixture.Partition, "device:" + old.Device);
-        Assert.Equal("revoked", retired.GetString("State"));
-        Assert.False(retired.GetBoolean("Acknowledged"));
-        Assert.Equal(old.Device, (await Read(f, RevocationFixture.Partition, "revocation:" + old.Device)).GetString("DeviceId"));
-        var quota = await Read(f, "global:enrollment-v1", "quota");
-        Assert.Equal(2L, quota.GetInt64("RetainedEnrollmentCount"));
-        Assert.Equal(1L, quota.GetInt64("Count"));
+        var gate = f.State.Version(GateKey);
+        await Retained.ReclaimEnrollment(f, old.Id);
+        Assert.Equal(gate, f.State.Version(GateKey));
+        Assert.Equal(replacement.Device, f.Gate.OwnerEnrollmentId);
+        var retired = f.Enrollment(old.Device);
+        Assert.Equal("revoked", retired.State);
+        Assert.False(retired.Acknowledged);
+        Assert.Equal(old.Device, f.State.Get(RevocationReceipt.Key(Retained.Repository, old.Device))!.EnrollmentId);
+        var quota = f.State.Get(EnrollmentQuota.Key)!;
+        Assert.Equal(2L, quota.RetainedEnrollmentCount);
+        Assert.Equal(1L, quota.Count);
     }
 
     [Fact]
     public async Task Unknown_setup_send_still_blocks_owner_recovery_after_known_tokens_expire()
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var old = await Unacknowledged(f);
+        var f = new InMemoryBroker();
+        var old = await Retained.CompletedAgent(f);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("Provider send outcome unknown");
-        using var unknown = await f.Send("/v2/enrollments", Request(Guid.NewGuid().ToString("N")));
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, unknown.StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2)).StatusCode);
         f.Clock.Advance(TimeSpan.FromDays(2));
-        foreach (var ledger in await IssuanceLedgers(f)) await Reclaim(f, ledger);
-        await ReclaimPending(f, old.Id);
+        foreach (var ledger in Retained.IssuanceLedgers(f)) await Retained.ReclaimIssuance(f, ledger.Value);
+        await Retained.ReclaimEnrollment(f, old.Id);
 
-        await ReclaimPending(f, old.Id);
+        await Retained.ReclaimEnrollment(f, old.Id);
 
-        var gate = await Read(f, RevocationFixture.Partition, "gate");
-        Assert.Equal(old.Device, gate.GetString("OwnerDeviceId"));
-        Assert.Equal(1L, gate.GetInt64("OutstandingTokenCount"));
-        Assert.False((await f.Storage.Table.GetEntityIfExistsAsync<TableEntity>(gate.PartitionKey,
-            "revocation:" + old.Device, cancellationToken: Token)).HasValue);
-        using var runtime = await f.Send($"/v1/devices/{old.Device}/installation-token", secret: old.Secret);
-        Assert.Equal(HttpStatusCode.Unauthorized, runtime.StatusCode);
+        Assert.Equal(old.Device, f.Gate.OwnerEnrollmentId);
+        Assert.Equal(1L, f.Gate.OutstandingTokenCount);
+        Assert.Null(f.State.Row(RevocationReceipt.Key(Retained.Repository, old.Device)));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.Device, old.Secret)).StatusCode);
     }
 
     [Theory]
@@ -82,78 +78,81 @@ public sealed partial class AzuriteReclamationTests
     [InlineData("unknown-property")]
     public async Task Owner_recovery_requires_never_activated_device_and_complete_current_binding_proofs(string barrier)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var old = await Unacknowledged(f);
+        var f = new InMemoryBroker();
+        var old = await Retained.CompletedAgent(f);
         if (barrier == "acknowledged")
         {
             f.Clock.Advance(TimeSpan.FromMinutes(1));
-            using var ack = await f.Send($"/v2/devices/{old.Device}/acknowledgment", new { completionId = old.Completion }, old.Secret);
-            Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(old.Device, old.Completion, old.Secret, 2)).StatusCode);
         }
         f.Clock.Advance(TimeSpan.FromDays(91));
         await SettleVerifiers(f);
-        await ReclaimPending(f, old.Id);
-        var device = await Read(f, RevocationFixture.Partition, "device:" + old.Device);
-        if (barrier == "pending-binding") device["PendingId"] = "123456_" + Guid.NewGuid().ToString("N");
-        if (barrier == "missing-acknowledgment") device.Remove("Acknowledged");
-        // An enrollment of another App, which the deployment's binding does not encode.
-        if (barrier == "app-binding") device["AppSlug"] = "another-app";
-        // A property no record maps: the release reads the gate and the enrollment through their records.
-        if (barrier == "unknown-property") device["Unrecognized"] = "kept by no record";
+        await Retained.ReclaimEnrollment(f, old.Id);
+        var device = ControllerEnrollment.Key(Retained.Repository, old.Device);
         if (barrier is "pending-binding" or "missing-acknowledgment" or "app-binding" or "unknown-property")
-            await f.Storage.Table.UpdateEntityAsync(device, device.ETag, TableUpdateMode.Replace, Token);
-        if (barrier == "missing-device") await f.Storage.Table.DeleteEntityAsync(device.PartitionKey, device.RowKey, device.ETag, Token);
-        if (barrier == "missing-release")
-        {
-            var release = await Read(f, RevocationFixture.Partition, "release:pending:" + old.Id);
-            await f.Storage.Table.DeleteEntityAsync(release.PartitionKey, release.RowKey, release.ETag, Token);
-        }
-        var before = await Read(f, RevocationFixture.Partition, "gate");
+            f.State.Change(device, row =>
+            {
+                if (barrier == "pending-binding") row["PendingId"] = "123456_" + Guid.NewGuid().ToString("N");
+                if (barrier == "missing-acknowledgment") Assert.True(row.Remove("Acknowledged"));
+                // An enrollment of another App, which the deployment's binding does not encode.
+                if (barrier == "app-binding") row["AppSlug"] = "another-app";
+                // A property no record maps: the release reads the gate and the enrollment through their records.
+                if (barrier == "unknown-property") row["Unrecognized"] = "kept by no record";
+            });
+        if (barrier == "missing-device") Assert.True(f.State.Remove(device));
+        if (barrier == "missing-release") Assert.True(f.State.Remove(ReleaseProof.Enrollment(Retained.Repository, old.Id)));
+        var before = f.State.Version(GateKey);
+        Assert.NotNull(before);
+        if (barrier == "epoch") f.DeploymentEpoch = "restored-epoch";
 
-        if (barrier == "epoch")
-        {
-            var ledger = await Read(f, "global:enrollment-v1", "pending:" + old.Id);
-            await new CapacityReclamation(new TableBrokerState(f.Storage.Table), (Options(f) with { DeploymentEpoch = "restored-epoch" }).DeploymentEpoch, f.Clock)
-                .ReclaimEnrollmentAsync(old.Id, ledger.GetString("Generation")!, Token);
-        }
-        else if (barrier is "pending-binding" or "missing-device" or "missing-release" or "app-binding")
-            await Assert.ThrowsAsync<IssuanceDenied>(() => ReclaimPending(f, old.Id));
-        else if (barrier == "unknown-property") await Assert.ThrowsAsync<BrokerRecordUnreadable>(() => ReclaimPending(f, old.Id));
-        else await ReclaimPending(f, old.Id);
+        if (barrier is "pending-binding" or "missing-device" or "missing-release" or "app-binding")
+            await Assert.ThrowsAsync<IssuanceDenied>(() => Retained.ReclaimEnrollment(f, old.Id));
+        else if (barrier == "unknown-property") await Assert.ThrowsAsync<BrokerRecordUnreadable>(() => Retained.ReclaimEnrollment(f, old.Id));
+        else await Retained.ReclaimEnrollment(f, old.Id);
 
-        Assert.Equal(before.ETag, (await Read(f, before.PartitionKey, before.RowKey)).ETag);
-        Assert.Equal(old.Device, (await Read(f, before.PartitionKey, before.RowKey)).GetString("OwnerDeviceId"));
+        Assert.Equal(before, f.State.Version(GateKey));
+        Assert.Equal(old.Device, f.Gate.OwnerEnrollmentId);
     }
 
     [Fact]
     public async Task Stale_recovery_cannot_release_a_replacement_after_another_worker_recovers_the_owner()
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var old = await Unacknowledged(f);
+        var f = new InMemoryBroker();
+        var old = await Retained.CompletedAgent(f);
         f.Clock.Advance(TimeSpan.FromMinutes(15));
-        await ReclaimPending(f, old.Id);
+        await Retained.ReclaimEnrollment(f, old.Id);
         await SettleVerifiers(f);
-        var pause = new CapacityPause(body => body.Contains("\"State\":\"vacant\"", StringComparison.Ordinal));
-        var stale = ReclaimPending(f, old.Id, f.Storage.CreateClient(pause.Transport));
+        // The first owner release to commit is the stale worker's; it is held until another worker released the owner
+        // and a replacement took the gate.
+        var pause = new CommitPause(f.State, t => t.Writes("State", "vacant"));
+        var stale = Retained.ReclaimEnrollment(f, old.Id);
         try
         {
             await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(8), Token);
-            await ReclaimPending(f, old.Id);
-            var replacement = await Active(f);
-            var gate = await Read(f, RevocationFixture.Partition, "gate");
+            await Retained.ReclaimEnrollment(f, old.Id);
+            var replacement = await Retained.ActiveAgent(f);
+            var gate = f.State.Version(GateKey);
             pause.Release.TrySetResult();
 
             await Assert.ThrowsAsync<StateConflict>(() => stale);
 
-            Assert.Equal(gate.ETag, (await Read(f, gate.PartitionKey, gate.RowKey)).ETag);
-            Assert.Equal(replacement.Device, (await Read(f, gate.PartitionKey, gate.RowKey)).GetString("OwnerDeviceId"));
-            using var runtime = await f.Send($"/v1/devices/{replacement.Device}/installation-token", secret: replacement.Secret);
-            Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
+            Assert.Equal(gate, f.State.Version(GateKey));
+            Assert.Equal(replacement.Device, f.Gate.OwnerEnrollmentId);
+            Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.Device, replacement.Secret)).StatusCode);
         }
         finally
         {
             pause.Release.TrySetResult();
             try { await stale; } catch (Exception ex) when (ex is StateConflict or BrokerStateUnavailable) { }
         }
+    }
+
+    // Past every verifier GitHub token's expiry and grace, with each issuance attempt reclaimed.
+    private static async Task SettleVerifiers(InMemoryBroker f)
+    {
+        var ledgers = Retained.IssuanceLedgers(f);
+        var expiry = ledgers.Max(ledger => f.State.Get(Retained.Attempt(ledger.Value))!.ExpiresAt!.Value.AddMinutes(5));
+        if (expiry > f.Clock.GetUtcNow()) f.Clock.Advance(expiry - f.Clock.GetUtcNow());
+        foreach (var ledger in ledgers) await Retained.ReclaimIssuance(f, ledger.Value);
     }
 }
