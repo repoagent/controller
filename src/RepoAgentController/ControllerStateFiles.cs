@@ -260,6 +260,8 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
                 "title" => CheckpointPart.Title, "closed" => CheckpointPart.Closed, "locked" => CheckpointPart.Locked, "answer" => CheckpointPart.Answer,
                 "category" => CheckpointPart.Category, _ => CheckpointPart.OtherState
             }));
+        // A key that holds null where the writer leaves it out, or the reverse, changes no field but the state as compared.
+        if (!JsonNode.DeepEquals(written, state) && changed.All(part => part == CheckpointPart.Content)) changed.Add(CheckpointPart.OtherState);
         var reactions = (checkpoint["reactions"]?.AsObject() ?? []).Select(entry => (entry.Value is JsonObject reaction ? Lenient(() => Reaction(reaction)) : null) ??
             new(entry.Key, "", null, default));
         var checkpointed = new SourceCheckpoint(read, observed, [.. reactions], checkpoint["replyTo"].OptionalText()) { ReadAsChanged = changed };

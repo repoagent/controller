@@ -345,6 +345,8 @@ public sealed class BridgeEnrollmentTests
     [InlineData("sources.D1.state", null, "discussion.stateChanged(title closed locked category),comment.created")]
     [InlineData("sources.D1.state.closed", "\"yes\"", "discussion.stateChanged(closed),comment.created")]
     [InlineData("sources.D1.state.extra", "1", "discussion.stateChanged(),comment.created")]
+    [InlineData("sources.D1.state.extra", "null", "discussion.stateChanged(),comment.created")]
+    [InlineData("sources.D1.state.answer", null, "discussion.stateChanged(),comment.created")]
     [InlineData("sources.D1.reactions", null, "reaction.added,comment.created")]
     [InlineData("sources.D1.reactions.R1", "5", "comment.created")]
     [InlineData("waiting", "5", "comment.created", true)] // Replaced by what observation found, as it was.
