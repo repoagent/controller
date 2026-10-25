@@ -53,6 +53,23 @@ public sealed class EnrollmentDecisionTests
         Assert.Equal(0, f.GitHub.Reads);
     }
 
+    // An expired ledger is gone, even after reclamation released it: the expiry answers before the release does.
+    [Fact]
+    public async Task Retried_start_of_an_expired_released_ledger_is_gone()
+    {
+        var f = new InMemoryBroker();
+        var request = InMemoryBroker.Request();
+        f.State.AfterCommit = _ => Lost("Lost committed admission");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Start(request)).StatusCode);
+        f.State.AfterCommit = null;
+        // Reclamation released the expired ledger; redaction has not run yet.
+        f.Clock.Advance(TimeSpan.FromMinutes(16));
+        f.State.Change(EnrollmentLedger.Key(request.IdempotencyId), row => row["PendingCapacityReleased"] = true);
+        Assert.Equal(HttpStatusCode.Gone, (await f.Start(request)).StatusCode);
+        Assert.DoesNotContain(f.Rows(), row => row.Scope == InMemoryBroker.Partition);
+        Assert.Equal(0, f.GitHub.Reads);
+    }
+
     // The gate and the candidate repository count pending enrollments in separate partitions; each limit holds on its own.
     [Fact]
     public async Task Gate_pending_limit_holds_when_the_candidate_repository_counts_fewer()
