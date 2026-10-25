@@ -100,8 +100,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             {
                 // Read every page, including reactions to agent-authored messages.
                 var conversation = await discussions.Read(discussion, ct);
-                (DiscussionMessage Message, IReadOnlyList<Reaction> Reactions)[] sources =
-                    [(discussion, conversation.Reactions), .. conversation.Comments.Select(comment => ((DiscussionMessage)comment, comment.Reactions))];
+                var sources = conversation.Messages;
                 var bootstrap = record is null || record.Text("sessionId").Length == 0;
                 var byCategory = false;
                 if (bootstrap && record?["waiting"] is null && !enroll.Contains(discussion.Number) &&
@@ -316,15 +315,12 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         // Bootstrap context travels with the first batch delivered to the session.
         if (context is not null) waiting["context"] = context;
         var inputs = waiting["inputs"]!.AsArray();
+        var sources = conversation.Messages;
         var observed = clock.GetUtcNow().ToString("O");
         for (var index = 0; index < changes.Count; index++)
         {
             var input = new JsonObject { ["observedAt"] = observed, ["change"] = changes[index]!.Copy() };
-            if (receipts[index] is { } subject)
-            {
-                DiscussionMessage[] sources = [conversation.Discussion, .. conversation.Comments];
-                input["receipt"] = DiscussionJson.Receipt(sources.First(candidate => candidate.Id == subject));
-            }
+            if (receipts[index] is { } subject) input["receipt"] = DiscussionJson.Receipt(sources.First(source => source.Message.Id == subject).Message);
             inputs.Add((JsonNode)input);
         }
         record["waiting"] = waiting;

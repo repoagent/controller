@@ -17,10 +17,7 @@ public sealed record Reaction(string Id, string Content, Actor? User, DateTimeOf
 public abstract record DiscussionMessage(string Id, string Url, string Body, Actor? Author, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
     IReadOnlyList<ReactionGroup> ReactionGroups, IReadOnlySet<string> MentionedUsers)
 {
-    /// <summary>Whether the App has reacted with EYES, its receipt for accepted input.</summary>
-    public bool HasEyesReceipt => HasEyes(ReactionGroups);
-
-    /// <summary>Whether these reaction groups hold the App's EYES receipt.</summary>
+    /// <summary>Whether these reaction groups hold the App's EYES receipt for accepted input.</summary>
     public static bool HasEyes(IEnumerable<ReactionGroup> groups) => groups.Any(group => group.Content == "EYES" && group.ViewerHasReacted);
 }
 
@@ -39,7 +36,12 @@ public sealed record DiscussionComment(string Id, string Url, string Body, Actor
 /// A Discussion with every page of its reactions and comments: the top-level comments in order, then the replies to each in
 /// that order.
 /// </summary>
-public sealed record DiscussionConversation(Discussion Discussion, IReadOnlyList<Reaction> Reactions, IReadOnlyList<DiscussionComment> Comments);
+public sealed record DiscussionConversation(Discussion Discussion, IReadOnlyList<Reaction> Reactions, IReadOnlyList<DiscussionComment> Comments)
+{
+    /// <summary>The Discussion, then each comment in order, each with its reactions.</summary>
+    public IReadOnlyList<(DiscussionMessage Message, IReadOnlyList<Reaction> Reactions)> Messages =>
+        [(Discussion, Reactions), .. Comments.Select(comment => ((DiscussionMessage)comment, comment.Reactions))];
+}
 
 /// <summary>A Discussion in the dashboard's category: who wrote it and its body, which tell the App's dashboard from others.</summary>
 public sealed record CategoryDiscussion(string Id, string Url, Actor? Author, string Body);

@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 namespace RepoAgentController;
 
 /// <summary>The <see cref="IDiscussions"/> adapter: the repository's Discussions, the App's EYES receipts and its owned dashboard,
-/// through gh's GraphQL API with the installation token. <see cref="DiscussionJson"/> maps the nodes to records.</summary>
+/// through gh's GraphQL API with the GitHub token. <see cref="DiscussionJson"/> maps the nodes to records.</summary>
 sealed class GitHubDiscussions(GitHub github) : IDiscussions
 {
     const string MessageFields = "id url body bodyHTML createdAt updatedAt author { __typename login } reactionGroups { content viewerHasReacted }";

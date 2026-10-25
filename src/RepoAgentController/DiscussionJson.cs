@@ -52,7 +52,7 @@ static class DiscussionJson
         ["id"] = discussion.Id, ["url"] = discussion.Url, ["body"] = discussion.Body, ["createdAt"] = Time(discussion.CreatedAt),
         ["updatedAt"] = Time(discussion.UpdatedAt), ["author"] = Author(discussion.Author), ["number"] = discussion.Number,
         ["title"] = discussion.Title, ["closed"] = discussion.Closed, ["locked"] = discussion.Locked, ["answer"] = Answer(discussion),
-        ["category"] = discussion.Category is { } category ? new JsonObject { ["id"] = category.Id, ["name"] = category.Name } : null
+        ["category"] = Category(discussion)
     };
 
     /// <summary>A comment as bootstrap context carries it, with its reactions.</summary>
@@ -83,7 +83,7 @@ static class DiscussionJson
         var state = source is Discussion discussion ? new JsonObject
         {
             ["title"] = discussion.Title, ["closed"] = discussion.Closed, ["locked"] = discussion.Locked, ["answer"] = Answer(discussion),
-            ["category"] = discussion.Category is { } category ? new JsonObject { ["id"] = category.Id, ["name"] = category.Name } : null
+            ["category"] = Category(discussion)
         } : new JsonObject();
         var others = new JsonObject();
         foreach (var reaction in reactions)
@@ -108,5 +108,7 @@ static class DiscussionJson
 
     static JsonObject? Author(Actor? actor) => actor is null ? null : new JsonObject { ["__typename"] = actor.Type, ["login"] = actor.Login };
     static JsonObject? Answer(Discussion discussion) => discussion.AnswerId is { } id ? new JsonObject { ["id"] = id } : null;
+    static JsonObject? Category(Discussion discussion) =>
+        discussion.Category is { } category ? new JsonObject { ["id"] = category.Id, ["name"] = category.Name } : null;
     static string Time(DateTimeOffset at) => at.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
 }
