@@ -11,6 +11,7 @@
     <ProjectReference Include="../../src/RepoAgentController/RepoAgentController.csproj" />
     <EmbeddedResource Include="DiscussionJsonGolden.json" LogicalName="DiscussionJsonGolden.json" />
     <EmbeddedResource Include="StateFileWritten.json" LogicalName="StateFileWritten.json" />
+    <EmbeddedResource Include="ControllerStatusGolden.txt" LogicalName="ControllerStatusGolden.txt" />
     <None Include="../../src/RepoAgentController/bin/$(Configuration)/$(TargetFramework)/RepoAgentController.runtimeconfig.json" Link="RepoAgentController.runtimeconfig.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../src/RepoAgentController/bin/$(Configuration)/$(TargetFramework)/RepoAgentController.deps.json" Link="RepoAgentController.deps.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

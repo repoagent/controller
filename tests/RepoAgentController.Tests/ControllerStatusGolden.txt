@@ -1,0 +1,388 @@
+--- live ---
+{
+  "version": 1,
+  "generatedAt": "2026-10-25T09:00:10.0000000+00:00",
+  "repository": "owner/repository",
+  "actor": "test-app[bot]",
+  "controller": {
+    "state": "running",
+    "mode": "polling",
+    "startedAt": "2026-10-25T09:00:00.0000000+00:00",
+    "updatedAt": "2026-10-25T09:00:06.0000000+00:00"
+  },
+  "authentication": {
+    "state": "healthy",
+    "updatedAt": "2026-10-25T09:00:02.0000000+00:00"
+  },
+  "codexAuthentication": {
+    "state": "supplied",
+    "updatedAt": "2026-10-25T09:00:03.0000000+00:00"
+  },
+  "settings": {
+    "REPOAGENT_MAX_ACTIVE_SESSIONS": {
+      "state": "configured",
+      "value": "3",
+      "since": "2026-10-25T09:00:00.0000000+00:00"
+    },
+    "REPOAGENT_MODEL": {
+      "state": "invalid",
+      "reason": "must be a model name"
+    }
+  },
+  "work": {
+    "sessions": 5,
+    "pending": 1,
+    "retrying": 1,
+    "waiting": 5,
+    "running": 3,
+    "limit": 3,
+    "admissionBlocked": true
+  },
+  "sessions": [
+    {
+      "discussion": "https://github.com/owner/repository/discussions/1",
+      "session": "S1",
+      "state": "idle"
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/2",
+      "session": "S2",
+      "state": "pending",
+      "since": "2026-10-25T09:01:00.0000000+00:00",
+      "operation": "send",
+      "waiting": 1
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/3",
+      "session": "S3",
+      "state": "retrying",
+      "attempts": 2,
+      "retryAt": "2026-10-25T09:05:00.0000000+00:00",
+      "waiting": 2
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/4",
+      "session": "S4",
+      "state": "running",
+      "since": "2026-10-25T09:02:00.0000000+00:00",
+      "waiting": 1
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/5",
+      "session": null,
+      "state": "idle",
+      "waiting": 1
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/6",
+      "session": "S6",
+      "state": "running"
+    }
+  ],
+  "failures": [
+    {
+      "at": "2026-10-25T09:00:06.0000000+00:00",
+      "kind": "delivery-retry",
+      "message": "https://github.com/owner/repository/discussions/3 session=S3 attempt=2 redelivery=false inputs=2 sources=C3 retry-at=2026-10-25T09:05:00.0000000+00:00: native refused"
+    }
+  ],
+  "latestActivity": {
+    "at": "2026-10-25T09:00:05.0000000+00:00",
+    "kind": "forwarded",
+    "message": "https://github.com/owner/repository/discussions/1 session=S1 changes=1 sources=C1 waiting=0 latest=https://github.com/owner/repository/discussions/1#discussioncomment-7",
+    "url": "https://github.com/owner/repository/discussions/1#discussioncomment-7"
+  }
+}
+--- record ---
+{
+  "version": 1,
+  "repository": "owner/repository",
+  "controller": {
+    "state": "stopped",
+    "mode": "polling",
+    "startedAt": "2026-10-25T09:00:00.0000000+00:00",
+    "updatedAt": "2026-10-25T09:00:20.0000000+00:00",
+    "stoppedAt": "2026-10-25T09:00:20.0000000+00:00"
+  },
+  "authentication": {
+    "state": "healthy",
+    "updatedAt": "2026-10-25T09:00:02.0000000+00:00"
+  },
+  "codexAuthentication": {
+    "state": "supplied",
+    "updatedAt": "2026-10-25T09:00:03.0000000+00:00"
+  },
+  "failures": [
+    {
+      "at": "2026-10-25T09:00:06.0000000+00:00",
+      "kind": "delivery-retry",
+      "message": "https://github.com/owner/repository/discussions/3 session=S3 attempt=2 redelivery=false inputs=2 sources=C3 retry-at=2026-10-25T09:05:00.0000000+00:00: native refused"
+    }
+  ],
+  "latestActivity": {
+    "at": "2026-10-25T09:00:05.0000000+00:00",
+    "kind": "forwarded",
+    "message": "https://github.com/owner/repository/discussions/1 session=S1 changes=1 sources=C1 waiting=0 latest=https://github.com/owner/repository/discussions/1#discussioncomment-7",
+    "url": "https://github.com/owner/repository/discussions/1#discussioncomment-7"
+  },
+  "runningSessions": [
+    "S4",
+    "S9"
+  ]
+}
+--- stopped ---
+{
+  "version": 1,
+  "generatedAt": "2026-10-25T09:00:30.0000000+00:00",
+  "repository": "owner/repository",
+  "actor": "test-app[bot]",
+  "controller": {
+    "state": "stopped",
+    "mode": "polling",
+    "startedAt": "2026-10-25T09:00:00.0000000+00:00",
+    "updatedAt": "2026-10-25T09:00:20.0000000+00:00",
+    "stoppedAt": "2026-10-25T09:00:20.0000000+00:00"
+  },
+  "authentication": {
+    "state": "healthy",
+    "updatedAt": "2026-10-25T09:00:02.0000000+00:00"
+  },
+  "codexAuthentication": {
+    "state": "supplied",
+    "updatedAt": "2026-10-25T09:00:03.0000000+00:00"
+  },
+  "settings": {
+    "REPOAGENT_MAX_ACTIVE_SESSIONS": {
+      "state": "configured",
+      "value": "3",
+      "since": "2026-10-25T09:00:00.0000000+00:00"
+    },
+    "REPOAGENT_MODEL": {
+      "state": "invalid",
+      "reason": "must be a model name"
+    }
+  },
+  "work": {
+    "sessions": 5,
+    "pending": 1,
+    "retrying": 1,
+    "waiting": 5,
+    "running": 0,
+    "limit": 3,
+    "admissionBlocked": true
+  },
+  "sessions": [
+    {
+      "discussion": "https://github.com/owner/repository/discussions/1",
+      "session": "S1",
+      "state": "idle"
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/2",
+      "session": "S2",
+      "state": "pending",
+      "since": "2026-10-25T09:01:00.0000000+00:00",
+      "operation": "send",
+      "waiting": 1
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/3",
+      "session": "S3",
+      "state": "retrying",
+      "attempts": 2,
+      "retryAt": "2026-10-25T09:05:00.0000000+00:00",
+      "waiting": 2
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/4",
+      "session": "S4",
+      "state": "idle",
+      "waiting": 1
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/5",
+      "session": null,
+      "state": "idle",
+      "waiting": 1
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/6",
+      "session": "S6",
+      "state": "idle"
+    }
+  ],
+  "failures": [
+    {
+      "at": "2026-10-25T09:00:06.0000000+00:00",
+      "kind": "delivery-retry",
+      "message": "https://github.com/owner/repository/discussions/3 session=S3 attempt=2 redelivery=false inputs=2 sources=C3 retry-at=2026-10-25T09:05:00.0000000+00:00: native refused"
+    }
+  ],
+  "latestActivity": {
+    "at": "2026-10-25T09:00:05.0000000+00:00",
+    "kind": "forwarded",
+    "message": "https://github.com/owner/repository/discussions/1 session=S1 changes=1 sources=C1 waiting=0 latest=https://github.com/owner/repository/discussions/1#discussioncomment-7",
+    "url": "https://github.com/owner/repository/discussions/1#discussioncomment-7"
+  }
+}
+--- restarted ---
+{
+  "version": 1,
+  "generatedAt": "2026-10-25T09:00:30.0000000+00:00",
+  "repository": "owner/repository",
+  "actor": "test-app[bot]",
+  "controller": {
+    "state": "failed",
+    "mode": "webhook",
+    "startedAt": "2026-10-25T09:00:30.0000000+00:00",
+    "updatedAt": "2026-10-25T09:00:42.0000000+00:00"
+  },
+  "authentication": {
+    "state": "failed",
+    "updatedAt": "2026-10-25T09:00:40.0000000+00:00",
+    "error": "GitHub App installation token refresh failed: HTTP 401"
+  },
+  "codexAuthentication": {
+    "state": "failed",
+    "updatedAt": "2026-10-25T09:00:41.0000000+00:00",
+    "error": "turn failed: unexpected status 401 Unauthorized"
+  },
+  "settings": {
+    "REPOAGENT_MAX_ACTIVE_SESSIONS": {
+      "state": "configured",
+      "value": "3",
+      "since": "2026-10-25T09:00:00.0000000+00:00"
+    },
+    "REPOAGENT_MODEL": {
+      "state": "invalid",
+      "reason": "must be a model name"
+    }
+  },
+  "work": {
+    "sessions": 5,
+    "pending": 1,
+    "retrying": 1,
+    "waiting": 5,
+    "running": 0,
+    "limit": 3,
+    "admissionBlocked": true
+  },
+  "sessions": [
+    {
+      "discussion": "https://github.com/owner/repository/discussions/1",
+      "session": "S1",
+      "state": "idle"
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/2",
+      "session": "S2",
+      "state": "pending",
+      "since": "2026-10-25T09:01:00.0000000+00:00",
+      "operation": "send",
+      "waiting": 1
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/3",
+      "session": "S3",
+      "state": "retrying",
+      "attempts": 2,
+      "retryAt": "2026-10-25T09:05:00.0000000+00:00",
+      "waiting": 2
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/4",
+      "session": "S4",
+      "state": "idle",
+      "waiting": 1
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/5",
+      "session": null,
+      "state": "idle",
+      "waiting": 1
+    },
+    {
+      "discussion": "https://github.com/owner/repository/discussions/6",
+      "session": "S6",
+      "state": "idle"
+    }
+  ],
+  "failures": [
+    {
+      "at": "2026-10-25T09:00:06.0000000+00:00",
+      "kind": "delivery-retry",
+      "message": "https://github.com/owner/repository/discussions/3 session=S3 attempt=2 redelivery=false inputs=2 sources=C3 retry-at=2026-10-25T09:05:00.0000000+00:00: native refused"
+    },
+    {
+      "at": "2026-10-25T09:00:40.0000000+00:00",
+      "kind": "app-refresh-error",
+      "message": "GitHub App installation token refresh failed: HTTP 401"
+    },
+    {
+      "at": "2026-10-25T09:00:41.0000000+00:00",
+      "kind": "codex-auth-failed",
+      "message": "turn failed: unexpected status 401 Unauthorized"
+    },
+    {
+      "at": "2026-10-25T09:00:42.0000000+00:00",
+      "kind": "fatal",
+      "message": "GitHub App installation token refresh failed: HTTP 401"
+    }
+  ],
+  "latestActivity": {
+    "at": "2026-10-25T09:00:05.0000000+00:00",
+    "kind": "forwarded",
+    "message": "https://github.com/owner/repository/discussions/1 session=S1 changes=1 sources=C1 waiting=0 latest=https://github.com/owner/repository/discussions/1#discussioncomment-7",
+    "url": "https://github.com/owner/repository/discussions/1#discussioncomment-7"
+  }
+}
+--- failed ---
+{
+  "version": 1,
+  "repository": "owner/repository",
+  "controller": {
+    "state": "failed",
+    "mode": "webhook",
+    "startedAt": "2026-10-25T09:00:30.0000000+00:00",
+    "updatedAt": "2026-10-25T09:00:30.0000000+00:00",
+    "stoppedAt": "2026-10-25T09:00:30.0000000+00:00"
+  },
+  "authentication": {
+    "state": "failed",
+    "updatedAt": "2026-10-25T09:00:40.0000000+00:00",
+    "error": "GitHub App installation token refresh failed: HTTP 401"
+  },
+  "codexAuthentication": {
+    "state": "failed",
+    "updatedAt": "2026-10-25T09:00:41.0000000+00:00",
+    "error": "turn failed: unexpected status 401 Unauthorized"
+  },
+  "failures": [
+    {
+      "at": "2026-10-25T09:00:06.0000000+00:00",
+      "kind": "delivery-retry",
+      "message": "https://github.com/owner/repository/discussions/3 session=S3 attempt=2 redelivery=false inputs=2 sources=C3 retry-at=2026-10-25T09:05:00.0000000+00:00: native refused"
+    },
+    {
+      "at": "2026-10-25T09:00:40.0000000+00:00",
+      "kind": "app-refresh-error",
+      "message": "GitHub App installation token refresh failed: HTTP 401"
+    },
+    {
+      "at": "2026-10-25T09:00:41.0000000+00:00",
+      "kind": "codex-auth-failed",
+      "message": "turn failed: unexpected status 401 Unauthorized"
+    },
+    {
+      "at": "2026-10-25T09:00:42.0000000+00:00",
+      "kind": "fatal",
+      "message": "GitHub App installation token refresh failed: HTTP 401"
+    }
+  ],
+  "latestActivity": {
+    "at": "2026-10-25T09:00:05.0000000+00:00",
+    "kind": "forwarded",
+    "message": "https://github.com/owner/repository/discussions/1 session=S1 changes=1 sources=C1 waiting=0 latest=https://github.com/owner/repository/discussions/1#discussioncomment-7",
+    "url": "https://github.com/owner/repository/discussions/1#discussioncomment-7"
+  }
+}
