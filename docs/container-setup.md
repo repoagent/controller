@@ -143,7 +143,7 @@ docker run --rm \
   repoagent:local supply-codex-auth
 ```
 
-The command atomically replaces `/data/credentials/codex-supply/auth.json` (owner-only). Once that file exists, `start` and `check` pass it to the controller as `--codex-auth` instead of checking the container sign-in. A running agent applies a replacement within about five seconds when no Codex turn is running: it restarts only its owned Codex app-server, and each Discussion's session resumes its native history on the next input. The pinned Codex cannot reload a replaced `auth.json` in a running app-server, so that owned restart is required. Rejected credentials appear as `codexAuthentication.state` `failed` in `status`, and new input waits until replacement credentials are applied. See [supplied Codex credentials](../README.md#supplied-codex-credentials).
+The command atomically replaces `/data/credentials/codex-supply/auth.json` (owner-only). Once that file exists, `start` and `check` pass it to the controller as `--codex-auth` instead of checking the container sign-in. A running agent applies a replacement within about five seconds when no Codex turn is running: it restarts only its owned Codex app-server, and each Discussion's session resumes its native history on the next input. The pinned Codex cannot reload a replaced `auth.json` in a running app-server, so that owned restart is required. Rejected credentials appear as `codexAuthentication.state` `failed` in `status`, and new input waits until replacement credentials are applied. See [supplied Codex credentials](controller-operations.md#supplied-codex-credentials).
 
 ## Skills
 
@@ -203,9 +203,9 @@ Polling mode publishes no ports. Explicit [fixed-URL webhook mode](webhooks.md) 
 ./repoagent state
 ```
 
-`./repoagent status` (or `.\repoagent.ps1 status`) shows identity, lifetime, authentication health, sessions, pending/retrying/running work and recent failures as JSON while the agent runs or after it stops. `./repoagent logs --retained` prints the retained logs from the state volume, which survive container replacement unlike `docker logs`. Retention defaults to five 1 MiB files; see [status and retained logs](../README.md#status-and-retained-logs) for fields, bounds and exclusions.
+`./repoagent status` (or `.\repoagent.ps1 status`) shows identity, lifetime, authentication health, sessions, pending/retrying/running work and recent failures as JSON while the agent runs or after it stops. `./repoagent logs --retained` prints the retained logs from the state volume, which survive container replacement unlike `docker logs`. Retention defaults to five 1 MiB files; see [status and retained logs](controller-operations.md#status-and-retained-logs) for fields, bounds and exclusions.
 
-Keep one running bridge per repository/App; separate instances do not make concurrent processing of the same conversations safe. Back up the state and native history before any manual recovery described in the [README](../README.md#checkpoints-and-manual-recovery).
+Keep one running bridge per repository/App; separate instances do not make concurrent processing of the same conversations safe. Back up the state and native history before any manual recovery described in the [controller operations guide](controller-operations.md#checkpoints-and-manual-recovery).
 
 To intentionally remove this instance's stored credentials, selected skills, workspace, native history and checkpoint:
 
