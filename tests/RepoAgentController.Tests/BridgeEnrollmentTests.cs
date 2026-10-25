@@ -160,6 +160,8 @@ public sealed class BridgeEnrollmentTests
         await world.Begin();
         Assert.True(await world.Poll());
         Assert.Equal(["Agents"], world.State.Saved!.CategoryStarts.Keys);
+        await world.End();
+        await world.Begin(); // This lifetime holds the saved starts as it read them.
 
         world.State.FailWrites = true; // As a full disk fails the save.
         world.Variables.Set(Setting, null);

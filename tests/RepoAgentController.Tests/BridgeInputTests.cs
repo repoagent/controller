@@ -121,6 +121,9 @@ public sealed class BridgeInputTests
             .Concat(input.Envelope["changes"]!.AsArray().Select(change => change!["subject"]!["body"]?.GetValue<string>()).OfType<string>())));
         Assert.Equal(Enumerable.Range(1, 20).Select(index => $"C{index}"), inputs.SelectMany(input => input.Envelope["changes"]!.AsArray())
             .Where(change => change!["kind"]!.GetValue<string>() == "comment.created").Select(change => change!["subject"]!["id"]!.GetValue<string>()));
+        // The context counts the comments it leaves to their own changes.
+        var context = inputs[0].Envelope["context"]!;
+        Assert.Equal(bodies.Length - context["existingComments"]!.AsArray().Count, context["laterComments"]!.GetValue<int>());
     }
 
     [Fact]
@@ -152,6 +155,7 @@ public sealed class BridgeInputTests
         Assert.Equal("Also check the installer.", changes[2]!["subject"]!["body"]!.GetValue<string>());
         Assert.Equal(("RE1", "THUMBS_UP", "bob", "C1"), (changes[3]!["reaction"]!["id"]!.GetValue<string>(), changes[3]!["reaction"]!["content"]!.GetValue<string>(),
             changes[3]!["subject"]!["author"]!["login"]!.GetValue<string>(), changes[3]!["subject"]!["replyTo"]!["id"]!.GetValue<string>()));
+        Assert.EndsWith(" latest=" + changes[3]!["subject"]!["url"]!.GetValue<string>(), world.Logged("forwarded")[^1]);
     }
 
     [Fact]
@@ -362,6 +366,24 @@ public sealed class BridgeInputTests
         var change = Assert.Single(world.Envelope(1)["changes"]!.AsArray())!;
         Assert.Equal("discussion.stateChanged", change["kind"]!.GetValue<string>());
         Assert.Equal("""{"id":"D1","url":"https://github.com/owner/repository/discussions/1","author":{"__typename":"User","login":"participant"},"title":"Renamed","category":{"id":"DIC_Q\u0026A","name":"Q\u0026A"}}""",
+            change["subject"]!.ToJsonString());
+    }
+
+    [Fact]
+    public async Task An_edit_that_comes_with_a_rename_sends_one_content_change_carrying_its_body_and_new_title_and_category()
+    {
+        await using var world = Enrolled();
+        await world.Begin(1);
+        await world.Poll();
+        world.Finish(1);
+        world.GitHub.Edit(1, "Edited body.");
+        world.GitHub.Move(1, "Renamed", "Q&A");
+
+        await world.Poll();
+
+        var change = Assert.Single(world.Envelope(1)["changes"]!.AsArray())!;
+        Assert.Equal("discussion.changed", change["kind"]!.GetValue<string>());
+        Assert.Equal("""{"id":"D1","url":"https://github.com/owner/repository/discussions/1","author":{"__typename":"User","login":"participant"},"body":"Edited body.","title":"Renamed","category":{"id":"DIC_Q\u0026A","name":"Q\u0026A"}}""",
             change["subject"]!.ToJsonString());
     }
 
