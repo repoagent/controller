@@ -30,6 +30,8 @@ sealed class BridgeWorld : IAsyncDisposable
     /// <summary>Whether lifetimes read the REPOAGENT_ variables, as <c>--repository-settings</c> selects.</summary>
     public bool RepositorySettings { get; set; } = true;
     public string StatePath { get; }
+    /// <summary>The managed checkout's admission, as a lifetime with a managed checkout has one; none by default.</summary>
+    public RecordingCheckoutAdmission? Admission { get; set; }
     /// <summary>Prepares each lifetime's agent runtime before the bridge uses it, as the agent's catalogue and configuration.</summary>
     public Action<FakeAgentRuntime>? PrepareRuntime { get; set; }
 
@@ -86,7 +88,7 @@ sealed class BridgeWorld : IAsyncDisposable
         current.Sessions.TurnsChanged += current.Status.Running;
         current.Sessions.TurnsChanged += running => { lock (log) mostActive = Math.Max(mostActive, running.Length); };
         await current.Settings.Refresh(stop.Token);
-        current.Bridge = new(Repository, GitHub, InMemoryDiscussions.App, current.Sessions, current.Store, current.Outbox, [.. enroll], current.Settings, time: Clock);
+        current.Bridge = new(Repository, GitHub, InMemoryDiscussions.App, current.Sessions, current.Store, current.Outbox, [.. enroll], current.Settings, Admission, Clock);
         current.Bridge.ResumeInterrupted();
     }
 

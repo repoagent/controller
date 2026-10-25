@@ -362,8 +362,11 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
         return Task.CompletedTask;
     }
 
-    public Task<(string SessionId, AgentSessionStatus Status)> StartSession(CancellationToken ct) =>
-        Task.FromResult(($"S{++sessions}", AgentSessionStatus.Idle));
+    /// <summary>When set, starting a session fails with it and starts none.</summary>
+    public Exception? SessionStartFailure { get; set; }
+
+    public Task<(string SessionId, AgentSessionStatus Status)> StartSession(CancellationToken ct) => SessionStartFailure is { } failure
+        ? Task.FromException<(string, AgentSessionStatus)>(failure) : Task.FromResult(($"S{++sessions}", AgentSessionStatus.Idle));
 
     /// <summary>Runs as the runtime handles a resume, before its response; it can report events.</summary>
     public Action<string>? Resuming { get; set; }
@@ -464,4 +467,33 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 
     /// <summary>Whether a timer was armed since the last <see cref="Armed"/>, without waiting.</summary>
     public bool WasArmed() => armed.CurrentCount != 0;
+}
+
+/// <summary>
+/// The managed checkout's admission as the bridge resolves it: every admission and resolution, in order, as "admit", "bind S1",
+/// "accepted S1 T1", "abandon", "unconfirmed", "confirm" and "dispose". Every admission succeeds.
+/// </summary>
+sealed class RecordingCheckoutAdmission : ICheckoutAdmission
+{
+    readonly List<string> calls = [];
+
+    public IReadOnlyList<string> Calls { get { lock (calls) return [.. calls]; } }
+
+    public Task<ICheckoutTurn> Admit(CancellationToken ct)
+    {
+        Add("admit");
+        return Task.FromResult<ICheckoutTurn>(new Turn(this));
+    }
+
+    void Add(string call) { lock (calls) calls.Add(call); }
+
+    sealed class Turn(RecordingCheckoutAdmission owner) : ICheckoutTurn
+    {
+        public void Bind(string session) => owner.Add("bind " + session);
+        public void Accepted(string session, string turn) => owner.Add($"accepted {session} {turn}");
+        public void Abandon() => owner.Add("abandon");
+        public void Unconfirmed() => owner.Add("unconfirmed");
+        public void Confirm() => owner.Add("confirm");
+        public void Dispose() => owner.Add("dispose");
+    }
 }
