@@ -44,10 +44,8 @@ public sealed partial class PayloadRedactionTests(ITestOutputHelper output)
         output.WriteLine("Real v2 enrollment returned 200; both charged rows contain RecoveryHash. Original deadline: {0:O}; payload deadline: {1:O}.", deadline, purgeAt);
 
         f.Clock.Advance(purgeAt.AddTicks(1) - f.Clock.GetUtcNow());
-        var options = new BrokerOptions(new Uri("https://example.table.core.windows.net"),
-            f.Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15);
         // Cleanup is constructed without any signing, provider or Data Protection dependency.
-        await new BrokerPayloadRedaction(table, options, f.Clock)
+        await new BrokerPayloadRedaction(table, f.Clock)
             .RedactEnrollmentAsync(idempotencyId, generation, Token);
 
         var fresh = f.Storage.CreateClient();

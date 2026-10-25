@@ -1,5 +1,4 @@
 using System.Net;
-using Azure.Data.Tables;
 using Xunit;
 
 namespace RepoAgent.Auth.Tests;
@@ -9,49 +8,32 @@ public sealed class RetainedEnrollmentAdmissionTests
     [Fact]
     public async Task Retained_enrollment_limit_denies_new_start_without_charging_identical_retry()
     {
-        await using var f = await EnrollmentFixture.CreateAsync(settings: new()
-        {
-            ["Broker:RetainedEnrollmentLimit"] = "1"
-        });
-        AgentVariableEnrollmentTests.ConfigureGitHub(f);
-        var request = new
-        {
-            idempotencyId = Guid.NewGuid().ToString("N"), repositoryId = 123456,
-            repository = "owner/project", variable = "APPROVAL", profile = "polling"
-        };
-        using var first = await f.Send("/v2/enrollments", request);
+        var f = new InMemoryBroker { Retained = new(128, 1, 4096) };
+        AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
+        var request = new RepositoryVariableEnrollmentRequest(Guid.NewGuid().ToString("N"), 123456, "owner/project", "APPROVAL", "polling");
+        var first = await f.Start(request, 2);
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
-        using var retry = await f.Send("/v2/enrollments", request);
+        var retry = await f.Start(request, 2);
         Assert.Equal(HttpStatusCode.OK, retry.StatusCode);
-        Assert.Equal(await first.Content.ReadAsStringAsync(TestContext.Current.CancellationToken),
-            await retry.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(first.Text, retry.Text);
         Assert.Equal(1, f.GitHub.VerifierMints);
 
         // Remove the independent per-minute mint ceiling as a reason for denial.
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var second = await f.Send("/v2/enrollments", new
-        {
-            idempotencyId = Guid.NewGuid().ToString("N"), repositoryId = 123456,
-            repository = "owner/project", variable = "APPROVAL_SECOND", profile = "polling"
-        });
+        var second = await f.Start(new RepositoryVariableEnrollmentRequest(Guid.NewGuid().ToString("N"), 123456, "owner/project", "APPROVAL_SECOND", "polling"), 2);
         Assert.Equal(HttpStatusCode.TooManyRequests, second.StatusCode);
 
         // Fresh reads expose any leaked reservation or repository publication on denial.
-        var rows = new List<TableEntity>();
-        await foreach (var row in f.Storage.Table.QueryAsync<TableEntity>(cancellationToken: TestContext.Current.CancellationToken))
-            rows.Add(row);
-        Assert.Equal("pending:" + request.idempotencyId,
-            Assert.Single(rows, row => row.PartitionKey == "global:enrollment-v1"
-                && row.RowKey.StartsWith("pending:", StringComparison.Ordinal)).RowKey);
-        Assert.Equal("pending:" + request.idempotencyId,
-            Assert.Single(rows, row => row.PartitionKey == RevocationFixture.Partition
-                && row.RowKey.StartsWith("pending:", StringComparison.Ordinal)).RowKey);
-        var ledger = Assert.Single(rows, row => row.PartitionKey == "global:enrollment-v1"
-            && row.RowKey == "pending:" + request.idempotencyId);
-        Assert.Equal(ledger.GetDateTimeOffset("CreatedAt")!.Value.AddMinutes(15), ledger.GetDateTimeOffset("Deadline"));
-        Assert.Equal(ledger.GetDateTimeOffset("Deadline")!.Value.AddHours(24), ledger.GetDateTimeOffset("PayloadPurgeAt"));
-        Assert.Equal(8, ledger.GetInt64("RowCredits"));
-        Assert.Equal(1, rows.Single(row => row.PartitionKey == "global:enrollment-v1" && row.RowKey == "quota").GetInt64("RetainedEnrollmentCount"));
+        var rows = f.Rows();
+        Assert.Equal("pending:" + request.IdempotencyId,
+            Assert.Single(rows, row => row.Scope == "global:enrollment-v1" && row.Name.StartsWith("pending:", StringComparison.Ordinal)).Name);
+        Assert.Equal("pending:" + request.IdempotencyId,
+            Assert.Single(rows, row => row.Scope == InMemoryBroker.Partition && row.Name.StartsWith("pending:", StringComparison.Ordinal)).Name);
+        var ledger = f.State.Get(EnrollmentLedger.Key(request.IdempotencyId))!;
+        Assert.Equal(ledger.CreatedAt!.Value.AddMinutes(15), ledger.Deadline);
+        Assert.Equal(ledger.Deadline!.Value.AddHours(24), ledger.PayloadPurgeAt);
+        Assert.Equal(8, ledger.RowCredits);
+        Assert.Equal(1, f.State.Get(EnrollmentQuota.Key)!.RetainedEnrollmentCount);
         Assert.Equal(1, f.GitHub.VerifierMints);
     }
 }

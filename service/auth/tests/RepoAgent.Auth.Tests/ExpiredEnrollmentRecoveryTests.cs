@@ -78,6 +78,8 @@ public sealed partial class CapacityReclamationTests
     [InlineData("missing-device")]
     [InlineData("missing-release")]
     [InlineData("missing-acknowledgment")]
+    [InlineData("app-binding")]
+    [InlineData("unknown-property")]
     public async Task Owner_recovery_requires_never_activated_device_and_complete_current_binding_proofs(string barrier)
     {
         await using var f = await EnrollmentFixture.CreateAsync();
@@ -94,7 +96,11 @@ public sealed partial class CapacityReclamationTests
         var device = await Read(f, RevocationFixture.Partition, "device:" + old.Device);
         if (barrier == "pending-binding") device["PendingId"] = "123456_" + Guid.NewGuid().ToString("N");
         if (barrier == "missing-acknowledgment") device.Remove("Acknowledged");
-        if (barrier is "pending-binding" or "missing-acknowledgment")
+        // An enrollment of another App, which the deployment's binding does not encode.
+        if (barrier == "app-binding") device["AppSlug"] = "another-app";
+        // A property no record maps: the release reads the gate and the enrollment through their records.
+        if (barrier == "unknown-property") device["Unrecognized"] = "kept by no record";
+        if (barrier is "pending-binding" or "missing-acknowledgment" or "app-binding" or "unknown-property")
             await f.Storage.Table.UpdateEntityAsync(device, device.ETag, TableUpdateMode.Replace, Token);
         if (barrier == "missing-device") await f.Storage.Table.DeleteEntityAsync(device.PartitionKey, device.RowKey, device.ETag, Token);
         if (barrier == "missing-release")
@@ -110,8 +116,9 @@ public sealed partial class CapacityReclamationTests
             await new BrokerCapacityReclamation(f.Storage.Table, Options(f) with { DeploymentEpoch = "restored-epoch" }, f.Clock)
                 .ReclaimEnrollmentAsync(old.Id, ledger.GetString("Generation")!, Token);
         }
-        else if (barrier is "pending-binding" or "missing-device" or "missing-release")
+        else if (barrier is "pending-binding" or "missing-device" or "missing-release" or "app-binding")
             await Assert.ThrowsAsync<IssuanceDenied>(() => ReclaimPending(f, old.Id));
+        else if (barrier == "unknown-property") await Assert.ThrowsAsync<BrokerRecordUnreadable>(() => ReclaimPending(f, old.Id));
         else await ReclaimPending(f, old.Id);
 
         Assert.Equal(before.ETag, (await Read(f, before.PartitionKey, before.RowKey)).ETag);

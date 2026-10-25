@@ -8,7 +8,7 @@ namespace RepoAgent.Auth;
 // A later invocation retires eligible retained rows using durable deletion proof.
 public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions options, TimeProvider clock)
 {
-    private readonly RetainedState retained = new(table, options);
+    private readonly RetainedState retained = new(table);
 
     public async Task ReclaimIssuanceAsync(string operationId, string generation, CancellationToken ct)
     {
@@ -142,7 +142,8 @@ public sealed class BrokerCapacityReclamation(TableClient table, BrokerOptions o
         Bind(ledger, device, false);
         var acknowledged = device.GetBoolean("Acknowledged");
         if (acknowledged is null || acknowledged == false && deadline > clock.GetUtcNow()) return;
-        new GrantRows(gate, device).RequireBinding(options);
+        new GrantSnapshot(Text(ledger, "RepositoryId"), Text(ledger, "DeviceId"), TableBrokerState.Versioned<RepositoryGate>(gate),
+            TableBrokerState.Versioned<ControllerEnrollment>(device)).RequireBinding(options.DeploymentEpoch);
         if (pending.GetBoolean("PendingCapacityReleased") != true || Date(pending, "Deadline") != deadline
             || Text(device, "PendingId") != Text(ledger, "PendingId")
             || Text(pending, "CompletionId") != Text(device, "CompletionId")

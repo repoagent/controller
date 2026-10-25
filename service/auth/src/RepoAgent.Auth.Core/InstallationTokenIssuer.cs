@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using static RepoAgent.Auth.IssuancePolicy;
 
 namespace RepoAgent.Auth;
@@ -34,7 +33,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
             (grant, runtime) = await store.ReserveAsync(grant, "runtime", work);
             verifier = await store.VerifierAsync(grant, work.Cancellation) ?? throw new IssuanceDenied();
             var verifierToken = store.Recover(grant, verifier);
-            var app = await observer.AuthorizeAsync(IssuanceStore.ReservedWindow(runtime), work.Cancellation);
+            var app = await observer.AuthorizeAsync(IssuanceStore.ReservedWindow(runtime.Value), work.Cancellation);
             work.Check();
             var admission = await ObserveAsync(grant, app, verifierToken, work);
             work.Fresh(admission);
@@ -54,7 +53,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
             released = true;
             return Response(grant, known.Token);
         }
-        catch (Exception ex) when (Expected(ex))
+        catch (Exception ex) when (Answerable(ex))
         {
             // A lost release response is uncertain. Fence an unpublished runtime before revocation;
             // an already committed release can be shared and must remain valid.
@@ -107,7 +106,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
         try
         {
             (grant, attempt) = await store.ReserveAsync(grant, "verification", work);
-            var app = await observer.AuthorizeAsync(IssuanceStore.ReservedWindow(attempt), work.Cancellation);
+            var app = await observer.AuthorizeAsync(IssuanceStore.ReservedWindow(attempt.Value), work.Cancellation);
             work.Check();
             attempt = await store.ClaimSendAsync(grant, attempt, work.Cancellation);
             token = await minter.MintAsync(app, grant.InstallationId, grant.BoundRepository,
@@ -116,7 +115,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
             if (!token.ScopeValid) throw new IssuanceDenied();
             return attempt;
         }
-        catch (Exception ex) when (Expected(ex))
+        catch (Exception ex) when (Answerable(ex))
         {
             if (token is not null && attempt is not null) await RevokeKnownAsync(grant, attempt, token.Token);
             throw;
@@ -144,14 +143,6 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
             await minter.RevokeAsync(token, completion.Token);
             await store.MarkRevokedAsync(grant, attempt, completion.Token);
         }
-        catch (Exception ex) when (Expected(ex)) { /* Preserve unknown/known evidence for explicit reconciliation. */ }
+        catch (Exception ex) when (Answerable(ex)) { /* Preserve unknown/known evidence for explicit reconciliation. */ }
     }
-
-    // What an operation may fail with and still answer: a denial, an unavailable or unknown broker state, a conflict
-    // after observation, unreadable durable data, a protection failure or GitHub's unavailability. The adapters wrap
-    // their providers' exceptions into these, so no Azure exception reaches the core.
-    private static bool Expected(Exception ex) => ex is IssuanceDenied or BrokerStateUnavailable or BrokerRecordUnreadable or StateConflict
-        or IOException or InvalidDataException or InvalidCastException or FormatException
-        or OverflowException or OperationCanceledException or CryptographicException or KeyNotFoundException or InvalidOperationException or ArgumentException
-        or SecretProtectionFailed or GitHubUnavailable;
 }
