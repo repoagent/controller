@@ -291,9 +291,7 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
     // Controllers before d83a284 copied the groups as GitHub reported them, which may be null.
     internal static EyesReceipt ReadReceipt(JsonObject receipt)
     {
-        var read = new EyesReceipt(receipt["id"]?.GetValue<string>() ?? "", receipt["url"].OptionalText() ?? "", [.. (receipt["reactionGroups"] as JsonArray ?? [])
-            .OfType<JsonObject>().Select(group => new ReactionGroup(group["content"].OptionalText() ?? "", group["viewerHasReacted"] is JsonValue reacted &&
-                reacted.TryGetValue<bool>(out var flag) && flag))]);
+        var read = new EyesReceipt(receipt["id"]?.GetValue<string>() ?? "", receipt["url"].OptionalText() ?? "", DiscussionJson.ReadReactionGroups(receipt["reactionGroups"]));
         return JsonNode.DeepEquals(Receipt(read), receipt) ? read : read with { AsRead = receipt.ToJsonString() };
     }
 
