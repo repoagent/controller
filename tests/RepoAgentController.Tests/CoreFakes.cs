@@ -347,7 +347,7 @@ sealed class InMemoryControllerState : IControllerState
         foreach (var (name, since) in state.CategoryStarts) copy.CategoryStarts[name] = since;
         foreach (var (id, record) in state.Discussions)
         {
-            var waiting = record.Waiting is { } held ? new WaitingInput(held.Discussion) { Context = held.Context, Retry = held.Retry, Unknown = held.Unknown } : null;
+            var waiting = record.Waiting is { } held ? new WaitingInput(held.DiscussionJson) { ContextJson = held.ContextJson, Retry = held.Retry, Unknown = held.Unknown } : null;
             waiting?.Inputs.AddRange(record.Waiting!.Inputs);
             copy.Discussions[id] = new(record.Url)
             {

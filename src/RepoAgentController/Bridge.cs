@@ -124,7 +124,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                 var receipts = new List<string?>(); // Receipt source of each change, by index; none for a deletion.
                 // The bootstrap context captured by this observation carries the existing bodies that fit its budget; the
                 // changes of later comments carry their own body, so a long conversation splits into bounded batches.
-                var snapshot = bootstrap && record.Waiting?.Context is null;
+                var snapshot = bootstrap && record.Waiting?.ContextJson is null;
                 var (context, inContext) = snapshot ? Context(conversation.Comments) : (null, []);
                 foreach (var (source, reactions) in sources)
                 {
@@ -321,9 +321,9 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     {
         var discussion = DiscussionJson.Public(conversation.Discussion).ToJsonString();
         var waiting = record.Waiting ?? new WaitingInput(discussion);
-        waiting.Discussion = discussion;
+        waiting.DiscussionJson = discussion;
         // Bootstrap context travels with the first batch delivered to the session.
-        if (context is not null) waiting.Context = context.ToJsonString();
+        if (context is not null) waiting.ContextJson = context.ToJsonString();
         var sources = conversation.Messages;
         var observed = clock.GetUtcNow();
         for (var index = 0; index < changes.Count; index++)
@@ -355,9 +355,9 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         // Global capacity counts running native turns only; stored idle sessions and retrying deliveries take no slot.
         if (sessions.ActiveTurns >= ActiveSessionLimit) return false;
         var inputs = waiting.Inputs;
-        var bootstrap = waiting.Context is not null;
+        var bootstrap = waiting.ContextJson is not null;
         // Bootstrap supplies the initial Discussion; a continuation shares only its identity, once per batch.
-        var discussion = JsonNode.Parse(waiting.Discussion)!;
+        var discussion = JsonNode.Parse(waiting.DiscussionJson)!;
         var redelivery = inputs[0].Redelivery;
         var envelope = new JsonObject
         {
@@ -366,10 +366,10 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         };
         // The native may already hold this input; the marker lets the agent check its history before repeating work.
         if (redelivery) envelope["_bridge"]!["redelivery"] = true;
-        if (bootstrap) envelope["context"] = JsonNode.Parse(waiting.Context!);
+        if (bootstrap) envelope["context"] = JsonNode.Parse(waiting.ContextJson!);
         envelope["changes"] = new JsonArray();
         var count = Batch(envelope, inputs, record);
-        envelope["changes"] = new JsonArray(inputs.Take(count).Select(input => JsonNode.Parse(input.Change)).ToArray());
+        envelope["changes"] = new JsonArray(inputs.Take(count).Select(input => JsonNode.Parse(input.ChangeJson)).ToArray());
         var receipts = inputs.Take(count).Select(input => input.Receipt).OfType<EyesReceipt>().DistinctBy(receipt => receipt.SubjectId).ToArray();
         // Global admission: checkout refresh exclusion; the active-session limit was checked above.
         using var admission = refresh is null ? null : await refresh.Admit(ct);
@@ -420,9 +420,9 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             return false;
         }
         // Kept until the turn's outcome: a provider rejection of the Codex account credentials returns it to the queue.
-        running[turn] = new(waiting.Discussion, waiting.Context, [.. inputs.Take(count)]);
+        running[turn] = new(waiting.DiscussionJson, waiting.ContextJson, [.. inputs.Take(count)]);
         inputs.RemoveRange(0, count);
-        waiting.Context = null;
+        waiting.ContextJson = null;
         waiting.Retry = null;
         if (inputs.Count == 0) record.Waiting = null;
         record.Pending = null;
@@ -469,8 +469,8 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     // work ran; the history may still hold the input, so it is marked as a redelivery. Returns the event to log once saved.
     string Requeue(DiscussionRecord record, RunningBatch batch, string turn)
     {
-        var waiting = record.Waiting ?? new WaitingInput(batch.Discussion);
-        if (batch.Context is { } context && waiting.Context is null) waiting.Context = context;
+        var waiting = record.Waiting ?? new WaitingInput(batch.DiscussionJson);
+        if (batch.ContextJson is { } context && waiting.ContextJson is null) waiting.ContextJson = context;
         var returned = batch.Inputs;
         waiting.Inputs.InsertRange(0, returned.Select(input => input with { Redelivery = true }));
         record.Waiting = waiting;
@@ -549,7 +549,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         foreach (var input in inputs)
         {
             if (input.Redelivery != redelivery) break;
-            var next = input.Change.Length + (count == 0 ? 0 : 1);
+            var next = input.ChangeJson.Length + (count == 0 ? 0 : 1);
             if (count != 0 && length + next > MaximumBatchCharacters) break;
             length += next;
             count++;
@@ -627,5 +627,5 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     }
 
     // A running turn's input, as it waited: the Discussion and bootstrap context as agent input carries them, and the inputs.
-    sealed record RunningBatch(string Discussion, string? Context, IReadOnlyList<ObservedInput> Inputs);
+    sealed record RunningBatch(string DiscussionJson, string? ContextJson, IReadOnlyList<ObservedInput> Inputs);
 }

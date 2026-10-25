@@ -105,15 +105,15 @@ public sealed record CheckpointState(string Title, bool Closed, bool Locked, str
 /// Observed input waiting for the Discussion's session, oldest first, with the Discussion and, until the first delivery, the
 /// bootstrap context, each as the agent input writer wrote it. <see cref="Retry"/> schedules the attempt after a failed one.
 /// </summary>
-public sealed class WaitingInput(string discussion)
+public sealed class WaitingInput(string discussionJson)
 {
     public List<ObservedInput> Inputs { get; } = [];
 
     /// <summary>The Discussion's JSON as agent input carries it.</summary>
-    public string Discussion { get; set; } = discussion;
+    public string DiscussionJson { get; set; } = discussionJson;
 
     /// <summary>The bootstrap context's JSON as the first delivery to a new session carries it, or null.</summary>
-    public string? Context { get; set; }
+    public string? ContextJson { get; set; }
 
     public DeliveryRetry? Retry { get; set; }
 
@@ -124,7 +124,7 @@ public sealed class WaitingInput(string discussion)
 /// One observed change waiting for delivery: when it was observed, its JSON as agent input carries it, the EYES receipt for its
 /// source (none for a deletion), and whether an earlier delivery may already have carried it to the agent.
 /// </summary>
-public sealed record ObservedInput(DateTimeOffset ObservedAt, string Change, EyesReceipt? Receipt, bool Redelivery = false)
+public sealed record ObservedInput(DateTimeOffset ObservedAt, string ChangeJson, EyesReceipt? Receipt, bool Redelivery = false)
 {
     public IReadOnlyList<UnknownKey> Unknown { get; init; } = [];
 }

@@ -113,7 +113,7 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
     {
         var waiting = new WaitingInput(Part<JsonObject>(item, "discussion").ToJsonString())
         {
-            Context = item["context"]?.AsObject().ToJsonString(),
+            ContextJson = item["context"]?.AsObject().ToJsonString(),
             Retry = item["retry"]?.AsObject() is { } retry ? new(Number(retry, "attempts"), At(retry, "after")) { Unknown = Unknown(retry, RetryKeys) } : null,
             Unknown = Unknown(item, WaitingKeys)
         };
@@ -133,14 +133,14 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
         {
             ["inputs"] = new JsonArray([.. waiting.Inputs.Select(input =>
             {
-                var item = new JsonObject { ["observedAt"] = Time(input.ObservedAt), ["change"] = JsonNode.Parse(input.Change) };
+                var item = new JsonObject { ["observedAt"] = Time(input.ObservedAt), ["change"] = JsonNode.Parse(input.ChangeJson) };
                 if (input.Receipt is { } receipt) item["receipt"] = Receipt(receipt);
                 if (input.Redelivery) item["redelivery"] = true;
                 return (JsonNode?)Kept(item, input.Unknown);
             })]),
-            ["discussion"] = JsonNode.Parse(waiting.Discussion)
+            ["discussion"] = JsonNode.Parse(waiting.DiscussionJson)
         };
-        if (waiting.Context is { } context) item["context"] = JsonNode.Parse(context);
+        if (waiting.ContextJson is { } context) item["context"] = JsonNode.Parse(context);
         if (waiting.Retry is { } retry) item["retry"] = Kept(new JsonObject { ["attempts"] = retry.Attempts, ["after"] = Time(retry.After) }, retry.Unknown);
         return Kept(item, waiting.Unknown);
     }
