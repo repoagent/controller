@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
 
@@ -9,8 +8,8 @@ namespace RepoAgentController;
 /// A failed or unacknowledged delivery keeps its batch first in line and retries it with backoff; input that may already
 /// have reached the native is sent again marked as a redelivery, accepting possible duplicate processing.
 /// </summary>
-sealed class Bridge(string repository, IDiscussions discussions, AppIdentity identity, AgentSessions sessions, StateStore store, GitHubOutbox outbox,
-    HashSet<int> enroll, RepositorySettings settings, ICheckoutAdmission? refresh = null, TimeProvider? time = null)
+public sealed class Bridge(string repository, IDiscussions discussions, AppIdentity identity, AgentSessions sessions, StateStore store, GitHubOutbox outbox,
+    HashSet<int> enroll, RepositorySettings settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? refresh = null)
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
@@ -22,7 +21,6 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     readonly HashSet<string> held = [];
     // Delivery retries back off from five seconds, doubling up to five minutes, with no attempt limit.
     static readonly TimeSpan FirstRetry = TimeSpan.FromSeconds(5), LastRetry = TimeSpan.FromMinutes(5);
-    readonly TimeProvider clock = time ?? TimeProvider.System;
     // Reads the same repository settings as the active-session limit.
     readonly CategoryEnrollment categories = new(settings, identity, store);
     // Model label and selection problems by kind and Discussion URL, each reported once until it changes or clears.
@@ -56,7 +54,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         try { listed = await discussions.List(ct); }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            Log.Write("poll-error", error.Message);
+            log.Write("poll-error", error.Message);
             return false;
         }
         return await Observe(listed, ct);
@@ -73,7 +71,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            Log.Write("observation-error", $"discussion={number}: {error.Message}");
+            log.Write("observation-error", $"discussion={number}: {error.Message}");
             return false;
         }
     }
@@ -116,12 +114,12 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                 {
                     record = new DiscussionRecord(discussion.Url);
                     store.Discussions[id] = record;
-                    Log.Write("discovered", discussion.Url + (byCategory ? " enrollment=category" : ""));
+                    log.Write("discovered", discussion.Url + (byCategory ? " enrollment=category" : ""));
                 }
                 await ObserveLabels(record, id, ct);
                 var previous = record.Sources;
                 var current = new OrderedDictionary<string, SourceCheckpoint>();
-                var changes = new List<JsonObject>();
+                var changes = new List<string>();
                 var receipts = new List<string?>(); // Receipt source of each change, by index; none for a deletion.
                 // The bootstrap context captured by this observation carries the existing bodies that fit its budget; the
                 // changes of later comments carry their own body, so a long conversation splits into bounded batches.
@@ -134,32 +132,29 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                     current[sourceId] = version;
                     var old = previous.GetValueOrDefault(sourceId);
                     // The Discussion ID travels once per dispatched batch; each change keeps its own thread root.
-                    var target = new JsonObject { ["replyToId"] = sourceId == id ? null : (source as DiscussionComment)?.ReplyToId ?? sourceId };
-                    var state = Changed(old?.State, version.State, old?.ReadAsChanged ?? []);
-                    void Add(string kind, JsonObject? content = null, JsonNode? reaction = null)
+                    var target = sourceId == id ? null : (source as DiscussionComment)?.ReplyToId ?? sourceId;
+                    // A content change carries the state fields that changed with it; a state change carries them alone.
+                    var state = new AgentChange("", source, target) { State = version.State, Fields = Changed(old?.State, version.State, old?.ReadAsChanged ?? []) };
+                    void Add(AgentChange change)
                     {
-                        var subject = DiscussionJson.Subject(source);
-                        foreach (var field in content ?? []) subject[field.Key] = field.Value?.Copy();
-                        var change = new JsonObject { ["kind"] = kind, ["subject"] = subject, ["replyTarget"] = target.Copy() };
-                        if (reaction is not null) change["reaction"] = reaction.Copy();
-                        changes.Add(change);
+                        changes.Add(input.Change(change));
                         receipts.Add(sourceId);
                     }
                     if (!identity.IsAgentActor(source.Author) && (old?.Content != version.Content || old.ReadAsChanged.Contains(CheckpointPart.Content)))
                     {
-                        var content = new JsonObject { ["body"] = source.Body };
-                        foreach (var field in state) content[field.Key] = field.Value?.Copy();
-                        Add(sourceId == id ? (old is null ? "discussion.created" : "discussion.changed") : (old is null ? "comment.created" : "comment.edited"),
-                            snapshot && old is null && (sourceId == id || inContext.Contains(sourceId)) ? null : content);
+                        var kind = sourceId == id ? (old is null ? "discussion.created" : "discussion.changed") : (old is null ? "comment.created" : "comment.edited");
+                        // Bootstrap supplies new content in the Discussion or its context instead.
+                        Add(snapshot && old is null && (sourceId == id || inContext.Contains(sourceId)) ? new(kind, source, target) : state with { Kind = kind, Body = source.Body });
                     }
                     // Discussion state can change independently of its original author.
-                    else if (sourceId == id && !bootstrap && (old is null || old.State != version.State || old.ReadAsChanged.Any(part => part != CheckpointPart.Content))) Add("discussion.stateChanged", state);
+                    else if (sourceId == id && !bootstrap && (old is null || old.State != version.State || old.ReadAsChanged.Any(part => part != CheckpointPart.Content)))
+                        Add(state with { Kind = "discussion.stateChanged" });
                     var oldReactions = old?.Reactions ?? [];
                     var (oldIds, newIds) = (oldReactions.Select(reaction => reaction.Id).ToHashSet(), version.Reactions.Select(reaction => reaction.Id).ToHashSet());
                     foreach (var reaction in version.Reactions)
-                        if (!oldIds.Contains(reaction.Id)) Add("reaction.added", reaction: DiscussionJson.Public(reaction));
+                        if (!oldIds.Contains(reaction.Id)) Add(new("reaction.added", source, target) { Reaction = reaction });
                     foreach (var reaction in oldReactions)
-                        if (!newIds.Contains(reaction.Id)) Add("reaction.removed", reaction: DiscussionJson.Public(reaction));
+                        if (!newIds.Contains(reaction.Id)) Add(new("reaction.removed", source, target) { Reaction = reaction });
                 }
                 // Sources returned every page, so a checkpointed comment it lacks is confirmed deleted; a failed or partial
                 // read throws above and leaves the checkpoint alone. A deletion carries identity, attribution and routing
@@ -167,19 +162,13 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                 foreach (var (sourceId, old) in previous)
                 {
                     if (current.ContainsKey(sourceId)) continue;
-                    var subject = new JsonObject { ["id"] = sourceId, ["author"] = old.Content.Author is { } login ? new JsonObject { ["login"] = login } : null };
                     var root = old.ReplyTo ?? "";
-                    if (root.Length != 0) subject["replyTo"] = new JsonObject { ["id"] = root };
-                    changes.Add(new JsonObject
-                    {
-                        ["kind"] = "comment.deleted", ["subject"] = subject,
-                        ["replyTarget"] = new JsonObject { ["replyToId"] = current.ContainsKey(root) ? root : null }
-                    });
+                    changes.Add(input.Deletion(new(sourceId, old.Content.Author, root.Length != 0 ? root : null, current.ContainsKey(root) ? root : null)));
                     receipts.Add(null);
                 }
                 if (bootstrap && changes.Count == 0 && record.Waiting is null)
                 {
-                    changes.Add(new JsonObject { ["kind"] = "discussion.enrolled", ["subject"] = DiscussionJson.Subject(discussion), ["replyTarget"] = new JsonObject { ["replyToId"] = null } });
+                    changes.Add(input.Change(new("discussion.enrolled", discussion, null)));
                     receipts.Add(id);
                 }
                 if (changes.Count != 0) Queue(record, conversation, changes, receipts, context, current);
@@ -187,12 +176,12 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                 else if (!Same(previous, current)) { record.Sources = current; store.Save(); }
                 if (record.Waiting is not { } waiting) continue;
                 if (!await Dispatch(record, ct) && changes.Count != 0)
-                    Log.Write("input-waiting", $"{discussion.Url} session={record.SessionId ?? ""} status={(record.SessionId is { Length: > 0 } session ? sessions.Status(session).ToString() : "none")} waiting={waiting.Inputs.Count} sources={string.Join(',', receipts.OfType<string>().Distinct())} active={sessions.ActiveTurns} limit={ActiveSessionLimit}");
+                    log.Write("input-waiting", $"{discussion.Url} session={record.SessionId ?? ""} status={(record.SessionId is { Length: > 0 } session ? sessions.Status(session).ToString() : "none")} waiting={waiting.Inputs.Count} sources={string.Join(',', receipts.OfType<string>().Distinct())} active={sessions.ActiveTurns} limit={ActiveSessionLimit}");
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
                 succeeded = false;
-                Log.Write("observation-error", $"{discussion.Url}: {error.Message}");
+                log.Write("observation-error", $"{discussion.Url}: {error.Message}");
             }
         }
         return succeeded;
@@ -219,7 +208,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         // The starts stay reconciled in memory and are saved with the next state change; settings refresh continues.
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
-            Log.Write("repository-settings-error", $"the category enrollment starts could not be saved: {error.Message}");
+            log.Write("repository-settings-error", $"the category enrollment starts could not be saved: {error.Message}");
         }
         finally { gate.Release(); }
     }
@@ -272,7 +261,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             {
                 try { await Dispatch(record, ct); }
                 catch (Exception error) when (error is not OperationCanceledException)
-                { Log.Write("dispatch-error", $"{record.Url}: {error.Message}"); }
+                { log.Write("dispatch-error", $"{record.Url}: {error.Message}"); }
             }
             return NextRetry();
         }
@@ -320,19 +309,19 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     }
 
     // Caller holds the gate. Observed changes wait durably, in order, with their receipt source; the checkpoint advances.
-    void Queue(DiscussionRecord record, DiscussionConversation conversation, List<JsonObject> changes, List<string?> receipts, JsonObject? context,
+    void Queue(DiscussionRecord record, DiscussionConversation conversation, List<string> changes, List<string?> receipts, string? context,
         OrderedDictionary<string, SourceCheckpoint> current)
     {
-        var discussion = DiscussionJson.Public(conversation.Discussion).ToJsonString();
+        var discussion = input.Discussion(conversation.Discussion);
         var waiting = record.Waiting ?? new WaitingInput(discussion);
         record.UnreadableKeys.Remove(RecordKey.Waiting);
         waiting.DiscussionJson = discussion;
         // Bootstrap context travels with the first batch delivered to the session.
-        if (context is not null) waiting.ContextJson = context.ToJsonString();
+        if (context is not null) waiting.ContextJson = context;
         var sources = conversation.Messages;
         var observed = clock.GetUtcNow();
         for (var index = 0; index < changes.Count; index++)
-            waiting.Inputs.Add(new(observed, changes[index].ToJsonString(),
+            waiting.Inputs.Add(new(observed, changes[index],
                 receipts[index] is { } subject ? EyesReceipt.Of(sources.First(source => source.Message.Id == subject).Message) : null));
         record.Waiting = waiting;
         record.Sources = current;
@@ -350,7 +339,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         if (sessions.AuthenticationFailure is not null)
         {
             // A turn would fail after its EYES receipt; queued input waits for replacement credentials.
-            if (held.Add(record.Url)) Log.Write("input-held", $"{record.Url} waiting={waiting.Inputs.Count}: Codex account credentials were rejected; input waits for replacement credentials");
+            if (held.Add(record.Url)) log.Write("input-held", $"{record.Url} waiting={waiting.Inputs.Count}: Codex account credentials were rejected; input waits for replacement credentials");
             return false;
         }
         held.Clear();
@@ -362,21 +351,13 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         // Global capacity counts running native turns only; stored idle sessions and retrying deliveries take no slot.
         if (sessions.ActiveTurns >= ActiveSessionLimit) return false;
         var inputs = waiting.Inputs;
-        var bootstrap = waiting.ContextJson is not null;
-        // Bootstrap supplies the initial Discussion; a continuation shares only its identity, once per batch.
-        var discussion = JsonNode.Parse(waiting.DiscussionJson)!;
+        // Bootstrap supplies the initial Discussion; a continuation shares only its identity, once per batch. The native may
+        // already hold redelivered input; the marker lets the agent check its history before repeating work.
         var redelivery = inputs[0].Redelivery;
-        var envelope = new JsonObject
-        {
-            ["_bridge"] = new JsonObject { ["channel"] = "github-discussions", ["mode"] = bootstrap ? "bootstrap" : "continue", ["repository"] = repository, ["agentLogin"] = identity.AgentLogin, ["mentionLogin"] = identity.MentionUser?.Login },
-            ["discussion"] = bootstrap ? discussion : new JsonObject { ["id"] = discussion.Text("id"), ["number"] = discussion["number"]?.Copy(), ["url"] = discussion.Text("url") }
-        };
-        // The native may already hold this input; the marker lets the agent check its history before repeating work.
-        if (redelivery) envelope["_bridge"]!["redelivery"] = true;
-        if (bootstrap) envelope["context"] = JsonNode.Parse(waiting.ContextJson!);
-        envelope["changes"] = new JsonArray();
-        var count = Batch(envelope, inputs, record);
-        envelope["changes"] = new JsonArray(inputs.Take(count).Select(input => JsonNode.Parse(input.ChangeJson)).ToArray());
+        var envelope = new AgentEnvelope(repository, identity, waiting.DiscussionJson, waiting.ContextJson, redelivery, []);
+        var count = Batch(input.Envelope(envelope).Length, inputs, record);
+        var turnInput = input.Envelope(envelope with { Changes = [.. inputs.Take(count).Select(waited => waited.ChangeJson)] });
+        var latest = inputs[count - 1].ChangeJson;
         var receipts = inputs.Take(count).Select(input => input.Receipt).OfType<EyesReceipt>().DistinctBy(receipt => receipt.SubjectId).ToArray();
         // Global admission: checkout refresh exclusion; the active-session limit was checked above.
         using var admission = refresh is null ? null : await refresh.Admit(ct);
@@ -399,7 +380,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                 record.SessionId = session = await sessions.Start(ct);
                 admission?.Bind(session);
                 store.Save();
-                Log.Write("session-created", $"{record.Url} session={session}");
+                log.Write("session-created", $"{record.Url} session={session}");
             }
             else
             {
@@ -415,7 +396,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             }
             if (!create) { record.Pending = pending; store.Save(); }
             offered = true;
-            turn = await sessions.Accept(session, envelope.ToJsonString(), selection, admission is null ? null : admission.Accepted, ct);
+            turn = await sessions.Accept(session, turnInput, selection, admission is null ? null : admission.Accepted, ct);
         }
         // A failure while this lifetime stops leaves pending; the next start retries it as an interrupted delivery. Credential
         // loss kills the native before the lifetime token is cancelled, so it is checked directly.
@@ -437,7 +418,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         record.Running = new(turn, clock.GetUtcNow());
         store.Save();
         admission?.Confirm();
-        Log.Write("forwarded", $"{record.Url} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.SubjectId))} waiting={inputs.Count} latest={envelope["changes"]!.AsArray()[^1]!["subject"]!.Text("url")}" + (redelivery ? " redelivery=true" : ""));
+        log.Write("forwarded", $"{record.Url} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.SubjectId))} waiting={inputs.Count} latest={input.SubjectUrl(latest)}" + (redelivery ? " redelivery=true" : ""));
         foreach (var source in receipts) outbox.Receipt(source.SubjectId, source.Url, DiscussionMessage.HasEyes(source.ReactionGroups));
         return true;
     }
@@ -469,7 +450,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         if (events.Count == 0) return;
         // Saved first: status and dashboard compose work from the state file when these events are logged.
         store.Save();
-        foreach (var (kind, message) in events) Log.Write(kind, message);
+        foreach (var (kind, message) in events) log.Write(kind, message);
     }
 
     // Caller holds the gate and saves. The native accepted this batch but the provider refused the Codex account, so no agent
@@ -511,7 +492,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         try { store.Save(); }
         finally
         {
-            Log.Write("delivery-retry", $"{record.Url} session={(record.SessionId is { Length: > 0 } session ? session : "none")} attempt={attempts} redelivery={(offered ? "true" : "false")} inputs={count} sources={Sources(inputs.Take(count))} retry-at={after:O}: {reason}");
+            log.Write("delivery-retry", $"{record.Url} session={(record.SessionId is { Length: > 0 } session ? session : "none")} attempt={attempts} redelivery={(offered ? "true" : "false")} inputs={count} sources={Sources(inputs.Take(count))} retry-at={after:O}: {reason}");
         }
     }
 
@@ -544,15 +525,14 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         else if (reported.GetValueOrDefault((kind, url)) != problem)
         {
             reported[(kind, url)] = problem;
-            Log.Write(kind, $"{url}: {problem}");
+            log.Write(kind, $"{url}: {problem}");
         }
     }
 
     // Leading inputs whose changes fit one envelope; at least one, so an oversized change is sent alone, never dropped.
     // Redelivered and fresh input never share a batch, so the redelivery marker covers every change it carries.
-    static int Batch(JsonObject envelope, List<ObservedInput> inputs, DiscussionRecord record)
+    int Batch(long length, List<ObservedInput> inputs, DiscussionRecord record)
     {
-        long length = envelope.ToJsonString().Length;
         var count = 0;
         var redelivery = inputs[0].Redelivery;
         foreach (var input in inputs)
@@ -563,8 +543,8 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             length += next;
             count++;
         }
-        if (count < inputs.Count) Log.Write("batch-split", $"{record.Url} dispatching={count} remaining={inputs.Count - count}");
-        if (length > MaximumBatchCharacters) Log.Write("batch-oversized", $"{record.Url} characters={length}");
+        if (count < inputs.Count) log.Write("batch-split", $"{record.Url} dispatching={count} remaining={inputs.Count - count}");
+        if (length > MaximumBatchCharacters) log.Write("batch-oversized", $"{record.Url} characters={length}");
         return count;
     }
 
@@ -588,22 +568,22 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                 foreach (var key in reported.Keys.Where(key => key.Url == stored).ToArray()) reported.Remove(key);
             }
             if (forgotten.Length == 0) return;
-            Log.Write("discussion-forgotten", $"{url} reason=not-found session={string.Join(',', forgotten.Select(entry => entry.Value.SessionId ?? ""))}");
+            log.Write("discussion-forgotten", $"{url} reason=not-found session={string.Join(',', forgotten.Select(entry => entry.Value.SessionId ?? ""))}");
         }
         finally { gate.Release(); }
     }
 
-    // The checkpointed state fields whose values differ, with their current values, in checkpoint order. A field with no
-    // earlier value differs unless it is null now.
-    static JsonObject Changed(CheckpointState? before, CheckpointState? after, IReadOnlyList<CheckpointPart> readAsChanged)
+    // The checkpointed state fields whose values differ, in checkpoint order. A field with no earlier value differs unless it is
+    // null now.
+    static IReadOnlyList<CheckpointPart> Changed(CheckpointState? before, CheckpointState? after, IReadOnlyList<CheckpointPart> readAsChanged)
     {
-        var changed = new JsonObject();
-        if (after is null) return changed;
-        if (before?.Title != after.Title || readAsChanged.Contains(CheckpointPart.Title)) changed["title"] = after.Title;
-        if (before?.Closed != after.Closed || readAsChanged.Contains(CheckpointPart.Closed)) changed["closed"] = after.Closed;
-        if (before?.Locked != after.Locked || readAsChanged.Contains(CheckpointPart.Locked)) changed["locked"] = after.Locked;
-        if (before?.AnswerId != after.AnswerId || readAsChanged.Contains(CheckpointPart.Answer)) changed["answer"] = DiscussionJson.Answer(after.AnswerId);
-        if (before?.Category != after.Category || readAsChanged.Contains(CheckpointPart.Category)) changed["category"] = DiscussionJson.Category(after.Category);
+        if (after is null) return [];
+        var changed = new List<CheckpointPart>();
+        if (before?.Title != after.Title || readAsChanged.Contains(CheckpointPart.Title)) changed.Add(CheckpointPart.Title);
+        if (before?.Closed != after.Closed || readAsChanged.Contains(CheckpointPart.Closed)) changed.Add(CheckpointPart.Closed);
+        if (before?.Locked != after.Locked || readAsChanged.Contains(CheckpointPart.Locked)) changed.Add(CheckpointPart.Locked);
+        if (before?.AnswerId != after.AnswerId || readAsChanged.Contains(CheckpointPart.Answer)) changed.Add(CheckpointPart.Answer);
+        if (before?.Category != after.Category || readAsChanged.Contains(CheckpointPart.Category)) changed.Add(CheckpointPart.Category);
         return changed;
     }
 
@@ -617,22 +597,19 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
 
     // The leading existing comments within the context budget, and how many later ones carry their body in their change
     // instead (App-authored ones have no change).
-    static (JsonObject? Context, HashSet<string> Included) Context(IReadOnlyList<DiscussionComment> comments)
+    (string? Context, HashSet<string> Included) Context(IReadOnlyList<DiscussionComment> comments)
     {
-        var existing = new JsonArray();
+        var existing = new List<DiscussionComment>();
         var included = new HashSet<string>();
         long length = 0;
         foreach (var source in comments)
         {
-            var comment = DiscussionJson.Public(source);
-            length += comment.ToJsonString().Length + 1;
+            length += input.Comment(source).Length + 1;
             if (length > MaximumContextCharacters) break;
-            existing.Add((JsonNode)comment);
+            existing.Add(source);
             included.Add(source.Id);
         }
-        var context = new JsonObject { ["existingComments"] = existing };
-        if (included.Count < comments.Count) context["laterComments"] = comments.Count - included.Count;
-        return (context, included);
+        return (input.Context(existing, comments.Count - included.Count), included);
     }
 
     // A running turn's input, as it waited: the Discussion and bootstrap context as agent input carries them, and the inputs.

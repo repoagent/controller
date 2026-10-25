@@ -15,8 +15,9 @@ public sealed class StateStoreTests : IDisposable
     [Fact]
     public void Discussions_whose_removal_failed_to_save_stay_in_memory_and_a_retry_removes_them_from_the_file()
     {
-        using (var store = new StateStore(State, Repository))
+        using (var leased = new LeasedStateStore(State, Repository))
         {
+            var store = leased.Store;
             store.Discussions["D1"] = new("https://github.com/owner/repository/discussions/1") { SessionId = "S1" };
             store.Discussions["D2"] = new("https://github.com/owner/repository/discussions/2") { SessionId = "S2" };
             store.Save();
@@ -30,7 +31,8 @@ public sealed class StateStoreTests : IDisposable
             Directory.Delete(State + ".tmp");
             store.Remove(["D1"]);
         }
-        using var restarted = new StateStore(State, Repository);
+        using var reopened = new LeasedStateStore(State, Repository);
+        var restarted = reopened.Store;
         Assert.Equal(["D2"], restarted.Discussions.Keys);
     }
 
@@ -41,7 +43,8 @@ public sealed class StateStoreTests : IDisposable
         File.WriteAllText(State, recorded);
         return Record.Exception(() =>
         {
-            using var store = new StateStore(State, Repository);
+            using var leased = new LeasedStateStore(State, Repository);
+            var store = leased.Store;
             store.VerifyIdentity(login);
         });
     }
@@ -77,7 +80,9 @@ public sealed class StateStoreTests : IDisposable
     {
         Assert.Null(Open("""{"version":1,"repository":"owner/repository","discussions":[],"later":true}"""));
 
-        using var store = new StateStore(State, Repository);
+        using var leased = new LeasedStateStore(State, Repository);
+
+        var store = leased.Store;
         Assert.Equal("the state file's discussions are missing or not an object", Assert.Throws<InvalidDataException>(() => store.Discussions.Count).Message);
         var saved = JsonNode.Parse(File.ReadAllText(State))!;
         Assert.Equal("[]", saved["discussions"]!.ToJsonString());
@@ -105,7 +110,9 @@ public sealed class StateStoreTests : IDisposable
               "D5":{"url":"u5","sources":{},"pending":{"operation":5}},"D6":{"url":"u6","sources":{}},"D7":7}}
             """));
 
-        using var store = new StateStore(State, Repository);
+        using var leased = new LeasedStateStore(State, Repository);
+
+        var store = leased.Store;
         Assert.Equal(["D1", "D3", "D7"], store.Discussions.Where(entry => entry.Value.HoldsSession).Select(entry => entry.Key));
         Assert.Equal(["D4", "D5", "D7"], store.Discussions.Where(entry => entry.Value.HoldsPending).Select(entry => entry.Key));
         Assert.Equal(7, JsonNode.Parse(File.ReadAllText(State))!["discussions"]!["D7"]!.GetValue<int>()); // Saved as read.

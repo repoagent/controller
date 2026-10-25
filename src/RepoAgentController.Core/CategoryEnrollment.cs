@@ -7,7 +7,7 @@ namespace RepoAgentController;
 /// created before then is preexisting and is not selected. Removing a category forgets its start, so selecting it again
 /// starts afresh; the bridge reconciles every refreshed change, so this holds without an observation in between. The App's
 /// own Discussions, including the controller's status dashboard, are never selected. Callers serialize access to the state store.</remarks>
-sealed class CategoryEnrollment
+public sealed class CategoryEnrollment
 {
     public const string Setting = "REPOAGENT_ENROLLMENT_CATEGORIES";
     readonly RepositorySettings settings;

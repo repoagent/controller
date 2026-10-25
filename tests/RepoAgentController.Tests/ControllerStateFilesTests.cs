@@ -281,7 +281,7 @@ public sealed class ControllerStateFilesTests : IDisposable
         var statePath = Path.Combine(directory, "bridge.json");
         File.WriteAllText(statePath, RecordedState);
 
-        using (var store = new StateStore(statePath, "owner/repository")) store.Save();
+        using (var leased = new LeasedStateStore(statePath, "owner/repository")) leased.Store.Save();
 
         Assert.Equal(Canonical(JsonNode.Parse(RecordedState)), Canonical(JsonNode.Parse(File.ReadAllText(statePath))));
     }
@@ -296,7 +296,7 @@ public sealed class ControllerStateFilesTests : IDisposable
         File.WriteAllText(statePath, RecordedState);
         using var written = typeof(ControllerStateFilesTests).Assembly.GetManifestResourceStream("StateFileWritten.json")!;
 
-        using (var store = new StateStore(statePath, "owner/repository")) store.Save();
+        using (var leased = new LeasedStateStore(statePath, "owner/repository")) leased.Store.Save();
 
         Assert.Equal(new StreamReader(written).ReadToEnd(), File.ReadAllText(statePath));
     }

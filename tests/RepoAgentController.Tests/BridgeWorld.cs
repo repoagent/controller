@@ -56,7 +56,7 @@ sealed class BridgeWorld : IAsyncDisposable
         });
     }
 
-    sealed record Lifetime(CancellationTokenSource Stop, StateStore Store, ControllerStatus Status, RepositorySettings Settings, GitHubOutbox Outbox,
+    sealed record Lifetime(CancellationTokenSource Stop, LeasedStateStore Lease, ControllerStatus Status, RepositorySettings Settings, GitHubOutbox Outbox,
         FakeAgentRuntime Runtime, AgentSessions Sessions)
     {
         public Bridge Bridge { get; set; } = null!;
@@ -80,7 +80,7 @@ sealed class BridgeWorld : IAsyncDisposable
         var runtime = new FakeAgentRuntime(counts.Sessions, counts.Turns);
         PrepareRuntime?.Invoke(runtime);
         while (answers.TryDequeue(out var answer)) runtime.Answer(answer);
-        var current = new Lifetime(stop, new StateStore(StatePath, Repository), new ControllerStatus(StatePath, Repository, "polling", Clock),
+        var current = new Lifetime(stop, new LeasedStateStore(StatePath, Repository), new ControllerStatus(StatePath, Repository, "polling", Clock),
             new RepositorySettings(RepositorySettingsCatalogue.Settings, RepositorySettings ? Variables : null, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             new GitHubOutbox(Repository, GitHub, InMemoryDiscussions.App, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             runtime, new AgentSessions(runtime, new ControllerLog()));
@@ -88,7 +88,8 @@ sealed class BridgeWorld : IAsyncDisposable
         current.Sessions.TurnsChanged += current.Status.Running;
         current.Sessions.TurnsChanged += running => { lock (log) mostActive = Math.Max(mostActive, running.Length); };
         await current.Settings.Refresh(stop.Token);
-        current.Bridge = new(Repository, GitHub, InMemoryDiscussions.App, current.Sessions, current.Store, current.Outbox, [.. enroll], current.Settings, Admission, Clock);
+        current.Bridge = new(Repository, GitHub, InMemoryDiscussions.App, current.Sessions, current.Lease.Store, current.Outbox, [.. enroll], current.Settings,
+            new AgentInputJson(), new ControllerLog(), Clock, Admission);
         current.Bridge.ResumeInterrupted();
     }
 
@@ -102,7 +103,7 @@ sealed class BridgeWorld : IAsyncDisposable
         await ending.Stop.CancelAsync();
         await ending.Outbox.DisposeAsync();
         ending.Status.Dispose();
-        ending.Store.Dispose();
+        ending.Lease.Dispose();
         ending.Stop.Dispose();
     }
 

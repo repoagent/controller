@@ -297,8 +297,7 @@ sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
 }
 
 /// <summary>The controller's settings and outbox as its files hold them: only what was written survives into another lifetime.
-/// A write can fail on demand, as a full or read-only disk does. The Discussion state is not held: the state store reads it
-/// through the file adapter, and no core reads it yet.</summary>
+/// A write can fail on demand, as a full or read-only disk does.</summary>
 sealed class InMemoryControllerState : IControllerState
 {
     RecordedSettings? settings;
@@ -330,11 +329,6 @@ sealed class InMemoryControllerState : IControllerState
         OutboxWrites++;
         Outbox = outbox with { Operations = [.. outbox.Operations] };
     }
-
-    // The state store keeps the Discussion state in the state file it leases.
-    public DiscussionState? ReadDiscussions() => throw new NotSupportedException();
-
-    public void WriteDiscussions(DiscussionState state) => throw new NotSupportedException();
 }
 
 /// <summary>

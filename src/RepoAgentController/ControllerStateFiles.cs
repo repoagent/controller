@@ -5,8 +5,8 @@ using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
 
-/// <summary>The <see cref="IControllerState"/> adapter: the controller's state file and the files beside it.</summary>
-sealed class ControllerStateFiles(string statePath) : IControllerState
+/// <summary>The <see cref="IDiscussionStore"/> and <see cref="IControllerState"/> adapter: the controller's state file and the files beside it.</summary>
+sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControllerState
 {
     static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
     // The order a record's keys are written in.

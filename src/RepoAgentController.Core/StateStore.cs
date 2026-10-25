@@ -1,30 +1,19 @@
 namespace RepoAgentController;
 
-/// <summary>The controller's Discussion state, held in memory by the one controller that leases its state file, and saved whole.</summary>
-sealed class StateStore : IDisposable
+/// <summary>The controller's Discussion state, held in memory by the one controller that leases it, and saved whole.</summary>
+public sealed class StateStore
 {
-    readonly IControllerState files;
-    readonly FileStream lease;
+    readonly IDiscussionStore files;
     public DiscussionState State { get; }
 
     /// <summary>Throws as reading the untyped file's records threw when they are unreadable (<see cref="DiscussionState.Unreadable"/>).</summary>
     public OrderedDictionary<string, DiscussionRecord> Discussions =>
         State.Unreadable is { } problem ? throw new InvalidDataException(problem) : State.Discussions;
 
-    public StateStore(string path, string repository, Action? onLockAcquired = null)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        lease = ExclusiveFileLease.Open(path + ".lock");
-        try
-        {
-            onLockAcquired?.Invoke();
-            files = new ControllerStateFiles(path);
-            State = Read(files, repository);
-        }
-        catch { lease.Dispose(); throw; }
-    }
+    /// <summary>Reads the state <paramref name="files"/> keep for <paramref name="repository"/>; the caller holds their lease.</summary>
+    public StateStore(IDiscussionStore files, string repository) => (this.files, State) = (files, Read(files, repository));
 
-    static DiscussionState Read(IControllerState files, string repository)
+    static DiscussionState Read(IDiscussionStore files, string repository)
     {
         var state = files.ReadDiscussions() ?? new DiscussionState(repository);
         if (!string.Equals(state.Repository, repository, StringComparison.OrdinalIgnoreCase))
@@ -55,6 +44,4 @@ sealed class StateStore : IDisposable
     }
 
     public void Save() => files.WriteDiscussions(State);
-
-    public void Dispose() => lease.Dispose();
 }
