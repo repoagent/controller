@@ -78,7 +78,7 @@ sealed class BridgeWorld : IAsyncDisposable
         var runtime = new FakeAgentRuntime(counts.Sessions, counts.Turns);
         PrepareRuntime?.Invoke(runtime);
         while (answers.TryDequeue(out var answer)) runtime.Answer(answer);
-        var current = new Lifetime(stop, new StateStore(StatePath, Repository), new ControllerStatus(StatePath, Repository, "polling"),
+        var current = new Lifetime(stop, new StateStore(StatePath, Repository), new ControllerStatus(StatePath, Repository, "polling", Clock),
             new RepositorySettings(RepositorySettingsCatalogue.Settings, RepositorySettings ? Variables : null, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             new GitHubOutbox(Repository, GitHub, InMemoryDiscussions.App, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             runtime, new AgentSessions(runtime, new ControllerLog()));
@@ -191,7 +191,7 @@ sealed class BridgeWorld : IAsyncDisposable
         .Where(entry => entry.Value!["sessionId"]?.GetValue<string>() is { Length: > 0 }).Select(entry => entry.Key).Order()];
 
     /// <summary>The operator status of the running lifetime, or as the last one left it.</summary>
-    public JsonObject Status() => lifetime?.Status.Snapshot() ?? ControllerStatus.Read(StatePath)!;
+    public JsonObject Status() => lifetime?.Status.Snapshot() ?? ControllerStatus.Read(StatePath, Clock)!;
 
     /// <summary>The numbers of the Discussions with input waiting, as status reports them.</summary>
     public int[] Waiting()

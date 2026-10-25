@@ -24,7 +24,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     {
         Directory.CreateDirectory(directory);
         statePath = Path.Combine(directory, "bridge.json");
-        status = new(statePath, "owner/repository", "polling");
+        status = new(statePath, "owner/repository", "polling", clock);
         outbox = new("owner/repository", github, InMemoryDiscussions.App, state, clock, new ControllerLog());
         github.Category(Category);
     }

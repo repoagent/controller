@@ -23,6 +23,7 @@ sealed class ControllerStatus : IDisposable
     // Terminal-readable output; status is never embedded in HTML.
     static readonly JsonSerializerOptions Indented = new() { WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
     readonly string statePath;
+    readonly TimeProvider clock;
     readonly Lock gate = new();
     readonly JsonObject runtime;
     bool closed;
@@ -32,11 +33,12 @@ sealed class ControllerStatus : IDisposable
 
     public static string PathFor(string statePath) => statePath + ".status.json";
 
-    public ControllerStatus(string statePath, string repository, string mode)
+    /// <summary>Starts this lifetime's status; its own times, such as the start, stop and each snapshot, are <paramref name="clock"/>'s.</summary>
+    public ControllerStatus(string statePath, string repository, string mode, TimeProvider clock)
     {
-        this.statePath = statePath;
+        (this.statePath, this.clock) = (statePath, clock);
         var previous = ReadObject(PathFor(statePath));
-        var now = DateTimeOffset.UtcNow.ToString("O");
+        var now = clock.GetUtcNow().ToString("O");
         runtime = new JsonObject
         {
             ["version"] = 1, ["repository"] = repository,
@@ -125,19 +127,19 @@ sealed class ControllerStatus : IDisposable
     {
         JsonObject copy;
         lock (gate) copy = runtime.Copy().AsObject();
-        return Compose(statePath, copy);
+        return Compose(statePath, copy, clock.GetUtcNow());
     }
 
-    /// <summary>Reads the last recorded status of a running or stopped controller without taking its lease.</summary>
-    public static JsonObject? Read(string statePath)
+    /// <summary>Reads the last recorded status of a running or stopped controller without taking its lease, generated at <paramref name="clock"/>'s time.</summary>
+    public static JsonObject? Read(string statePath, TimeProvider clock)
     {
         var recorded = ReadObject(PathFor(statePath));
-        return recorded is null && !File.Exists(statePath) ? null : Compose(statePath, recorded);
+        return recorded is null && !File.Exists(statePath) ? null : Compose(statePath, recorded, clock.GetUtcNow());
     }
 
     public static string Render(JsonObject snapshot) => snapshot.ToJsonString(Indented);
 
-    static JsonObject Compose(string statePath, JsonObject? recorded)
+    static JsonObject Compose(string statePath, JsonObject? recorded, DateTimeOffset now)
     {
         var state = ReadObject(statePath);
         // Managed clone mode also records native turns in its refresh journal, for checkout refresh admission.
@@ -178,7 +180,7 @@ sealed class ControllerStatus : IDisposable
         return new JsonObject
         {
             ["version"] = 1,
-            ["generatedAt"] = DateTimeOffset.UtcNow.ToString("O"),
+            ["generatedAt"] = now.ToString("O"),
             ["repository"] = state?["repository"]?.Copy() ?? recorded?["repository"]?.Copy(),
             ["actor"] = state?["agentLogin"]?.Copy(),
             ["controller"] = recorded?["controller"]?.Copy() ?? Json.Object(("state", "unknown")),
@@ -215,7 +217,7 @@ sealed class ControllerStatus : IDisposable
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             // Status is diagnostic; its failure must not stop work. Never recurse into Log from its observer.
-            Console.WriteLine($"{DateTimeOffset.UtcNow:O} status-error {error.Message}");
+            Console.WriteLine($"{clock.GetUtcNow():O} status-error {error.Message}");
         }
     }
 
@@ -226,7 +228,7 @@ sealed class ControllerStatus : IDisposable
         {
             if (closed) return;
             var controller = runtime["controller"]!;
-            var now = DateTimeOffset.UtcNow.ToString("O");
+            var now = clock.GetUtcNow().ToString("O");
             if (controller.Text("state") != "failed") controller["state"] = "stopped";
             controller["stoppedAt"] = now; controller["updatedAt"] = now;
             Save();
