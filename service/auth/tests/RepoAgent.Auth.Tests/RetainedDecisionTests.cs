@@ -160,6 +160,31 @@ public sealed class RetainedDecisionTests
         Assert.Equal(change == "target" ? 1L : 0L, f.State.Get(EnrollmentQuota.Key)!.RetainedEnrollmentCount);
     }
 
+    // Reclamation and redaction trust the gate only when it is the repository's and carries a sequence, even when the
+    // call would then write nothing: redaction before the payload deadline, and reclamation at the enrollment deadline,
+    // which would release it.
+    [Theory]
+    [InlineData("other-repository")]
+    [InlineData("no-sequence")]
+    public async Task Reclamation_and_redaction_deny_a_gate_that_is_not_the_repositorys_or_has_no_sequence(string gate)
+    {
+        var f = new InMemoryBroker();
+        var (id, _) = await Retained.StartAgent(f);
+        var ledger = Retained.EnrollmentLedger(f, id).Value;
+        f.State.Change(RepositoryGate.Key(Retained.Repository), row =>
+        {
+            if (gate == "other-repository") row["RepositoryId"] = "654321";
+            else Assert.True(row.Remove("Sequence"));
+        });
+        var before = Versions(f).ToList();
+
+        await Assert.ThrowsAsync<IssuanceDenied>(() => f.Redaction().RedactEnrollmentAsync(id, ledger.Generation!, Token));
+        f.Clock.Advance(ledger.Deadline!.Value - f.Clock.GetUtcNow());
+        await Assert.ThrowsAsync<IssuanceDenied>(() => Retained.ReclaimEnrollment(f, id));
+
+        Assert.Equal(before, Versions(f));
+    }
+
     [Fact]
     public async Task Every_repository_transaction_of_reclamation_and_redaction_writes_the_next_gate_sequence()
     {
