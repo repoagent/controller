@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
@@ -53,6 +54,58 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
         if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
         using (var file = new FileStream(temporary, options))
             file.Write(System.Text.Encoding.UTF8.GetBytes(Json.Object(("version", 1), ("settings", settings)).ToJsonString()));
+        File.Move(temporary, path, true);
+    }
+
+    /// <summary>The GitHub operations the outbox of the controller whose state file is <paramref name="statePath"/> retains.</summary>
+    public static string OutboxPath(string statePath) => statePath + ".outbox";
+
+    public OutboxState? ReadOutbox()
+    {
+        var path = OutboxPath(statePath);
+        if (!File.Exists(path)) return null;
+        var state = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        if (state["version"]?.GetValue<int>() != 1 || state["operations"] is not JsonArray operations)
+            throw new InvalidOperationException("GitHub outbox belongs to a different repository or unsupported version; preserve it for manual inspection");
+        try
+        {
+            // Read every retained field once, as delivery will, so a damaged file stops startup instead of the loop.
+            return new(state.Text("repository"), state["pausedUntil"] is { } paused ? Time(paused) : null, [.. operations.Select(item =>
+            {
+                var operation = item!.AsObject();
+                var key = operation.Text("key");
+                _ = key[0];
+                return new OutboxOperation(key, operation.Text("kind"), operation.Text("subjectId"), operation.Text("url"), Optional(operation, "category"),
+                    Optional(operation, "title"), Optional(operation, "body"), operation["attempts"]!.GetValue<int>(), operation["dueAt"] is { } due ? Time(due) : DateTimeOffset.MinValue,
+                    operation["uncertain"]!.GetValue<bool>(), operation["lastError"].OptionalText());
+            })]);
+        }
+        catch (Exception error) { throw new InvalidOperationException("GitHub outbox contains an unreadable operation; preserve it for manual inspection", error); }
+
+        static string? Optional(JsonObject operation, string name) => operation[name] is null ? null : operation.Text(name);
+        static DateTimeOffset Time(JsonNode value) => DateTimeOffset.Parse(value.GetValue<string>(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+    }
+
+    public void WriteOutbox(OutboxState outbox)
+    {
+        var operations = new JsonArray();
+        foreach (var retained in outbox.Operations)
+        {
+            var operation = Json.Object(("key", retained.Key), ("kind", retained.Kind), ("subjectId", retained.SubjectId), ("url", retained.Url));
+            if (retained.Category is not null) operation["category"] = retained.Category;
+            if (retained.Title is not null) operation["title"] = retained.Title;
+            if (retained.Body is not null) operation["body"] = retained.Body;
+            operation["attempts"] = retained.Attempts;
+            operation["dueAt"] = retained.DueAt.ToString("O", CultureInfo.InvariantCulture);
+            operation["uncertain"] = retained.Uncertain;
+            operation["lastError"] = retained.LastError;
+            operations.Add((JsonNode)operation);
+        }
+        var state = Json.Object(("version", 1), ("repository", outbox.Repository),
+            ("pausedUntil", outbox.PausedUntil?.ToString("O", CultureInfo.InvariantCulture)), ("operations", operations));
+        var path = OutboxPath(statePath);
+        var temporary = path + ".tmp";
+        File.WriteAllText(temporary, state.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         File.Move(temporary, path, true);
     }
 }

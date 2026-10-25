@@ -428,7 +428,7 @@ sealed class Bridge(GitHub github, Codex codex, StateStore store, GitHubOutbox o
         store.Save();
         admission?.Confirm();
         Log.Write("forwarded", $"{record.Text("url")} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.Text("id")))} waiting={inputs.Count} latest={envelope["changes"]!.AsArray()[^1]!["subject"]!.Text("url")}" + (redelivery ? " redelivery=true" : ""));
-        foreach (var source in receipts) outbox.Receipt(source);
+        foreach (var source in receipts) outbox.Receipt(source.Text("id"), source.Text("url"), GitHub.HasViewerReceipt(source));
         return true;
     }
 

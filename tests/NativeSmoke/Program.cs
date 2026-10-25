@@ -1,10 +1,29 @@
 using RepoAgentController;
 
-// Native AOT trimming is a separate compatibility boundary from the ordinary xUnit run.
+// Native AOT trimming is a separate compatibility boundary from the ordinary xUnit run. Which users GitHub's rendered HTML
+// mentions is only checked here: shapes captured from GitHub's POST /markdown in GFM repository context.
 var mention = new MentionUser("repoagent");
-var rendered = """<p><strong><a class="user-mention notranslate" href="https://github.com/repoagent">@repoagent</a></strong></p>""";
-if (!mention.IsMentioned(rendered) || mention.IsMentioned("<p><code>@repoagent</code></p>"))
-    throw new InvalidOperationException("Native AOT mention enrollment differs from GitHub-rendered mention semantics.");
+string[] mentions =
+[
+    """<p><a class="user-mention notranslate" href="https://github.com/repoagent">@repoagent</a></p>""",
+    """<strong><a class="user-mention notranslate" href="https://github.com/repoagent">@repoagent</a></strong>""",
+    """<p><strong><a class="user-mention notranslate" href="https://github.com/repoagent">@repoagent</a></strong></p>"""
+];
+string[] others =
+[
+    "<p><code>@repoagent</code></p>",
+    "<pre><code>@repoagent</code></pre>",
+    """<a href="mailto:support+@repoagent.example">support+@repoagent.example</a>""",
+    """<a href="https://github.com/repoagent">profile</a>""",
+    """<a class="user-mention" href="https://github.com/egil">@egil</a>""",
+    """<a class="user-mention" href="https://github.com/repoagent-other">@repoagent-other</a>""",
+    """<a class="user-mention" href="https://github.com.evil/repoagent">@repoagent</a>""",
+    "<p>@repoagent</p>"
+];
+if (mentions.FirstOrDefault(html => !mention.IsMentioned(RenderedMentions.Users(html))) is { } missed)
+    throw new InvalidOperationException("Native AOT mention enrollment missed GitHub's rendered mention " + missed);
+if (others.FirstOrDefault(html => mention.IsMentioned(RenderedMentions.Users(html))) is { } other)
+    throw new InvalidOperationException("Native AOT mention enrollment treated other rendered content as a mention: " + other);
 Console.WriteLine("Native AOT rendered-mention smoke passed.");
 
 var directory = Path.Combine(Path.GetTempPath(), "native-lease-" + Guid.NewGuid().ToString("N"));

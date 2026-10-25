@@ -13,7 +13,7 @@ public sealed class GitHubAppCredentials : IDisposable
     InstallationCredential? credential;
     string appSlug = "";
 
-    public string AgentLogin => appSlug.Length == 0 ? "" : appSlug + "[bot]";
+    public string AgentLogin => Identity.AgentLogin;
     /// <summary>Private gh/Git configuration, generated wrappers and the nonsecret pointer to this lifetime's credential handoff.</summary>
     public string CredentialDirectory { get; }
     public CancellationToken BrokerCredentialLost => source is BrokerTokenSource ? brokerCredentialLost.Token : CancellationToken.None;
@@ -69,13 +69,10 @@ public sealed class GitHubAppCredentials : IDisposable
         File.Delete(Path.Combine(credentialDirectory, "installation-token.json.tmp"));
     }
 
-    public bool IsAgentActor(JsonNode? actor)
-    {
-        if (appSlug.Length == 0 || actor is null) return false;
-        var login = actor.Text("login");
-        return string.Equals(login, AgentLogin, StringComparison.OrdinalIgnoreCase) ||
-            (actor.Text("__typename") == "Bot" && string.Equals(login, appSlug, StringComparison.OrdinalIgnoreCase));
-    }
+    /// <summary>This App, once initialized; until then no actor is the App.</summary>
+    public AppIdentity Identity => new(appSlug);
+
+    public bool IsAgentActor(JsonNode? actor) => Identity.IsAgentActor(GitHub.ActorOf(actor));
 
     public async Task<string> GetToken(CancellationToken ct) => (await GetCredential(ct)).Token;
 

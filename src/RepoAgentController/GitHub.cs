@@ -9,10 +9,14 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     public string Repository { get; } = repository;
     public string AgentLogin => credentials.AgentLogin;
     public MentionUser? MentionUser { get; private set; }
-    public bool IsAgentActor(JsonNode? actor) => credentials.IsAgentActor(actor);
+    public AppIdentity Identity => credentials.Identity with { MentionUser = MentionUser };
+    public bool IsAgentActor(JsonNode? actor) => Identity.IsAgentActor(ActorOf(actor));
+
+    /// <summary>An author, sender or reaction user as GitHub's GraphQL reports it; null when GitHub reports none.</summary>
+    internal static Actor? ActorOf(JsonNode? actor) => actor is null ? null : new(actor.Text("login"), actor.Text("__typename"));
     const string MessageFields = "id url body bodyHTML createdAt updatedAt author { __typename login } reactionGroups { content viewerHasReacted }";
     const string DiscussionFields = MessageFields + " number title closed locked answer { id } category { id name }";
-    const string PageInfo = "pageInfo { hasNextPage endCursor }";
+    internal const string PageInfo = "pageInfo { hasNextPage endCursor }";
 
     public async Task<JsonNode> Query(string query, JsonObject variables, CancellationToken ct)
     {
@@ -119,9 +123,11 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         Log.Write("mention-user", $"@{MentionUser.Login} publishes-as={AgentLogin}");
     }
 
-    public bool IsEnrollmentMention(JsonNode source) => !IsAgentActor(source["author"]) &&
-        ((MentionUser?.IsMentioned(source.Text("bodyHTML")) ?? false) ||
-         Regex.IsMatch(source.Text("body"), @"(?<![\w-])@" + Regex.Escape(AgentLogin) + @"(?![\w-])", RegexOptions.IgnoreCase));
+    // The rendered body is parsed only when a mention user can be mentioned in it.
+    public bool IsEnrollmentMention(JsonNode source) => Identity.IsEnrollmentMention(ActorOf(source["author"]), source.Text("body"),
+        MentionUser is null ? NoMentions : RenderedMentions.Users(source.Text("bodyHTML")));
+
+    static readonly IReadOnlySet<string> NoMentions = new HashSet<string>();
 
     public async Task<List<JsonNode>> Discussions(CancellationToken ct)
     {
@@ -146,8 +152,8 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
             Json.Object(("owner", parts[0]), ("name", parts[1]), ("number", number)), ct);
         // Only the typed NOT_FOUND for this field inside the resolved repository confirms deletion. Message text,
         // repository access loss, other error types and incomplete data stay classified failures.
-        if (GitHubRequestException.ConfirmsAbsent(response, "repository", "discussion")) return null;
-        return GitHubRequestException.Classify(response)["repository"]?["discussion"]?.Copy()
+        if (ConfirmsAbsent(response, "repository", "discussion")) return null;
+        return Classify(response)["repository"]?["discussion"]?.Copy()
             ?? throw new GitHubRequestException(GitHubFailure.Transient, "incomplete Discussion response");
     }
 
@@ -183,77 +189,15 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         return nodes;
     }
 
-    static string? Next(JsonNode connection) => connection["pageInfo"]!["hasNextPage"]!.GetValue<bool>() ? connection["pageInfo"]!.Text("endCursor") : null;
+    internal static string? Next(JsonNode connection) => connection["pageInfo"]!["hasNextPage"]!.GetValue<bool>() ? connection["pageInfo"]!.Text("endCursor") : null;
 
     public static bool HasViewerReceipt(JsonNode source) =>
         source["reactionGroups"]?.AsArray().Any(g => g!.Text("content") == "EYES" && g!["viewerHasReacted"]!.GetValue<bool>()) ?? false;
 
-    public async Task AddReceipt(string subjectId, CancellationToken ct)
-    {
-        var data = await Send("mutation($id:ID!) { addReaction(input:{subjectId:$id,content:EYES}) { reaction { id } } }", Json.Object(("id", subjectId)), ct);
-        if (data["addReaction"]?["reaction"]?["id"] is null)
-            throw new GitHubRequestException(GitHubFailure.Transient, "receipt mutation returned no reaction", uncertain: true);
-    }
-
-    /// <summary>Reads whether the App's EYES receipt exists, to reconcile an uncertain earlier write.</summary>
-    public async Task<bool> HasReceipt(string subjectId, CancellationToken ct)
-    {
-        var node = (await Send("query($id:ID!) { node(id:$id) { ... on Reactable { reactionGroups { content viewerHasReacted } } } }", Json.Object(("id", subjectId)), ct))["node"];
-        return node is null ? throw new GitHubRequestException(GitHubFailure.Permanent, "receipt subject no longer exists") : HasViewerReceipt(node);
-    }
-
-    /// <summary>Hidden in the rendered dashboard body; with App authorship it identifies the controller-owned dashboard.</summary>
-    public const string DashboardMarker = "<!-- repoagent:controller-dashboard -->";
-
-    /// <summary>The controller's own status Discussion: authored by this App and marked. Participants cannot author as the App.</summary>
-    public bool IsDashboard(JsonNode discussion) =>
-        IsAgentActor(discussion["author"]) && discussion.Text("body").Contains(DashboardMarker, StringComparison.Ordinal);
-
-    /// <summary>Resolves the repository and named Discussion category that hold the dashboard.</summary>
-    public async Task<(string Repository, string Category)> DashboardCategory(string name, CancellationToken ct)
-    {
-        var parts = Repository.Split('/');
-        var repository = (await Send("query($owner:String!,$name:String!) { repository(owner:$owner,name:$name) { id discussionCategories(first:100) { nodes { id name } } } }",
-            Json.Object(("owner", parts[0]), ("name", parts[1])), ct))["repository"] ?? throw new GitHubRequestException(GitHubFailure.Permanent, "repository not found");
-        var category = repository["discussionCategories"]?["nodes"]?.AsArray().FirstOrDefault(node => string.Equals(node!.Text("name"), name, StringComparison.OrdinalIgnoreCase))
-            ?? throw new GitHubRequestException(GitHubFailure.Permanent, $"dashboard Discussion category '{name}' does not exist");
-        return (repository.Text("id"), category.Text("id"));
-    }
-
-    /// <summary>Finds the oldest owned dashboard in the category, which also settles an uncertain earlier creation.</summary>
-    public async Task<(string Id, string Url)?> FindDashboard(string category, CancellationToken ct)
-    {
-        var parts = Repository.Split('/');
-        string? cursor = null;
-        do
-        {
-            var connection = (await Send("query($owner:String!,$name:String!,$category:ID!,$cursor:String) { repository(owner:$owner,name:$name) { discussions(first:50,after:$cursor,categoryId:$category,orderBy:{field:CREATED_AT,direction:ASC}) { nodes { id url body author { __typename login } } " + PageInfo + " } } }",
-                Json.Object(("owner", parts[0]), ("name", parts[1]), ("category", category), ("cursor", cursor)), ct))["repository"]?["discussions"]
-                ?? throw new GitHubRequestException(GitHubFailure.Permanent, "repository Discussions are not readable");
-            if (connection["nodes"]!.AsArray().FirstOrDefault(node => IsDashboard(node!)) is { } owned) return (owned.Text("id"), owned.Text("url"));
-            cursor = Next(connection);
-        } while (cursor is not null);
-        return null;
-    }
-
-    public async Task<(string Id, string Url)> CreateDashboard((string Repository, string Category) target, string title, string body, CancellationToken ct)
-    {
-        var created = (await Send("mutation($repository:ID!,$category:ID!,$title:String!,$body:String!) { createDiscussion(input:{repositoryId:$repository,categoryId:$category,title:$title,body:$body}) { discussion { id url } } }",
-            Json.Object(("repository", target.Repository), ("category", target.Category), ("title", title), ("body", body)), ct))["createDiscussion"]?["discussion"]
-            ?? throw new GitHubRequestException(GitHubFailure.Transient, "dashboard creation returned no Discussion", uncertain: true);
-        return (created.Text("id"), created.Text("url"));
-    }
-
-    public async Task UpdateDashboard(string id, string title, string body, CancellationToken ct)
-    {
-        // Replacing the whole title and body is idempotent, so an uncertain earlier update needs no reconciliation.
-        if ((await Send("mutation($id:ID!,$title:String!,$body:String!) { updateDiscussion(input:{discussionId:$id,title:$title,body:$body}) { discussion { id } } }",
-            Json.Object(("id", id), ("title", title), ("body", body)), ct))["updateDiscussion"]?["discussion"] is null)
-            throw new GitHubRequestException(GitHubFailure.Transient, "dashboard update returned no Discussion", uncertain: true);
-    }
+    public bool IsDashboard(JsonNode discussion) => Identity.IsDashboard(ActorOf(discussion["author"]), discussion.Text("body"));
 
     // Controller-owned requests: classify by HTTP status, rate-limit headers and GraphQL error type.
-    async Task<JsonNode> Send(string query, JsonObject variables, CancellationToken ct) => GitHubRequestException.Classify(await Post(query, variables, ct));
+    internal async Task<JsonNode> Send(string query, JsonObject variables, CancellationToken ct) => Classify(await Post(query, variables, ct));
 
     // The gh --include output of one GraphQL request, for classification.
     async Task<string> Post(string query, JsonObject variables, CancellationToken ct)
@@ -265,44 +209,16 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
             throw new GitHubRequestException(GitHubFailure.Transient, error.Message, uncertain: true);
         }
     }
-}
 
-enum GitHubFailure { Transient, RateLimited, Permanent }
-
-/// <summary>
-/// A classified failure of a controller-owned GitHub read or write. Uncertain means GitHub may have applied a write; Status is
-/// the HTTP status GitHub returned, when the request got that far.
-/// </summary>
-sealed class GitHubRequestException(GitHubFailure kind, string message, bool uncertain = false, TimeSpan? retryAfter = null,
-    DateTimeOffset? resetAt = null, int? status = null) : IOException(message)
-{
     static readonly string[] Rejections = ["NOT_FOUND", "FORBIDDEN", "UNPROCESSABLE"];
-    public GitHubFailure Kind { get; } = kind;
-    public bool Uncertain { get; } = uncertain;
-    public int? Status { get; } = status;
-
-    /// <summary>A REST read GitHub answered with an unexpected HTTP status.</summary>
-    public static GitHubRequestException Rejected(int status) => new(status switch
-    {
-        429 => GitHubFailure.RateLimited,
-        400 or 403 or 404 or 410 or 422 => GitHubFailure.Permanent,
-        _ => GitHubFailure.Transient
-    }, $"GitHub returned HTTP {status}", status: status);
-
-    /// <summary>The earliest retry GitHub signalled, if any.</summary>
-    public DateTimeOffset? NotBefore(DateTimeOffset now)
-    {
-        var after = retryAfter is { } delay ? now + delay : (DateTimeOffset?)null;
-        return after is null ? resetAt : resetAt is null || after > resetAt ? after : resetAt;
-    }
 
     /// <summary>
     /// True only when gh --include output is GitHub's typed NOT_FOUND for exactly the field at <paramref name="path"/>, inside
     /// a parent that resolved: that object is confirmed absent. Every other response is left to <see cref="Classify"/>.
     /// </summary>
-    public static bool ConfirmsAbsent(string response, params string[] path)
+    internal static bool ConfirmsAbsent(string response, params string[] path)
     {
-        if (GitHub.Included(response) is not (200, _, var text)) return false;
+        if (Included(response) is not (200, _, var text)) return false;
         JsonNode? body;
         try { body = JsonNode.Parse(text); } catch (System.Text.Json.JsonException) { return false; }
         if (body?["errors"] is not JsonArray { Count: 1 } errors || errors[0] is not JsonObject error || error["type"].OptionalText() != "NOT_FOUND" ||
@@ -313,9 +229,9 @@ sealed class GitHubRequestException(GitHubFailure kind, string message, bool unc
     }
 
     /// <summary>Returns GraphQL data from gh --include output, or throws the classified failure.</summary>
-    public static JsonNode Classify(string response)
+    internal static JsonNode Classify(string response)
     {
-        if (GitHub.Included(response) is not { } included)
+        if (Included(response) is not { } included)
             throw new GitHubRequestException(GitHubFailure.Transient, "unrecognized gh response", uncertain: true);
         var (status, headers, text) = included;
         JsonNode? body = null;

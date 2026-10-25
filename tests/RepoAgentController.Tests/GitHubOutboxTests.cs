@@ -10,54 +10,6 @@ namespace RepoAgentController.Tests;
 [Collection("Managed checkout environment")]
 public sealed class GitHubOutboxTests
 {
-    [Theory]
-    [InlineData("secondary")]
-    [InlineData("primary")]
-    [InlineData("graphql")]
-    [InlineData("too-many-requests")]
-    public async Task Rate_limited_receipt_retries_after_restart_without_resending_accepted_input(string signal)
-    {
-        using var controller = new Controller();
-        controller.Respond(RateLimited(signal, controller.Clock));
-
-        Assert.Equal(1, await controller.RunOnce());
-        Assert.Equal(1, controller.Turns);
-        Assert.Equal(1, controller.Writes("D1"));
-
-        controller.Clock.Advance(TimeSpan.FromSeconds(30));
-        await controller.RunOnce();
-        Assert.Equal(1, controller.Writes("D1")); // The signalled wait survives a restart.
-
-        controller.Clock.Advance(TimeSpan.FromSeconds(32));
-        Assert.Equal(0, await controller.RunOnce());
-        Assert.Equal(2, controller.Writes("D1"));
-        Assert.True(controller.HasEyes("D1"));
-
-        Assert.Equal(0, await controller.RunOnce());
-        Assert.Equal(2, controller.Writes("D1"));
-        Assert.Equal(1, controller.Turns);
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Uncertain_receipt_is_reconciled_from_GitHub_before_another_write(bool appliedBeforeTheResponseFailed)
-    {
-        using var controller = new Controller();
-        var lost = Response(502, "<html>Bad gateway</html>");
-        lost["apply"] = appliedBeforeTheResponseFailed;
-        controller.Respond(lost);
-
-        Assert.Equal(1, await controller.RunOnce());
-        Assert.Equal(1, controller.Writes("D1"));
-
-        controller.Clock.Advance(TimeSpan.FromSeconds(20));
-        Assert.Equal(0, await controller.RunOnce());
-        Assert.True(controller.HasEyes("D1"));
-        Assert.Equal(appliedBeforeTheResponseFailed ? 1 : 2, controller.Writes("D1"));
-        Assert.Equal(1, controller.Turns);
-    }
-
     [Fact]
     public async Task Permanent_receipt_failure_leaves_active_delivery_with_an_actionable_nonsecret_log()
     {
@@ -84,7 +36,7 @@ public sealed class GitHubOutboxTests
     {
         using var controller = new Controller();
         controller.Comment("C1", "First observation.");
-        controller.Respond(RateLimited("secondary", controller.Clock));
+        controller.Respond(SecondaryRateLimit());
         Assert.Equal(1, await controller.RunOnce()); // D1 is rate-limited; C1 waits behind the installation-wide pause.
 
         controller.Clock.Advance(TimeSpan.FromSeconds(30));
@@ -101,56 +53,8 @@ public sealed class GitHubOutboxTests
         Assert.Equal(2, controller.Turns);
     }
 
-    [Fact]
-    public async Task Transient_receipt_failure_retries_while_the_controller_keeps_running()
-    {
-        using var controller = new Controller();
-        controller.Respond(Response(503, """{"message":"Service unavailable"}"""));
-        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token);
-        try
-        {
-            await Until(() => controller.Writes("D1") == 1);
-            // Only the controlled clock moves; the next poll is an hour away, so delivery alone must retry.
-            await Until(() =>
-            {
-                controller.Clock.Advance(TimeSpan.FromSeconds(1));
-                return controller.HasEyes("D1");
-            });
-            Assert.Equal(2, controller.Writes("D1"));
-            Assert.Equal(1, controller.Turns);
-        }
-        finally { await shutdown.CancelAsync(); }
-        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-    }
-
-    // A real-time watchdog for observing another process; it never drives the controller's clock.
-    static async Task Until(Func<bool> condition)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(20);
-        while (true)
-        {
-            try { if (condition()) return; }
-            catch (Exception error) when (error is System.Text.Json.JsonException or IOException) { } // The controlled peer is rewriting its file.
-            Assert.True(DateTime.UtcNow < deadline, "Condition was not observed before the watchdog deadline");
-            await Task.Delay(50, TestContext.Current.CancellationToken);
-        }
-    }
-
-    static JsonObject RateLimited(string signal, TimeProvider clock)
-    {
-        var reset = (clock.GetUtcNow().ToUnixTimeSeconds() + 61).ToString();
-        return signal switch
-        {
-            "secondary" => Response(403, """{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","documentation_url":"https://docs.github.com/graphql/overview/rate-limits-and-node-limits-for-the-graphql-api#secondary-rate-limits"}""",
-                ("Retry-After", "61")),
-            "primary" => Response(403, """{"message":"API rate limit exceeded for installation ID 234.","documentation_url":"https://docs.github.com/graphql/overview/rate-limits-and-node-limits-for-the-graphql-api"}""",
-                ("X-RateLimit-Remaining", "0"), ("X-RateLimit-Reset", reset)),
-            "graphql" => Response(200, """{"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded for installation ID 234."}]}""",
-                ("X-RateLimit-Remaining", "0"), ("X-RateLimit-Reset", reset)),
-            _ => Response(429, """{"message":"Too many requests"}""", ("Retry-After", "61"))
-        };
-    }
+    static JsonObject SecondaryRateLimit() => Response(403, """{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","documentation_url":"https://docs.github.com/graphql/overview/rate-limits-and-node-limits-for-the-graphql-api#secondary-rate-limits"}""",
+        ("Retry-After", "61"));
 
     static JsonObject Response(int status, string body, params (string Name, string Value)[] headers) => new()
     {

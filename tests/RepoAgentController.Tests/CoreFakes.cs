@@ -64,6 +64,115 @@ sealed class InMemoryBaselineReleases : IBaselineReleases
     }
 }
 
+/// <summary>
+/// The repository's Discussions as GitHub holds the App's EYES reactions and dashboards. Each queued failure answers the next write,
+/// in order; an applied failure makes the write first, as GitHub does when only its response is lost.
+/// </summary>
+sealed class InMemoryDiscussions : IDiscussions
+{
+    public const string RepositoryId = "R_repository";
+    readonly Lock sync = new();
+    readonly Dictionary<string, string> categories = new(StringComparer.OrdinalIgnoreCase);
+    readonly List<Dashboard> dashboards = [];
+    readonly HashSet<string> eyes = [];
+    readonly Queue<(GitHubRequestException Error, bool Applied)> failures = [];
+    readonly List<string> calls = [];
+
+    /// <summary>A Discussion the App authored as its dashboard, as GitHub holds it now.</summary>
+    public sealed record Dashboard(string Id, string Url, string CategoryId, string Title, string Body);
+
+    /// <summary>Adds a Discussion category; returns its ID.</summary>
+    public string Category(string name)
+    {
+        lock (sync) return categories.TryGetValue(name, out var id) ? id : categories[name] = "DIC_" + name.Replace(' ', '_');
+    }
+
+    /// <summary>A dashboard an earlier lifetime created in <paramref name="category"/>.</summary>
+    public Dashboard Created(string category, string title, string body)
+    {
+        lock (sync) return Add(Category(category), title, body);
+    }
+
+    /// <summary>The next write fails with <paramref name="error"/>, after taking effect when <paramref name="applied"/>.</summary>
+    public void Fail(GitHubRequestException error, bool applied = false) { lock (sync) failures.Enqueue((error, applied)); }
+
+    /// <summary>Every request so far, in order, as its GraphQL field and subject, such as <c>addReaction D1</c>.</summary>
+    public IReadOnlyList<string> Calls { get { lock (sync) return [.. calls]; } }
+
+    /// <summary>How many times the App wrote its EYES reaction to <paramref name="subject"/>.</summary>
+    public int Writes(string subject) => Calls.Count(call => call == "addReaction " + subject);
+
+    public bool HasEyes(string subject) { lock (sync) return eyes.Contains(subject); }
+
+    public IReadOnlyList<Dashboard> Dashboards { get { lock (sync) return [.. dashboards]; } }
+
+    public Task AddEyesReceipt(string subjectId, CancellationToken ct) => Write("addReaction " + subjectId, () => eyes.Add(subjectId));
+
+    public Task<bool> HasEyesReceipt(string subjectId, CancellationToken ct)
+    {
+        lock (sync)
+        {
+            calls.Add("reactionGroups " + subjectId);
+            return Task.FromResult(eyes.Contains(subjectId));
+        }
+    }
+
+    public Task<DashboardLocation> DashboardCategory(string name, CancellationToken ct)
+    {
+        lock (sync)
+        {
+            calls.Add("discussionCategories " + name);
+            return categories.TryGetValue(name, out var id) ? Task.FromResult(new DashboardLocation(RepositoryId, id))
+                : Task.FromException<DashboardLocation>(new GitHubRequestException(GitHubFailure.Permanent, $"dashboard Discussion category '{name}' does not exist"));
+        }
+    }
+
+    public Task<DashboardDiscussion?> FindDashboard(DashboardLocation at, CancellationToken ct)
+    {
+        lock (sync)
+        {
+            calls.Add("discussions " + at.CategoryId);
+            return Task.FromResult(dashboards.FirstOrDefault(dashboard => dashboard.CategoryId == at.CategoryId) is { } owned ? new DashboardDiscussion(owned.Id, owned.Url) : null);
+        }
+    }
+
+    public async Task<DashboardDiscussion> CreateDashboard(DashboardLocation at, string title, string body, CancellationToken ct)
+    {
+        Dashboard? created = null;
+        await Write("createDiscussion " + at.CategoryId, () => created = Add(at.CategoryId, title, body));
+        return new(created!.Id, created.Url);
+    }
+
+    public Task UpdateDashboard(string id, string title, string body, CancellationToken ct) => Write("updateDiscussion " + id, () =>
+    {
+        var index = dashboards.FindIndex(dashboard => dashboard.Id == id);
+        dashboards[index] = dashboards[index] with { Title = title, Body = body };
+    });
+
+    Dashboard Add(string category, string title, string body)
+    {
+        var number = 100 + dashboards.Count;
+        var dashboard = new Dashboard("DD" + number, "https://github.com/owner/repository/discussions/" + number, category, title, body);
+        dashboards.Add(dashboard);
+        return dashboard;
+    }
+
+    Task Write(string call, Action apply)
+    {
+        lock (sync)
+        {
+            calls.Add(call);
+            if (!failures.TryDequeue(out var failure))
+            {
+                apply();
+                return Task.CompletedTask;
+            }
+            if (failure.Applied) apply();
+            return Task.FromException(failure.Error);
+        }
+    }
+}
+
 /// <summary>The controller state as its files hold it: only what was written survives into another lifetime. A write can fail
 /// on demand, as a full or read-only disk does.</summary>
 sealed class InMemoryControllerState : IControllerState
@@ -83,6 +192,20 @@ sealed class InMemoryControllerState : IControllerState
         SettingsWrites++;
         settings = new(new Dictionary<string, SettingValue>(recorded.Settings));
     }
+
+    /// <summary>The outbox's retained operations as last written, or as an earlier lifetime left them.</summary>
+    public OutboxState? Outbox { get; set; }
+
+    public OutboxState? ReadOutbox() => Outbox;
+
+    public int OutboxWrites { get; private set; }
+
+    public void WriteOutbox(OutboxState outbox)
+    {
+        if (FailWrites) throw new IOException("No space left on device");
+        OutboxWrites++;
+        Outbox = outbox with { Operations = [.. outbox.Operations] };
+    }
 }
 
 /// <summary>The controller's log, as kind and message pairs in the order the core wrote them.</summary>
@@ -90,10 +213,35 @@ sealed class RecordingLog : IControllerLog
 {
     readonly Lock sync = new();
     readonly List<(string Kind, string Message)> entries = [];
+    readonly List<(int Count, TaskCompletionSource Reached)> waiters = [];
 
     public IReadOnlyList<(string Kind, string Message)> Entries { get { lock (sync) return [.. entries]; } }
 
-    public void Write(string kind, string message) { lock (sync) entries.Add((kind, message)); }
+    public void Write(string kind, string message)
+    {
+        lock (sync)
+        {
+            entries.Add((kind, message));
+            foreach (var waiter in waiters.Where(waiter => entries.Count >= waiter.Count).ToArray())
+            {
+                waiters.Remove(waiter);
+                waiter.Reached.TrySetResult();
+            }
+        }
+    }
+
+    /// <summary>Completes once <paramref name="count"/> entries are written: the end of work a loop does on another thread when it
+    /// arms no further timer.</summary>
+    public Task Written(int count)
+    {
+        lock (sync)
+        {
+            if (entries.Count >= count) return Task.CompletedTask;
+            var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            waiters.Add((count, reached));
+            return reached.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        }
+    }
 }
 
 /// <summary>Controlled time that reports each timer a loop arms, so a test moves time only once the loop waits.</summary>
