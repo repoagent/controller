@@ -6,7 +6,7 @@ public sealed class StateStore
     readonly IDiscussionStore store;
     public DiscussionState State { get; }
 
-    /// <summary>Throws as reading the untyped file's records threw when they are unreadable (<see cref="DiscussionState.Unreadable"/>).</summary>
+    /// <summary>Throws as reading the untyped records threw when they are unreadable (<see cref="DiscussionState.Unreadable"/>).</summary>
     public OrderedDictionary<string, DiscussionRecord> Discussions =>
         State.Unreadable is { } problem ? throw new InvalidDataException(problem) : State.Discussions;
 
@@ -30,7 +30,7 @@ public sealed class StateStore
     }
 
     /// <summary>Removes these Discussion records and saves. When the save fails they are restored before the error propagates,
-    /// so memory still matches the state file and a retry removes and saves them again.</summary>
+    /// so memory still matches the saved state and a retry removes and saves them again.</summary>
     public void Remove(IReadOnlyCollection<string> ids)
     {
         var removed = ids.Where(Discussions.ContainsKey).Select(id => (Id: id, Record: Discussions[id])).ToArray();

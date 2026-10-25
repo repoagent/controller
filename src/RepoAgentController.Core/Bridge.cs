@@ -450,7 +450,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             events.Add(("turn-ended", $"{record.Url} session={record.SessionId ?? ""} turn={turn} status=lost"));
         }
         if (events.Count == 0) return;
-        // Saved first: status and dashboard compose work from the state file when these events are logged.
+        // Saved first: status and dashboard compose work from the saved state when these events are logged.
         store.Save();
         foreach (var (kind, message) in events) log.Write(kind, message);
     }
@@ -490,7 +490,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         waiting.Retry = new(attempts, after);
         record.Pending = null;
         Wake();
-        // Saved first: status and dashboard compose work from the state file when this event is logged.
+        // Saved first: status and dashboard compose work from the saved state when this event is logged.
         try { store.Save(); }
         finally
         {
