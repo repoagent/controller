@@ -5,35 +5,76 @@ using Xunit;
 
 namespace RepoAgentController.Tests;
 
-// The controller's Discussion state, opened as a startup opens the state file in a private temporary directory.
+// The controller's Discussion state: the core's rules over the in-memory Discussion store, then the state file as a startup
+// leases and reads it in a private temporary directory.
 public sealed class StateStoreTests : IDisposable
 {
     const string Repository = "owner/repository";
     readonly string directory = Path.Combine(Path.GetTempPath(), "state-store-" + Guid.NewGuid().ToString("N"));
     string State => Path.Combine(directory, "bridge.json");
 
+    // The core's rules, over the in-memory Discussion store.
     [Fact]
-    public void Discussions_whose_removal_failed_to_save_stay_in_memory_and_a_retry_removes_them_from_the_file()
+    public void Discussions_whose_removal_failed_to_save_stay_in_memory_and_a_retry_removes_them()
     {
-        using (var leased = new LeasedStateStore(State, Repository))
+        var saved = new InMemoryDiscussionStore();
+        var store = new StateStore(saved, Repository);
+        store.Discussions["D1"] = new("https://github.com/owner/repository/discussions/1") { SessionId = "S1" };
+        store.Discussions["D2"] = new("https://github.com/owner/repository/discussions/2") { SessionId = "S2" };
+        store.Save();
+        saved.FailWrites = true;
+
+        var error = Record.Exception(() => store.Remove(["D1"]));
+
+        // The exceptions the port documents for a failed save, which its callers filter on.
+        Assert.IsType<IOException>(error);
+        Assert.Equal(["D1", "D2"], store.Discussions.Keys.Order());
+        Assert.Equal(["D1", "D2"], saved.Saved!.Discussions.Keys.Order());
+        saved.FailWrites = false;
+        store.Remove(["D1"]);
+        Assert.Equal(["D2"], new StateStore(saved, Repository).Discussions.Keys);
+    }
+
+    [Fact]
+    public void A_state_of_another_repository_stops_startup()
+    {
+        var saved = new InMemoryDiscussionStore();
+        saved.WriteDiscussions(new DiscussionState("owner/other"));
+
+        var error = Assert.Throws<InvalidOperationException>(() => new StateStore(saved, Repository));
+
+        Assert.Equal("State belongs to a different repository or unsupported version", error.Message);
+    }
+
+    [Fact]
+    public void The_App_login_is_saved_by_the_first_startup_and_another_one_stops_startup()
+    {
+        var saved = new InMemoryDiscussionStore();
+        new StateStore(saved, Repository).VerifyIdentity("test-app[bot]");
+        Assert.Equal("test-app[bot]", saved.Saved!.AgentLogin);
+
+        var error = Assert.Throws<InvalidOperationException>(() => new StateStore(saved, Repository).VerifyIdentity("other-app[bot]"));
+
+        Assert.StartsWith("State belongs to a different GitHub identity;", error.Message);
+        Assert.Equal("test-app[bot]", saved.Saved!.AgentLogin);
+    }
+
+    // The state file's own rules: the lease is held while the lock step runs, the file is read after it, and released on dispose.
+    [Fact]
+    public void A_startup_holds_the_lease_while_its_lock_step_runs_and_then_reads_what_that_step_left()
+    {
+        Exception? competing = null;
+        using (var leased = new LeasedStateStore(State, Repository, () =>
         {
-            var store = leased.Store;
-            store.Discussions["D1"] = new("https://github.com/owner/repository/discussions/1") { SessionId = "S1" };
-            store.Discussions["D2"] = new("https://github.com/owner/repository/discussions/2") { SessionId = "S2" };
-            store.Save();
-            Directory.CreateDirectory(State + ".tmp"); // The next save cannot write its replacement file.
-
-            var error = Record.Exception(() => store.Remove(["D1"]));
-
-            // The exceptions the port documents for a failed write, which its callers filter on.
-            Assert.True(error is IOException or UnauthorizedAccessException, $"Expected a failed save, not {error}");
-            Assert.Equal(["D1", "D2"], store.Discussions.Keys.Order());
-            Directory.Delete(State + ".tmp");
-            store.Remove(["D1"]);
+            competing = Record.Exception(() => new LeasedStateStore(State, Repository).Dispose());
+            File.WriteAllText(State, """{"version":1,"repository":"owner/repository","discussions":{"D1":{"url":"u1","sources":{}}}}""");
+        }))
+        {
+            Assert.Contains(State + ".lock", Assert.IsAssignableFrom<IOException>(competing).Message); // As the process or the lock refuses it.
+            Assert.Equal(["D1"], leased.Store.Discussions.Keys);
         }
         using var reopened = new LeasedStateStore(State, Repository);
-        var restarted = reopened.Store;
-        Assert.Equal(["D2"], restarted.Discussions.Keys);
+        Assert.Equal(["D1"], reopened.Store.Discussions.Keys);
     }
 
     // As a startup opens it: the lease is taken and the file read, then the App identity is checked and saved.
@@ -49,12 +90,10 @@ public sealed class StateStoreTests : IDisposable
         });
     }
 
-    [Theory]
-    [InlineData("""{"version":2,"repository":"owner/repository","discussions":{}}""")]
-    [InlineData("""{"version":1,"repository":"owner/other","discussions":{}}""")]
-    public void A_state_of_another_version_or_repository_stops_startup(string recorded)
+    [Fact]
+    public void A_state_file_of_another_version_stops_startup()
     {
-        var error = Assert.IsType<InvalidOperationException>(Open(recorded));
+        var error = Assert.IsType<InvalidOperationException>(Open("""{"version":2,"repository":"owner/repository","discussions":{}}"""));
         Assert.Equal("State belongs to a different repository or unsupported version", error.Message);
     }
 
@@ -67,10 +106,8 @@ public sealed class StateStoreTests : IDisposable
     }
 
     [Fact]
-    public void A_state_of_another_App_login_or_with_a_login_that_is_not_text_stops_startup()
+    public void A_state_file_with_an_App_login_that_is_not_text_stops_startup()
     {
-        Assert.StartsWith("State belongs to a different GitHub identity;", Assert.IsType<InvalidOperationException>(
-            Open("""{"version":1,"repository":"owner/repository","discussions":{},"agentLogin":"other-app[bot]"}""")).Message);
         Assert.Equal(Reported(() => JsonNode.Parse("7")!.GetValue<string>()), Assert.IsType<InvalidOperationException>(
             Open("""{"version":1,"repository":"owner/repository","discussions":{},"agentLogin":7}""")).Message);
     }
