@@ -175,7 +175,8 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
         throw new IssuanceDenied();
     }
 
-    // The pending enrollment starts as a copy of every property of its ledger.
+    // The pending enrollment starts as a copy of its ledger: every property admission or reclamation may have set on it.
+    // Retirement is not copied; admission denies a ledger that has started it.
     private static PendingControllerEnrollment Copy(EnrollmentLedger ledger) => new()
     {
         RepositoryId = ledger.RepositoryId, PendingId = ledger.PendingId, SetupSecretHash = ledger.SetupSecretHash,
