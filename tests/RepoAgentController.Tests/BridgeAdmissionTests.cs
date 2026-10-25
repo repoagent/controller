@@ -457,6 +457,15 @@ public sealed class BridgeAdmissionTests
             await world.Poll();
             Assert.Equal(["admit", "abandon", "dispose"], world.Admission.Calls);
         }
+        // The model catalogue cannot be read, so no selection is made.
+        await using (var world = Mentioned(1))
+        {
+            world.Admission = new();
+            world.PrepareRuntime = runtime => runtime.ModelsFailure = new IOException("no catalogue");
+            await world.Begin();
+            await world.Poll();
+            Assert.Equal(["admit", "abandon", "dispose"], world.Admission.Calls);
+        }
         // A restarted runtime reports the session active once it loads it.
         await using (var world = Mentioned(1))
         {

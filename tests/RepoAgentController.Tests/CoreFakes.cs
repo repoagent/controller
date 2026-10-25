@@ -433,7 +433,11 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
 
     public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => Task.FromResult(Configuration);
 
-    public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => Task.FromResult(Catalogue);
+    /// <summary>When set, reading the model catalogue fails with it, as a native that cannot answer does.</summary>
+    public Exception? ModelsFailure { get; set; }
+
+    public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => ModelsFailure is { } failure
+        ? Task.FromException<IReadOnlyList<NativeModel>>(failure) : Task.FromResult(Catalogue);
 
     public void Report(string session, AgentSessionStatus status) => Changed?.Invoke(new AgentSessionStatusChanged(Epoch, session, status));
     public void Started(string session, string turn) => Changed?.Invoke(new AgentTurnStarted(Epoch, session, turn));
