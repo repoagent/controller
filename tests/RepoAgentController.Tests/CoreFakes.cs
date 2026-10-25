@@ -329,6 +329,34 @@ sealed class InMemoryControllerState : IControllerState
         OutboxWrites++;
         Outbox = outbox with { Operations = [.. outbox.Operations] };
     }
+
+    DiscussionState? discussions;
+
+    public DiscussionState? ReadDiscussions() => discussions is null ? null : Copy(discussions);
+
+    // Kept as a copy, so a later change in memory is not saved until written.
+    public void WriteDiscussions(DiscussionState state)
+    {
+        if (FailWrites) throw new IOException("No space left on device");
+        discussions = Copy(state);
+    }
+
+    static DiscussionState Copy(DiscussionState state)
+    {
+        var copy = new DiscussionState(state.Repository) { AgentLogin = state.AgentLogin, Unknown = state.Unknown, Unreadable = state.Unreadable };
+        foreach (var (name, since) in state.CategoryStarts) copy.CategoryStarts[name] = since;
+        foreach (var (id, record) in state.Discussions)
+        {
+            var waiting = record.Waiting is { } held ? new WaitingInput(held.Discussion) { Context = held.Context, Retry = held.Retry, Unknown = held.Unknown } : null;
+            waiting?.Inputs.AddRange(record.Waiting!.Inputs);
+            copy.Discussions[id] = new(record.Url)
+            {
+                Sources = new(record.Sources), Labels = record.Labels, SessionId = record.SessionId, Waiting = waiting, Pending = record.Pending,
+                Running = record.Running, Unknown = record.Unknown, Unreadable = record.Unreadable
+            };
+        }
+        return copy;
+    }
 }
 
 /// <summary>

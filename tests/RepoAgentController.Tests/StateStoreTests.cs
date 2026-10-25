@@ -5,7 +5,8 @@ using Xunit;
 
 namespace RepoAgentController.Tests;
 
-// The controller state file in a private temporary directory.
+// The controller's Discussion state: kept by the in-memory controller state, or opened as a startup opens the state file in a
+// private temporary directory.
 public sealed class StateStoreTests : IDisposable
 {
     const string Repository = "owner/repository";
@@ -13,24 +14,23 @@ public sealed class StateStoreTests : IDisposable
     string State => Path.Combine(directory, "bridge.json");
 
     [Fact]
-    public void Discussions_whose_removal_failed_to_save_stay_in_memory_and_a_retry_removes_them_from_the_file()
+    public void Discussions_whose_removal_failed_to_save_stay_in_memory_and_a_retry_removes_them_from_the_saved_state()
     {
-        using (var store = new StateStore(State, Repository))
-        {
-            store.Discussions["D1"] = new JsonObject { ["url"] = "https://github.com/owner/repository/discussions/1", ["sessionId"] = "S1" };
-            store.Discussions["D2"] = new JsonObject { ["url"] = "https://github.com/owner/repository/discussions/2", ["sessionId"] = "S2" };
-            store.Save();
-            Directory.CreateDirectory(State + ".tmp"); // The next save cannot write its replacement file.
+        var files = new InMemoryControllerState();
+        var store = new StateStore(files, Repository);
+        store.Discussions["D1"] = new("https://github.com/owner/repository/discussions/1") { SessionId = "S1" };
+        store.Discussions["D2"] = new("https://github.com/owner/repository/discussions/2") { SessionId = "S2" };
+        store.Save();
+        files.FailWrites = true; // The next save cannot write its replacement.
 
-            var error = Record.Exception(() => store.Remove(["D1"]));
+        var error = Record.Exception(() => store.Remove(["D1"]));
 
-            Assert.True(error is IOException or UnauthorizedAccessException, $"Expected a failed save, not {error}");
-            Assert.Equal(["D1", "D2"], store.Discussions.Select(entry => entry.Key).Order());
-            Directory.Delete(State + ".tmp");
-            store.Remove(["D1"]);
-        }
-        using var restarted = new StateStore(State, Repository);
-        Assert.Equal(["D2"], restarted.Discussions.Select(entry => entry.Key));
+        Assert.IsType<IOException>(error);
+        Assert.Equal(["D1", "D2"], store.Discussions.Keys.Order());
+        Assert.Equal(["D1", "D2"], new StateStore(files, Repository).Discussions.Keys);
+        files.FailWrites = false;
+        store.Remove(["D1"]);
+        Assert.Equal(["D2"], new StateStore(files, Repository).Discussions.Keys);
     }
 
     // As a startup opens it: the lease is taken and the file read, then the App identity is checked and saved.

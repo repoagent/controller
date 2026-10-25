@@ -4,9 +4,9 @@ using System.Text.Json.Nodes;
 namespace RepoAgentController;
 
 /// <summary>
-/// Maps Discussions between GitHub's GraphQL nodes, the core's records, and the JSON the bridge saves as checkpoints and sends
-/// as agent input. The JSON keeps GitHub's field order and shapes: an absent author is <c>null</c>, a comment's
-/// <c>replyTo</c> is <c>null</c> or an object, and timestamps are <c>yyyy-MM-ddTHH:mm:ssZ</c>.
+/// Maps Discussions between GitHub's GraphQL nodes, the core's records, and the JSON the bridge sends as agent input. The JSON
+/// keeps GitHub's field order and shapes: an absent author is <c>null</c>, a comment's <c>replyTo</c> is <c>null</c> or an
+/// object, and timestamps are <c>yyyy-MM-ddTHH:mm:ssZ</c>. Checkpoints keep the same shapes in the state file.
 /// </summary>
 static class DiscussionJson
 {
@@ -51,8 +51,8 @@ static class DiscussionJson
     {
         ["id"] = discussion.Id, ["url"] = discussion.Url, ["body"] = discussion.Body, ["createdAt"] = Time(discussion.CreatedAt),
         ["updatedAt"] = Time(discussion.UpdatedAt), ["author"] = Author(discussion.Author), ["number"] = discussion.Number,
-        ["title"] = discussion.Title, ["closed"] = discussion.Closed, ["locked"] = discussion.Locked, ["answer"] = Answer(discussion),
-        ["category"] = Category(discussion)
+        ["title"] = discussion.Title, ["closed"] = discussion.Closed, ["locked"] = discussion.Locked, ["answer"] = Answer(discussion.AnswerId),
+        ["category"] = Category(discussion.Category)
     };
 
     /// <summary>A comment as bootstrap context carries it, with its reactions.</summary>
@@ -61,7 +61,7 @@ static class DiscussionJson
         ["id"] = comment.Id, ["url"] = comment.Url, ["body"] = comment.Body, ["createdAt"] = Time(comment.CreatedAt),
         ["updatedAt"] = Time(comment.UpdatedAt), ["author"] = Author(comment.Author),
         ["replyTo"] = comment.ReplyToId is { } parent ? new JsonObject { ["id"] = parent } : null,
-        ["reactions"] = new JsonArray([.. comment.Reactions.Select(reaction => (JsonNode)Node(reaction))])
+        ["reactions"] = new JsonArray([.. comment.Reactions.Select(reaction => (JsonNode)Public(reaction))])
     };
 
     /// <summary>A change subject's identity and attribution, with a reply's thread root.</summary>
@@ -72,43 +72,17 @@ static class DiscussionJson
         return subject;
     }
 
-    /// <summary>
-    /// What observation compares for work: the content, the Discussion's state fields, and the reactions of other accounts than
-    /// the App by ID. A reply also keeps its thread root, so its deletion can still be attributed and routed.
-    /// </summary>
-    public static JsonObject Checkpoint(DiscussionMessage source, IReadOnlyList<Reaction> reactions, AppIdentity identity)
-    {
-        // Actor type is observation metadata; adding it must not replay accepted content.
-        var content = new JsonObject { ["body"] = source.Body, ["author"] = source.Author is { } author ? new JsonObject { ["login"] = author.Login } : null };
-        var state = source is Discussion discussion ? new JsonObject
-        {
-            ["title"] = discussion.Title, ["closed"] = discussion.Closed, ["locked"] = discussion.Locked, ["answer"] = Answer(discussion),
-            ["category"] = Category(discussion)
-        } : new JsonObject();
-        var others = new JsonObject();
-        foreach (var reaction in reactions)
-            if (!identity.IsAgentActor(reaction.User)) others[reaction.Id] = Node(reaction);
-        var version = new JsonObject { ["content"] = content, ["state"] = state, ["reactions"] = others };
-        if (source is DiscussionComment { ReplyToId: { } root }) version["replyTo"] = root;
-        return version;
-    }
-
-    /// <summary>The receipt a waiting input keeps for its source: where to add EYES, and whether the App already reacted.</summary>
-    public static JsonObject Receipt(DiscussionMessage source) => new()
-    {
-        ["id"] = source.Id, ["url"] = source.Url,
-        ["reactionGroups"] = new JsonArray([.. source.ReactionGroups.Select(group => (JsonNode)new JsonObject
-            { ["content"] = group.Content, ["viewerHasReacted"] = group.ViewerHasReacted })])
-    };
-
-    static JsonObject Node(Reaction reaction) => new()
+    /// <summary>A reaction as agent input and checkpoints carry it.</summary>
+    public static JsonObject Public(Reaction reaction) => new()
     {
         ["id"] = reaction.Id, ["content"] = reaction.Content, ["user"] = Author(reaction.User), ["createdAt"] = Time(reaction.CreatedAt)
     };
 
+    /// <summary>A Discussion's answer and category as agent input and checkpoints carry them, or null.</summary>
+    public static JsonObject? Answer(string? answerId) => answerId is { } id ? new JsonObject { ["id"] = id } : null;
+    public static JsonObject? Category(DiscussionCategory? category) =>
+        category is null ? null : new JsonObject { ["id"] = category.Id, ["name"] = category.Name };
+
     static JsonObject? Author(Actor? actor) => actor is null ? null : new JsonObject { ["__typename"] = actor.Type, ["login"] = actor.Login };
-    static JsonObject? Answer(Discussion discussion) => discussion.AnswerId is { } id ? new JsonObject { ["id"] = id } : null;
-    static JsonObject? Category(Discussion discussion) =>
-        discussion.Category is { } category ? new JsonObject { ["id"] = category.Id, ["name"] = category.Name } : null;
     static string Time(DateTimeOffset at) => at.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
 }

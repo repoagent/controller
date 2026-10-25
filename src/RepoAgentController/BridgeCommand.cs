@@ -168,8 +168,8 @@ public static class BridgeCommand
                         var nativeConfig = Path.Combine(credentialDirectory, "gh-config");
                         if (checkout is not null) await Codex.TrustWorkspace(nativeRoot, wrapper, nativeConfig, runtimeToken, credentials.BrokerCredentialLost);
                         var reconciliation = checkout is null ? null : new CheckoutRefresh(checkout, statePath,
-                            store.Discussions.Any(entry => entry.Value!.Text("sessionId").Length != 0),
-                            store.Discussions.Any(entry => entry.Value?["pending"] is not null));
+                            store.Discussions.Values.Any(record => !string.IsNullOrEmpty(record.SessionId) || StateStore.Holds(record, "sessionId")),
+                            store.Discussions.Values.Any(record => record.Pending is not null || StateStore.Holds(record, "pending")));
                         await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, credentials.BrokerCredentialLost,
                             suppliedCredentials: agentCredentials is not null);
                         var sessions = new AgentSessions(codex, new ControllerLog(), reconciliation, credentials.BrokerCredentialLost, agentCredentials is not null);

@@ -1,8 +1,20 @@
 namespace RepoAgentController;
 
-/// <summary>What the controller keeps beside its state file across lifetimes.</summary>
+/// <summary>What the controller keeps in and beside its state file across lifetimes.</summary>
 public interface IControllerState
 {
+    /// <summary>
+    /// The Discussion state, or null when none was ever saved. A Discussion record in a form no writer leaves is read as
+    /// <see cref="DiscussionRecord.Unreadable"/>, and records that cannot be read at all as <see cref="DiscussionState.Unreadable"/>.
+    /// Throws <see cref="InvalidOperationException"/> for a state of another version or an App login that is not text, and as
+    /// reading the file throws for one that is not a state.
+    /// </summary>
+    DiscussionState? ReadDiscussions();
+
+    /// <summary>Replaces the Discussion state. Throws <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> when it
+    /// cannot be written.</summary>
+    void WriteDiscussions(DiscussionState state);
+
     /// <summary>The repository settings this controller last recorded, or null when none are recorded or the record is unreadable.</summary>
     RecordedSettings? ReadSettings();
 

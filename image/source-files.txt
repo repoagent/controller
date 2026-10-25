@@ -42,6 +42,7 @@ src/RepoAgentController.Core/ModelSelection.cs
 src/RepoAgentController.Core/SettingValue.cs
 src/RepoAgentController.Core/IRepositorySettings.cs
 src/RepoAgentController.Core/IControllerState.cs
+src/RepoAgentController.Core/DiscussionState.cs
 src/RepoAgentController.Core/RepositorySettings.cs
 src/RepoAgentController.Core/IBaselineReleases.cs
 src/RepoAgentController.Core/BaselineReleases.cs
