@@ -211,12 +211,12 @@ public sealed class ControllerStatusProjectionTests
         var snapshot = status.Snapshot();
 
         Assert.Equal([
-            new(Url(1), "S1", "pending") { Since = since.ToString("O"), Operation = "send", Waiting = 1 },
-            new(Url(2), "S2", "retrying") { Attempts = 2, RetryAt = since.AddMinutes(4).ToString("O"), Waiting = 1 },
-            new(Url(3), "S3", "running") { Since = since.AddMinutes(1).ToString("O") },
-            new(Url(4), "S4", "idle"),
-            new(Url(5), "S5", "running"), // The checkout's turn.
-            new(Url(6), null, "idle") { Waiting = 2 }], snapshot.Sessions);
+            new(Url(1), "S1", new SessionActivity.Pending(since.ToString("O"), "send")) { Waiting = 1 },
+            new(Url(2), "S2", new SessionActivity.Retrying(2, since.AddMinutes(4).ToString("O"))) { Waiting = 1 },
+            new(Url(3), "S3", new SessionActivity.Running(since.AddMinutes(1).ToString("O"))),
+            new(Url(4), "S4", new SessionActivity.Idle()),
+            new(Url(5), "S5", new SessionActivity.Running(null)), // The checkout's turn.
+            new(Url(6), null, new SessionActivity.Idle()) { Waiting = 2 }], snapshot.Sessions);
         Assert.Equal(new WorkCounts(5, 1, 1, 4, 2, Bridge.DefaultActiveSessions, true), snapshot.Work);
         Assert.Equal((Repository, "test-app[bot]"), (snapshot.Repository, snapshot.Actor));
     }
@@ -229,7 +229,7 @@ public sealed class ControllerStatusProjectionTests
             ("D2", Record(2, "S2", retry: new(2, Start) { AsRead = """{"attempts":"x"}""" }))));
         using var status = Open();
 
-        Assert.Equal([new(Url(1), "S1", "pending") { Waiting = 1 }, new(Url(2), "S2", "retrying") { Waiting = 1 }], status.Snapshot().Sessions);
+        Assert.Equal([new(Url(1), "S1", new SessionActivity.Pending(null, null)) { Waiting = 1 }, new(Url(2), "S2", new SessionActivity.Retrying(null, null)) { Waiting = 1 }], status.Snapshot().Sessions);
     }
 
     [Fact]
@@ -241,7 +241,7 @@ public sealed class ControllerStatusProjectionTests
         discussions.WriteDiscussions(state);
         using var status = Open();
 
-        Assert.Equal([new(Url(1), "S1", "running"), new(Url(2), "S2", "idle")], status.Snapshot().Sessions);
+        Assert.Equal([new(Url(1), "S1", new SessionActivity.Running(null)), new(Url(2), "S2", new SessionActivity.Idle())], status.Snapshot().Sessions);
     }
 
     [Fact]

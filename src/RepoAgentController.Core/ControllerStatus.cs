@@ -163,27 +163,28 @@ public sealed class ControllerStatus : IDisposable
             var retry = discussion.Waiting?.Retry;
             var turn = live && (discussion.Running is not null || discussion.UnreadableKeys.GetValueOrDefault(RecordKey.Running) is { IsObject: true } ||
                 session.Length != 0 && journal?.Sessions.Contains(session) == true);
-            var activity = marker is not null ? "pending" : retry is not null ? "retrying" : turn ? "running" : "idle";
-            if (marker is not null) pending++;
-            else if (retry is not null) retrying++;
-            else if (turn) running++;
+            // A delivery or retry in a form no writer leaves reports none of its times or counts.
+            SessionActivity activity;
+            if (marker is not null)
+            {
+                pending++;
+                activity = new SessionActivity.Pending(marker.AsRead is null ? Time(marker.Since) : null, marker.AsRead is null ? marker.Operation : null);
+            }
+            else if (retry is not null)
+            {
+                retrying++;
+                activity = new SessionActivity.Retrying(retry.AsRead is null ? retry.Attempts : null, retry.AsRead is null ? Time(retry.After) : null);
+            }
+            else if (turn)
+            {
+                running++;
+                activity = new SessionActivity.Running(discussion.Running is { } current ? Time(current.Since) : null);
+            }
+            else activity = new SessionActivity.Idle();
             // Observed input held in the controller until its session is idle.
             var inputs = discussion.Waiting?.Inputs.Count ?? 0;
             waiting += inputs;
-            sessions.Add(new(discussion.Url, session.Length == 0 ? null : session, activity)
-            {
-                // A delivery or retry in a form no writer leaves reports none of its times or counts.
-                Since = activity switch
-                {
-                    "pending" => marker!.AsRead is null ? Time(marker.Since) : null,
-                    "running" => discussion.Running is { } current ? Time(current.Since) : null,
-                    _ => null
-                },
-                Operation = activity == "pending" && marker!.AsRead is null ? marker.Operation : null,
-                Attempts = activity == "retrying" && retry!.AsRead is null ? retry.Attempts : null,
-                RetryAt = activity == "retrying" && retry!.AsRead is null ? Time(retry.After) : null,
-                Waiting = inputs
-            });
+            sessions.Add(new(discussion.Url, session.Length == 0 ? null : session, activity) { Waiting = inputs });
         }
         // A turn whose Discussion record was forgotten still runs, and holds its slot, until the agent ends it.
         if (live) running += recorded!.RunningSessions.Count(session => !held.Contains(session));

@@ -23,12 +23,12 @@ static class OperatorStatusJson
         var sessions = new JsonArray();
         foreach (var session in status.Sessions)
         {
-            var item = Json.Object(("discussion", session.Discussion), ("session", session.Session), ("state", session.State));
-            switch (session.State)
+            var item = Json.Object(("discussion", session.Discussion), ("session", session.Session), ("state", session.Activity.State));
+            switch (session.Activity)
             {
-                case "pending": item["since"] = session.Since; item["operation"] = session.Operation; break;
-                case "retrying": item["attempts"] = session.Attempts; item["retryAt"] = session.RetryAt; break;
-                case "running" when session.Since is not null: item["since"] = session.Since; break;
+                case SessionActivity.Pending delivery: item["since"] = delivery.Since; item["operation"] = delivery.Operation; break;
+                case SessionActivity.Retrying retry: item["attempts"] = retry.Attempts; item["retryAt"] = retry.RetryAt; break;
+                case SessionActivity.Running { Since: { } since }: item["since"] = since; break;
             }
             if (session.Waiting != 0) item["waiting"] = session.Waiting;
             sessions.Add((JsonNode)item);
