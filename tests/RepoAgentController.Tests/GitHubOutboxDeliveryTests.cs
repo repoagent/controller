@@ -9,13 +9,15 @@ public sealed class GitHubOutboxDeliveryTests
 {
     const string Repository = "owner/repository", Category = "Controller status";
     const string Url = "https://github.com/owner/repository/discussions/1", Comment = Url + "#discussioncomment-7";
+    // Every dashboard body the controller publishes carries the marker.
+    const string Marked = AppIdentity.DashboardMarker + "\n";
     static readonly DateTimeOffset Start = new(2026, 10, 24, 10, 0, 0, TimeSpan.Zero);
     readonly FakeTimeProvider clock = new(Start);
     readonly InMemoryDiscussions github = new();
     readonly InMemoryControllerState state = new();
     readonly RecordingLog log = new();
 
-    GitHubOutbox Lifetime(TimeProvider? time = null) => new(Repository, github, state, time ?? clock, log);
+    GitHubOutbox Lifetime(TimeProvider? time = null) => new(Repository, github, InMemoryDiscussions.App, state, time ?? clock, log);
 
     [Theory]
     [InlineData("retry-after", 61)]
@@ -126,22 +128,22 @@ public sealed class GitHubOutboxDeliveryTests
         var category = github.Category(Category);
         await using (var outbox = Lifetime())
         {
-            outbox.Dashboard(Category, "Status", "first");
+            outbox.Dashboard(Category, "Status", Marked + "first");
             Assert.True(await outbox.Flush(ct));
-            outbox.Dashboard(Category, "Status", "second");
+            outbox.Dashboard(Category, "Status", Marked + "second");
             Assert.True(await outbox.Flush(ct));
         }
         var dashboard = Assert.Single(github.Dashboards);
-        Assert.Equal(("Status", "second"), (dashboard.Title, dashboard.Body));
+        Assert.Equal(("Status", Marked + "second"), (dashboard.Title, dashboard.Body));
         Assert.Equal([$"discussionCategories {Category}", $"discussions {category}", $"createDiscussion {category}", $"updateDiscussion {dashboard.Id}"], github.Calls);
         Assert.Equal([("dashboard-created", dashboard.Url)], log.Entries); // A routine update is not logged.
 
         await using (var outbox = Lifetime())
         {
-            outbox.Dashboard(Category, "Attention", "third");
+            outbox.Dashboard(Category, "Attention", Marked + "third");
             Assert.True(await outbox.Flush(ct));
         }
-        Assert.Equal(dashboard with { Title = "Attention", Body = "third" }, Assert.Single(github.Dashboards));
+        Assert.Equal(dashboard with { Title = "Attention", Body = Marked + "third" }, Assert.Single(github.Dashboards));
         Assert.Equal([$"discussionCategories {Category}", $"discussions {category}", $"updateDiscussion {dashboard.Id}"], github.Calls.Skip(4));
         Assert.Equal(("dashboard", dashboard.Url), log.Entries[^1]);
     }
@@ -153,7 +155,7 @@ public sealed class GitHubOutboxDeliveryTests
         github.Category(Category);
         github.Fail(new(GitHubFailure.Transient, "dashboard creation returned no Discussion", uncertain: true), applied: true);
         await using var outbox = Lifetime();
-        outbox.Dashboard(Category, "Status", "first");
+        outbox.Dashboard(Category, "Status", Marked + "first");
         Assert.False(await outbox.Flush(ct));
 
         clock.Advance(TimeSpan.FromSeconds(15));
@@ -162,6 +164,27 @@ public sealed class GitHubOutboxDeliveryTests
         Assert.Equal([
             ("dashboard-error", $"dashboard category '{Category}' attempt=1 Transient: dashboard creation returned no Discussion; retained for retry at {Start.AddSeconds(15):O}"),
             ("dashboard", dashboard.Url)], log.Entries);
+    }
+
+    [Fact]
+    public async Task The_dashboard_is_the_oldest_marked_Discussion_the_App_wrote_and_never_a_participant_copy_of_the_marker()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var category = github.Category(Category);
+        var copy = github.Post(Category, new("participant", "User"), "Status", Marked + "copied by a participant");
+        var unmarked = github.Post(Category, InMemoryDiscussions.AppAccount, "Release notes", "the App's, without the marker");
+        // GitHub reports the App's own Discussions either as its [bot] login or as a Bot with the bare slug.
+        var dashboard = github.Post(Category, new(InMemoryDiscussions.App.AppSlug, "Bot"), "Status", Marked + "first");
+        var newer = github.Post(Category, InMemoryDiscussions.AppAccount, "Status", Marked + "a later copy");
+        await using (var outbox = Lifetime())
+        {
+            outbox.Dashboard(Category, "Attention", Marked + "second");
+            Assert.True(await outbox.Flush(ct));
+        }
+
+        Assert.Equal([copy, unmarked, dashboard with { Title = "Attention", Body = Marked + "second" }, newer], github.Posts);
+        Assert.Equal([$"discussionCategories {Category}", $"discussions {category}", $"updateDiscussion {dashboard.Id}"], github.Calls);
+        Assert.Equal([("dashboard", dashboard.Url)], log.Entries);
     }
 
     [Fact]
