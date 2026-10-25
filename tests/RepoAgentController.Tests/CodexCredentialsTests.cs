@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Xunit;
 
@@ -76,28 +75,9 @@ public sealed class CodexCredentialsTests : IDisposable
         finally { Environment.SetEnvironmentVariable("CODEX_HOME", previous); }
 
         Assert.Empty(fixture.Transport.Requests);
-        var status = await Status(fixture.State);
-        Assert.Equal("failed", status["controller"]!["state"]!.GetValue<string>());
-        Assert.Contains(status["failures"]!.AsArray(), item => item!["kind"]!.GetValue<string>() == "fatal" &&
-            item["message"]!.GetValue<string>().Contains("--codex-auth file " + supplied + " does not exist"));
-    }
-
-    // The operator-facing status command in a separate process, like the container's.
-    static async Task<JsonNode> Status(string state)
-    {
-        var apphost = Path.Combine(AppContext.BaseDirectory, "RepoAgentController");
-        var start = File.Exists(apphost) ? new ProcessStartInfo(apphost) : new ProcessStartInfo("dotnet")
-        {
-            ArgumentList = { Path.Combine(AppContext.BaseDirectory, "RepoAgentController.dll") }
-        };
-        foreach (var argument in new[] { "status", "--state", state }) start.ArgumentList.Add(argument);
-        start.RedirectStandardOutput = start.RedirectStandardError = true;
-        using var process = Process.Start(start)!;
-        var output = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
-        var error = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-        await process.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
-        Assert.True(process.ExitCode == 0, await error);
-        return JsonNode.Parse(await output)!;
+        var status = StatusFiles.Read(fixture.State, fixture.Clock)!; // As the status command reads it.
+        Assert.Equal("failed", status.Controller.State);
+        Assert.Contains(status.Failures, item => item.Kind == "fatal" && item.Message.Contains("--codex-auth file " + supplied + " does not exist"));
     }
 
     public void Dispose() => Directory.Delete(directory, true);
