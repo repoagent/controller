@@ -5,33 +5,12 @@ using Xunit;
 
 namespace RepoAgentController.Tests;
 
-// The controller's Discussion state: kept by the in-memory controller state, or opened as a startup opens the state file in a
-// private temporary directory.
+// The controller's Discussion state, opened as a startup opens the state file in a private temporary directory.
 public sealed class StateStoreTests : IDisposable
 {
     const string Repository = "owner/repository";
     readonly string directory = Path.Combine(Path.GetTempPath(), "state-store-" + Guid.NewGuid().ToString("N"));
     string State => Path.Combine(directory, "bridge.json");
-
-    [Fact]
-    public void Discussions_whose_removal_failed_to_save_stay_in_memory_and_a_retry_removes_them_from_the_saved_state()
-    {
-        var files = new InMemoryControllerState();
-        var store = new StateStore(files, Repository);
-        store.Discussions["D1"] = new("https://github.com/owner/repository/discussions/1") { SessionId = "S1" };
-        store.Discussions["D2"] = new("https://github.com/owner/repository/discussions/2") { SessionId = "S2" };
-        store.Save();
-        files.FailWrites = true; // The next save cannot write its replacement.
-
-        var error = Record.Exception(() => store.Remove(["D1"]));
-
-        Assert.IsType<IOException>(error);
-        Assert.Equal(["D1", "D2"], store.Discussions.Keys.Order());
-        Assert.Equal(["D1", "D2"], new StateStore(files, Repository).Discussions.Keys);
-        files.FailWrites = false;
-        store.Remove(["D1"]);
-        Assert.Equal(["D2"], new StateStore(files, Repository).Discussions.Keys);
-    }
 
     [Fact]
     public void Discussions_whose_removal_failed_to_save_stay_in_memory_and_a_retry_removes_them_from_the_file()

@@ -330,34 +330,10 @@ sealed class InMemoryControllerState : IControllerState
         Outbox = outbox with { Operations = [.. outbox.Operations] };
     }
 
-    DiscussionState? discussions;
+    // The state store keeps the Discussion state in the state file it leases.
+    public DiscussionState? ReadDiscussions() => throw new NotSupportedException();
 
-    public DiscussionState? ReadDiscussions() => discussions is null ? null : Copy(discussions);
-
-    // Kept as a copy, so a later change in memory is not saved until written.
-    public void WriteDiscussions(DiscussionState state)
-    {
-        if (FailWrites) throw new IOException("No space left on device");
-        discussions = Copy(state);
-    }
-
-    static DiscussionState Copy(DiscussionState state)
-    {
-        var copy = new DiscussionState(state.Repository) { AgentLogin = state.AgentLogin, Unknown = state.Unknown, Unreadable = state.Unreadable };
-        foreach (var (name, since) in state.CategoryStarts) copy.CategoryStarts[name] = since;
-        foreach (var (id, record) in state.Discussions)
-        {
-            var waiting = record.Waiting is { } held ? new WaitingInput(held.DiscussionJson) { ContextJson = held.ContextJson, Retry = held.Retry, Unknown = held.Unknown } : null;
-            waiting?.Inputs.AddRange(record.Waiting!.Inputs);
-            var kept = copy.Discussions[id] = new(record.Url)
-            {
-                Sources = new(record.Sources), Labels = record.Labels, SessionId = record.SessionId, Waiting = waiting, Pending = record.Pending,
-                Running = record.Running, Unknown = record.Unknown, Unreadable = record.Unreadable
-            };
-            foreach (var (name, value) in record.UnreadableKeys) kept.UnreadableKeys[name] = value;
-        }
-        return copy;
-    }
+    public void WriteDiscussions(DiscussionState state) => throw new NotSupportedException();
 }
 
 /// <summary>

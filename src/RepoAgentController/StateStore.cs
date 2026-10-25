@@ -4,7 +4,7 @@ namespace RepoAgentController;
 sealed class StateStore : IDisposable
 {
     readonly IControllerState files;
-    readonly FileStream? lease;
+    readonly FileStream lease;
     public DiscussionState State { get; }
 
     /// <summary>Throws as reading the untyped file's records threw when they are unreadable (<see cref="DiscussionState.Unreadable"/>).</summary>
@@ -23,9 +23,6 @@ sealed class StateStore : IDisposable
         }
         catch { lease.Dispose(); throw; }
     }
-
-    /// <summary>The state <paramref name="files"/> keeps, for a caller that holds it alone.</summary>
-    public StateStore(IControllerState files, string repository) => (this.files, State) = (files, Read(files, repository));
 
     static DiscussionState Read(IControllerState files, string repository)
     {
@@ -59,5 +56,5 @@ sealed class StateStore : IDisposable
 
     public void Save() => files.WriteDiscussions(State);
 
-    public void Dispose() => lease?.Dispose();
+    public void Dispose() => lease.Dispose();
 }
