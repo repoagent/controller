@@ -351,7 +351,13 @@ public sealed class BridgeEnrollmentTests
         // A state change also names the state fields it carries.
         Assert.Equal(kinds.Split(','), world.Envelope(world.Turns.Count - 1)["changes"]!.AsArray().Select(change => change!["kind"]!.GetValue<string>() is var kind &&
             kind == "discussion.stateChanged" ? $"{kind}({string.Join(' ', change["subject"]!.AsObject().Select(field => field.Key).Except(["id", "url", "author"]))})" : kind));
-        if (json is not null && path.Split('.').Aggregate((JsonNode?)world.Record(1), (node, key) => node is JsonArray ? null : node?[key]) is { } value)
-            Assert.NotEqual(json, value.ToJsonString());
+        // A damaged value is replaced or removed; a removed key has no damaged value to replace.
+        var value = path.Split('.').Aggregate((JsonNode?)world.Record(1), (node, key) => node switch
+        {
+            JsonArray items => items.ElementAtOrDefault(int.Parse(key)),
+            JsonObject item => item[key],
+            _ => null
+        });
+        if (json is not null) Assert.NotEqual(json, value?.ToJsonString());
     }
 }
