@@ -111,6 +111,25 @@ public sealed class BridgeAdmissionTests
         Assert.Empty(world.Waiting());
     }
 
+    [Theory]
+    [InlineData(AgentTurnStatus.Completed, "completed")]
+    [InlineData(AgentTurnStatus.Interrupted, "interrupted")]
+    [InlineData(AgentTurnStatus.Failed, "failed")]
+    [InlineData(AgentTurnStatus.Unknown, "")] // Reported without a status.
+    [InlineData(AgentTurnStatus.Unknown, "cancelled")] // Pinned Codex never sends it; a later agent tool might.
+    public async Task An_ended_turn_is_logged_with_the_status_its_runtime_reported(AgentTurnStatus status, string reported)
+    {
+        await using var world = Mentioned(1);
+        await world.Begin();
+        await world.Poll();
+        world.Runtime.Report("S1", AgentSessionStatus.Idle);
+        world.Runtime.Completed("S1", "T1", status, reported: reported);
+
+        await world.Dispatch();
+
+        Assert.Equal($"{BridgeWorld.Url(1)} session=S1 turn=T1 status={reported}", Assert.Single(world.Logged("turn-ended")));
+    }
+
     [Fact]
     public async Task A_failed_turn_leaves_its_session_ready_for_the_next_input_without_a_restart()
     {

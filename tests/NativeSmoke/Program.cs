@@ -55,7 +55,7 @@ try
     probe.Start();
     var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
     probe.Stop();
-    using var idle = new ControllerStatus(Path.Combine(directory, "idle.json"), "storage-probe/example", "polling");
+    using var idle = new ControllerStatus(Path.Combine(directory, "idle.json"), "storage-probe/example", "polling", TimeProvider.System);
     await using (await ControllerHttpServer.Start(port, () => StatusSnapshot.From(idle.Snapshot()), null, CancellationToken.None))
     {
         using var client = new HttpClient();

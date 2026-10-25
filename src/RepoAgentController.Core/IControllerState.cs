@@ -25,8 +25,25 @@ public sealed record RecordedSettings(IReadOnlyDictionary<string, SettingValue> 
 public sealed record OutboxState(string Repository, DateTimeOffset? PausedUntil, IReadOnlyList<OutboxOperation> Operations);
 
 /// <summary>
-/// One retained GitHub operation: an EYES receipt for a subject, or the dashboard's complete category, title and body. It is
-/// due at <paramref name="DueAt"/>; uncertain means an earlier attempt may have reached GitHub.
+/// One retained GitHub operation. A newer operation with the same key supersedes it. It is due at <see cref="DueAt"/>; uncertain
+/// means an earlier attempt may have reached GitHub.
 /// </summary>
-public sealed record OutboxOperation(string Key, string Kind, string SubjectId, string Url, string? Category, string? Title, string? Body,
-    int Attempts, DateTimeOffset DueAt, bool Uncertain, string? LastError);
+public abstract record OutboxOperation(string Key)
+{
+    public int Attempts { get; init; }
+    public DateTimeOffset DueAt { get; init; }
+    public bool Uncertain { get; init; }
+    public string? LastError { get; init; }
+}
+
+/// <summary>An EYES receipt for accepted input from the subject at <paramref name="Url"/>, keyed by that subject unless retained under another key.</summary>
+public sealed record ReceiptOperation(string SubjectId, string Url) : OutboxOperation("receipt:" + SubjectId);
+
+/// <summary>The dashboard's complete category, title and body, keyed "dashboard" unless retained under another key.</summary>
+public sealed record DashboardOperation(string Category, string Title, string Body) : OutboxOperation("dashboard");
+
+/// <summary>
+/// A retained operation this controller does not deliver, kept as read until delivery drops it: one of a kind a later controller
+/// might retain, or a receipt or dashboard with fields those records do not hold.
+/// </summary>
+public sealed record UnsupportedOperation(string Key, string Kind, string SubjectId, string Url, string? Category, string? Title, string? Body) : OutboxOperation(Key);

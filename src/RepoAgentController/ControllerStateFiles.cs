@@ -73,11 +73,22 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
             return new(state.Text("repository"), state["pausedUntil"] is { } paused ? Time(paused) : null, [.. operations.Select(item =>
             {
                 var operation = item!.AsObject();
-                var key = operation.Text("key");
+                var (key, kind, subject, url) = (operation.Text("key"), operation.Text("kind"), operation.Text("subjectId"), operation.Text("url"));
                 _ = key[0];
-                return new OutboxOperation(key, operation.Text("kind"), operation.Text("subjectId"), operation.Text("url"), Optional(operation, "category"),
-                    Optional(operation, "title"), Optional(operation, "body"), operation["attempts"]!.GetValue<int>(), operation["dueAt"] is { } due ? Time(due) : DateTimeOffset.MinValue,
-                    operation["uncertain"]!.GetValue<bool>(), operation["lastError"].OptionalText());
+                var (category, title, body) = (Optional(operation, "category"), Optional(operation, "title"), Optional(operation, "body"));
+                // A receipt or dashboard with fields its record does not hold is kept as read, like an operation of another kind, so
+                // the next write keeps them.
+                OutboxOperation read = (kind, category, title, body) switch
+                {
+                    ("receipt", null, null, null) => new ReceiptOperation(subject, url) { Key = key },
+                    ("dashboard", not null, not null, not null) when (subject, url) is ("", "") => new DashboardOperation(category, title, body) { Key = key },
+                    _ => new UnsupportedOperation(key, kind, subject, url, category, title, body)
+                };
+                return read with
+                {
+                    Attempts = operation["attempts"]!.GetValue<int>(), DueAt = operation["dueAt"] is { } due ? Time(due) : DateTimeOffset.MinValue,
+                    Uncertain = operation["uncertain"]!.GetValue<bool>(), LastError = operation["lastError"].OptionalText()
+                };
             })]);
         }
         catch (Exception error) { throw new InvalidOperationException("GitHub outbox contains an unreadable operation; preserve it for manual inspection", error); }
@@ -91,10 +102,17 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
         var operations = new JsonArray();
         foreach (var retained in outbox.Operations)
         {
-            var operation = Json.Object(("key", retained.Key), ("kind", retained.Kind), ("subjectId", retained.SubjectId), ("url", retained.Url));
-            if (retained.Category is not null) operation["category"] = retained.Category;
-            if (retained.Title is not null) operation["title"] = retained.Title;
-            if (retained.Body is not null) operation["body"] = retained.Body;
+            var (kind, subject, url, category, title, body) = retained switch
+            {
+                ReceiptOperation receipt => ("receipt", receipt.SubjectId, receipt.Url, null, null, null),
+                DashboardOperation update => ("dashboard", "", "", update.Category, update.Title, update.Body),
+                UnsupportedOperation other => (other.Kind, other.SubjectId, other.Url, other.Category, other.Title, other.Body),
+                _ => throw new ArgumentOutOfRangeException(nameof(outbox), $"outbox operation '{retained.Key}' has no file form")
+            };
+            var operation = Json.Object(("key", retained.Key), ("kind", kind), ("subjectId", subject), ("url", url));
+            if (category is not null) operation["category"] = category;
+            if (title is not null) operation["title"] = title;
+            if (body is not null) operation["body"] = body;
             operation["attempts"] = retained.Attempts;
             operation["dueAt"] = retained.DueAt.ToString("O", CultureInfo.InvariantCulture);
             operation["uncertain"] = retained.Uncertain;

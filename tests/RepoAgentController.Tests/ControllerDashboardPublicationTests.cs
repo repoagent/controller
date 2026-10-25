@@ -1,12 +1,14 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Xunit;
+using static RepoAgentController.Tests.BaselineReleaseCheckTests;
 
 namespace RepoAgentController.Tests;
 
 // The dashboard in-process: what it publishes through the core outbox, and when, from a real ControllerStatus over state files
-// in a temporary directory. GitHub is the Discussions fake. The baseline release check never completes here;
-// ControllerDashboardUpdatesTests owns that section.
+// in a temporary directory. GitHub is the Discussions fake. The baseline release check completes only where its outcome must
+// reach the dashboard; ControllerDashboardUpdatesTests owns that section's text.
 public sealed class ControllerDashboardPublicationTests : IDisposable
 {
     const string Category = "Controller status", Title = "RepoAgent controller status", Attention = "Attention: RepoAgent controller authentication failed";
@@ -24,17 +26,26 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     {
         Directory.CreateDirectory(directory);
         statePath = Path.Combine(directory, "bridge.json");
-        status = new(statePath, "owner/repository", "polling");
+        status = new(statePath, "owner/repository", "polling", clock);
         outbox = new("owner/repository", github, InMemoryDiscussions.App, state, clock, new ControllerLog());
         github.Category(Category);
     }
 
-    ControllerDashboard Dashboard() => new(Category, status, outbox,
-        new BaselineReleases(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text),
+    ControllerDashboard Dashboard(BaselineReleases? releases = null) => new(Category, status, outbox,
+        releases ?? new BaselineReleases(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text),
         clock);
 
+    // The published body once the dashboard has republished it naming the release at this URL; each publication arms the next heartbeat.
+    async Task<string> Naming(BaselineRelease release)
+    {
+        var url = "https://github.com/repoagent/controller/releases/tag/" + release.Tag;
+        while (state.Outbox?.Operations.OfType<DashboardOperation>().SingleOrDefault() is not { } publication || !publication.Body.Contains(url, StringComparison.Ordinal))
+            await clock.Armed();
+        return Published().Body;
+    }
+
     // What the dashboard last handed the outbox; delivery is the outbox's.
-    OutboxOperation Published() => state.Outbox!.Operations.Single(operation => operation.Kind == "dashboard");
+    DashboardOperation Published() => state.Outbox!.Operations.OfType<DashboardOperation>().Single();
 
     string Started => Time(DateTimeOffset.Parse(status.Snapshot()["controller"]!["startedAt"]!.GetValue<string>(), CultureInfo.InvariantCulture));
 
@@ -97,6 +108,30 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
         Assert.Equal(Title, stopped.Title);
         Assert.Contains($"\n- **Controller:** stopped at 2026-10-24T10:00:45Z after a graceful shutdown; it had started at {Started}\n- **Heartbeat:** none while stopped.\n", stopped.Body);
         Assert.Contains("\n- **Sessions:** 0 stored; no turns run while the controller is stopped; 0 awaiting native acknowledgement; 0 inputs waiting\n", stopped.Body);
+    }
+
+    // The controller's options reaching the check is the composition's; BaselineReleaseCheckTests owns the check's decisions.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Newer_baseline_release_reaches_the_dashboard_after_a_later_hourly_check(bool startupToolUpdates)
+    {
+        var published = new InMemoryBaselineReleases();
+        var current = Release(101, image: "running");
+        published.Publish(current);
+        var releases = new BaselineReleases(published, _ => Task.FromResult<string?>(Inventory("running")), startupToolUpdates, clock, new RecordingLog(), text => text);
+        await using var dashboard = Dashboard(releases);
+
+        dashboard.Start(TestContext.Current.CancellationToken);
+        Assert.Matches(startupToolUpdates ? @"### Updates\n\*\*Release identity uncertain\*\*[^\n]*startup tool updates"
+            : @"### Updates\nThis controller's image matches \[" + Regex.Escape(current.Tag) + @"\][^\n]*newest", await Naming(current));
+
+        var newest = Release(102, image: "newest", gh: "2.103.1");
+        published.Publish(newest);
+        clock.Advance(TimeSpan.FromHours(1));
+        Assert.Matches(startupToolUpdates
+            ? @"### Updates\n\*\*Release identity uncertain\*\*[^\n]*startup tool updates[^\n]*matches \[" + Regex.Escape(current.Tag) + @"\][^\n]*\n- Newest published baseline release: \[" + Regex.Escape(newest.Tag) + @"\]"
+            : @"### Updates\n\*\*Update available:\*\* baseline release \[" + Regex.Escape(newest.Tag) + @"\][^\n]*\[" + Regex.Escape(current.Tag) + @"\]\([^)\n]*\) \(1 newer release;", await Naming(newest));
     }
 
     [Fact]
