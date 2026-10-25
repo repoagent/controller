@@ -152,6 +152,25 @@ public sealed class BridgeEnrollmentTests
         Assert.Equal(["D2"], Delivered(world));
     }
 
+    // Starts that are not an object of text, as only a hand edit leaves them, are replaced by the first start recorded.
+    [Theory]
+    [InlineData("5")]
+    [InlineData("""{"Agents":"2026-10-24T08:00:00Z","Q&A":7}""")]
+    public async Task Category_starts_no_writer_leaves_are_gone_once_their_replacement_is_forgotten(string starts)
+    {
+        await using var world = new BridgeWorld();
+        Directory.CreateDirectory(Path.GetDirectoryName(world.StatePath)!);
+        File.WriteAllText(world.StatePath, """{"version":1,"repository":"owner/repository","discussions":{},"enrollmentCategories":""" + starts + "}");
+        world.Variables.Set(Setting, "Agents");
+        await world.Begin();
+
+        world.Variables.Set(Setting, null);
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        await world.Refresh();
+
+        Assert.False(JsonNode.Parse(File.ReadAllText(world.StatePath))!.AsObject().ContainsKey("enrollmentCategories"));
+    }
+
     [Fact]
     public async Task The_owned_dashboard_never_becomes_agent_input_however_it_is_enrolled_while_a_participant_copy_stays_ordinary()
     {

@@ -33,8 +33,9 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
         {
             // The identity check reads it as text, and stops startup when it is not.
             AgentLogin = state["agentLogin"]?.GetValue<string>(),
-            Unknown = Unknown(state, [.. StateKeys.Where(key => key switch { "discussions" => discussions is not null, "enrollmentCategories" => starts is not null, _ => true })]),
-            Unreadable = discussions is null ? "the state file's discussions are missing or not an object" : null
+            Unknown = Unknown(state, [.. StateKeys.Where(key => key != "discussions" || discussions is not null)]),
+            Unreadable = discussions is null ? "the state file's discussions are missing or not an object" : null,
+            CategoryStartsAsRead = starts is null && state.ContainsKey("enrollmentCategories") ? state["enrollmentCategories"]?.ToJsonString() ?? "null" : null
         };
         foreach (var (name, since) in starts ?? []) read.CategoryStarts[name] = since.OptionalText()!;
         foreach (var (id, record) in discussions ?? []) read.Discussions[id] = Record(record);
@@ -57,6 +58,7 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
             foreach (var (name, since) in state.CategoryStarts) starts[name] = since;
             file["enrollmentCategories"] = starts;
         }
+        else if (state.CategoryStartsAsRead is { } json) file["enrollmentCategories"] = JsonNode.Parse(json);
         var temporary = statePath + ".tmp";
         File.WriteAllText(temporary, Kept(file, state.Unknown).ToJsonString(Indented));
         File.Move(temporary, statePath, true);

@@ -20,6 +20,12 @@ public sealed class DiscussionState(string repository)
     /// </summary>
     public OrderedDictionary<string, string> CategoryStarts { get; } = [];
 
+    /// <summary>
+    /// The recorded starts as read, when they are not an object of text: <see cref="CategoryStarts"/> is then empty, and they
+    /// are written back until category enrollment records a change, which replaces them.
+    /// </summary>
+    public string? CategoryStartsAsRead { get; set; }
+
     public OrderedDictionary<string, DiscussionRecord> Discussions { get; } = [];
 
     /// <summary>Keys this controller does not write, as read, so they are written back.</summary>

@@ -36,6 +36,7 @@ sealed class CategoryEnrollment
     {
         var starts = store.State.CategoryStarts;
         if (CategoryEnrollmentStarts.Reconcile([.. starts.Keys], settings[Setting]) is not { } changes) return starts;
+        store.State.CategoryStartsAsRead = null;
         foreach (var name in changes.Forgotten) starts.Remove(name);
         var since = changes.Since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
         foreach (var name in changes.Started) starts[name] = since;
