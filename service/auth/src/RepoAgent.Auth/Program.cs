@@ -49,5 +49,3 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 }).DisableRateLimiting().DisableRequestTimeout();
 BrokerEndpoints.Map(app);
 app.Run();
-
-public partial class Program;

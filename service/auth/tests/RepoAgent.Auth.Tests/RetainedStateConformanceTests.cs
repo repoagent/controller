@@ -1,5 +1,4 @@
 using System.Net;
-using Microsoft.Extensions.Configuration;
 using Xunit;
 
 namespace RepoAgent.Auth.Tests;
@@ -108,7 +107,7 @@ public sealed class RetainedStateConformanceTests
                 ["Broker:TableName"] = "tests", ["Broker:DeploymentEpoch"] = "test"
             };
             if (value is not null) settings["Broker:" + limit] = value;
-            return BrokerOptions.Read(new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
+            return BrokerOptions.Read(name => settings.GetValueOrDefault(name));
         }
         int Selected(BrokerOptions o) => limit switch
         {

@@ -5,22 +5,13 @@ namespace RepoAgent.Auth;
 
 internal static class BrokerStorage
 {
-    internal static string? DevelopmentConnection(IConfiguration configuration, string? environment)
-    {
-        var connection = configuration["Broker:DevelopmentConnectionString"]
-            ?? configuration["Broker:Cleanup:DevelopmentConnectionString"];
-        if (connection is not null && environment != "Development")
-            throw new InvalidOperationException("Development storage requires Development environment.");
-        return connection;
-    }
-
     internal static BrokerOptions Options(IConfiguration configuration, string? environment) =>
-        BrokerOptions.Read(configuration, DevelopmentConnection(configuration, environment) is not null);
+        BrokerSettings.Options(name => configuration[name], environment);
 
     internal static TableClient Create(IConfiguration configuration, string? environment, TableClientOptions clientOptions)
     {
-        var connection = DevelopmentConnection(configuration, environment);
-        var options = BrokerOptions.Read(configuration, connection is not null);
+        var connection = BrokerSettings.DevelopmentConnection(name => configuration[name], environment);
+        var options = Options(configuration, environment);
         if (connection is not null)
         {
             if (!BrokerOptions.IsDevelopmentTableEndpoint(options.TableEndpoint))

@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Azure.Data.Tables;
 
 namespace RepoAgent.Auth;
@@ -24,18 +23,20 @@ internal static class BrokerCleanupCommand
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
             return 0;
         }
-        if (args is not ["cleanup", "--once"])
-        {
-            Console.Error.WriteLine("Usage: cleanup --once");
-            return 2;
-        }
+        using var host = new Host();
+        return await new CleanupCommand(host, Console.Out, Console.Error, TimeProvider.System).RunAsync(args, CancellationToken.None);
+    }
 
-        using var budget = new CleanupRequestBudget();
-        BrokerOptions options;
-        TableClient table;
-        IConfiguration configuration;
-        try
+    // The environment's configuration, the Table adapter over the counted transport, and Azure Monitor.
+    private sealed class Host : ICleanupHost, IDisposable
+    {
+        private CleanupRequestBudget? budget;
+        private IConfiguration? configuration;
+        private BrokerOptions? options;
+
+        public CleanupComposition Open()
         {
+            budget = new CleanupRequestBudget();
             var builder = new ConfigurationBuilder().AddEnvironmentVariables();
             var initial = builder.Build();
             DevelopmentSettings.Add(builder, initial, initial["DOTNET_ENVIRONMENT"]);
@@ -47,24 +48,16 @@ internal static class BrokerCleanupCommand
                 Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(3) },
                 Diagnostics = { IsLoggingContentEnabled = false }
             };
-            table = BrokerStorage.Create(configuration, initial["DOTNET_ENVIRONMENT"], clientOptions);
-        }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or FormatException)
-        {
-            Console.Error.WriteLine("Invalid cleanup configuration.");
-            return 2;
+            var table = BrokerStorage.Create(configuration, initial["DOTNET_ENVIRONMENT"], clientOptions);
+            return new(new TableBrokerState(table), options.DeploymentEpoch, budget);
         }
 
-        var cleanup = new BrokerCleanup(new TableBrokerState(table), options.DeploymentEpoch, budget, TimeProvider.System);
-        var exitCode = await cleanup.RunAsync(CancellationToken.None);
-        var summary = JsonSerializer.SerializeToElement(cleanup.Summary());
-        Console.WriteLine(summary.GetRawText());
-        try
+        public void Export(IReadOnlyList<CleanupObservation> observations)
         {
-            if (BrokerTelemetry.CreateOptions(configuration, options.ManagedIdentityClientId) is { } telemetry)
-                BrokerTelemetry.ExportCleanupOnce(summary, telemetry);
+            if (BrokerTelemetry.CreateOptions(configuration!, options!.ManagedIdentityClientId) is { } telemetry)
+                BrokerTelemetry.ExportCleanupOnce(observations, telemetry);
         }
-        catch (Exception) { } // Optional telemetry never changes the CLI result or emits configuration details.
-        return exitCode;
+
+        public void Dispose() => budget?.Dispose();
     }
 }
