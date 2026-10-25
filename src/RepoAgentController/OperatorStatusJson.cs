@@ -45,7 +45,7 @@ static class OperatorStatusJson
             ["codexAuthentication"] = Credential(status.CodexAuthentication),
             // Each repository setting's latest observation: state, effective value and since when, and why it is unusable.
             ["settings"] = status.Settings is { } settings ? ControllerStateFiles.Settings(settings) : null,
-            // Running native turns against the effective active-session limit.
+            // Running agent turns against the effective active-session limit.
             ["work"] = Json.Object(("sessions", work.Sessions), ("pending", work.Pending), ("retrying", work.Retrying), ("waiting", work.Waiting),
                 ("running", work.Running), ("limit", work.Limit), ("admissionBlocked", work.AdmissionBlocked)),
             ["sessions"] = sessions,

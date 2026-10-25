@@ -32,7 +32,7 @@ public sealed class ControllerStatus : IDisposable
 
     /// <summary>
     /// Starts this lifetime's status in <paramref name="record"/>, composing work from the saved <paramref name="discussions"/>,
-    /// the recorded <paramref name="settings"/> and the <paramref name="checkout"/>'s native turns. Its own times, such as the
+    /// the recorded <paramref name="settings"/> and the <paramref name="checkout"/>'s agent turns. Its own times, such as the
     /// start, stop and each snapshot, are <paramref name="clock"/>'s.
     /// </summary>
     public ControllerStatus(string repository, string mode, IStatusRecord record, IDiscussionStore discussions, IControllerState settings,
@@ -143,7 +143,7 @@ public sealed class ControllerStatus : IDisposable
 
     static OperatorStatus Compose(RuntimeStatus? recorded, DiscussionState? state, IControllerState settingsRecord, ICheckoutWork checkout, DateTimeOffset now)
     {
-        // Managed clone mode also records native turns in its refresh journal, for checkout refresh admission.
+        // Managed clone mode also records agent turns in its refresh journal, for checkout refresh admission.
         var journal = checkout.Read();
         var settings = Settings(settingsRecord);
         var limit = settings?.Settings.GetValueOrDefault(Bridge.ActiveSessionSetting)?.Value is { } text &&
@@ -162,7 +162,7 @@ public sealed class ControllerStatus : IDisposable
             // A failed or unacknowledged delivery waiting for its next attempt.
             var retry = discussion.Waiting?.Retry;
             var turn = live && (discussion.Running is not null || discussion.UnreadableKeys.GetValueOrDefault(RecordKey.Running) is { IsObject: true } ||
-                session.Length != 0 && journal?.Threads.Contains(session) == true);
+                session.Length != 0 && journal?.Sessions.Contains(session) == true);
             var activity = marker is not null ? "pending" : retry is not null ? "retrying" : turn ? "running" : "idle";
             if (marker is not null) pending++;
             else if (retry is not null) retrying++;
@@ -189,7 +189,7 @@ public sealed class ControllerStatus : IDisposable
         if (live) running += recorded!.RunningSessions.Count(session => !held.Contains(session));
         return new(now, state?.Repository ?? recorded?.Repository, state?.AgentLogin, recorded?.Controller ?? new("unknown"),
             recorded?.Authentication ?? new("unknown"), recorded?.CodexAuthentication ?? new("unknown"), settings,
-            // Running native turns against the effective active-session limit.
+            // Running agent turns against the effective active-session limit.
             new(started, pending, retrying, waiting, running, limit, journal?.AdmissionBlocked), sessions, recorded?.Failures ?? [], recorded?.LatestActivity)
             { FailuresAsRead = recorded?.FailuresAsRead };
     }

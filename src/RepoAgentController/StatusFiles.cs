@@ -71,10 +71,11 @@ sealed class CheckoutJournalFile(string statePath) : ICheckoutWork
         try
         {
             if (StatusFiles.ReadObject(path) is not { } journal) return null;
-            var threads = journal["active"] is JsonObject active
+            // The journal names each admitted turn's agent session by its persisted key, thread.
+            var sessions = journal["active"] is JsonObject active
                 ? active.Select(entry => (entry.Value as JsonObject)?["thread"].OptionalText()).OfType<string>().ToHashSet(StringComparer.Ordinal)
                 : [];
-            return new(threads, journal["blocked"] is JsonValue blocked && blocked.TryGetValue<bool>(out var held) ? held : null);
+            return new(sessions, journal["blocked"] is JsonValue blocked && blocked.TryGetValue<bool>(out var held) ? held : null);
         }
         catch (ArgumentException) { return null; }
     }

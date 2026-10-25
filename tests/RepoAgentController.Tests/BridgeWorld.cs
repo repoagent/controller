@@ -41,7 +41,7 @@ sealed class BridgeWorld : IAsyncDisposable
     public bool Files { get; set; }
     /// <summary>The status each lifetime records and a stopped controller's status reads.</summary>
     public InMemoryStatusRecord StatusRecord { get; } = new();
-    /// <summary>The managed checkout's recorded native turns, as status reads them; none by default.</summary>
+    /// <summary>The managed checkout's recorded agent turns, as status reads them; none by default.</summary>
     public InMemoryCheckoutWork Checkout { get; } = new();
     /// <summary>The managed checkout's admission, as a lifetime with a managed checkout has one; none by default.</summary>
     public RecordingCheckoutAdmission? Admission { get; set; }

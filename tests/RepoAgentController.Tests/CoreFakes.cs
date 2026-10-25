@@ -349,7 +349,7 @@ sealed class InMemoryStatusRecord : IStatusRecord
     }
 }
 
-/// <summary>The managed checkout's recorded native turns and admission, as a test sets them; none by default.</summary>
+/// <summary>The managed checkout's recorded agent turns and admission, as a test sets them; none by default.</summary>
 sealed class InMemoryCheckoutWork : ICheckoutWork
 {
     public CheckoutWork? Work { get; set; }
