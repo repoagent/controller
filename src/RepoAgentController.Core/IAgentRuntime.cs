@@ -64,20 +64,13 @@ public sealed record AgentSessionStatusChanged(int Epoch, string SessionId, Agen
 public sealed record AgentTurnStarted(int Epoch, string SessionId, string? TurnId) : AgentRuntimeEvent(Epoch);
 
 /// <summary>
-/// The runtime reported a turn ended, with its status as the runtime sent it, empty when it sent none. A session ID the report
-/// lacked is empty and a turn ID null. <paramref name="CredentialRejection"/> is the provider's message when the report says it
-/// rejected the agent account's credentials; <see cref="AgentSessions"/> decides whether that counts.
+/// The runtime reported a turn ended. <paramref name="Status"/> is what its status means and <paramref name="ReportedStatus"/> the
+/// status as the runtime sent it, empty when it sent none; logs keep that text, so a status the adapter does not name stays visible.
+/// A session ID the report lacked is empty and a turn ID null. <paramref name="CredentialRejection"/> is the provider's message when
+/// the report says it rejected the agent account's credentials; <see cref="AgentSessions"/> decides whether that counts.
 /// </summary>
-public sealed record AgentTurnCompleted(int Epoch, string SessionId, string? TurnId, string ReportedStatus, string? CredentialRejection) : AgentRuntimeEvent(Epoch)
-{
-    /// <summary>What the reported status means, by pinned Codex's names. Logs keep the reported text, so a status a later agent
-    /// tool sends stays visible there.</summary>
-    public AgentTurnStatus Status => ReportedStatus switch
-    {
-        "completed" => AgentTurnStatus.Completed, "interrupted" => AgentTurnStatus.Interrupted, "failed" => AgentTurnStatus.Failed,
-        _ => AgentTurnStatus.Unknown
-    };
-}
+public sealed record AgentTurnCompleted(int Epoch, string SessionId, string? TurnId, AgentTurnStatus Status, string ReportedStatus,
+    string? CredentialRejection) : AgentRuntimeEvent(Epoch);
 
 /// <summary>The runtime process stopped answering; its sessions and turns are gone.</summary>
 public sealed record AgentRuntimeDisconnected(int Epoch) : AgentRuntimeEvent(Epoch);

@@ -112,22 +112,22 @@ public sealed class BridgeAdmissionTests
     }
 
     [Theory]
-    [InlineData("completed", "completed")]
-    [InlineData("interrupted", "interrupted")]
-    [InlineData("failed", "failed")]
-    [InlineData("", "")] // Reported without a status.
-    [InlineData("cancelled", "cancelled")] // Pinned Codex never sends it; a later agent tool might.
-    public async Task An_ended_turn_is_logged_with_the_status_its_runtime_reported(string reported, string logged)
+    [InlineData(AgentTurnStatus.Completed, "completed")]
+    [InlineData(AgentTurnStatus.Interrupted, "interrupted")]
+    [InlineData(AgentTurnStatus.Failed, "failed")]
+    [InlineData(AgentTurnStatus.Unknown, "")] // Reported without a status.
+    [InlineData(AgentTurnStatus.Unknown, "cancelled")] // Pinned Codex never sends it; a later agent tool might.
+    public async Task An_ended_turn_is_logged_with_the_status_its_runtime_reported(AgentTurnStatus status, string reported)
     {
         await using var world = Mentioned(1);
         await world.Begin();
         await world.Poll();
         world.Runtime.Report("S1", AgentSessionStatus.Idle);
-        world.Runtime.Completed("S1", "T1", reported);
+        world.Runtime.Completed("S1", "T1", status, reported: reported);
 
         await world.Dispatch();
 
-        Assert.Equal($"{BridgeWorld.Url(1)} session=S1 turn=T1 status={logged}", Assert.Single(world.Logged("turn-ended")));
+        Assert.Equal($"{BridgeWorld.Url(1)} session=S1 turn=T1 status={reported}", Assert.Single(world.Logged("turn-ended")));
     }
 
     [Fact]

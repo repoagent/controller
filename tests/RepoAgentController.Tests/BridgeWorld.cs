@@ -143,7 +143,7 @@ sealed class BridgeWorld : IAsyncDisposable
     public void Finish(string session, string turn, bool failed = false, string? rejection = null)
     {
         Runtime.Report(session, failed ? AgentSessionStatus.SystemError : AgentSessionStatus.Idle);
-        Runtime.Completed(session, turn, failed ? "failed" : "completed", rejection);
+        Runtime.Completed(session, turn, failed ? AgentTurnStatus.Failed : AgentTurnStatus.Completed, rejection);
     }
 
     /// <summary>Ends the turn the Discussion's saved record shows running.</summary>

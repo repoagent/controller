@@ -376,8 +376,11 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
 
     public void Report(string session, AgentSessionStatus status) => Changed?.Invoke(new AgentSessionStatusChanged(Epoch, session, status));
     public void Started(string session, string turn) => Changed?.Invoke(new AgentTurnStarted(Epoch, session, turn));
-    public void Completed(string session, string turn, string status = "completed", string? rejection = null, int? epoch = null) =>
-        Changed?.Invoke(new AgentTurnCompleted(epoch ?? Epoch, session, turn, status, rejection));
+    /// <summary>Reports a turn ended with <paramref name="status"/>, sent as <paramref name="reported"/> or else as the status's
+    /// lowercase name.</summary>
+    public void Completed(string session, string turn, AgentTurnStatus status = AgentTurnStatus.Completed, string? rejection = null,
+        int? epoch = null, string? reported = null) =>
+        Changed?.Invoke(new AgentTurnCompleted(epoch ?? Epoch, session, turn, status, reported ?? status.ToString().ToLowerInvariant(), rejection));
     public void Disconnect() => Changed?.Invoke(new AgentRuntimeDisconnected(Epoch));
 }
 

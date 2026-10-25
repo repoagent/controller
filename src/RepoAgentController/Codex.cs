@@ -54,7 +54,7 @@ sealed class Codex : IAgentRuntime, IAsyncDisposable
     static AgentTurnCompleted Completed(int source, string thread, JsonObject? turn)
     {
         var status = turn?["status"].OptionalText() ?? "";
-        return new(source, thread, turn?["id"].OptionalText(), status, Rejection(turn?["error"] as JsonObject));
+        return new(source, thread, turn?["id"].OptionalText(), TurnStatus(status), status, Rejection(turn?["error"] as JsonObject));
     }
 
     static AgentSessionStatus Parse(JsonNode? status) =>
@@ -63,6 +63,13 @@ sealed class Codex : IAgentRuntime, IAsyncDisposable
             "idle" => AgentSessionStatus.Idle, "active" => AgentSessionStatus.Active, "notLoaded" => AgentSessionStatus.NotLoaded,
             "systemError" => AgentSessionStatus.SystemError, _ => AgentSessionStatus.Unknown
         } : AgentSessionStatus.Unknown;
+
+    // Pinned Codex's turn status names. The event also carries the text as sent, which the logs keep.
+    static AgentTurnStatus TurnStatus(string name) => name switch
+    {
+        "completed" => AgentTurnStatus.Completed, "interrupted" => AgentTurnStatus.Interrupted, "failed" => AgentTurnStatus.Failed,
+        _ => AgentTurnStatus.Unknown
+    };
 
     // Pinned native: a rejected account is codexErrorInfo "unauthorized", or an HTTP 401 forwarded from the model provider.
     static string? Rejection(JsonObject? error)

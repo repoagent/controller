@@ -68,7 +68,7 @@ public sealed class AgentSessionsTests
         Assert.Empty(sessions.TakeTurns().Ended);
         await Assert.ThrowsAsync<InvalidOperationException>(() => Accept(session));
 
-        runtime.Completed(session, "T1", "interrupted");
+        runtime.Completed(session, "T1", AgentTurnStatus.Interrupted);
         Assert.Equal((AgentSessionStatus.Idle, 0), (sessions.Status(session), sessions.ActiveTurns));
         Assert.Equal([new AgentSessions.TurnOutcome("S1", "T1", "interrupted", false)], sessions.TakeTurns().Ended);
         Assert.Equal("T2", await Accept(session));
@@ -208,7 +208,7 @@ public sealed class AgentSessionsTests
         await Accept(session);
         order.Clear();
 
-        runtime.Completed(session, "T1", "failed", "unexpected status 401 Unauthorized");
+        runtime.Completed(session, "T1", AgentTurnStatus.Failed, "unexpected status 401 Unauthorized");
 
         // Held once the outcome is visible and before dispatch wakes, so input returned from the rejected turn never follows it.
         const string Rejected = "unexpected status 401 Unauthorized";
@@ -219,14 +219,14 @@ public sealed class AgentSessionsTests
         // Another failure, or a rejection reported for a turn that did not fail, is not a credential rejection and changes
         // nothing; a running turn defers the restart.
         await Accept(session);
-        runtime.Completed(session, "T2", "failed");
+        runtime.Completed(session, "T2", AgentTurnStatus.Failed);
         await Accept(session);
-        runtime.Completed(session, "T3", "interrupted", "unauthorized");
+        runtime.Completed(session, "T3", AgentTurnStatus.Interrupted, "unauthorized");
         Assert.Equal(Rejected, sessions.AuthenticationFailure);
         Assert.Equal([false, false], sessions.TakeTurns().Ended.Select(outcome => outcome.CredentialsRejected));
         await Accept(session);
         Assert.False(await sessions.RestartWhenIdle(() => order.Add("prepared"), ct));
-        runtime.Completed(session, "T4", "failed", "unauthorized");
+        runtime.Completed(session, "T4", AgentTurnStatus.Failed, "unauthorized");
         order.Clear();
 
         // Replacement credentials apply at an idle restart: prepared while no process runs, then the journal's new epoch.
@@ -241,7 +241,7 @@ public sealed class AgentSessionsTests
         runtime.Completed(session, "T6");
         Assert.Single(log.Entries, entry => entry == ("codex-auth-verified", "Codex account credentials authenticated a completed turn"));
         await Accept(session);
-        runtime.Completed(session, "T7", "failed", "unauthorized");
+        runtime.Completed(session, "T7", AgentTurnStatus.Failed, "unauthorized");
         Assert.Equal("unauthorized", sessions.AuthenticationFailure);
         await Accept(session);
         runtime.Completed(session, "T8");
@@ -262,7 +262,7 @@ public sealed class AgentSessionsTests
         var session = await sessions.Start(TestContext.Current.CancellationToken);
         await Accept(session);
 
-        runtime.Completed(session, "T1", "cancelled", "unauthorized");
+        runtime.Completed(session, "T1", AgentTurnStatus.Unknown, "unauthorized", reported: "cancelled");
 
         Assert.Null(sessions.AuthenticationFailure);
         Assert.DoesNotContain(log.Entries, entry => entry.Kind.StartsWith("codex-auth-", StringComparison.Ordinal));
@@ -280,7 +280,7 @@ public sealed class AgentSessionsTests
         var session = await rejected.Start(ct);
         await rejected.Accept(session, """{"changes":[]}""", Selection, null, ct);
 
-        credentialRuntime.Completed(session, "T1", "failed", "unexpected status 401 Unauthorized");
+        credentialRuntime.Completed(session, "T1", AgentTurnStatus.Failed, "unexpected status 401 Unauthorized");
 
         Assert.Equal(("codex-auth-failed", $"session=S1 turn=T1: Codex account credentials were rejected (unexpected status 401 Unauthorized). {remedy} New Discussion input is held until then."),
             log.Entries[^1]);
