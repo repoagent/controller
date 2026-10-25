@@ -1,10 +1,11 @@
 using System.Net;
-using System.Text;
-using Azure.Data.Tables;
 using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
+// Redaction against a writer held mid-transaction. A CommitPause holds the writer's first matching transaction before
+// its versions are checked; redaction then writes the gate with the next sequence, so the released writer conflicts.
+// It can neither replace a tombstone nor restore a removed payload, and a late locator routes only.
 public sealed partial class PayloadRedactionTests
 {
     [Theory]
@@ -13,53 +14,64 @@ public sealed partial class PayloadRedactionTests
     [InlineData("runtime-attempt")]
     public async Task Paused_add_cannot_replace_original_charged_key_tombstone(string stage)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        Journey? active = stage == "runtime-attempt" ? await ActiveAgent(f) : null;
-        if (active is null) AgentVariableEnrollmentTests.ConfigureGitHub(f);
+        var f = new InMemoryBroker();
+        var active = stage == "runtime-attempt" ? await Retained.ActiveAgent(f) : null;
+        if (active is null) AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
         var id = Guid.NewGuid().ToString("N");
-        var fence = new TablePause(body => body.Contains(stage == "pending" ? "\"State\":\"discovering\"" : "\"State\":\"reserved\"", StringComparison.Ordinal));
-        await f.RestartAsync(fence.Transport);
-        var writer = active is null ? f.Send("/v2/enrollments", AgentRequest(id))
-            : f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
+        var pause = new CommitPause(f.State, t => t.Writes("State", stage == "pending" ? "discovering" : "reserved"));
+        var writer = Task.Run(() => active is null ? f.Start(Retained.AgentRequest(id), 2)
+            : f.Issue(active.Device, active.Secret), Token);
         try
         {
-            await fence.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
-            var before = await Inventory(f);
-            var enrollment = stage == "pending";
-            var ledger = enrollment ? await EnrollmentLedger(f, id)
-                : Assert.Single(before, r => r.PartitionKey == "global:issuance-v1"
-                    && r.RowKey.StartsWith("operation:", StringComparison.Ordinal)
-                    && !before.Any(a => a.PartitionKey == RevocationFixture.Partition && a.RowKey == r.GetString("AttemptRowKey")));
-            var target = enrollment ? ledger.RowKey : ledger.GetString("AttemptRowKey")!;
-            Assert.DoesNotContain(before, r => r.PartitionKey == RevocationFixture.Partition && r.RowKey == target);
-            f.Clock.Advance(ledger.GetDateTimeOffset("PayloadPurgeAt")!.Value - f.Clock.GetUtcNow());
-            if (enrollment) await RedactEnrollment(f, ledger);
-            else await Cleanup(f).RedactIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
-            var tombstone = await Read(f, RevocationFixture.Partition, target);
-            Assert.Equal("redacted", tombstone.GetString("State"));
-            Assert.Equal(ledger.GetString("Generation"), tombstone.GetString("Generation"));
-            fence.Release.TrySetResult();
-            using var response = await writer;
-            Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
-            var retained = await Read(f, tombstone.PartitionKey, tombstone.RowKey);
-            Assert.Equal(tombstone.ETag, retained.ETag);
+            await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+            var before = f.Rows();
+            string target, generation;
+            DateTimeOffset due;
+            Func<Task> redact;
+            if (stage == "pending")
+            {
+                var ledger = Retained.EnrollmentLedger(f, id).Value;
+                (target, generation, due) = (PendingKey(id).Name, ledger.Generation!, ledger.PayloadPurgeAt!.Value);
+                redact = () => RedactEnrollment(f, id, ledger);
+            }
+            else
+            {
+                // The ledger whose attempt the held transaction adds.
+                var ledger = Assert.Single(IssuanceLedgers(before),
+                    l => !before.Any(r => r.Scope == InMemoryBroker.Partition && r.Name == l.AttemptRowKey));
+                (target, generation, due) = (ledger.AttemptRowKey!, ledger.Generation!, ledger.PayloadPurgeAt!.Value);
+                redact = () => RedactIssuance(f, ledger);
+            }
+            Assert.DoesNotContain(before, r => r.Scope == InMemoryBroker.Partition && r.Name == target);
+            f.Clock.Advance(due - f.Clock.GetUtcNow());
+            await redact();
+            var tombstone = f.State.Row(InMemoryBroker.Partition, target)!;
+            var version = f.State.Version(InMemoryBroker.Partition, target)!;
+            Assert.Equal("redacted", tombstone["State"]);
+            Assert.Equal(generation, tombstone["Generation"]);
+            pause.Release.TrySetResult();
+            Assert.NotEqual(HttpStatusCode.OK, (await writer).StatusCode);
+            Assert.Equal(version, f.State.Version(InMemoryBroker.Partition, target));
+            var retained = f.State.Row(InMemoryBroker.Partition, target)!;
             Assert.False(retained.ContainsKey("RecoveryHash"));
             Assert.False(retained.ContainsKey("ProtectedToken"));
             Assert.False(retained.ContainsKey("ProtectedCompletion"));
-            var after = await Inventory(f);
+            var after = f.Rows();
             foreach (var row in before)
             {
-                var current = Assert.Single(after, r => r.PartitionKey == row.PartitionKey && r.RowKey == row.RowKey);
-                foreach (var field in row.Keys.Where(k => k.EndsWith("Count", StringComparison.Ordinal) || k is "RowCredits" or "Slots" or "GlobalSlot"))
-                    Assert.Equal(row[field], current[field]);
+                var current = Assert.Single(after, r => r.Key == row.Key);
+                foreach (var field in row.Row.Keys.Where(k => k.EndsWith("Count", StringComparison.Ordinal)
+                    || k is "RowCredits" or "Slots" or "GlobalSlot"))
+                    Assert.Equal(row.Row[field], current.Row[field]);
             }
-            Assert.DoesNotContain(after, r => r.RowKey.StartsWith("device:", StringComparison.Ordinal) && (active is null || r.RowKey != "device:" + active.Device));
+            Assert.DoesNotContain(after, r => r.Name.StartsWith("device:", StringComparison.Ordinal)
+                && (active is null || r.Name != EnrollmentKey(active.Device).Name));
             Assert.Equal(active is null ? 0 : 1, f.GitHub.Mints);
         }
         finally
         {
-            fence.Release.TrySetResult();
-            using var completed = await writer;
+            pause.Release.TrySetResult();
+            await writer;
         }
     }
 
@@ -68,122 +80,125 @@ public sealed partial class PayloadRedactionTests
     [InlineData(true)]
     public async Task Paused_known_ciphertext_or_device_completion_cannot_rehydrate_after_cleanup(bool completion)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        string id;
-        string path;
-        if (completion)
-        {
-            var start = await StartAgent(f);
-            id = start.Id; path = $"/v2/enrollments/{start.Pending}/completion";
-        }
+        var f = new InMemoryBroker();
+        string id, pendingId = "";
+        if (completion) (id, pendingId) = await StartAgent(f);
         else
         {
-            AgentVariableEnrollmentTests.ConfigureGitHub(f);
-            id = Guid.NewGuid().ToString("N"); path = "/v2/enrollments";
+            AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
+            id = Guid.NewGuid().ToString("N");
         }
-        var fence = new TablePause(body => body.Contains(completion ? "\"ProtectedCompletion\"" : "\"ProtectedToken\"", StringComparison.Ordinal));
-        await f.RestartAsync(fence.Transport);
-        var writer = f.Send(path, completion ? null : AgentRequest(id));
+        var pause = new CommitPause(f.State, t => t.Stores(completion ? "ProtectedCompletion" : "ProtectedToken"));
+        var writer = Task.Run(() => completion ? f.Complete(pendingId, 2) : f.Start(Retained.AgentRequest(id), 2), Token);
         try
         {
-            await fence.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
-            var before = await Inventory(f);
-            var ledger = completion ? await EnrollmentLedger(f, id)
-                : Assert.Single(before, r => r.PartitionKey == "global:issuance-v1" && r.RowKey.StartsWith("operation:", StringComparison.Ordinal));
-            f.Clock.Advance(ledger.GetDateTimeOffset("PayloadPurgeAt")!.Value - f.Clock.GetUtcNow());
-            if (completion) await RedactEnrollment(f, ledger);
-            else await Cleanup(f).RedactIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
-            fence.Release.TrySetResult();
-            using var response = await writer;
-            Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
-            var target = await Read(f, RevocationFixture.Partition, completion ? ledger.RowKey : ledger.GetString("AttemptRowKey")!);
-            Assert.False(target.ContainsKey(completion ? "ProtectedCompletion" : "ProtectedToken"));
-            Assert.True(target.GetBoolean("PayloadRedacted"));
-            var after = await Inventory(f);
-            Assert.DoesNotContain(after, r => r.RowKey.StartsWith("device:", StringComparison.Ordinal));
+            await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+            var before = f.Rows();
+            string target;
+            if (completion)
+            {
+                var ledger = Retained.EnrollmentLedger(f, id).Value;
+                f.Clock.Advance(ledger.PayloadPurgeAt!.Value - f.Clock.GetUtcNow());
+                await RedactEnrollment(f, id, ledger);
+                target = PendingKey(id).Name;
+            }
+            else
+            {
+                var ledger = Assert.Single(IssuanceLedgers(before));
+                f.Clock.Advance(ledger.PayloadPurgeAt!.Value - f.Clock.GetUtcNow());
+                await RedactIssuance(f, ledger);
+                target = ledger.AttemptRowKey!;
+            }
+            pause.Release.TrySetResult();
+            Assert.NotEqual(HttpStatusCode.OK, (await writer).StatusCode);
+            var redacted = f.State.Row(InMemoryBroker.Partition, target)!;
+            Assert.False(redacted.ContainsKey(completion ? "ProtectedCompletion" : "ProtectedToken"));
+            Assert.Equal(true, redacted["PayloadRedacted"]);
+            var after = f.Rows();
+            Assert.DoesNotContain(after, r => r.Name.StartsWith("device:", StringComparison.Ordinal));
             AssertCharges(before, after);
         }
         finally
         {
-            fence.Release.TrySetResult();
-            using var completed = await writer;
+            pause.Release.TrySetResult();
+            await writer;
         }
     }
 
     [Fact]
     public async Task Late_locator_publication_remains_routing_only_and_charged_after_redaction()
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
+        var f = new InMemoryBroker();
         var start = await StartAgent(f);
-        var fence = new TablePause(body => body.Contains("\"PartitionKey\":\"locator:", StringComparison.Ordinal), batchesOnly: false);
-        await f.RestartAsync(fence.Transport);
-        var writer = f.Send($"/v2/enrollments/{start.Pending}/completion");
+        var ledger = Retained.EnrollmentLedger(f, start.Id).Value;
+        var pause = new CommitPause(f.State, t => t.InScope(EnrollmentLocator.Key(ledger.EnrollmentId!).Scope));
+        var writer = Task.Run(() => f.Complete(start.Pending, 2), Token);
         try
         {
-            await fence.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
-            var ledger = await EnrollmentLedger(f, start.Id);
-            var before = await Inventory(f);
-            Assert.DoesNotContain(before, r => r.PartitionKey.StartsWith("locator:", StringComparison.Ordinal));
-            Assert.Single(before, r => r.RowKey.StartsWith("device:", StringComparison.Ordinal));
-            f.Clock.Advance(ledger.GetDateTimeOffset("PayloadPurgeAt")!.Value - f.Clock.GetUtcNow());
-            await RedactEnrollment(f, ledger);
-            fence.Release.TrySetResult();
-            using var response = await writer;
-            Assert.Equal(HttpStatusCode.Gone, response.StatusCode);
-            var after = await Inventory(f);
-            var locator = Assert.Single(after, r => r.PartitionKey.StartsWith("locator:", StringComparison.Ordinal));
-            Assert.Equal(ledger.GetString("DeviceId"), locator.GetString("DeviceId"));
-            Assert.Equal(ledger.GetString("PendingId"), locator.GetString("PendingId"));
-            Assert.Equal(ledger.GetString("RepositoryId"), locator.GetString("RepositoryId"));
-            Assert.All(locator.Keys, key => Assert.Contains(key, new[] { "PartitionKey", "RowKey", "Timestamp", "odata.etag", "RepositoryId", "DeviceId", "PendingId" }));
-            AssertCharges(before, after.Where(r => r.PartitionKey != locator.PartitionKey).ToList());
-            Assert.False((await Read(f, RevocationFixture.Partition, ledger.RowKey)).ContainsKey("ProtectedCompletion"));
-            Assert.False((await Read(f, RevocationFixture.Partition, "device:" + ledger.GetString("DeviceId"))).ContainsKey("SecretHash"));
+            await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+            var before = f.Rows();
+            Assert.DoesNotContain(before, r => r.Scope.StartsWith("locator:", StringComparison.Ordinal));
+            Assert.Single(before, r => r.Name.StartsWith("device:", StringComparison.Ordinal));
+            f.Clock.Advance(ledger.PayloadPurgeAt!.Value - f.Clock.GetUtcNow());
+            await RedactEnrollment(f, start.Id, ledger);
+            pause.Release.TrySetResult();
+            Assert.Equal(HttpStatusCode.Gone, (await writer).StatusCode);
+            var after = f.Rows();
+            var locator = Assert.Single(after, r => r.Scope.StartsWith("locator:", StringComparison.Ordinal));
+            var route = locator.Read<EnrollmentLocator>();
+            Assert.Equal(ledger.EnrollmentId, route.EnrollmentId);
+            Assert.Equal(ledger.PendingId, route.PendingId);
+            Assert.Equal(ledger.RepositoryId, route.RepositoryId);
+            Assert.Equal(new[] { "DeviceId", "PendingId", "RepositoryId" }, locator.Row.Keys.Order(StringComparer.Ordinal));
+            AssertCharges(before, [.. after.Where(r => r.Scope != locator.Scope)]);
+            Assert.False(f.State.Row(PendingKey(start.Id))!.ContainsKey("ProtectedCompletion"));
+            Assert.False(f.State.Row(EnrollmentKey(ledger.EnrollmentId!))!.ContainsKey("SecretHash"));
         }
         finally
         {
-            fence.Release.TrySetResult();
-            using var completed = await writer;
+            pause.Release.TrySetResult();
+            await writer;
         }
     }
 
     [Fact]
     public async Task Release_winning_cleanup_race_preserves_renewed_live_secret()
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var j = await ActiveAgent(f);
-        var ledger = await EnrollmentLedger(f, j.Id);
-        var device = await Read(f, RevocationFixture.Partition, "device:" + j.Device);
-        var originalExpiry = device.GetDateTimeOffset("ExpiresAt")!.Value;
+        var f = new InMemoryBroker();
+        var j = await Retained.ActiveAgent(f);
+        var ledger = Retained.EnrollmentLedger(f, j.Id).Value;
+        var key = EnrollmentKey(j.Device);
+        var device = f.State.Row(key)!;
+        var originalExpiry = f.State.Get(key)!.ExpiresAt!.Value;
         f.Clock.Advance(originalExpiry.AddMinutes(-1) - f.Clock.GetUtcNow());
-        var releaseFence = new TablePause(body => body.Contains("\"State\":\"released\"", StringComparison.Ordinal));
-        await f.RestartAsync(releaseFence.Transport);
-        var writer = f.Send($"/v1/devices/{j.Device}/installation-token", secret: j.Secret);
+        var releasePause = new CommitPause(f.State, t => t.Writes("State", "released"));
+        var writer = Task.Run(() => f.Issue(j.Device, j.Secret), Token);
+        CommitPause? cleanupPause = null;
         Task? cleanup = null;
-        var cleanupFence = new TablePause(body => body.Contains("\"PayloadRedacted\":true", StringComparison.Ordinal));
         try
         {
-            await releaseFence.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
-            var before = await Inventory(f);
+            await releasePause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+            var before = f.Rows();
             f.Clock.Advance(originalExpiry.AddHours(24) - f.Clock.GetUtcNow());
-            cleanup = Cleanup(f, table: f.Storage.CreateClient(cleanupFence.Transport))
-                .RedactEnrollmentAsync(j.Id, ledger.GetString("Generation")!, Token);
-            await cleanupFence.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
-            releaseFence.Release.TrySetResult();
-            using var result = await writer;
-            Assert.Equal(HttpStatusCode.OK, result.StatusCode);
-            cleanupFence.Release.TrySetResult();
+            // The issuance writer is held, so redaction is the only writer this pause can match.
+            cleanupPause = new CommitPause(f.State, t => t.Writes("PayloadRedacted", true));
+            cleanup = Task.Run(() => RedactEnrollment(f, j.Id, ledger), Token);
+            await cleanupPause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+            releasePause.Release.TrySetResult();
+            Assert.Equal(HttpStatusCode.OK, (await writer).StatusCode);
+            cleanupPause.Release.TrySetResult();
             await Assert.ThrowsAsync<StateConflict>(() => cleanup);
-            var renewed = await Read(f, device.PartitionKey, device.RowKey);
-            Assert.True(renewed.GetDateTimeOffset("ExpiresAt") > f.Clock.GetUtcNow());
+            var renewed = f.State.Row(key)!;
+            Assert.True(f.State.Get(key)!.ExpiresAt > f.Clock.GetUtcNow());
             Assert.Equal(device["SecretHash"], renewed["SecretHash"]);
             Assert.False(renewed.ContainsKey("PayloadRedacted"));
-            AssertCharges(before, await Inventory(f));
+            AssertCharges(before, f.Rows());
         }
         finally
         {
-            releaseFence.Release.TrySetResult(); cleanupFence.Release.TrySetResult();
-            using var result = await writer;
+            releasePause.Release.TrySetResult();
+            cleanupPause?.Release.TrySetResult();
+            await writer;
             if (cleanup is not null)
             {
                 try { await cleanup; }
@@ -195,58 +210,35 @@ public sealed partial class PayloadRedactionTests
     [Fact]
     public async Task Stale_runtime_token_replacement_cannot_restore_redacted_ciphertext()
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var j = await ActiveAgent(f);
-        var fence = new TablePause(body => body.Split('\n').Any(line =>
-            line.Contains("\"ProtectedToken\"", StringComparison.Ordinal)
-            && line.Contains("\"Purpose\":\"runtime\"", StringComparison.Ordinal)
-            && line.Contains("\"State\":\"known\"", StringComparison.Ordinal)));
-        await f.RestartAsync(fence.Transport);
-        var writer = f.Send($"/v1/devices/{j.Device}/installation-token", secret: j.Secret);
+        var f = new InMemoryBroker();
+        var j = await Retained.ActiveAgent(f);
+        // The runtime attempt's known outcome, with its protected GitHub token.
+        var pause = new CommitPause(f.State, t => t.Writes.Any(write => write.Row is { } row && row.ContainsKey("ProtectedToken")
+            && Equals(row.GetValueOrDefault("Purpose"), "runtime") && Equals(row.GetValueOrDefault("State"), "known")));
+        var writer = Task.Run(() => f.Issue(j.Device, j.Secret), Token);
         try
         {
-            await fence.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
-            var before = await Inventory(f);
-            var ledger = Assert.Single(before, r => r.PartitionKey == "global:issuance-v1" && r.GetString("Purpose") == "runtime" && r.RowKey.StartsWith("operation:", StringComparison.Ordinal));
-            var originalAttempt = await Read(f, RevocationFixture.Partition, ledger.GetString("AttemptRowKey")!);
-            Assert.Equal("sending", originalAttempt.GetString("State"));
-            Assert.False(originalAttempt.ContainsKey("ProtectedToken"));
-            f.Clock.Advance(ledger.GetDateTimeOffset("PayloadPurgeAt")!.Value - f.Clock.GetUtcNow());
-            await Cleanup(f).RedactIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
-            fence.Release.TrySetResult();
-            using var response = await writer;
-            Assert.NotEqual(HttpStatusCode.OK, response.StatusCode);
-            var attempt = await Read(f, RevocationFixture.Partition, ledger.GetString("AttemptRowKey")!);
+            await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+            var before = f.Rows();
+            var ledger = Assert.Single(IssuanceLedgers(before), l => l.Purpose == "runtime");
+            var attemptKey = Retained.Attempt(ledger);
+            Assert.Equal("sending", f.State.Get(attemptKey)!.State);
+            Assert.False(f.State.Row(attemptKey)!.ContainsKey("ProtectedToken"));
+            f.Clock.Advance(ledger.PayloadPurgeAt!.Value - f.Clock.GetUtcNow());
+            await RedactIssuance(f, ledger);
+            pause.Release.TrySetResult();
+            Assert.NotEqual(HttpStatusCode.OK, (await writer).StatusCode);
+            var attempt = f.State.Row(attemptKey)!;
             Assert.False(attempt.ContainsKey("ProtectedToken"));
-            Assert.True(attempt.GetBoolean("PayloadRedacted"));
-            Assert.Equal("sending", attempt.GetString("State"));
+            Assert.Equal(true, attempt["PayloadRedacted"]);
+            Assert.Equal("sending", attempt["State"]);
             Assert.False(attempt.ContainsKey("SettledAt"));
-            AssertCharges(before, await Inventory(f));
+            AssertCharges(before, f.Rows());
         }
         finally
         {
-            fence.Release.TrySetResult();
-            using var completed = await writer;
-        }
-    }
-
-    private sealed class TablePause
-    {
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public ObservedTransport Transport { get; }
-        public TablePause(Func<string, bool> matches, bool batchesOnly = true)
-        {
-            var paused = 0;
-            Transport = new() { Before = async message =>
-            {
-                if (batchesOnly && !ObservedTransport.IsBatch(message) || message.Request.Content is null) return;
-                using var stream = new MemoryStream();
-                await message.Request.Content.WriteToAsync(stream, Token);
-                if (!matches(Encoding.UTF8.GetString(stream.ToArray())) || Interlocked.CompareExchange(ref paused, 1, 0) != 0) return;
-                Entered.TrySetResult();
-                await Release.Task.WaitAsync(TimeSpan.FromSeconds(20), Token);
-            }};
+            pause.Release.TrySetResult();
+            await writer;
         }
     }
 }
