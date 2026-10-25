@@ -2,9 +2,10 @@ using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-// The production guards over the broker's settings, in the order the host applies them at startup: the local settings
-// file, the issuance composition (with the broker options), the emulator's key ring, the broker options and the
-// emulator's table.
+// The production guards over the broker's settings, in the order the host applies them. At startup: the local settings
+// file, the issuance composition (with the broker options), the emulator's key ring and the broker options. Then the
+// emulator's table, when the Table client is first resolved: the web host's first storage use, or before the cleanup
+// command's first read.
 public sealed class BrokerSettingsTests
 {
     private const string Emulated = "http://127.0.0.1:10000/devstoreaccount1/data-protection/keyring.xml";
@@ -12,37 +13,49 @@ public sealed class BrokerSettingsTests
     // The table a remote account's connection string names: the configured endpoint's, so only the loopback guard refuses it.
     private const string RemoteTable = "https://readiness.table.core.windows.net/readiness";
 
-    public enum Startup { Ready, NotReady, Refused }
+    // Refused: the host doesn't start. NotReadyStorageRefused: the host starts and isn't ready, and its first storage use
+    // throws; `cleanup --once` exits 2 before its first read.
+    public enum Startup { Ready, NotReady, Refused, NotReadyStorageRefused }
 
-    // The whole startup sequence, for what only it shows: readiness (/health/ready answers 200 when ready, 503 when not),
-    // and Development storage only on a loopback table endpoint. Each malformed setting has its own theory.
+    // Startup and the first storage use, for what only they show: readiness (/health/ready answers 200 when ready, 503
+    // when not), the table endpoint each environment allows, and Development storage only on a loopback table endpoint.
+    // Each malformed setting has its own theory.
     [Theory]
     [InlineData(null, Startup.Ready)]
     [InlineData("missing-signing", Startup.NotReady)]
     [InlineData("missing-origin", Startup.NotReady)]
     [InlineData("revoke-only", Startup.NotReady)]
     [InlineData("local-table-production", Startup.Refused)]
-    [InlineData("remote-development-storage", Startup.Refused)]
+    [InlineData("remote-development-storage", Startup.NotReadyStorageRefused)]
     [InlineData("local-development-storage", Startup.Ready)]
     [InlineData("local-vault-development", Startup.Ready)]
     public void Only_a_broker_that_issues_and_enrolls_is_ready(string? scenario, Startup expected)
     {
         var (settings, environment) = Scenario(scenario);
         string? Setting(string name) => settings.GetValueOrDefault(name);
-        bool Start()
+        (bool Ready, BrokerOptions Options) Start()
         {
             _ = BrokerSettings.DevelopmentSettingsFile(Setting, environment);
             var issuance = BrokerSettings.Issuance(Setting, environment);
             issuance?.RequireEmulatedKeyRing(new(Emulated));
-            var options = BrokerSettings.Options(Setting, environment);
-            // The table the Development connection's client names; the adapter reads it from the TableClient.
+            return (BrokerSettings.Ready(issuance), BrokerSettings.Options(Setting, environment));
+        }
+        // The table the Development connection's client names; the adapter reads it from the TableClient.
+        void UseStorage(BrokerOptions options)
+        {
             if (BrokerSettings.DevelopmentConnection(Setting, environment) is not null)
                 options.RequireEmulatedTable(new(scenario == "remote-development-storage" ? RemoteTable : EmulatedTable));
-            return BrokerSettings.Ready(issuance);
         }
 
-        if (expected == Startup.Refused) Assert.Throws<InvalidOperationException>(() => Start());
-        else Assert.Equal(expected == Startup.Ready, Start());
+        if (expected == Startup.Refused)
+        {
+            Assert.Throws<InvalidOperationException>(() => Start());
+            return;
+        }
+        var (ready, options) = Start();
+        Assert.Equal(expected == Startup.Ready, ready);
+        if (expected == Startup.NotReadyStorageRefused) Assert.Throws<InvalidOperationException>(() => UseStorage(options));
+        else UseStorage(options);
     }
 
     // Uri equality ignores user information and fragments, so the emulator's table is also checked for them.
