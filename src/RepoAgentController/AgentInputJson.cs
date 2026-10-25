@@ -52,8 +52,6 @@ sealed class AgentInputJson : IAgentInput
         return item.ToJsonString();
     }
 
-    public string SubjectUrl(string change) => JsonNode.Parse(change)!["subject"]!.Text("url");
-
     static string Name(CheckpointPart field) => field switch
     {
         CheckpointPart.Title => "title", CheckpointPart.Closed => "closed", CheckpointPart.Locked => "locked", CheckpointPart.Answer => "answer",

@@ -23,9 +23,6 @@ public interface IAgentInput
 
     /// <summary>A turn's input. Throws as reading the Discussion's identity throws when <see cref="AgentEnvelope.DiscussionJson"/> has none.</summary>
     string Envelope(AgentEnvelope envelope);
-
-    /// <summary>The URL of a change's subject, or empty when it has none.</summary>
-    string SubjectUrl(string change);
 }
 
 /// <summary>

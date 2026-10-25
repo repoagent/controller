@@ -358,7 +358,8 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         var envelope = new AgentEnvelope(repository, identity, waiting.DiscussionJson, waiting.ContextJson, redelivery, []);
         var count = Batch(input.Envelope(envelope).Length, inputs, record);
         var turnInput = input.Envelope(envelope with { Changes = [.. inputs.Take(count).Select(waited => waited.ChangeJson)] });
-        var latest = inputs[count - 1].ChangeJson;
+        // The batch's last change is about its receipt's subject; a deletion has neither.
+        var latest = inputs[count - 1].Receipt?.Url ?? "";
         var receipts = inputs.Take(count).Select(input => input.Receipt).OfType<EyesReceipt>().DistinctBy(receipt => receipt.SubjectId).ToArray();
         // Global admission: checkout refresh exclusion; the active-session limit was checked above.
         using var checkout = admission is null ? null : await admission.Admit(ct);
@@ -419,7 +420,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         record.Running = new(turn, clock.GetUtcNow());
         store.Save();
         checkout?.Confirm();
-        log.Write("forwarded", $"{record.Url} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.SubjectId))} waiting={inputs.Count} latest={input.SubjectUrl(latest)}" + (redelivery ? " redelivery=true" : ""));
+        log.Write("forwarded", $"{record.Url} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.SubjectId))} waiting={inputs.Count} latest={latest}" + (redelivery ? " redelivery=true" : ""));
         foreach (var source in receipts) outbox.Receipt(source.SubjectId, source.Url, DiscussionMessage.HasEyes(source.ReactionGroups));
         return true;
     }
