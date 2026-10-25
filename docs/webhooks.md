@@ -62,9 +62,24 @@ Deleting local storage does not disable or delete the remote hook. For permanent
 | Polling | Available | None; only the loopback status endpoint |
 | Fixed URL | Available | Operator-provided HTTPS ingress, independent of Cloudflare |
 | [Quick Tunnel](quick-tunnel.md) | Available | Temporary hostname for local testing, no Cloudflare account/domain |
-| Named tunnel | Not built; [#22](https://github.com/repoagent/controller/issues/22) was closed without implementation | For an externally managed stable hostname, use fixed-URL mode |
+| Named tunnel | Not built in; [#22](https://github.com/repoagent/controller/issues/22) was closed without implementation | Stable hostname through fixed-URL mode and an operator-run `cloudflared`; see [below](#stable-hostname-through-a-cloudflare-named-tunnel) |
 
 The same image can run behind external HTTP ingress in Azure Container Apps or another host. Set the public origin to that deployment's HTTPS hostname and the ingress target port to the configured listener port. Run image command `start`; provide the selected key at `/run/secrets/github-app.pem`, container-owned Codex authentication, public configuration, and persistent storage at the paths in the container guide. Keep configuration read-only during agent work. Use one replica and persistent storage for the JSON state/native history; do not rely on an ephemeral container filesystem for conversation continuity. Provisioning the cloud resources and HTTPS ingress is operator-owned. The controller does not keep its host running: a host that stops idle replicas, such as one scaling to zero, must not stop a controller while its [status endpoint](controller-operations.md#status-endpoint) reports `busy` ([ADR 0009](adr/0009-keep-hosting-lifecycle-out-of-the-controller.md)).
+
+### Stable hostname through a Cloudflare named tunnel
+
+A Cloudflare named tunnel can be the HTTPS ingress for fixed-URL mode. The operator owns the Cloudflare account, the domain and the tunnel. The controller and image do not run `cloudflared` for this mode.
+
+1. In Cloudflare, create a remotely managed tunnel and add a **Published application** route, for example `agent.example.com`, with service URL `http://localhost:8080` (the listener port the local Docker wrapper publishes on 127.0.0.1).
+2. On the Docker host, save the tunnel token to a file only the connector's user can read, and run the connector from it (`cloudflared` 2025.4.0 or later). The token then stays out of command arguments and shell history:
+
+   ```sh
+   cloudflared tunnel run --token-file /path/to/tunnel-token
+   ```
+
+3. Configure the instance with `--mode fixed-url --public-url https://agent.example.com --listen-port 8080`, then `check` and `start` as above.
+
+Anyone holding the token can run the tunnel, so treat it as a secret. Keep it out of the instance configuration, the state volume and logs. Restarting the container or the connector keeps the hostname, so the saved hook ID and URL stay unchanged. Moving an existing Quick Tunnel or fixed-URL instance to the tunnel hostname follows the hostname change above: stop, configure the new origin, start. See [Create a remotely managed tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/), [tunnel tokens](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/remote-tunnel-permissions/) and [run parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/).
 
 ## Manual verification catalog
 
