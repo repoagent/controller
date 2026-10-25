@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace RepoAgentController;
 
 /// <summary>
@@ -61,10 +63,10 @@ public sealed class DiscussionRecord(string url)
     public IReadOnlyList<UnknownKey> Unknown { get; init; } = [];
 
     /// <summary>
-    /// Known keys whose value is in a form no writer leaves, by name, in the order read: the property each names is then null
+    /// Known keys whose value is in a form no writer leaves, in the order read: the property each names is then null
     /// (<see cref="Url"/> empty), and the value is written back as read until the bridge replaces it.
     /// </summary>
-    public OrderedDictionary<string, UnreadableJson> UnreadableKeys { get; } = [];
+    public OrderedDictionary<RecordKey, UnreadableJson> UnreadableKeys { get; } = [];
 
     /// <summary>The record as read, when it is not an object of keys; null otherwise.</summary>
     public UnreadableJson? Unreadable { get; init; }
@@ -76,21 +78,25 @@ public sealed class DiscussionRecord(string url)
     /// </summary>
     public string? Problem => Unreadable?.Reason ?? UnreadableKeys.Where(key => key.Key switch
     {
-        "labels" => false,
+        RecordKey.Labels => false,
         // Waiting input that is not an object: observation of a Discussion with a session replaces it with what it observes.
-        "waiting" => string.IsNullOrEmpty(SessionId) || key.Value.Json.StartsWith('{'),
-        _ => true
+        RecordKey.Waiting => string.IsNullOrEmpty(SessionId) || key.Value.IsObject,
+        RecordKey.Url or RecordKey.Sources or RecordKey.SessionId or RecordKey.Pending or RecordKey.Running => true,
+        _ => throw new UnreachableException()
     }).Select(key => key.Value.Reason).FirstOrDefault();
 
     /// <summary>Whether the record may hold an agent session: a session ID, one that is not text, or a record that is not an object of keys.</summary>
-    public bool HoldsSession => SessionId is { Length: > 0 } || UnreadableKeys.ContainsKey("sessionId") || Unreadable is not null;
+    public bool HoldsSession => SessionId is { Length: > 0 } || UnreadableKeys.ContainsKey(RecordKey.SessionId) || Unreadable is not null;
 
     /// <summary>Whether the record may hold a delivery whose outcome is unknown.</summary>
     public bool HoldsPending => Pending is not null || Unreadable is not null;
 }
 
-/// <summary>JSON as read, in a form no writer leaves, and why reading it failed.</summary>
-public sealed record UnreadableJson(string Json, string Reason);
+/// <summary>A known key of a <see cref="DiscussionRecord"/>.</summary>
+public enum RecordKey { Url, Sources, Labels, SessionId, Waiting, Pending, Running }
+
+/// <summary>JSON as read, in a form no writer leaves, why reading it failed, and whether it is an object of keys.</summary>
+public sealed record UnreadableJson(string Json, string Reason, bool IsObject);
 
 /// <summary>
 /// What observation compares of one message for work: its content, the Discussion's state fields (null for a comment), the
@@ -112,8 +118,8 @@ public sealed record SourceCheckpoint(CheckpointContent Content, CheckpointState
     public string? AsRead { get; init; }
 
     /// <summary>What observation compares as changed, as its JSON compared before the records were typed, since it was read in
-    /// a form no writer leaves: <c>content</c>, and the names of state keys.</summary>
-    public IReadOnlyList<string> ReadAsChanged { get; init; } = [];
+    /// a form no writer leaves.</summary>
+    public IReadOnlyList<CheckpointPart> ReadAsChanged { get; init; } = [];
 
     /// <summary>The same content, state, reactions in any order, and thread root, neither kept as read.</summary>
     public bool Equals(SourceCheckpoint? other) => other is not null && AsRead == other.AsRead && Content == other.Content &&
@@ -121,6 +127,10 @@ public sealed record SourceCheckpoint(CheckpointContent Content, CheckpointState
 
     public override int GetHashCode() => HashCode.Combine(AsRead, Content, State, ReplyTo, Reactions.Count);
 }
+
+/// <summary>A part of a <see cref="SourceCheckpoint"/> that observation compares: its content, a state field, or a state key no
+/// writer writes.</summary>
+public enum CheckpointPart { Content, Title, Closed, Locked, Answer, Category, OtherState }
 
 /// <summary>A message's body and its author's login, null when GitHub reports no account. The actor type is observation
 /// metadata, so adding it never replays accepted content.</summary>

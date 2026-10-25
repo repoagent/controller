@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -9,7 +10,7 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
 {
     static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
     static readonly string[] StateKeys = ["version", "repository", "discussions", "agentLogin", "enrollmentCategories"],
-        RecordKeys = ["url", "sources", "labels", "sessionId", "waiting", "pending", "running"], WaitingKeys = ["inputs", "discussion", "context", "retry"],
+        RecordKeys = [.. Enum.GetValues<RecordKey>().Select(Name)], WaitingKeys = ["inputs", "discussion", "context", "retry"],
         InputKeys = ["observedAt", "change", "receipt", "redelivery"], RetryKeys = ["attempts", "after"],
         PendingKeys = ["operation", "since", "sourceIds", "inputs"], RunningKeys = ["turn", "since"];
 
@@ -65,37 +66,37 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
         try
         {
             var item = node as JsonObject ?? throw new InvalidDataException("a Discussion record is not an object");
-            var unreadable = new OrderedDictionary<string, UnreadableJson>();
-            T? Read<T>(string name, Func<JsonNode, T> read, bool required = false) where T : class
+            var unreadable = new OrderedDictionary<RecordKey, UnreadableJson>();
+            T? Read<T>(RecordKey key, Func<JsonNode, T> read, bool required = false) where T : class
             {
-                if (item[name] is not { } value)
+                if (item[Name(key)] is not { } value)
                 {
-                    if (required) unreadable[name] = new("null", Missing(name).Message);
+                    if (required) unreadable[key] = new("null", Missing(Name(key)).Message, false);
                     return null;
                 }
                 try { return read(value); }
-                catch (Exception error) when (Damaged(error)) { unreadable[name] = new(value.ToJsonString(), error.Message); return null; }
+                catch (Exception error) when (Damaged(error)) { unreadable[key] = new(value.ToJsonString(), error.Message, value is JsonObject); return null; }
             }
-            var record = new DiscussionRecord(Read("url", url => url.GetValue<string>()) ?? "")
+            var record = new DiscussionRecord(Read(RecordKey.Url, url => url.GetValue<string>()) ?? "")
             {
                 // A message whose checkpoint is null is observed as new, as a missing one is.
-                Sources = Read("sources", sources => new OrderedDictionary<string, SourceCheckpoint>(sources.AsObject().Where(checkpoint => checkpoint.Value is not null)
+                Sources = Read(RecordKey.Sources, sources => new OrderedDictionary<string, SourceCheckpoint>(sources.AsObject().Where(checkpoint => checkpoint.Value is not null)
                     .Select(checkpoint => KeyValuePair.Create(checkpoint.Key, ReadCheckpoint(checkpoint.Value!.AsObject())))), required: true) ?? [],
-                Labels = Read<IReadOnlyList<string>>("labels", labels => [.. labels.AsArray().Select(label => label?.GetValue<string>() ?? throw Missing("labels"))]),
-                SessionId = Read("sessionId", session => session.GetValue<string>()), Waiting = Read("waiting", waiting => Waiting(waiting.AsObject())),
+                Labels = Read<IReadOnlyList<string>>(RecordKey.Labels, labels => [.. labels.AsArray().Select(label => label?.GetValue<string>() ?? throw Missing("labels"))]),
+                SessionId = Read(RecordKey.SessionId, session => session.GetValue<string>()), Waiting = Read(RecordKey.Waiting, waiting => Waiting(waiting.AsObject())),
                 Pending = item["pending"] is { } pending ? Pending(pending) : null,
-                Running = Read("running", node =>
+                Running = Read(RecordKey.Running, node =>
                 {
                     var running = node.AsObject();
                     return new RunningTurn(Required(running, "turn"), At(running, "since")) { Unknown = Unknown(running, RunningKeys) };
                 }),
                 Unknown = Unknown(item, RecordKeys)
             };
-            foreach (var (name, value) in unreadable) record.UnreadableKeys[name] = value;
+            foreach (var (key, value) in unreadable) record.UnreadableKeys[key] = value;
             return record;
         }
         // Not an object, or one whose keys cannot be read (a duplicate key).
-        catch (Exception error) when (Damaged(error)) { return new("") { Unreadable = new(node?.ToJsonString() ?? "null", error.Message) }; }
+        catch (Exception error) when (Damaged(error)) { return new("") { Unreadable = new(node?.ToJsonString() ?? "null", error.Message, node is JsonObject) }; }
     }
 
     // Every start ends a pending delivery, so one in a form no writer leaves still says how many leading inputs it carried;
@@ -119,35 +120,46 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
     {
         if (record.Unreadable is { } unreadable) return JsonNode.Parse(unreadable.Json);
         var item = new JsonObject();
-        foreach (var name in RecordKeys)
-            if ((record.UnreadableKeys.TryGetValue(name, out var kept) ? JsonNode.Parse(kept.Json) : Written(record, name)) is { } value) item[name] = value;
+        foreach (var key in Enum.GetValues<RecordKey>())
+            if ((record.UnreadableKeys.TryGetValue(key, out var kept) ? JsonNode.Parse(kept.Json) : Written(record, key)) is { } value) item[Name(key)] = value;
         return Kept(item, record.Unknown);
     }
 
-    static JsonNode? Written(DiscussionRecord record, string name)
+    static string Name(RecordKey key) => key switch
     {
-        switch (name)
+        RecordKey.Url => "url", RecordKey.Sources => "sources", RecordKey.Labels => "labels", RecordKey.SessionId => "sessionId",
+        RecordKey.Waiting => "waiting", RecordKey.Pending => "pending", RecordKey.Running => "running", _ => throw new UnreachableException()
+    };
+
+    static JsonNode? Written(DiscussionRecord record, RecordKey key) => key switch
+    {
+        RecordKey.Url => record.Url,
+        RecordKey.Sources => Sources(record.Sources),
+        RecordKey.Labels => record.Labels is { } labels ? new JsonArray([.. labels.Select(label => (JsonNode?)JsonValue.Create(label))]) : null,
+        RecordKey.SessionId => record.SessionId,
+        RecordKey.Waiting => record.Waiting is { } waiting ? Waiting(waiting) : null,
+        RecordKey.Pending => record.Pending is { } pending ? Pending(pending) : null,
+        RecordKey.Running => record.Running is { } running ? Kept(new JsonObject { ["turn"] = running.Turn, ["since"] = Time(running.Since) }, running.Unknown) : null,
+        _ => throw new UnreachableException()
+    };
+
+    static JsonObject Sources(OrderedDictionary<string, SourceCheckpoint> checkpoints)
+    {
+        var sources = new JsonObject();
+        foreach (var (id, checkpoint) in checkpoints) sources[id] = Checkpoint(checkpoint);
+        return sources;
+    }
+
+    static JsonNode? Pending(PendingDelivery pending)
+    {
+        if (pending.AsRead is { } json) return JsonNode.Parse(json);
+        var written = new JsonObject
         {
-            case "url": return record.Url;
-            case "sources":
-                var sources = new JsonObject();
-                foreach (var (id, checkpoint) in record.Sources) sources[id] = Checkpoint(checkpoint);
-                return sources;
-            case "labels": return record.Labels is { } labels ? new JsonArray([.. labels.Select(label => (JsonNode?)JsonValue.Create(label))]) : null;
-            case "sessionId": return record.SessionId;
-            case "waiting": return record.Waiting is { } waiting ? Waiting(waiting) : null;
-            case "pending":
-                if (record.Pending is not { } pending) return null;
-                if (pending.AsRead is { } json) return JsonNode.Parse(json);
-                var written = new JsonObject
-                {
-                    ["operation"] = pending.Operation, ["since"] = Time(pending.Since),
-                    ["sourceIds"] = new JsonArray([.. pending.SourceIds.Select(source => (JsonNode?)JsonValue.Create(source))])
-                };
-                if (pending.Inputs is { } inputs) written["inputs"] = inputs;
-                return Kept(written, pending.Unknown);
-            default: return record.Running is { } running ? Kept(new JsonObject { ["turn"] = running.Turn, ["since"] = Time(running.Since) }, running.Unknown) : null;
-        }
+            ["operation"] = pending.Operation, ["since"] = Time(pending.Since),
+            ["sourceIds"] = new JsonArray([.. pending.SourceIds.Select(source => (JsonNode?)JsonValue.Create(source))])
+        };
+        if (pending.Inputs is { } inputs) written["inputs"] = inputs;
+        return Kept(written, pending.Unknown);
     }
 
     // Agent input (the Discussion, the bootstrap context and each change) is kept as the text the bridge sends; the Discussion
@@ -230,14 +242,19 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
     {
         var content = checkpoint["content"] as JsonObject;
         var read = new CheckpointContent(content?["body"].OptionalText() ?? "", content?["author"] is JsonObject author ? author["login"].OptionalText() : null);
-        var changed = JsonNode.DeepEquals(Content(read), content) ? new List<string>() : ["content"];
+        var changed = JsonNode.DeepEquals(Content(read), content) ? new List<CheckpointPart>() : [CheckpointPart.Content];
         var state = checkpoint["state"] as JsonObject ?? [];
         var category = state["category"] as JsonObject;
         var observed = state.Count == 0 ? null : new CheckpointState(state["title"].OptionalText() ?? "", IsTrue(state["closed"]), IsTrue(state["locked"]),
             (state["answer"] as JsonObject)?["id"].OptionalText(),
             category?["id"].OptionalText() is { } id && category["name"].OptionalText() is { } name ? new(id, name) : null);
         var written = State(observed);
-        changed.AddRange(written.Select(field => field.Key).Union(state.Select(field => field.Key)).Where(key => !JsonNode.DeepEquals(written[key], state[key])));
+        changed.AddRange(written.Select(field => field.Key).Union(state.Select(field => field.Key)).Where(key => !JsonNode.DeepEquals(written[key], state[key]))
+            .Select(key => key switch
+            {
+                "title" => CheckpointPart.Title, "closed" => CheckpointPart.Closed, "locked" => CheckpointPart.Locked, "answer" => CheckpointPart.Answer,
+                "category" => CheckpointPart.Category, _ => CheckpointPart.OtherState
+            }));
         var reactions = (checkpoint["reactions"]?.AsObject() ?? []).Select(entry => (entry.Value is JsonObject reaction ? Lenient(() => Reaction(reaction)) : null) ??
             new(entry.Key, "", null, default));
         var checkpointed = new SourceCheckpoint(read, observed, [.. reactions], checkpoint["replyTo"].OptionalText()) { ReadAsChanged = changed };
