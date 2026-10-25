@@ -57,6 +57,7 @@ src/RepoAgentController.Core/GitHubOutbox.cs
 src/RepoAgentController.Core/IWebhookRegistration.cs
 src/RepoAgentController.Core/IAgentRuntime.cs
 src/RepoAgentController.Core/AgentSessions.cs
+src/RepoAgentController.Core/ICheckoutAdmission.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs
 tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj

@@ -10,7 +10,7 @@ namespace RepoAgentController;
 /// have reached the native is sent again marked as a redelivery, accepting possible duplicate processing.
 /// </summary>
 sealed class Bridge(string repository, IDiscussions discussions, AppIdentity identity, AgentSessions sessions, StateStore store, GitHubOutbox outbox,
-    HashSet<int> enroll, RepositorySettings settings, CheckoutRefresh? refresh = null, TimeProvider? time = null)
+    HashSet<int> enroll, RepositorySettings settings, ICheckoutAdmission? refresh = null, TimeProvider? time = null)
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
