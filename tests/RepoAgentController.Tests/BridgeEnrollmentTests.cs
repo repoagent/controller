@@ -236,4 +236,34 @@ public sealed class BridgeEnrollmentTests
         Assert.True(await world.Observe(2));
         Assert.Equal(["S1", "S2", "S2"], world.Turns.Select(turn => turn.SessionId));
     }
+
+    [Fact]
+    public async Task A_Discussion_record_in_a_form_no_writer_leaves_is_kept_as_it_was_and_its_Discussion_is_not_enrolled_again()
+    {
+        await using var world = new BridgeWorld();
+        world.GitHub.Open(1, Mention);
+        world.GitHub.Open(2, Mention);
+        await world.Begin();
+        Assert.True(await world.Poll());
+        world.Finish(1);
+        await world.Dispatch();
+        await world.End();
+        // A hand edit leaves a session ID that is not text.
+        var state = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(world.StatePath))!;
+        state["discussions"]!["D1"]!["sessionId"] = 4;
+        File.WriteAllText(world.StatePath, state.ToJsonString());
+        var damaged = world.Record(1)!.ToJsonString();
+
+        world.GitHub.Comment(1, "C1", "More context, please.");
+        world.GitHub.Comment(2, "C2", "Still here.");
+        await world.Begin();
+        Assert.False(await world.Poll());
+        world.Finish(2);
+        await world.Dispatch();
+
+        // Never observed as new: no session starts for it and its input is not sent again; the other Discussion continues.
+        Assert.Equal(["S1", "S2", "S2"], world.Turns.Select(turn => turn.SessionId));
+        Assert.StartsWith(BridgeWorld.Url(1) + ": ", Assert.Single(world.Logged("observation-error")));
+        Assert.Equal(damaged, world.Record(1)!.ToJsonString());
+    }
 }
