@@ -248,6 +248,22 @@ public sealed class GitHubOutboxDeliveryTests
     }
 
     [Fact]
+    public async Task A_retained_operation_of_a_kind_this_controller_does_not_deliver_is_dropped_as_a_permanent_failure_and_later_work_continues()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        state.Outbox = new(Repository, null, [new("label:D1", "label", "D1", Url, "Agents", null, "triage", 0, Start, false, null)]);
+        await using var outbox = Lifetime();
+        outbox.Receipt("C7", Comment, hasEyesReceipt: false);
+
+        Assert.False(await outbox.Flush(ct));
+
+        Assert.Equal([("label-error", $"{Url} subject=D1 attempt=1 Permanent: unsupported outbox operation kind 'label'; permanent failure removed from retry; accepted input is not replayed"),
+            ("receipt", Comment)], log.Entries);
+        Assert.Equal(["addReaction C7"], github.Calls);
+        Assert.Empty(state.Outbox!.Operations);
+    }
+
+    [Fact]
     public async Task An_outbox_retained_for_another_repository_stops_startup_and_stays_as_it_was()
     {
         var retained = new OutboxState("owner/other", null, [new("receipt:D1", "receipt", "D1", Url, null, null, null, 0, Start, false, null)]);

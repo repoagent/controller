@@ -4,7 +4,8 @@ namespace RepoAgentController.Tests;
 
 // The one golden round trip per persisted format (owner decision): a recorded file is read and written back unchanged, except
 // that a settings entry of a state this controller does not know keeps its value and reads as pending. Status reports this record under
-// "settings" verbatim, so an unchanged file also keeps that part of status unchanged.
+// "settings" verbatim, so an unchanged file also keeps that part of status unchanged. An outbox operation of a kind this controller
+// does not deliver is kept as read.
 public sealed class ControllerStateFilesTests : IDisposable
 {
     readonly string directory = Path.Combine(Path.GetTempPath(), "controller-state-files-" + Guid.NewGuid().ToString("N"));
@@ -102,6 +103,28 @@ public sealed class ControllerStateFilesTests : IDisposable
               ]
             }
             """;
+        // An operation of a kind a later controller might retain, which delivery drops as unsupported (GitHubOutboxDeliveryTests).
+        const string Later = """
+            {
+              "version": 1,
+              "repository": "owner/repository",
+              "pausedUntil": null,
+              "operations": [
+                {
+                  "key": "label:D_kwDOAbc",
+                  "kind": "label",
+                  "subjectId": "D_kwDOAbc",
+                  "url": "https://github.com/owner/repository/discussions/2",
+                  "category": "Agents",
+                  "body": "triage",
+                  "attempts": 0,
+                  "dueAt": "2026-10-24T11:00:03.0000000\u002B00:00",
+                  "uncertain": false,
+                  "lastError": null
+                }
+              ]
+            }
+            """;
         var statePath = Path.Combine(directory, "bridge.json");
         var files = new ControllerStateFiles(statePath);
 
@@ -127,6 +150,10 @@ public sealed class ControllerStateFilesTests : IDisposable
             (outbox.Operations[1].Kind, outbox.Operations[1].Category, outbox.Operations[1].Title, outbox.Operations[1].Attempts, outbox.Operations[1].DueAt, outbox.Operations[1].Uncertain, outbox.Operations[1].LastError));
         Assert.EndsWith("1 inputs waiting \u2014 caf\u00e9\n", outbox.Operations[1].Body);
         Assert.Equal(Paused, File.ReadAllText(ControllerStateFiles.OutboxPath(statePath)));
+
+        File.WriteAllText(ControllerStateFiles.OutboxPath(statePath), Later);
+        files.WriteOutbox(files.ReadOutbox()!);
+        Assert.Equal(Later, File.ReadAllText(ControllerStateFiles.OutboxPath(statePath)));
     }
 
     public void Dispose() => Directory.Delete(directory, true);
