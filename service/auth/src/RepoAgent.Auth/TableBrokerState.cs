@@ -32,7 +32,8 @@ internal sealed class TableBrokerState(TableClient table) : IBrokerState
     }
 
     // The Table query cleanup has always made: the range and `after` as a RowKey filter in one partition, at most 32 rows
-    // a page, resuming from the stored continuation. A page that breaks those bounds proves nothing and is unavailable.
+    // a page, resuming from the stored continuation. The caller checks the answer against the query. A page with a row
+    // that breaks BrokerTable's bounds or has no ETag proves nothing and is unavailable.
     public async Task<StatePage<T>> ListAsync<T>(StateRange<T> range, string after, string? continuation, CancellationToken ct)
         where T : BrokerRecord, new()
     {
@@ -44,14 +45,10 @@ internal sealed class TableBrokerState(TableClient table) : IBrokerState
             await using var pages = table.QueryAsync<TableEntity>(filter, maxPerPage: 32, cancellationToken: ct)
                 .AsPages(continuation, pageSizeHint: 32).GetAsyncEnumerator(ct);
             page = await pages.MoveNextAsync() ? pages.Current : null;
-            if (page is not null && (page.Values.Count > 32 || page.ContinuationToken is { Length: > 8192 }))
-                throw new InvalidDataException("Invalid durable page.");
             foreach (var row in page?.Values ?? [])
             {
                 BrokerTable.Validate(row);
-                if (row.ETag == ETag.All || string.IsNullOrEmpty(row.ETag.ToString()) || row.PartitionKey != range.Scope
-                    || string.CompareOrdinal(row.RowKey, range.From) < 0 || string.CompareOrdinal(row.RowKey, range.To) >= 0
-                    || string.CompareOrdinal(row.RowKey, after) <= 0) throw new InvalidDataException("Invalid durable page.");
+                if (row.ETag == ETag.All || string.IsNullOrEmpty(row.ETag.ToString())) throw new InvalidDataException("Invalid durable page.");
             }
         }
         catch (Exception ex) when (FromTable(ex, ct)) { throw new BrokerStateUnavailable("The broker table did not answer a listing.", ex); }

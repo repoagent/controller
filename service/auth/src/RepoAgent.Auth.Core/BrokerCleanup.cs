@@ -185,11 +185,20 @@ public sealed class BrokerCleanup(IBrokerState state, string deploymentEpoch, IC
     private sealed record ListedLedger(string Key, string Id, BrokerRecord Value);
 
     // A single allocation per turn keeps the other lane independent of prefix length: the first ledger after the
-    // position, or none and the empty page's continuation (null when the family's cycle is complete).
+    // position, or none and the empty page's continuation (null when the family's cycle is complete). A page the query
+    // could not have answered proves nothing: at most 32 records, each of the range's scope, inside the range and after
+    // the position, and a continuation the cursor can store.
     private async Task<(ListedLedger? Ledger, string? Continuation)> FirstAsync<T>(StateRange<T> range, CleanupPosition position,
         CancellationToken ct) where T : BrokerRecord, new()
     {
-        var page = await state.ListAsync(range, position.LastKey!, position.Continuation, ct);
+        var after = position.LastKey!;
+        var page = await state.ListAsync(range, after, position.Continuation, ct);
+        if (page.Records.Count > 32 || page.Continuation is { Length: > 8192 }) throw new InvalidDataException("Cleanup page exceeds its bound.");
+        foreach (var record in page.Records)
+            if (record.Key.Scope != range.Scope
+                || string.CompareOrdinal(record.Key.Name, range.From) < 0
+                || string.CompareOrdinal(record.Key.Name, range.To) >= 0
+                || string.CompareOrdinal(record.Key.Name, after) <= 0) throw new InvalidDataException("Invalid cleanup page.");
         if (page.Records.Count == 0) return (null, page.Continuation);
         var first = page.Records[0];
         return (new(first.Key.Name, first.Key.Name[range.From.Length..], first.Read().Value), null);

@@ -233,6 +233,50 @@ public sealed partial class BrokerCleanupTests
         Assert.Equal("x", f.State.Row(unreadable)!["Unrecognized"]);
     }
 
+    // A page the listing query could not have answered proves nothing. The turn that got it fails and writes nothing for
+    // it, both lanes' enrollment family stays where it was, and the issuance family completes its cycle.
+    [Theory]
+    [InlineData("before-range")]
+    [InlineData("past-range")]
+    [InlineData("other-scope")]
+    [InlineData("not-after-the-position")]
+    [InlineData("oversized-page")]
+    [InlineData("oversized-continuation")]
+    public async Task Page_the_query_could_not_have_answered_fails_its_turn_and_holds_the_family(string answer)
+    {
+        var f = new InMemoryBroker();
+        var (id, _) = await Retained.StartAgent(f);
+        var key = EnrollmentLedger.Key(id);
+        // Each lane's first enrollment page, or the page after the ledger the lane then processed.
+        var position = answer == "not-after-the-position" ? key.Name : "";
+        ListedRow Ledger(string scope, string name) => new(scope, name, f.State.Row(key)!, f.State.Version(key)!);
+        f.State.Answer = page => page.Scope != IssuanceCapacity.EnrollmentScope || page.After != position ? page : answer switch
+        {
+            "before-range" => page with { Rows = [Ledger(page.Scope, "pending!" + id)] },
+            "past-range" => page with { Rows = [Ledger(page.Scope, "pending;" + id)] },
+            "other-scope" => page with { Rows = [Ledger(IssuanceCapacity.Scope, key.Name)] },
+            "not-after-the-position" => page with { Rows = [Ledger(page.Scope, key.Name)] },
+            "oversized-page" => page with
+            {
+                Rows = [Ledger(page.Scope, key.Name), .. Enumerable.Range(0, 32).Select(i => Ledger(page.Scope, key.Name + i.ToString("D2")))]
+            },
+            _ => page with { Rows = [], Continuation = "after:" + new string('~', 8187) },
+        };
+
+        var run = await f.CleanupAsync(dispatches: 10_000, batches: 10_000);
+
+        Assert.Equal(1, run.Exit);
+        Assert.Equal(2, run.Int("failures"));
+        Assert.Equal("stream-failed", run.StopReason);
+        foreach (var cursor in new[] { f.State.Get(CleanupCursor.Payload)!, f.State.Get(CleanupCursor.Audit)! })
+        {
+            Assert.Equal(position, cursor.Enrollment.LastKey);
+            Assert.Null(cursor.Enrollment.Continuation);
+            Assert.Equal(0L, cursor.Enrollment.Cycle);
+            Assert.Equal(1L, cursor.Issuance.Cycle);
+        }
+    }
+
     // A clock whose time is the broker's manual clock, whose timestamps follow that time, so a run's elapsed time is the
     // manual time that passed, and whose timers are the TimerClock's.
     private sealed class ElapsedClock(IssuanceClock clock, TimerClock timers) : TimeProvider

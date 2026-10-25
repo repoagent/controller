@@ -15,8 +15,9 @@ public interface IBrokerState
 
     // One page of at most 32 records of a range, in ordinal name order, whose names sort after `after`. A page may be
     // empty and still carry a continuation; only a null continuation ends the range. Throws BrokerStateUnavailable when
-    // the store does not answer or answers a page outside the range. Each listed record is read on its own, so a row no
-    // record can read fails only the caller that reads it.
+    // the store does not answer. The answer is not checked against the query: each record carries the scope and name
+    // the store answered, for the caller to check. Each listed record is read on its own, so a row no record can read
+    // fails only the caller that reads it.
     Task<StatePage<T>> ListAsync<T>(StateRange<T> range, string after, string? continuation, CancellationToken ct)
         where T : BrokerRecord, new();
 }
