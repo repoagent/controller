@@ -5,6 +5,7 @@ namespace RepoAgentController.Tests;
 
 // Operator-supplied Codex account credentials over a private native home in a temporary directory: what each start installs
 // there, and what an unusable supply reveals. Whether the pinned Codex then signs in with its home's auth.json is not tested.
+[Collection("Managed checkout environment")]
 public sealed class CodexCredentialsTests : IDisposable
 {
     readonly string directory = Path.Combine(Path.GetTempPath(), "codex-credentials-" + Guid.NewGuid().ToString("N"));
@@ -57,20 +58,27 @@ public sealed class CodexCredentialsTests : IDisposable
         Assert.Empty(Directory.EnumerateFileSystemEntries(home));
     }
 
-    // The entrypoint checks agent account credentials before, and independently of, any GitHub App credential use.
+    // The entrypoint checks agent account credentials before, and independently of, any GitHub App credential use. The
+    // private home is valid, so only the missing supply can stop startup.
     [Fact]
     public async Task An_unusable_supply_stops_startup_before_a_GitHub_App_credential_is_acquired()
     {
         using var fixture = new BrokerAuthenticationTests.Fixture();
         string[] arguments = ["--repo", "owner/repository", "--app-id", "123", "--state", fixture.State, "--broker-url", "https://credentials.example.org",
             "--enrollment-file", fixture.EnrollmentFile, "--workspace", directory, "--codex-auth", supplied, "--once"];
-
-        Assert.Equal(1, await BridgeCommand.Run(arguments, fixture.Http, fixture.Gh, fixture.Clock, TestContext.Current.CancellationToken));
+        var previous = Environment.GetEnvironmentVariable("CODEX_HOME");
+        Environment.SetEnvironmentVariable("CODEX_HOME", home);
+        try
+        {
+            Assert.Equal(1, await BridgeCommand.Run(arguments, fixture.Http, fixture.Gh, fixture.Clock, TestContext.Current.CancellationToken));
+        }
+        finally { Environment.SetEnvironmentVariable("CODEX_HOME", previous); }
 
         Assert.Empty(fixture.Transport.Requests);
         var status = await OperatorStatusTests.Status(fixture.State);
         Assert.Equal("failed", status["controller"]!["state"]!.GetValue<string>());
-        Assert.Contains(status["failures"]!.AsArray(), item => item!["kind"]!.GetValue<string>() == "fatal" && item["message"]!.GetValue<string>().Contains("--codex-auth"));
+        Assert.Contains(status["failures"]!.AsArray(), item => item!["kind"]!.GetValue<string>() == "fatal" &&
+            item["message"]!.GetValue<string>().Contains("--codex-auth file " + supplied + " does not exist"));
     }
 
     public void Dispose() => Directory.Delete(directory, true);
