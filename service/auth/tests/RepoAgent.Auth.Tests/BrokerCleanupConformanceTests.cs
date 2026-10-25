@@ -33,12 +33,13 @@ public sealed partial class BrokerCleanupTests
         Assert.InRange(run.Int("logicalQueryPages"), 0, 16);
         foreach (var oldName in new[] { "tableRequests", "egts", "pages" }) Assert.False(summary.TryGetProperty(oldName, out _));
         var envelope = summary.GetProperty("reviewedHttp11Envelope");
-        Assert.Equal("Azure.Core1.62.0/.NET10.0.13/direct HTTP1.x/no handler authentication", envelope.GetProperty("scope").GetString());
-        Assert.Equal(4, envelope.GetProperty("maxSendsPerSdkDispatch").GetInt32());
-        Assert.Equal(4 * dispatches, envelope.GetProperty("tableRequestUpperBound").GetInt32());
-        Assert.Equal(4 * batches, envelope.GetProperty("batchRequestUpperBound").GetInt32());
-        Assert.InRange(envelope.GetProperty("tableRequestUpperBound").GetInt32(), 0, 512);
-        Assert.InRange(envelope.GetProperty("batchRequestUpperBound").GetInt32(), 0, 128);
+        var sends = run.Budget.MaxSendsPerDispatch;
+        Assert.Equal(run.Budget.EnvelopeScope, envelope.GetProperty("scope").GetString());
+        Assert.Equal(sends, envelope.GetProperty("maxSendsPerSdkDispatch").GetInt32());
+        Assert.Equal(sends * dispatches, envelope.GetProperty("tableRequestUpperBound").GetInt32());
+        Assert.Equal(sends * batches, envelope.GetProperty("batchRequestUpperBound").GetInt32());
+        Assert.InRange(envelope.GetProperty("tableRequestUpperBound").GetInt32(), 0, sends * 128);
+        Assert.InRange(envelope.GetProperty("batchRequestUpperBound").GetInt32(), 0, sends * 32);
         Assert.InRange(summary.GetProperty("elapsedMilliseconds").GetInt64(), 0, 60_000);
     }
 

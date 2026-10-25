@@ -1,13 +1,16 @@
 namespace RepoAgent.Auth;
 
 // The store requests a cleanup run may still make. The adapter counts the requests it dispatches, and refuses (and
-// marks exceeded) one that would pass the budget.
+// marks exceeded) one that would pass the budget. It also names the transport it reviewed the counts for, and the most
+// sends one counted dispatch may make below them, which the summary reports.
 public interface ICleanupBudget
 {
     int Dispatches { get; }
     int BatchDispatches { get; }
     bool Exceeded { get; }
     bool CanStart(int dispatches, int batches);
+    string EnvelopeScope { get; }
+    int MaxSendsPerDispatch { get; }
 }
 
 // One bounded cleanup run over the retained ledgers, for at most 60 seconds. Two lanes, payload (redaction) and audit
@@ -104,10 +107,10 @@ public sealed class BrokerCleanup(IBrokerState state, string deploymentEpoch, IC
             // Reference-scope calculation, not measured traffic or runtime-version detection.
             reviewedHttp11Envelope = new
             {
-                scope = "Azure.Core1.62.0/.NET10.0.13/direct HTTP1.x/no handler authentication",
-                maxSendsPerSdkDispatch = 4,
-                tableRequestUpperBound = 4 * budget.Dispatches,
-                batchRequestUpperBound = 4 * budget.BatchDispatches
+                scope = budget.EnvelopeScope,
+                maxSendsPerSdkDispatch = budget.MaxSendsPerDispatch,
+                tableRequestUpperBound = budget.MaxSendsPerDispatch * budget.Dispatches,
+                batchRequestUpperBound = budget.MaxSendsPerDispatch * budget.BatchDispatches
             },
             elapsedMilliseconds = (long)clock.GetElapsedTime(started).TotalMilliseconds,
             oldestObservedOverduePayloadAt = oldest, oldestObservedOverduePayloadAgeSeconds = Age(oldest, now),

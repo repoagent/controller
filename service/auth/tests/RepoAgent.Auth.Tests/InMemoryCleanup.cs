@@ -2,7 +2,8 @@ namespace RepoAgent.Auth.Tests;
 
 // The cleanup command's request budget over a broker state, as the Table adapter's counting transport keeps it: every
 // read, listing page and transaction is one dispatch and every transaction is also a batch. A request that would pass
-// the budget is refused, the budget is marked exceeded, and the core sees the store as unavailable.
+// the budget is refused, the budget is marked exceeded, and the core sees the store as unavailable. Its envelope is its
+// own, not the Table transport's, so the summary shows it reports the budget's.
 internal sealed class CleanupBudget(IBrokerState inner, int dispatches = 128, int batches = 32) : IBrokerState, ICleanupBudget
 {
     private readonly Lock sync = new();
@@ -10,6 +11,8 @@ internal sealed class CleanupBudget(IBrokerState inner, int dispatches = 128, in
     public int BatchDispatches { get; private set; }
     public bool Exceeded { get; private set; }
     public bool CanStart(int requests, int batchRequests) => Dispatches + requests <= dispatches && BatchDispatches + batchRequests <= batches;
+    public string EnvelopeScope => "in-memory broker state";
+    public int MaxSendsPerDispatch => 3;
 
     public Task<Versioned<T>?> ReadAsync<T>(StateKey<T> key, CancellationToken ct) where T : BrokerRecord, new()
     {
