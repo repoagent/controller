@@ -106,6 +106,12 @@ sealed class InMemoryDiscussions : IDiscussions
 
     public IReadOnlyList<Dashboard> Dashboards { get { lock (sync) return [.. dashboards]; } }
 
+    // The outbox reads no conversations.
+    public Task<IReadOnlyList<Discussion>> List(CancellationToken ct) => throw new NotSupportedException();
+    public Task<Discussion?> Find(int number, CancellationToken ct) => throw new NotSupportedException();
+    public Task<DiscussionConversation> Read(Discussion discussion, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<string>> Labels(string discussionId, CancellationToken ct) => throw new NotSupportedException();
+
     public Task AddEyesReceipt(string subjectId, CancellationToken ct) => Write("addReaction " + subjectId, () => eyes.Add(subjectId));
 
     public Task<bool> HasEyesReceipt(string subjectId, CancellationToken ct)

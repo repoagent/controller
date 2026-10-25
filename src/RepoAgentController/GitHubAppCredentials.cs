@@ -72,7 +72,7 @@ public sealed class GitHubAppCredentials : IDisposable
     /// <summary>This App, once initialized; until then no actor is the App.</summary>
     public AppIdentity Identity => new(appSlug);
 
-    public bool IsAgentActor(JsonNode? actor) => Identity.IsAgentActor(GitHub.ActorOf(actor));
+    public bool IsAgentActor(JsonNode? actor) => Identity.IsAgentActor(DiscussionJson.ReadActor(actor));
 
     public async Task<string> GetToken(CancellationToken ct) => (await GetCredential(ct)).Token;
 

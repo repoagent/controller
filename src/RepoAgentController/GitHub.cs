@@ -10,12 +10,6 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     public string AgentLogin => credentials.AgentLogin;
     public MentionUser? MentionUser { get; private set; }
     public AppIdentity Identity => credentials.Identity with { MentionUser = MentionUser };
-    public bool IsAgentActor(JsonNode? actor) => Identity.IsAgentActor(ActorOf(actor));
-
-    /// <summary>An author, sender or reaction user as GitHub's GraphQL reports it; null when GitHub reports none.</summary>
-    internal static Actor? ActorOf(JsonNode? actor) => actor is null ? null : new(actor.Text("login"), actor.Text("__typename"));
-    const string MessageFields = "id url body bodyHTML createdAt updatedAt author { __typename login } reactionGroups { content viewerHasReacted }";
-    const string DiscussionFields = MessageFields + " number title closed locked answer { id } category { id name }";
     internal const string PageInfo = "pageInfo { hasNextPage endCursor }";
 
     public async Task<JsonNode> Query(string query, JsonObject variables, CancellationToken ct)
@@ -123,84 +117,13 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         Log.Write("mention-user", $"@{MentionUser.Login} publishes-as={AgentLogin}");
     }
 
-    // The rendered body is parsed only when a mention user can be mentioned in it.
-    public bool IsEnrollmentMention(JsonNode source) => Identity.IsEnrollmentMention(ActorOf(source["author"]), source.Text("body"),
-        MentionUser is null ? NoMentions : RenderedMentions.Users(source.Text("bodyHTML")));
-
-    static readonly IReadOnlySet<string> NoMentions = new HashSet<string>();
-
-    public async Task<List<JsonNode>> Discussions(CancellationToken ct)
-    {
-        var parts = Repository.Split('/');
-        var discussions = new List<JsonNode>();
-        string? cursor = null;
-        do
-        {
-            var data = await Query("query($owner:String!,$name:String!,$cursor:String) { repository(owner:$owner,name:$name) { discussions(first:100,after:$cursor) { nodes { " + DiscussionFields + " } " + PageInfo + " } } }", Json.Object(("owner", parts[0]), ("name", parts[1]), ("cursor", cursor)), ct);
-            var connection = data["repository"]?["discussions"] ?? throw new IOException("Repository not found or Discussions inaccessible");
-            discussions.AddRange(connection["nodes"]!.AsArray().Select(n => n!.Copy()));
-            cursor = Next(connection);
-        } while (cursor is not null);
-        return discussions;
-    }
-
-    /// <summary>Returns null only when GitHub confirms that the configured repository has no Discussion with this number.</summary>
-    public async Task<JsonNode?> Discussion(int number, CancellationToken ct)
-    {
-        var parts = Repository.Split('/');
-        var response = await Post("query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { discussion(number:$number) { " + DiscussionFields + " } } }",
-            Json.Object(("owner", parts[0]), ("name", parts[1]), ("number", number)), ct);
-        // Only the typed NOT_FOUND for this field inside the resolved repository confirms deletion. Message text,
-        // repository access loss, other error types and incomplete data stay classified failures.
-        if (ConfirmsAbsent(response, "repository", "discussion")) return null;
-        return Classify(response)["repository"]?["discussion"]?.Copy()
-            ?? throw new GitHubRequestException(GitHubFailure.Transient, "incomplete Discussion response");
-    }
-
-    public async Task<List<JsonNode>> Sources(JsonNode discussion, CancellationToken ct)
-    {
-        var sources = new List<JsonNode> { discussion.Copy() };
-        sources.AddRange(await Connection(discussion.Text("id"), "Discussion", "comments", MessageFields + " replyTo { id }", ct));
-        foreach (var root in sources.Skip(1).ToArray())
-            sources.AddRange(await Connection(root.Text("id"), "DiscussionComment", "replies", MessageFields + " replyTo { id }", ct));
-        foreach (var source in sources)
-        {
-            var type = source.Text("id") == discussion.Text("id") ? "Discussion" : "DiscussionComment";
-            source["reactions"] = Json.Array(await Connection(source.Text("id"), type, "reactions", "id content user { __typename login } createdAt", ct));
-        }
-        return sources;
-    }
-
-    /// <summary>Names of the labels currently applied to a Discussion.</summary>
-    public async Task<List<string>> Labels(string discussionId, CancellationToken ct) =>
-        (await Connection(discussionId, "Discussion", "labels", "name", ct)).Select(label => label.Text("name")).ToList();
-
-    async Task<List<JsonNode>> Connection(string id, string type, string field, string fields, CancellationToken ct)
-    {
-        var nodes = new List<JsonNode>();
-        string? cursor = null;
-        do
-        {
-            var query = "query($id:ID!,$cursor:String) { node(id:$id) { ... on " + type + " { " + field + "(first:100,after:$cursor) { nodes { " + fields + " } " + PageInfo + " } } } }";
-            var connection = (await Query(query, Json.Object(("id", id), ("cursor", cursor)), ct))["node"]?[field] ?? throw new IOException($"Missing {type} {id}");
-            nodes.AddRange(connection["nodes"]!.AsArray().Select(n => n!.Copy()));
-            cursor = Next(connection);
-        } while (cursor is not null);
-        return nodes;
-    }
-
     internal static string? Next(JsonNode connection) => connection["pageInfo"]!["hasNextPage"]!.GetValue<bool>() ? connection["pageInfo"]!.Text("endCursor") : null;
-
-    public static bool HasViewerReceipt(JsonNode source) =>
-        source["reactionGroups"]?.AsArray().Any(g => g!.Text("content") == "EYES" && g!["viewerHasReacted"]!.GetValue<bool>()) ?? false;
-
-    public bool IsDashboard(JsonNode discussion) => Identity.IsDashboard(ActorOf(discussion["author"]), discussion.Text("body"));
 
     // Controller-owned requests: classify by HTTP status, rate-limit headers and GraphQL error type.
     internal async Task<JsonNode> Send(string query, JsonObject variables, CancellationToken ct) => Classify(await Post(query, variables, ct));
 
     // The gh --include output of one GraphQL request, for classification.
-    async Task<string> Post(string query, JsonObject variables, CancellationToken ct)
+    internal async Task<string> Post(string query, JsonObject variables, CancellationToken ct)
     {
         try { return await Api("POST", "graphql", Json.Object(("query", query), ("variables", variables)), ct, include: true); }
         catch (Exception error) when (error is not OperationCanceledException)

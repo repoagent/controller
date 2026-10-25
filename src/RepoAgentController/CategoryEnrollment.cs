@@ -12,22 +12,21 @@ sealed class CategoryEnrollment
 {
     public const string Setting = "REPOAGENT_ENROLLMENT_CATEGORIES";
     readonly RepositorySettings settings;
-    readonly GitHub github;
+    readonly AppIdentity identity;
     readonly StateStore store;
 
-    public CategoryEnrollment(RepositorySettings settings, GitHub github, StateStore store)
+    public CategoryEnrollment(RepositorySettings settings, AppIdentity identity, StateStore store)
     {
-        (this.settings, this.github, this.store) = (settings, github, store);
+        (this.settings, this.identity, this.store) = (settings, identity, store);
         Starts();
     }
 
-    public bool Selects(JsonNode discussion)
+    public bool Selects(Discussion discussion)
     {
         var starts = Starts();
-        if (github.IsAgentActor(discussion["author"]) || discussion["category"]?.Text("name") is not { } category ||
+        if (identity.IsAgentActor(discussion.Author) || discussion.Category?.Name is not { } category ||
             starts.FirstOrDefault(start => string.Equals(start.Key, category, StringComparison.OrdinalIgnoreCase)).Value is not { } since) return false;
-        return DateTimeOffset.TryParse(discussion.Text("createdAt"), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var created) &&
-            created >= DateTimeOffset.Parse(since.GetValue<string>(), CultureInfo.InvariantCulture);
+        return discussion.CreatedAt >= DateTimeOffset.Parse(since.GetValue<string>(), CultureInfo.InvariantCulture);
     }
 
     /// <summary>Records starts for newly selected categories and forgets those of removed ones.</summary>

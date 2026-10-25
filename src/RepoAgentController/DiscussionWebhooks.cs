@@ -151,10 +151,9 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, IWebhookRegistrati
         if (payload["discussion"]?["number"] is not JsonValue value || !value.TryGetValue<int>(out var number) || number < 1) return 400;
         var discussion = payload["discussion"]!;
         // Every heartbeat edit of the controller's own status Discussion is notified too; none of it is agent input.
-        if (github.IsDashboard(Json.Object(("author", Json.Object(("login", discussion["user"]?["login"]?.ToString()),
-            ("__typename", discussion["user"]?["type"]?.ToString()))), ("body", discussion["body"]?.ToString())))) return 204;
-        var sender = Json.Object(("login", payload["sender"]?["login"]?.ToString()), ("__typename", payload["sender"]?["type"]?.ToString()));
-        if (eventName == "discussion_comment" && github.IsAgentActor(sender))
+        var app = github.Identity;
+        if (app.IsDashboard(Account(discussion["user"]), discussion["body"]?.ToString() ?? "")) return 204;
+        if (eventName == "discussion_comment" && app.IsAgentActor(Account(payload["sender"])))
         {
             Log.Write("webhook-ignored", $"delivery={delivery} discussion={number} reason=own-comment");
             return 204;
@@ -163,4 +162,7 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, IWebhookRegistrati
         Log.Write("webhook-delivery", $"delivery={delivery} event={eventName} action={action} discussion={number} scheduled=True");
         return 202;
     }
+
+    // A webhook payload's user or sender, which GitHub reports as a login and a type such as User or Bot.
+    static Actor Account(JsonNode? user) => new(user?["login"]?.ToString() ?? "", user?["type"]?.ToString() ?? "");
 }
