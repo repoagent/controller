@@ -71,7 +71,7 @@ sealed class ControllerDashboard : IAsyncDisposable
         }
     }
 
-    internal static string Render(JsonObject snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, ReleaseNotice? release)
+    static string Render(JsonObject snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, ReleaseNotice? release)
     {
         var text = new StringBuilder();
         text.AppendLine(AppIdentity.DashboardMarker);
