@@ -4,9 +4,9 @@ using Xunit;
 
 namespace RepoAgentController.Tests;
 
-// The dashboard in-process: what it publishes through the core outbox from a real ControllerStatus in a temporary directory,
-// when it publishes, and how the status snapshot renders. GitHub is the Discussions fake. The baseline release check never
-// completes here; ControllerDashboardUpdatesTests owns that section.
+// The dashboard in-process: what it publishes through the core outbox, and when, from a real ControllerStatus over state files
+// in a temporary directory. GitHub is the Discussions fake. The baseline release check never completes here;
+// ControllerDashboardUpdatesTests owns that section.
 public sealed class ControllerDashboardPublicationTests : IDisposable
 {
     const string Category = "Controller status", Title = "RepoAgent controller status", Attention = "Attention: RepoAgent controller authentication failed";
@@ -225,54 +225,105 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
         Assert.Empty(state.Outbox!.Operations);
     }
 
-    [Theory]
-    [InlineData("idle", 1, "failed", 0, false, "1 inputs held until the Codex account credentials are replaced")]
-    [InlineData("idle", 1, "healthy", 4, false, "1 inputs waiting for a free active-session slot")]
-    [InlineData("idle", 2, "healthy", 3, false, "2 inputs waiting for dispatch")]
-    [InlineData("idle", 1, "healthy", 4, true, "1 inputs waiting for dispatch")]
-    [InlineData("running", 1, "failed", 4, false, "running a turn since 2026-10-24T09:30:00Z; 1 inputs waiting for that turn to finish")]
-    [InlineData("running", 1, "healthy", 4, true, "its turn ended with the controller; 1 inputs waiting")]
-    [InlineData("pending", 0, "healthy", 0, false, "awaiting native acknowledgement")]
-    [InlineData("retrying", 1, "failed", 0, false, "delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting")]
-    public void Each_busy_session_is_listed_with_what_it_is_doing_and_the_most_specific_reason_its_input_waits(string activity, int waiting, string codex,
-        int running, bool stopped, string listed)
+    [Fact]
+    public async Task Each_busy_session_is_listed_with_what_it_is_doing_and_the_most_specific_reason_its_input_waits()
     {
-        var session = new JsonObject { ["discussion"] = First, ["session"] = "s1", ["state"] = activity };
-        if (activity == "running") session["since"] = "2026-10-24T09:30:00.0000000+00:00";
-        if (activity == "retrying") { session["attempts"] = 2; session["retryAt"] = "2026-10-24T10:05:00.0000000+00:00"; }
-        if (waiting != 0) session["waiting"] = waiting;
-        var body = ControllerDashboard.Render(Snapshot(codex, running, session), Start, stopped ? (Start, null) : null, null);
-        Assert.Contains($"\n### Active and queued sessions\n- [Discussion #1]({First}): {listed}\n\n### Recent failures\n", body);
+        Limit(1);
+        Store(
+            ("D1", new JsonObject { ["url"] = Url(1), ["sessionId"] = "s1", ["running"] = new JsonObject { ["turn"] = "t1", ["since"] = "2026-10-24T09:30:00.0000000+00:00" }, ["waiting"] = Waiting(1) }),
+            ("D2", new JsonObject
+            {
+                ["url"] = Url(2), ["sessionId"] = "s2",
+                ["pending"] = new JsonObject { ["operation"] = "send", ["since"] = "2026-10-24T09:59:00.0000000+00:00", ["sourceIds"] = new JsonArray("DC_2"), ["inputs"] = 1 }
+            }),
+            ("D3", new JsonObject { ["url"] = Url(3), ["sessionId"] = "s3", ["waiting"] = Waiting(1, new JsonObject { ["attempts"] = 2, ["after"] = "2026-10-24T10:05:00.0000000+00:00" }) }),
+            ("D4", new JsonObject { ["url"] = Url(4), ["sessionId"] = "s4", ["waiting"] = Waiting(2) }),
+            ("D5", new JsonObject { ["url"] = Url(5), ["sessionId"] = "s5" }));
+        await using (var dashboard = Dashboard())
+        {
+            dashboard.Start(TestContext.Current.CancellationToken);
+            await clock.Armed();
+            Assert.Contains("\n- **Sessions:** 5 stored; 1 of 1 turns running (active-session limit); 1 awaiting native acknowledgement; 4 inputs waiting\n", Published().Body);
+            Assert.Equal($"""
+                - [Discussion #1]({Url(1)}): running a turn since 2026-10-24T09:30:00Z; 1 inputs waiting for that turn to finish
+                - [Discussion #2]({Url(2)}): awaiting native acknowledgement
+                - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
+                - [Discussion #4]({Url(4)}): 2 inputs waiting for a free active-session slot
+                """, Listed());
+
+            // Rejected Codex credentials hold idle input; input behind a turn or a delivery keeps its own reason.
+            status.Record(new(Start, "codex-auth-failed", "turn failed: unexpected status 401 Unauthorized"));
+            await clock.Armed();
+            Assert.Equal($"""
+                - [Discussion #1]({Url(1)}): running a turn since 2026-10-24T09:30:00Z; 1 inputs waiting for that turn to finish
+                - [Discussion #2]({Url(2)}): awaiting native acknowledgement
+                - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
+                - [Discussion #4]({Url(4)}): 2 inputs held until the Codex account credentials are replaced
+                """, Listed());
+
+            Limit(4);
+            status.Record(new(Start, "codex-auth-verified", "turn completed"));
+            await clock.Armed();
+            Assert.EndsWith($"\n- [Discussion #4]({Url(4)}): 2 inputs waiting for dispatch", Listed());
+            Limit(1);
+        }
+
+        // Turns end with the controller, so its stop claims no slot is awaited even at the limit.
+        Assert.Equal($"""
+            - [Discussion #1]({Url(1)}): its turn ended with the controller; 1 inputs waiting
+            - [Discussion #2]({Url(2)}): awaiting native acknowledgement
+            - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
+            - [Discussion #4]({Url(4)}): 2 inputs waiting for dispatch
+            """, Listed(Assert.Single(github.Dashboards).Body));
     }
 
     [Fact]
-    public void Idle_sessions_are_not_listed_and_at_most_20_busy_ones_are_with_only_GitHub_Discussion_links()
+    public async Task Idle_sessions_are_not_listed_and_at_most_20_busy_ones_are_with_only_GitHub_Discussion_links()
     {
-        Assert.Contains("\n### Active and queued sessions\nNone.\n", ControllerDashboard.Render(
-            Snapshot("healthy", 0, new JsonObject { ["discussion"] = First, ["state"] = "idle" }), Start, null, null));
+        Store(("D0", new JsonObject { ["url"] = Url(1), ["sessionId"] = "s0" }));
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+        Assert.Equal("None.", Listed());
 
-        var sessions = Enumerable.Range(1, 22).Select(number => new JsonObject
-        {
-            ["discussion"] = number == 1 ? "javascript:alert(1)" : $"https://github.com/owner/repository/discussions/{number}", ["state"] = "idle", ["waiting"] = 1
-        }).ToArray();
-        var body = ControllerDashboard.Render(Snapshot("healthy", 0, sessions), Start, null, null);
-        var listed = body.Split("### Active and queued sessions\n")[1].Split("\n\n")[0].Split('\n');
+        Store([.. Enumerable.Range(1, 22).Select(number => ($"D{number}", new JsonObject { ["url"] = number == 1 ? "javascript:alert(1)" : Url(number), ["waiting"] = Waiting(1) }))]);
+        clock.Advance(ControllerDashboard.HeartbeatInterval);
+        await clock.Armed();
+        var listed = Listed().Split('\n');
         Assert.Equal(21, listed.Length);
         Assert.Equal("- an unlinked Discussion: 1 inputs waiting for dispatch", listed[0]);
-        Assert.Equal("- [Discussion #20](https://github.com/owner/repository/discussions/20): 1 inputs waiting for dispatch", listed[19]);
+        Assert.Equal($"- [Discussion #20]({Url(20)}): 1 inputs waiting for dispatch", listed[19]);
         Assert.Equal("- and 2 more", listed[20]);
     }
 
-    // A status snapshot as ControllerStatus composes it, with the default active-session limit of 4.
-    static JsonObject Snapshot(string codex, int running, params JsonObject[] sessions) => new()
+    static string Url(int number) => $"https://github.com/owner/repository/discussions/{number}";
+
+    // The dashboard's session list, from the last publication handed to the outbox unless another body is given.
+    string Listed(string? body = null) => (body ?? Published().Body).Split("\n### Active and queued sessions\n")[1].Split("\n\n### Recent failures\n")[0];
+
+    // Discussion records as the bridge keeps them in the state file the status reads.
+    void Store(params (string Id, JsonObject Record)[] records)
     {
-        ["controller"] = new JsonObject { ["state"] = "running", ["mode"] = "webhook-fixed", ["startedAt"] = "2026-10-24T09:00:00.0000000+00:00" },
-        ["authentication"] = new JsonObject { ["state"] = "healthy" },
-        ["codexAuthentication"] = new JsonObject { ["state"] = codex },
-        ["work"] = new JsonObject { ["sessions"] = sessions.Length, ["pending"] = 0, ["waiting"] = 0, ["running"] = running, ["limit"] = 4 },
-        ["sessions"] = new JsonArray([.. sessions]),
-        ["failures"] = new JsonArray()
-    };
+        using var store = new StateStore(statePath, "owner/repository");
+        foreach (var (id, record) in records) store.Discussions[id] = record;
+        store.Save();
+    }
+
+    // Observed input waiting for its session, as the bridge queues it; a failed delivery also schedules its retry there.
+    static JsonObject Waiting(int inputs, JsonObject? retry = null)
+    {
+        var waiting = new JsonObject
+        {
+            ["inputs"] = new JsonArray([.. Enumerable.Range(1, inputs).Select(index => (JsonNode)new JsonObject { ["observedAt"] = Start.ToString("O"), ["change"] = new JsonObject { ["id"] = $"DC_{index}" } })])
+        };
+        if (retry is not null) waiting["retry"] = retry;
+        return waiting;
+    }
+
+    void Limit(int sessions) => new ControllerStateFiles(statePath).WriteSettings(new(new Dictionary<string, SettingValue>
+    {
+        [Bridge.ActiveSessionSetting] = new(SettingState.Configured, sessions.ToString(CultureInfo.InvariantCulture)) { Since = Start }
+    }));
 
     public void Dispose()
     {
