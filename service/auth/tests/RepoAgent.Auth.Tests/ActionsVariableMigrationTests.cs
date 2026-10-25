@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Xunit;
 
 namespace RepoAgent.Auth.Tests;
@@ -14,14 +15,14 @@ public sealed partial class CapacityReclamationTests
     {
         await using var f = await EnrollmentFixture.CreateAsync();
         var github = ActionsVariableEnrollmentTests.Repository.Configure(f);
-        var old = await ActionsVariableEnrollmentTests.Active(f, github, version: 2);
+        var old = await f.ActiveAsync(github, version: 2);
         using (var runtime = await f.Send($"/v1/devices/{old.Device}/installation-token", secret: old.Secret))
             Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
 
         using (var start = await f.Send("/v3/enrollments", ActionsVariableEnrollmentTests.Request()))
         {
             Assert.Equal(HttpStatusCode.OK, start.StatusCode);
-            var pending = await start.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(Token);
+            var pending = await start.Content.ReadFromJsonAsync<JsonElement>(Token);
             github.Actions["REPOAGENT_APPROVAL"] = pending.GetProperty("marker").GetString()!;
             f.Clock.Advance(TimeSpan.FromMinutes(1));
             using var blocked = await f.Send($"/v3/enrollments/{pending.GetProperty("pendingId").GetString()}/completion");
@@ -42,7 +43,7 @@ public sealed partial class CapacityReclamationTests
         await f.RestartAsync();
         await ReclaimPending(f, old.Request.IdempotencyId);
 
-        var replacement = await ActionsVariableEnrollmentTests.Active(f, github);
+        var replacement = await f.ActiveAsync(github);
         Assert.NotEqual(old.Device, replacement.Device);
         using var current = await f.Send($"/v1/devices/{replacement.Device}/installation-token", secret: replacement.Secret);
         Assert.Equal(HttpStatusCode.OK, current.StatusCode);
@@ -60,14 +61,14 @@ public sealed partial class CapacityReclamationTests
     {
         await using var f = await EnrollmentFixture.CreateAsync();
         var github = ActionsVariableEnrollmentTests.Repository.Configure(f);
-        var old = await ActionsVariableEnrollmentTests.Active(f, github);
+        var old = await f.ActiveAsync(github);
         using (var runtime = await f.Send($"/v1/devices/{old.Device}/installation-token", secret: old.Secret))
             Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
 
         using (var start = await f.Send("/v3/enrollments", ActionsVariableEnrollmentTests.Request("polling-settings") with { Variable = "SETTINGS_APPROVAL" }))
         {
             Assert.Equal(HttpStatusCode.OK, start.StatusCode);
-            var pending = await start.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(Token);
+            var pending = await start.Content.ReadFromJsonAsync<JsonElement>(Token);
             github.Actions["SETTINGS_APPROVAL"] = pending.GetProperty("marker").GetString()!;
             f.Clock.Advance(TimeSpan.FromMinutes(1));
             using var blocked = await f.Send($"/v3/enrollments/{pending.GetProperty("pendingId").GetString()}/completion");
@@ -89,7 +90,7 @@ public sealed partial class CapacityReclamationTests
         await f.RestartAsync();
         await ReclaimPending(f, old.Request.IdempotencyId);
 
-        var replacement = await ActionsVariableEnrollmentTests.Active(f, github, profile: "polling-settings");
+        var replacement = await f.ActiveAsync(github, profile: "polling-settings");
         using var current = await f.Send($"/v3/devices/{replacement.Device}/installation-token", secret: replacement.Secret);
         Assert.Equal(HttpStatusCode.OK, current.StatusCode);
         Assert.Equal("read", github.RuntimePermissions[^1]["actions_variables"]);

@@ -1,26 +1,23 @@
 using System.Net;
-using System.Net.Http.Json;
 using System.Text.Json;
 using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-// Public broker HTTP and a real pinned Azurite Table; GitHub is the in-memory fake, whose
-// direct repository Actions and Agent variables are separate so the observed approval
-// location is explicit.
+// The broker's enrollment and issuance over the in-memory broker state; GitHub is the in-memory fake, whose direct
+// repository Actions and Agent variables are separate so the observed approval location is explicit.
 public sealed class ActionsVariableEnrollmentTests
 {
-    private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Fact]
     public async Task Fresh_Actions_variable_approval_completes_private_enrollment_and_observed_removal_closes_runtime()
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var github = Repository.Configure(f);
+        var f = new InMemoryBroker();
+        var github = Repository.Configure(f.GitHub);
 
-        using var start = await f.Send("/v3/enrollments", Request());
+        var start = await f.Start(Request(), 3);
         Assert.Equal(HttpStatusCode.OK, start.StatusCode);
-        var pending = await Json(start);
+        var pending = start.Json;
         var pendingId = pending.GetProperty("pendingId").GetString()!;
         var marker = pending.GetProperty("marker").GetString()!;
         var approval = JsonSerializer.Deserialize<JsonElement>(marker);
@@ -32,15 +29,15 @@ public sealed class ActionsVariableEnrollmentTests
 
         // Before the installer publishes, the fresh challenge is not approved.
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var early = await f.Send($"/v3/enrollments/{pendingId}/completion");
+        var early = await f.Complete(pendingId, 3);
         Assert.Equal(HttpStatusCode.OK, early.StatusCode);
-        Assert.Equal("pending", (await Json(early)).GetProperty("state").GetString());
+        Assert.Equal("pending", early.Json.GetProperty("state").GetString());
 
         github.Actions["REPOAGENT_APPROVAL"] = marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var completion = await f.Send($"/v3/enrollments/{pendingId}/completion");
+        var completion = await f.Complete(pendingId, 3);
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
-        var receipt = await Json(completion);
+        var receipt = completion.Json;
         Assert.True(receipt.TryGetProperty("enrollment", out var enrollment), "Fresh Actions approval did not complete: " + receipt);
         var device = enrollment.GetProperty("deviceId").GetString()!;
         var secret = enrollment.GetProperty("deviceSecret").GetString()!;
@@ -49,14 +46,13 @@ public sealed class ActionsVariableEnrollmentTests
         Assert.DoesNotContain(github.Actions.Values, value => value.Contains(secret, StringComparison.Ordinal));
 
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var ack = await f.Send($"/v3/devices/{device}/acknowledgment", new { completionId = receipt.GetProperty("completionId").GetString() }, secret);
+        var ack = await f.Acknowledge(device, receipt.GetProperty("completionId").GetString()!, secret, 3);
         Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var runtime = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
+        var runtime = await f.Issue(device, secret);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
-        // The route answers the issuer's exact v1 body and never lets a GitHub token be cached.
-        Assert.True(runtime.Headers.CacheControl!.NoStore);
-        Assert.Equal(9, (await Json(runtime)).EnumerateObject().Count());
+        // The issuer's exact v1 body; EnrollmentRouteTests checks the route answers it uncached.
+        Assert.Equal(9, runtime.Json.EnumerateObject().Count());
         Assert.Contains("read variable actions owner/project REPOAGENT_APPROVAL", f.GitHub.Requests);
         Assert.DoesNotContain(f.GitHub.Requests, r => r.Contains(" agents ", StringComparison.Ordinal));
         Assert.Equal(1, github.VerifierMints);
@@ -64,12 +60,11 @@ public sealed class ActionsVariableEnrollmentTests
 
         github.Actions.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var removed = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
+        var removed = await f.Issue(device, secret);
         Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
         github.Actions["REPOAGENT_APPROVAL"] = marker;
-        await f.RestartAsync();
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var restored = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
+                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var restored = await f.Issue(device, secret);
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
 
@@ -80,24 +75,23 @@ public sealed class ActionsVariableEnrollmentTests
     [InlineData(true)]
     public async Task Unrelated_Actions_variables_never_deny_approval_and_removal_still_closes_at_any_count(bool beforeEnrollment)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var github = Repository.Configure(f);
+        var f = new InMemoryBroker();
+        var github = Repository.Configure(f.GitHub);
         void Unrelated() { foreach (var i in Enumerable.Range(0, 100)) github.Actions[$"CI_SETTING_{i:000}"] = "public"; }
         if (beforeEnrollment) Unrelated();
         var active = await Active(f, github);
         if (!beforeEnrollment) Unrelated();
 
-        using var renewed = await f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
+        var renewed = await f.Issue(active.Device, active.Secret);
         Assert.Equal(HttpStatusCode.OK, renewed.StatusCode);
 
         github.Actions.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var removed = await f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
+        var removed = await f.Issue(active.Device, active.Secret);
         Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
         github.Actions["REPOAGENT_APPROVAL"] = active.Marker;
-        await f.RestartAsync();
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var restored = await f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
+                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var restored = await f.Issue(active.Device, active.Secret);
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
 
@@ -111,9 +105,9 @@ public sealed class ActionsVariableEnrollmentTests
     [InlineData(2, "REPOAGENT_MODEL", HttpStatusCode.OK)]
     public async Task Actions_variable_approval_cannot_take_a_repository_settings_name(int setupVersion, string variable, HttpStatusCode expected)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        Repository.Configure(f);
-        using var start = await f.Send($"/v{setupVersion}/enrollments", Request() with { Variable = variable });
+        var f = new InMemoryBroker();
+        Repository.Configure(f.GitHub);
+        var start = await f.Start(Request() with { Variable = variable }, setupVersion);
         Assert.Equal(expected, start.StatusCode);
         if (expected == HttpStatusCode.BadRequest) Assert.Empty(f.GitHub.Requests);
     }
@@ -121,9 +115,9 @@ public sealed class ActionsVariableEnrollmentTests
     [Fact]
     public async Task Public_coordinates_copied_markers_or_the_wrong_variable_location_never_complete_enrollment()
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var github = Repository.Configure(f);
-        var actions = await Start(f, "/v3/enrollments", Request());
+        var f = new InMemoryBroker();
+        var github = Repository.Configure(f.GitHub);
+        var actions = await Start(f, 3, Request());
         // Public renderings an observer could copy: the same binding in the legacy Agent
         // shape, and an earlier enrollment's marker that differs only by its challenge.
         var approval = JsonSerializer.Deserialize<JsonElement>(actions.Marker);
@@ -136,7 +130,7 @@ public sealed class ActionsVariableEnrollmentTests
         // The pending URL and public marker are not possession of the recovery credential.
         github.Actions["REPOAGENT_APPROVAL"] = actions.Marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var stranger = await f.Send($"/v3/enrollments/{actions.Id}/completion", secret: new string('z', 43));
+        var stranger = await f.Complete(actions.Id, 3, new string('z', 43));
         Assert.Equal(HttpStatusCode.Unauthorized, stranger.StatusCode);
         github.Actions.Clear();
 
@@ -149,16 +143,16 @@ public sealed class ActionsVariableEnrollmentTests
             (location == "agent" ? github.Agent : github.Actions)["REPOAGENT_APPROVAL"] = value;
             github.Actions["OTHER_APPROVAL"] = actions.Marker;
             f.Clock.Advance(TimeSpan.FromMinutes(1));
-            await AssertPending(f, $"/v3/enrollments/{actions.Id}/completion");
+            await AssertPending(f, actions.Id);
         }
 
         github.Agent.Clear();
         github.Actions.Clear();
         github.Actions["REPOAGENT_APPROVAL"] = actions.Marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var approved = await f.Send($"/v3/enrollments/{actions.Id}/completion");
+        var approved = await f.Complete(actions.Id, 3);
         Assert.Equal(HttpStatusCode.OK, approved.StatusCode);
-        Assert.True((await Json(approved)).TryGetProperty("enrollment", out _));
+        Assert.True(approved.Json.TryGetProperty("enrollment", out _));
     }
 
     // Which answers prove a change is the core's rule (ApprovalObserverTests); this is the runtime route's outcome.
@@ -168,60 +162,59 @@ public sealed class ActionsVariableEnrollmentTests
     [InlineData("removed", true)]
     public async Task Runtime_reads_live_Actions_approval_and_only_confirmed_change_closes(string observation, bool terminal)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var github = Repository.Configure(f);
+        var f = new InMemoryBroker();
+        var github = Repository.Configure(f.GitHub);
         var active = await Active(f, github);
         if (observation == "denied") f.GitHub.VariableAnswer = _ => new GitHubRead<GitHubVariable>.Refused();
         if (observation == "changed") github.Actions["REPOAGENT_APPROVAL"] = active.Marker.Replace("\"version\":3", "\"version\":2", StringComparison.Ordinal);
         if (observation == "removed") github.Actions.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var observed = await f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
+        var observed = await f.Issue(active.Device, active.Secret);
         Assert.Equal(terminal ? HttpStatusCode.Unauthorized : HttpStatusCode.ServiceUnavailable, observed.StatusCode);
 
         f.GitHub.VariableAnswer = null;
         github.Actions["REPOAGENT_APPROVAL"] = active.Marker;
-        await f.RestartAsync();
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var after = await f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
+                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var after = await f.Issue(active.Device, active.Secret);
         Assert.Equal(terminal ? HttpStatusCode.Unauthorized : HttpStatusCode.OK, after.StatusCode);
     }
 
     [Fact]
     public async Task Legacy_Agent_grant_keeps_its_own_location_and_setup_versions_never_cross()
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var github = Repository.Configure(f);
+        var f = new InMemoryBroker();
+        var github = Repository.Configure(f.GitHub);
         var request = Request() with { Variable = "APPROVAL" };
-        var (pending, marker) = await Start(f, "/v2/enrollments", request);
+        var (pending, marker) = await Start(f, 2, request);
         Assert.Equal(2, JsonSerializer.Deserialize<JsonElement>(marker).GetProperty("version").GetInt32());
         github.Agent["APPROVAL"] = marker;
 
         // A pending Agent setup is never resumed, completed or acknowledged through v3.
         var reads = f.GitHub.Reads;
         var mints = f.GitHub.Mints;
-        using var crossedStart = await f.Send("/v3/enrollments", request);
-        using var crossedStatus = await f.Send($"/v3/enrollments/{pending}", method: HttpMethod.Get);
-        using var crossedCompletion = await f.Send($"/v3/enrollments/{pending}/completion");
+        var crossedStart = await f.Start(request, 3);
+        var crossedStatus = await f.Status(pending, 3);
+        var crossedCompletion = await f.Complete(pending, 3);
         Assert.Equal(HttpStatusCode.Conflict, crossedStart.StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, crossedStatus.StatusCode);
         Assert.Equal(HttpStatusCode.Conflict, crossedCompletion.StatusCode);
         Assert.Equal((reads, mints), (f.GitHub.Reads, f.GitHub.Mints));
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var completion = await f.Send($"/v2/enrollments/{pending}/completion");
+        var completion = await f.Complete(pending, 2);
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
-        var receipt = await Json(completion);
+        var receipt = completion.Json;
         var device = receipt.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
         var secret = receipt.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
-        var completionId = new { completionId = receipt.GetProperty("completionId").GetString() };
+        var completionId = receipt.GetProperty("completionId").GetString()!;
         reads = f.GitHub.Reads;
-        using var crossedAck = await f.Send($"/v3/devices/{device}/acknowledgment", completionId, secret);
+        var crossedAck = await f.Acknowledge(device, completionId, secret, 3);
         Assert.Equal(HttpStatusCode.Conflict, crossedAck.StatusCode);
         Assert.Equal(reads, f.GitHub.Reads);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var ack = await f.Send($"/v2/devices/{device}/acknowledgment", completionId, secret);
+        var ack = await f.Acknowledge(device, completionId, secret, 2);
         Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var runtime = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
+        var runtime = await f.Issue(device, secret);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
         Assert.Equal("agent_variables", github.VerifierPermission);
         Assert.DoesNotContain(f.GitHub.Requests, r => r.Contains(" actions ", StringComparison.Ordinal));
@@ -230,7 +223,7 @@ public sealed class ActionsVariableEnrollmentTests
         github.Actions["APPROVAL"] = marker;
         github.Agent.Remove("APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var moved = await f.Send($"/v1/devices/{device}/installation-token", secret: secret);
+        var moved = await f.Issue(device, secret);
         Assert.Equal(HttpStatusCode.Unauthorized, moved.StatusCode);
         Assert.DoesNotContain(f.GitHub.Requests, r => r.Contains(" actions ", StringComparison.Ordinal));
     }
@@ -240,8 +233,8 @@ public sealed class ActionsVariableEnrollmentTests
     [InlineData("webhook-clone")]
     public async Task Clone_profiles_issue_the_explicit_v3_clone_family_without_widening_runtime_permissions(string profile)
     {
-        await using var f = await EnrollmentFixture.CreateAsync();
-        var github = Repository.Configure(f);
+        var f = new InMemoryBroker();
+        var github = Repository.Configure(f.GitHub);
         var active = await Active(f, github, profile: profile);
         Assert.Equal(2, active.Enrollment.GetProperty("protocolVersion").GetInt32());
         Assert.Equal(profile, active.Enrollment.GetProperty("profile").GetString());
@@ -250,53 +243,49 @@ public sealed class ActionsVariableEnrollmentTests
         Assert.Equal(expected, active.Enrollment.GetProperty("permissions").EnumerateObject().Select(p => p.Name).Order());
 
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var v1 = await f.Send($"/v1/devices/{active.Device}/installation-token", secret: active.Secret);
+        var v1 = await f.Issue(active.Device, active.Secret);
         Assert.Equal(HttpStatusCode.Unauthorized, v1.StatusCode);
-        using var lease = await f.Send($"/v2/devices/{active.Device}/installation-token", secret: active.Secret);
+        var lease = await f.Issue(active.Device, active.Secret, 2);
         Assert.Equal(HttpStatusCode.OK, lease.StatusCode);
-        var body = await Json(lease);
+        var body = lease.Json;
         Assert.Equal("repository-actions-clone-approval-v3", body.GetProperty("policyVersion").GetString());
         Assert.Equal(expected, body.GetProperty("permissions").EnumerateObject().Select(p => p.Name).Order());
     }
 
     internal static RepositoryVariableEnrollmentRequest Request(string profile = "polling") =>
         new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "repoagent_approval", profile);
-    private static Task<JsonElement> Json(HttpResponseMessage response) => response.Content.ReadFromJsonAsync<JsonElement>(Token);
-    private static async Task<(string Id, string Marker)> Start(EnrollmentFixture f, string route, RepositoryVariableEnrollmentRequest request, string? secret = null)
+    private static async Task<(string Id, string Marker)> Start(InMemoryBroker f, int setupVersion, RepositoryVariableEnrollmentRequest request)
     {
-        using var start = await f.Send(route, request, secret);
+        var start = await f.Start(request, setupVersion);
         Assert.Equal(HttpStatusCode.OK, start.StatusCode);
-        var body = await Json(start);
-        return (body.GetProperty("pendingId").GetString()!, body.GetProperty("marker").GetString()!);
+        return (start.Json.GetProperty("pendingId").GetString()!, start.Json.GetProperty("marker").GetString()!);
     }
-    private static async Task AssertPending(EnrollmentFixture f, string completion, string? secret = null)
+    private static async Task AssertPending(InMemoryBroker f, string pending)
     {
-        using var response = await f.Send(completion, secret: secret);
-        var text = await response.Content.ReadAsStringAsync(Token);
+        var response = await f.Complete(pending, 3);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.DoesNotContain("deviceSecret", text);
-        Assert.Equal("pending", JsonSerializer.Deserialize<JsonElement>(text).GetProperty("state").GetString());
+        Assert.DoesNotContain("deviceSecret", response.Text);
+        Assert.Equal("pending", response.Json.GetProperty("state").GetString());
     }
 
     internal sealed record ActiveGrant(RepositoryVariableEnrollmentRequest Request, string Pending, string Marker, string Device, string Secret, string Completion, JsonElement Enrollment);
 
     // Setup v2 uses the legacy Agent location; setup v3 the Actions location. The request
     // variable is preserved so a legacy grant can be compared with copied v3 coordinates.
-    internal static async Task<ActiveGrant> Active(EnrollmentFixture f, Repository github, int version = 3, string profile = "polling")
+    internal static async Task<ActiveGrant> Active(InMemoryBroker f, Repository github, int version = 3, string profile = "polling")
     {
         var request = version == 3 ? Request(profile) : Request(profile) with { Variable = "APPROVAL" };
-        var (pending, marker) = await Start(f, $"/v{version}/enrollments", request);
+        var (pending, marker) = await Start(f, version, request);
         (version == 3 ? github.Actions : github.Agent)[request.Variable.ToUpperInvariant()] = marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var completion = await f.Send($"/v{version}/enrollments/{pending}/completion");
+        var completion = await f.Complete(pending, version);
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
-        var receipt = await Json(completion);
+        var receipt = completion.Json;
         var enrollment = receipt.GetProperty("enrollment");
         var grant = new ActiveGrant(request, pending, marker, enrollment.GetProperty("deviceId").GetString()!,
             enrollment.GetProperty("deviceSecret").GetString()!, receipt.GetProperty("completionId").GetString()!, enrollment);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var ack = await f.Send($"/v{version}/devices/{grant.Device}/acknowledgment", new { completionId = grant.Completion }, grant.Secret);
-        Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(grant.Device, grant.Completion, grant.Secret, version)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         return grant;
     }
@@ -310,10 +299,12 @@ public sealed class ActionsVariableEnrollmentTests
         public string? VerifierPermission;
         public List<Dictionary<string, string>> RuntimePermissions { get; } = [];
 
-        public static Repository Configure(EnrollmentFixture f)
+        public static Repository Configure(EnrollmentFixture f) => Configure(f.GitHub);
+
+        public static Repository Configure(InMemoryGitHub github)
         {
-            var repository = new Repository(f.GitHub);
-            f.GitHub.BeforeMint = mint =>
+            var repository = new Repository(github);
+            github.BeforeMint = mint =>
             {
                 Assert.Equal(InMemoryGitHub.Project.Id, mint.Repository.Id);
                 var permissions = mint.Authority.Permissions;
