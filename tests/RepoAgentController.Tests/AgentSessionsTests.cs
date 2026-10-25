@@ -43,7 +43,7 @@ public sealed class AgentSessionsTests
         // The completion already ended the turn, so the acceptance does not hold the session.
         Assert.Equal((AgentSessionStatus.Idle, 0), (sessions.Status(session), sessions.ActiveTurns));
         var (ended, running) = sessions.TakeTurns();
-        Assert.Equal([new AgentSessions.TurnOutcome("S1", "T1", AgentTurnStatus.Completed, false)], ended);
+        Assert.Equal([new AgentSessions.TurnOutcome("S1", "T1", "completed", false)], ended);
         Assert.Empty(running);
 
         // A response that itself reports the turn ended holds nothing either.
@@ -68,9 +68,9 @@ public sealed class AgentSessionsTests
         Assert.Empty(sessions.TakeTurns().Ended);
         await Assert.ThrowsAsync<InvalidOperationException>(() => Accept(session));
 
-        runtime.Completed(session, "T1", AgentTurnStatus.Interrupted);
+        runtime.Completed(session, "T1", "interrupted");
         Assert.Equal((AgentSessionStatus.Idle, 0), (sessions.Status(session), sessions.ActiveTurns));
-        Assert.Equal([new AgentSessions.TurnOutcome("S1", "T1", AgentTurnStatus.Interrupted, false)], sessions.TakeTurns().Ended);
+        Assert.Equal([new AgentSessions.TurnOutcome("S1", "T1", "interrupted", false)], sessions.TakeTurns().Ended);
         Assert.Equal("T2", await Accept(session));
     }
 
@@ -208,25 +208,25 @@ public sealed class AgentSessionsTests
         await Accept(session);
         order.Clear();
 
-        runtime.Completed(session, "T1", AgentTurnStatus.Failed, "unexpected status 401 Unauthorized");
+        runtime.Completed(session, "T1", "failed", "unexpected status 401 Unauthorized");
 
         // Held once the outcome is visible and before dispatch wakes, so input returned from the rejected turn never follows it.
         const string Rejected = "unexpected status 401 Unauthorized";
         Assert.Equal(["turns []", "outcome held=" + Rejected, "journal completed S1 T1 failed", "wake failure=" + Rejected], order);
         Assert.Equal("codex-auth-failed", log.Entries[^1].Kind);
-        Assert.Equal([new AgentSessions.TurnOutcome("S1", "T1", AgentTurnStatus.Failed, true)], sessions.TakeTurns().Ended);
+        Assert.Equal([new AgentSessions.TurnOutcome("S1", "T1", "failed", true)], sessions.TakeTurns().Ended);
 
         // Another failure, or a rejection reported for a turn that did not fail, is not a credential rejection and changes
         // nothing; a running turn defers the restart.
         await Accept(session);
-        runtime.Completed(session, "T2", AgentTurnStatus.Failed);
+        runtime.Completed(session, "T2", "failed");
         await Accept(session);
-        runtime.Completed(session, "T3", AgentTurnStatus.Interrupted, "unauthorized");
+        runtime.Completed(session, "T3", "interrupted", "unauthorized");
         Assert.Equal(Rejected, sessions.AuthenticationFailure);
         Assert.Equal([false, false], sessions.TakeTurns().Ended.Select(outcome => outcome.CredentialsRejected));
         await Accept(session);
         Assert.False(await sessions.RestartWhenIdle(() => order.Add("prepared"), ct));
-        runtime.Completed(session, "T4", AgentTurnStatus.Failed, "unauthorized");
+        runtime.Completed(session, "T4", "failed", "unauthorized");
         order.Clear();
 
         // Replacement credentials apply at an idle restart: prepared while no process runs, then the journal's new epoch.
@@ -241,7 +241,7 @@ public sealed class AgentSessionsTests
         runtime.Completed(session, "T6");
         Assert.Single(log.Entries, entry => entry == ("codex-auth-verified", "Codex account credentials authenticated a completed turn"));
         await Accept(session);
-        runtime.Completed(session, "T7", AgentTurnStatus.Failed, "unauthorized");
+        runtime.Completed(session, "T7", "failed", "unauthorized");
         Assert.Equal("unauthorized", sessions.AuthenticationFailure);
         await Accept(session);
         runtime.Completed(session, "T8");
@@ -256,6 +256,19 @@ public sealed class AgentSessionsTests
         Assert.Equal(3, log.Entries.Count(entry => entry.Kind == "codex-auth-verified"));
     }
 
+    [Fact]
+    public async Task A_turn_status_pinned_Codex_never_sends_neither_verifies_nor_rejects_the_credentials_and_keeps_its_text()
+    {
+        var session = await sessions.Start(TestContext.Current.CancellationToken);
+        await Accept(session);
+
+        runtime.Completed(session, "T1", "cancelled", "unauthorized");
+
+        Assert.Null(sessions.AuthenticationFailure);
+        Assert.DoesNotContain(log.Entries, entry => entry.Kind.StartsWith("codex-auth-", StringComparison.Ordinal));
+        Assert.Equal([new AgentSessions.TurnOutcome("S1", "T1", "cancelled", false)], sessions.TakeTurns().Ended);
+    }
+
     [Theory]
     [InlineData(false, "Supply fresh credentials with --codex-auth, or renew the native sign-in and restart.")]
     [InlineData(true, "Replace the --codex-auth file; the controller applies it at the next idle boundary.")]
@@ -267,7 +280,7 @@ public sealed class AgentSessionsTests
         var session = await rejected.Start(ct);
         await rejected.Accept(session, """{"changes":[]}""", Selection, null, ct);
 
-        credentialRuntime.Completed(session, "T1", AgentTurnStatus.Failed, "unexpected status 401 Unauthorized");
+        credentialRuntime.Completed(session, "T1", "failed", "unexpected status 401 Unauthorized");
 
         Assert.Equal(("codex-auth-failed", $"session=S1 turn=T1: Codex account credentials were rejected (unexpected status 401 Unauthorized). {remedy} New Discussion input is held until then."),
             log.Entries[^1]);
@@ -281,7 +294,7 @@ public sealed class AgentSessionsTests
         public void Observe(AgentRuntimeEvent change) => order.Add("journal " + change switch
         {
             AgentTurnStarted started => $"started {started.SessionId} {started.TurnId}",
-            AgentTurnCompleted completed => $"completed {completed.SessionId} {completed.TurnId} {completed.Status.Name()}",
+            AgentTurnCompleted completed => $"completed {completed.SessionId} {completed.TurnId} {completed.ReportedStatus}",
             AgentRuntimeDisconnected => "disconnected",
             AgentSessionStatusChanged report => $"status {report.SessionId} {report.Status}",
             _ => change.ToString()

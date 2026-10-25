@@ -52,8 +52,8 @@ public sealed class AgentSessions
     /// </summary>
     public event Action<string[]>? TurnsChanged;
 
-    /// <summary>A turn the native reported completed with its status, and whether the provider rejected the Codex account credentials for it.</summary>
-    public sealed record TurnOutcome(string Session, string Turn, AgentTurnStatus Status, bool CredentialsRejected);
+    /// <summary>A turn the native reported completed with its status as reported, and whether the provider rejected the Codex account credentials for it.</summary>
+    public sealed record TurnOutcome(string Session, string Turn, string Status, bool CredentialsRejected);
 
     public AgentSessions(IAgentRuntime runtime, IControllerLog log, IAgentTurnJournal? journal = null, CancellationToken credentialLost = default,
         bool suppliedCredentials = false)
@@ -90,7 +90,7 @@ public sealed class AgentSessions
                         var rejection = completed.Status == AgentTurnStatus.Failed ? completed.CredentialRejection : null;
                         if (rejection is not null) authenticationFailure = rejection;
                         if (ended.Count >= 256) ended.RemoveAt(0);
-                        ended.Add(new(id, turn, completed.Status, rejection is not null));
+                        ended.Add(new(id, turn, completed.ReportedStatus, rejection is not null));
                         changed = true;
                         break;
                 }

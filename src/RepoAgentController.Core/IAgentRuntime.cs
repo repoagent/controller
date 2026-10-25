@@ -3,23 +3,8 @@ namespace RepoAgentController;
 /// <summary>A session's runtime status as its runtime process reports it; see <see cref="AgentSessions.Admits"/>. The names appear in logs.</summary>
 public enum AgentSessionStatus { Unknown, NotLoaded, Idle, Active, SystemError }
 
-/// <summary>How an ended turn finished, as its runtime reports it. <see cref="Unknown"/> covers a missing or unrecognized status.</summary>
+/// <summary>How an ended turn finished. <see cref="Unknown"/> covers a missing status and any status pinned Codex does not send.</summary>
 public enum AgentTurnStatus { Unknown, Completed, Interrupted, Failed }
-
-public static class AgentTurnStatuses
-{
-    /// <summary>The status's name in the turn-ended log line, as pinned Codex names it; empty when unknown.</summary>
-    public static string Name(this AgentTurnStatus status) => status switch
-    {
-        AgentTurnStatus.Completed => "completed",
-        AgentTurnStatus.Interrupted => "interrupted",
-        AgentTurnStatus.Failed => "failed",
-        _ => ""
-    };
-
-    /// <summary>The status with this <see cref="Name"/>, or <see cref="AgentTurnStatus.Unknown"/> for any other text.</summary>
-    public static AgentTurnStatus Parse(string? name) => Enum.GetValues<AgentTurnStatus>().FirstOrDefault(status => status.Name() == name);
-}
 
 /// <summary>
 /// The agent runtime (ADR 0010): the process the controller owns to host agent sessions and run agent turns, currently
@@ -79,11 +64,20 @@ public sealed record AgentSessionStatusChanged(int Epoch, string SessionId, Agen
 public sealed record AgentTurnStarted(int Epoch, string SessionId, string? TurnId) : AgentRuntimeEvent(Epoch);
 
 /// <summary>
-/// The runtime reported a turn ended, with its runtime status. A session ID the report lacked is empty and a turn ID null.
-/// <paramref name="CredentialRejection"/> is the provider's message when the report says it rejected the agent account's
-/// credentials; <see cref="AgentSessions"/> decides whether that counts.
+/// The runtime reported a turn ended, with its status as the runtime sent it, empty when it sent none. A session ID the report
+/// lacked is empty and a turn ID null. <paramref name="CredentialRejection"/> is the provider's message when the report says it
+/// rejected the agent account's credentials; <see cref="AgentSessions"/> decides whether that counts.
 /// </summary>
-public sealed record AgentTurnCompleted(int Epoch, string SessionId, string? TurnId, AgentTurnStatus Status, string? CredentialRejection) : AgentRuntimeEvent(Epoch);
+public sealed record AgentTurnCompleted(int Epoch, string SessionId, string? TurnId, string ReportedStatus, string? CredentialRejection) : AgentRuntimeEvent(Epoch)
+{
+    /// <summary>What the reported status means, by pinned Codex's names. Logs keep the reported text, so a status a later agent
+    /// tool sends stays visible there.</summary>
+    public AgentTurnStatus Status => ReportedStatus switch
+    {
+        "completed" => AgentTurnStatus.Completed, "interrupted" => AgentTurnStatus.Interrupted, "failed" => AgentTurnStatus.Failed,
+        _ => AgentTurnStatus.Unknown
+    };
+}
 
 /// <summary>The runtime process stopped answering; its sessions and turns are gone.</summary>
 public sealed record AgentRuntimeDisconnected(int Epoch) : AgentRuntimeEvent(Epoch);

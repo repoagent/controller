@@ -116,15 +116,14 @@ public sealed class BridgeAdmissionTests
     [InlineData("interrupted", "interrupted")]
     [InlineData("failed", "failed")]
     [InlineData("", "")] // Reported without a status.
-    [InlineData(null, "")]
-    [InlineData("cancelled", "")] // A status pinned Codex never sends.
-    public async Task An_ended_turn_is_logged_with_the_status_its_runtime_reported(string? reported, string logged)
+    [InlineData("cancelled", "cancelled")] // Pinned Codex never sends it; a later agent tool might.
+    public async Task An_ended_turn_is_logged_with_the_status_its_runtime_reported(string reported, string logged)
     {
         await using var world = Mentioned(1);
         await world.Begin();
         await world.Poll();
         world.Runtime.Report("S1", AgentSessionStatus.Idle);
-        world.Runtime.Completed("S1", "T1", AgentTurnStatuses.Parse(reported));
+        world.Runtime.Completed("S1", "T1", reported);
 
         await world.Dispatch();
 

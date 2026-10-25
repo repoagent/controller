@@ -376,7 +376,7 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
 
     public void Report(string session, AgentSessionStatus status) => Changed?.Invoke(new AgentSessionStatusChanged(Epoch, session, status));
     public void Started(string session, string turn) => Changed?.Invoke(new AgentTurnStarted(Epoch, session, turn));
-    public void Completed(string session, string turn, AgentTurnStatus status = AgentTurnStatus.Completed, string? rejection = null, int? epoch = null) =>
+    public void Completed(string session, string turn, string status = "completed", string? rejection = null, int? epoch = null) =>
         Changed?.Invoke(new AgentTurnCompleted(epoch ?? Epoch, session, turn, status, rejection));
     public void Disconnect() => Changed?.Invoke(new AgentRuntimeDisconnected(Epoch));
 }
