@@ -31,6 +31,34 @@ internal sealed class TableBrokerState(TableClient table) : IBrokerState
         catch (Exception ex) when (FromTable(ex, ct)) { throw new BrokerStateUnavailable("The broker table did not confirm a transaction.", ex); }
     }
 
+    // The Table query cleanup has always made: the range and `after` as a RowKey filter in one partition, at most 32 rows
+    // a page, resuming from the stored continuation. A page that breaks those bounds proves nothing and is unavailable.
+    public async Task<StatePage<T>> ListAsync<T>(StateRange<T> range, string after, string? continuation, CancellationToken ct)
+        where T : BrokerRecord, new()
+    {
+        Page<TableEntity>? page;
+        try
+        {
+            var filter = TableClient.CreateQueryFilter(
+                $"PartitionKey eq {range.Scope} and RowKey ge {range.From} and RowKey lt {range.To} and RowKey gt {after}");
+            await using var pages = table.QueryAsync<TableEntity>(filter, maxPerPage: 32, cancellationToken: ct)
+                .AsPages(continuation, pageSizeHint: 32).GetAsyncEnumerator(ct);
+            page = await pages.MoveNextAsync() ? pages.Current : null;
+            if (page is not null && (page.Values.Count > 32 || page.ContinuationToken is { Length: > 8192 }))
+                throw new InvalidDataException("Invalid durable page.");
+            foreach (var row in page?.Values ?? [])
+            {
+                BrokerTable.Validate(row);
+                if (row.ETag == ETag.All || string.IsNullOrEmpty(row.ETag.ToString()) || row.PartitionKey != range.Scope
+                    || string.CompareOrdinal(row.RowKey, range.From) < 0 || string.CompareOrdinal(row.RowKey, range.To) >= 0
+                    || string.CompareOrdinal(row.RowKey, after) <= 0) throw new InvalidDataException("Invalid durable page.");
+            }
+        }
+        catch (Exception ex) when (FromTable(ex, ct)) { throw new BrokerStateUnavailable("The broker table did not answer a listing.", ex); }
+        return page is null ? new([], null) : new([.. page.Values.Select(row =>
+            new ListedRecord<T>(new(row.PartitionKey, row.RowKey), Properties(row), new(row.ETag.ToString())))], page.ContinuationToken);
+    }
+
     private static TableTransactionAction Action(StateWrite write)
     {
         var entity = new TableEntity(write.Key.Scope, write.Key.Name);
