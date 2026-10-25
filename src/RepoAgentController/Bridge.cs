@@ -155,10 +155,11 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                     // Discussion state can change independently of its original author.
                     else if (sourceId == id && !bootstrap && (old is null || old.State != version.State || old.ReadAsChanged.Any(part => part != CheckpointPart.Content))) Add("discussion.stateChanged", state);
                     var oldReactions = old?.Reactions ?? [];
+                    var (oldIds, newIds) = (oldReactions.Select(reaction => reaction.Id).ToHashSet(), version.Reactions.Select(reaction => reaction.Id).ToHashSet());
                     foreach (var reaction in version.Reactions)
-                        if (!oldReactions.Any(other => other.Id == reaction.Id)) Add("reaction.added", reaction: DiscussionJson.Public(reaction));
+                        if (!oldIds.Contains(reaction.Id)) Add("reaction.added", reaction: DiscussionJson.Public(reaction));
                     foreach (var reaction in oldReactions)
-                        if (!version.Reactions.Any(other => other.Id == reaction.Id)) Add("reaction.removed", reaction: DiscussionJson.Public(reaction));
+                        if (!newIds.Contains(reaction.Id)) Add("reaction.removed", reaction: DiscussionJson.Public(reaction));
                 }
                 // Sources returned every page, so a checkpointed comment it lacks is confirmed deleted; a failed or partial
                 // read throws above and leaves the checkpoint alone. A deletion carries identity, attribution and routing

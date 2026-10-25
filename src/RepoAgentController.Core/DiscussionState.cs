@@ -123,7 +123,7 @@ public sealed record SourceCheckpoint(CheckpointContent Content, CheckpointState
 
     /// <summary>The same content, state, reactions in any order, and thread root, neither kept as read.</summary>
     public bool Equals(SourceCheckpoint? other) => other is not null && AsRead == other.AsRead && Content == other.Content &&
-        State == other.State && ReplyTo == other.ReplyTo && Reactions.Count == other.Reactions.Count && Reactions.All(other.Reactions.Contains);
+        State == other.State && ReplyTo == other.ReplyTo && Reactions.Count == other.Reactions.Count && new HashSet<Reaction>(Reactions).SetEquals(other.Reactions);
 
     public override int GetHashCode() => HashCode.Combine(AsRead, Content, State, ReplyTo, Reactions.Count);
 }
