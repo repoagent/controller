@@ -349,11 +349,12 @@ sealed class InMemoryControllerState : IControllerState
         {
             var waiting = record.Waiting is { } held ? new WaitingInput(held.DiscussionJson) { ContextJson = held.ContextJson, Retry = held.Retry, Unknown = held.Unknown } : null;
             waiting?.Inputs.AddRange(record.Waiting!.Inputs);
-            copy.Discussions[id] = new(record.Url)
+            var kept = copy.Discussions[id] = new(record.Url)
             {
                 Sources = new(record.Sources), Labels = record.Labels, SessionId = record.SessionId, Waiting = waiting, Pending = record.Pending,
                 Running = record.Running, Unknown = record.Unknown, Unreadable = record.Unreadable
             };
+            foreach (var (name, value) in record.UnreadableKeys) kept.UnreadableKeys[name] = value;
         }
         return copy;
     }

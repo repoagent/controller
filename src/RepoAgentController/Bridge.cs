@@ -39,10 +39,11 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     /// <summary>Retries every delivery an earlier controller lifetime left unacknowledged. Call once, before observing.</summary>
     public void ResumeInterrupted()
     {
-        // Turns end with the native process of their lifetime.
-        foreach (var record in store.Discussions.Values.Where(record => record.Running is not null).ToArray())
+        // Turns end with the native process of their lifetime, however their marker was left.
+        foreach (var record in store.Discussions.Values.Where(record => record.Running is not null || record.UnreadableKeys.ContainsKey("running")).ToArray())
         {
             record.Running = null;
+            record.UnreadableKeys.Remove("running");
             store.Save();
         }
         foreach (var record in store.Discussions.Values.Where(record => record.Pending is not null).ToArray())
@@ -99,7 +100,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             try
             {
                 // Left as read, reporting why it could not be read, as observing it failed before the records were typed.
-                if (record?.Unreadable is { } unreadable) throw new InvalidDataException(unreadable.Reason);
+                if (record?.Problem is { } problem) throw new InvalidDataException(problem);
                 // Read every page, including reactions to agent-authored messages.
                 var conversation = await discussions.Read(discussion, ct);
                 var sources = conversation.Messages;
@@ -134,7 +135,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                     var old = previous.GetValueOrDefault(sourceId);
                     // The Discussion ID travels once per dispatched batch; each change keeps its own thread root.
                     var target = new JsonObject { ["replyToId"] = sourceId == id ? null : (source as DiscussionComment)?.ReplyToId ?? sourceId };
-                    var state = Changed(old?.State, version.State);
+                    var state = Changed(old?.State, version.State, old?.ReadAsChanged ?? []);
                     void Add(string kind, JsonObject? content = null, JsonNode? reaction = null)
                     {
                         var subject = DiscussionJson.Subject(source);
@@ -144,7 +145,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                         changes.Add(change);
                         receipts.Add(sourceId);
                     }
-                    if (!identity.IsAgentActor(source.Author) && old?.Content != version.Content)
+                    if (!identity.IsAgentActor(source.Author) && (old?.Content != version.Content || old.ReadAsChanged.Contains("content")))
                     {
                         var content = new JsonObject { ["body"] = source.Body };
                         foreach (var field in state) content[field.Key] = field.Value?.Copy();
@@ -152,7 +153,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                             snapshot && old is null && (sourceId == id || inContext.Contains(sourceId)) ? null : content);
                     }
                     // Discussion state can change independently of its original author.
-                    else if (sourceId == id && !bootstrap && old?.State != version.State) Add("discussion.stateChanged", state);
+                    else if (sourceId == id && !bootstrap && (old is null || old.State != version.State || old.ReadAsChanged.Any(key => key != "content"))) Add("discussion.stateChanged", state);
                     var oldReactions = old?.Reactions ?? [];
                     foreach (var reaction in version.Reactions)
                         if (!oldReactions.Any(other => other.Id == reaction.Id)) Add("reaction.added", reaction: DiscussionJson.Public(reaction));
@@ -263,8 +264,9 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
         try
         {
             Settle();
-            var ready = store.Discussions.Values.Where(record => record.Waiting is not null && record.Pending is null)
-                .OrderBy(record => record.Waiting!.Inputs[0].ObservedAt).ToArray();
+            // Unreadable waiting input fails its delivery below, as reading it for delivery did before the records were typed.
+            var ready = store.Discussions.Values.Where(record => (record.Waiting is not null || record.UnreadableKeys.ContainsKey("waiting")) && record.Pending is null)
+                .OrderBy(record => record.Waiting?.Inputs[0].ObservedAt ?? DateTimeOffset.MinValue).ToArray();
             foreach (var record in ready)
             {
                 try { await Dispatch(record, ct); }
@@ -310,7 +312,8 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
             return;
         }
         Report("label-read-error", record.Url, null);
-        if (record.Labels is null ? labels.Length == 0 : labels.Length != 0 && record.Labels.SequenceEqual(labels)) return;
+        // Labels in a form no writer leaves never equal those observed, as their JSON compared before the records were typed.
+        if (!record.UnreadableKeys.Remove("labels") && (record.Labels is null ? labels.Length == 0 : labels.Length != 0 && record.Labels.SequenceEqual(labels))) return;
         record.Labels = labels.Length == 0 ? null : labels;
         store.Save();
     }
@@ -321,6 +324,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     {
         var discussion = DiscussionJson.Public(conversation.Discussion).ToJsonString();
         var waiting = record.Waiting ?? new WaitingInput(discussion);
+        record.UnreadableKeys.Remove("waiting");
         waiting.DiscussionJson = discussion;
         // Bootstrap context travels with the first batch delivered to the session.
         if (context is not null) waiting.ContextJson = context.ToJsonString();
@@ -337,6 +341,8 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     // Caller holds the gate. Returns whether a batch was accepted; its EYES receipts are then retained in the outbox.
     async Task<bool> Dispatch(DiscussionRecord record, CancellationToken ct)
     {
+        // Its waiting input, session ID, and URL for the reports below, threw when read for delivery before the records were typed.
+        if (record.UnreadableKeys.FirstOrDefault(key => key.Key is "waiting" or "sessionId" or "url").Value is { } unreadable) throw new InvalidDataException(unreadable.Reason);
         var waiting = record.Waiting!;
         var session = record.SessionId ?? "";
         var create = session.Length == 0;
@@ -511,6 +517,8 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
     // Caller holds the gate. The validated selection for the Discussion's next turn, or null after reporting why its input waits.
     async Task<ModelChoice?> Select(DiscussionRecord record, CancellationToken ct)
     {
+        // Labels in a form no writer leaves threw when read for selection before the records were typed.
+        if (record.UnreadableKeys.GetValueOrDefault("labels") is { } unreadable) throw new InvalidDataException(unreadable.Reason);
         var labels = record.Labels ?? [];
         var (nativeModel, nativeReasoning) = await sessions.ConfiguredModel(ct);
         var catalogue = await sessions.Models(ct);
@@ -586,15 +594,15 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
 
     // The checkpointed state fields whose values differ, with their current values, in checkpoint order. A field with no
     // earlier value differs unless it is null now.
-    static JsonObject Changed(CheckpointState? before, CheckpointState? after)
+    static JsonObject Changed(CheckpointState? before, CheckpointState? after, IReadOnlyList<string> readAsChanged)
     {
         var changed = new JsonObject();
         if (after is null) return changed;
-        if (before?.Title != after.Title) changed["title"] = after.Title;
-        if (before?.Closed != after.Closed) changed["closed"] = after.Closed;
-        if (before?.Locked != after.Locked) changed["locked"] = after.Locked;
-        if (before?.AnswerId != after.AnswerId) changed["answer"] = DiscussionJson.Answer(after.AnswerId);
-        if (before?.Category != after.Category) changed["category"] = DiscussionJson.Category(after.Category);
+        if (before?.Title != after.Title || readAsChanged.Contains("title")) changed["title"] = after.Title;
+        if (before?.Closed != after.Closed || readAsChanged.Contains("closed")) changed["closed"] = after.Closed;
+        if (before?.Locked != after.Locked || readAsChanged.Contains("locked")) changed["locked"] = after.Locked;
+        if (before?.AnswerId != after.AnswerId || readAsChanged.Contains("answer")) changed["answer"] = DiscussionJson.Answer(after.AnswerId);
+        if (before?.Category != after.Category || readAsChanged.Contains("category")) changed["category"] = DiscussionJson.Category(after.Category);
         return changed;
     }
 

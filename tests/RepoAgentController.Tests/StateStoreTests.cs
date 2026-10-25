@@ -94,6 +94,21 @@ public sealed class StateStoreTests : IDisposable
         Assert.Equal("""{"Agents":"2026-10-24T08:00:00Z","Q\u0026A":7}""", JsonNode.Parse(File.ReadAllText(State))!["enrollmentCategories"]!.ToJsonString());
     }
 
+    [Fact]
+    public void A_record_holds_a_session_or_a_pending_delivery_where_its_keys_say_so_even_when_they_are_not_in_a_form_a_writer_leaves()
+    {
+        Assert.Null(Open("""
+            {"version":1,"repository":"owner/repository","discussions":{
+              "D1":{"url":"u1","sources":{},"sessionId":"S1"},"D2":{"url":"u2","sources":{},"sessionId":""},"D3":{"url":"u3","sources":{},"sessionId":4},
+              "D4":{"url":"u4","sources":{},"pending":{"operation":"send","since":"2026-10-25T09:00:00.0000000+00:00","sourceIds":[]}},
+              "D5":{"url":"u5","sources":{},"pending":{"operation":5}},"D6":{"url":"u6","sources":{}},"D7":7}}
+            """));
+
+        using var store = new StateStore(State, Repository);
+        Assert.Equal(["D1", "D3", "D7"], store.Discussions.Where(entry => entry.Value.HoldsSession).Select(entry => entry.Key));
+        Assert.Equal(["D4", "D5", "D7"], store.Discussions.Where(entry => entry.Value.HoldsPending).Select(entry => entry.Key));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(directory)) Directory.Delete(directory, true);

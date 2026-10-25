@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace RepoAgentController.Tests;
@@ -237,21 +238,44 @@ public sealed class BridgeEnrollmentTests
         Assert.Equal(["S1", "S2", "S2"], world.Turns.Select(turn => turn.SessionId));
     }
 
-    [Fact]
-    public async Task A_Discussion_record_in_a_form_no_writer_leaves_is_kept_as_it_was_and_its_Discussion_is_not_enrolled_again()
+    // Discussion 1 has a session that took its first input and is idle, or with waiting input while that turn ran; a hand edit
+    // then changes its record at this dotted path: the JSON text replaces the value there, or null removes it.
+    static async Task Damage(BridgeWorld world, string path, string? json, bool waiting = false)
     {
-        await using var world = new BridgeWorld();
         world.GitHub.Open(1, Mention);
+        world.GitHub.React(1, "D1", "R1", "HEART", "octocat");
         world.GitHub.Open(2, Mention);
         await world.Begin();
         Assert.True(await world.Poll());
-        world.Finish(1);
-        await world.Dispatch();
+        if (waiting)
+        {
+            world.GitHub.Comment(1, "C0", "Queued while the turn runs.");
+            Assert.True(await world.Poll());
+        }
+        else
+        {
+            world.Finish(1);
+            await world.Dispatch();
+        }
         await world.End();
-        // A hand edit leaves a session ID that is not text.
-        var state = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(world.StatePath))!;
-        state["discussions"]!["D1"]!["sessionId"] = 4;
-        File.WriteAllText(world.StatePath, state.ToJsonString());
+        var state = JsonNode.Parse(File.ReadAllText(world.StatePath))!;
+        var keys = path.Split('.');
+        var parent = keys[..^1].Aggregate(state["discussions"]!["D1"]!, (node, key) => node is JsonArray array ? array[int.Parse(key)]! : node[key]!);
+        if (json is null) parent.AsObject().Remove(keys[^1]);
+        else if (parent is JsonArray array) array[int.Parse(keys[^1])] = "\u0001"; // Replaced as text, so the edit can repeat a key.
+        else parent[keys[^1]] = "\u0001";
+        File.WriteAllText(world.StatePath, state.ToJsonString().Replace("\"\\u0001\"", json));
+    }
+
+    [Theory]
+    [InlineData("sessionId", "4")]
+    [InlineData("url", "5")]
+    [InlineData("sources", "5")]
+    [InlineData("sources.D1", """{"content":{"body":"one"},"content":{"body":"two"},"state":{},"reactions":{}}""")]
+    public async Task A_Discussion_record_that_observation_cannot_read_is_kept_as_it_was_and_only_its_Discussion_fails_observation(string path, string json)
+    {
+        await using var world = new BridgeWorld();
+        await Damage(world, path, json);
         var damaged = world.Record(1)!.ToJsonString();
 
         world.GitHub.Comment(1, "C1", "More context, please.");
@@ -263,7 +287,41 @@ public sealed class BridgeEnrollmentTests
 
         // Never observed as new: no session starts for it and its input is not sent again; the other Discussion continues.
         Assert.Equal(["S1", "S2", "S2"], world.Turns.Select(turn => turn.SessionId));
-        Assert.Equal(BridgeWorld.Url(1) + ": An element of type 'Number' cannot be converted to a 'System.String'.", Assert.Single(world.Logged("observation-error")));
+        Assert.StartsWith(BridgeWorld.Url(1) + ": ", Assert.Single(world.Logged("observation-error")));
         Assert.Equal(damaged, world.Record(1)!.ToJsonString());
+    }
+
+    [Theory]
+    [InlineData("labels", "[4]", "comment.created")]
+    [InlineData("running", """{"turn":5}""", "comment.created")]
+    [InlineData("pending", """{"operation":5}""", "comment.created")]
+    [InlineData("url", null, "comment.created")]
+    [InlineData("sources.D1", "null", "discussion.created,reaction.added,comment.created")]
+    [InlineData("sources.D1.content.body", "5", "discussion.changed,comment.created")]
+    [InlineData("sources.D1.state", null, "discussion.stateChanged,comment.created")]
+    [InlineData("sources.D1.reactions", null, "reaction.added,comment.created")]
+    [InlineData("waiting", "5", "comment.created", true)] // Replaced by what observation found, as it was.
+    [InlineData("waiting.discussion", "5", "comment.created,comment.created", true)]
+    [InlineData("waiting.context", "5", "comment.created,comment.created", true)]
+    [InlineData("waiting.inputs.0.observedAt", "5", "comment.created,comment.created", true)]
+    [InlineData("waiting.retry", """{"attempts":"x"}""", "comment.created,comment.created", true)]
+    public async Task A_Discussion_record_key_that_observation_replaces_or_a_start_ends_is_replaced_and_its_Discussion_continues(string path, string? json, string kinds,
+        bool waiting = false)
+    {
+        await using var world = new BridgeWorld();
+        await Damage(world, path, json, waiting);
+
+        world.GitHub.Comment(1, "C1", "More context, please.");
+        await world.Begin();
+        // Turns and deliveries end with their lifetime, so status reports neither.
+        Assert.Null(world.Record(1)!["running"]);
+        Assert.Null(world.Record(1)!["pending"]);
+        Assert.True(await world.Poll());
+
+        Assert.Empty(world.Logged("observation-error"));
+        Assert.Equal("S1", world.Turns[^1].SessionId);
+        Assert.Equal(kinds.Split(','), world.Envelope(world.Turns.Count - 1)["changes"]!.AsArray().Select(change => change!["kind"]!.GetValue<string>()));
+        if (json is not null && path.Split('.').Aggregate((JsonNode?)world.Record(1), (node, key) => node is JsonArray ? null : node?[key]) is { } value)
+            Assert.NotEqual(json, value.ToJsonString());
     }
 }

@@ -1,5 +1,3 @@
-using System.Text.Json.Nodes;
-
 namespace RepoAgentController;
 
 /// <summary>The controller's Discussion state, held in memory by the one controller that leases its state file, and saved whole.</summary>
@@ -60,10 +58,6 @@ sealed class StateStore : IDisposable
     }
 
     public void Save() => files.WriteDiscussions(State);
-
-    /// <summary>Whether <paramref name="record"/> holds a value under <paramref name="key"/> in its JSON, when it is unreadable.</summary>
-    public static bool Holds(DiscussionRecord record, string key) =>
-        record.Unreadable is { } unreadable && JsonNode.Parse(unreadable.Json) is JsonObject item && item[key] is { } value && value.OptionalText() is not "";
 
     public void Dispose() => lease?.Dispose();
 }
