@@ -89,7 +89,7 @@ sealed class BridgeWorld : IAsyncDisposable
         PrepareRuntime?.Invoke(runtime);
         while (answers.TryDequeue(out var answer)) runtime.Answer(answer);
         var lease = Files ? new LeasedStateStore(StatePath, Repository) : null;
-        var current = new Lifetime(stop, lease, lease?.Store ?? new StateStore(State, Repository), new ControllerStatus(StatePath, Repository, "polling", Clock),
+        var current = new Lifetime(stop, lease, lease?.Store ?? new StateStore(State, Repository), StatusFiles.Open(StatePath, Repository, "polling", Clock),
             new RepositorySettings(RepositorySettingsCatalogue.Settings, RepositorySettings ? Variables : null, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             new GitHubOutbox(Repository, GitHub, InMemoryDiscussions.App, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             runtime, new AgentSessions(runtime, new ControllerLog()));
@@ -215,7 +215,7 @@ sealed class BridgeWorld : IAsyncDisposable
     public JsonObject Status()
     {
         Mirror();
-        return lifetime?.Status.Snapshot() ?? ControllerStatus.Read(StatePath, Clock)!;
+        return OperatorStatusJson.Render(lifetime?.Status.Snapshot() ?? StatusFiles.Read(StatePath, Clock)!);
     }
 
     // ControllerStatus reads the state file until it moves to the core, so without Files the last save is written there as the

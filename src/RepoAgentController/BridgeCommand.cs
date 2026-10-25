@@ -56,8 +56,8 @@ public static class BridgeCommand
         statusCommand.SetAction(result =>
         {
             var path = result.GetValue(statusState)!.FullName;
-            if (ControllerStatus.Read(path, time) is not { } snapshot) { Console.Error.WriteLine($"No controller state or status at {path}"); return 1; }
-            Console.WriteLine(ControllerStatus.Render(snapshot));
+            if (StatusFiles.Read(path, time) is not { } snapshot) { Console.Error.WriteLine($"No controller state or status at {path}"); return 1; }
+            Console.WriteLine(OperatorStatusJson.Text(snapshot));
             return 0;
         });
         root.Subcommands.Add(statusCommand);
@@ -110,7 +110,7 @@ public static class BridgeCommand
                 var store = leased.Store;
                 // Only the lease holder retains logs and records status for this state.
                 using var retained = new RetainedLog(RetainedLog.DirectoryFor(statePath), result.GetValue(logFileBytes), result.GetValue(logFiles));
-                using var status = new ControllerStatus(statePath, repo, result.GetValue(checkAuth) ? "check-auth" : result.GetValue(disableWebhook) ? "disable-webhook" :
+                using var status = StatusFiles.Open(statePath, repo, result.GetValue(checkAuth) ? "check-auth" : result.GetValue(disableWebhook) ? "disable-webhook" :
                     publicUrl is not null ? "webhook" : "polling", time);
                 using var observation = Log.Observe(entry => { retained.Append(entry); status.Record(entry); });
                 try

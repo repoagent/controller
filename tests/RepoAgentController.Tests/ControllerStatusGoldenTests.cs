@@ -64,7 +64,7 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         var golden = Golden();
         var actual = new Dictionary<string, string>();
 
-        var first = new ControllerStatus(State, Repository, "polling", clock);
+        var first = StatusFiles.Open(State, Repository, "polling", clock);
         Log(first, 1, "ready", "repository=owner/repository actor=test-app[bot] mode=polling");
         Log(first, 2, "app-token-refreshed", "installation=7");
         Log(first, 3, "codex-auth-supplied", "account credentials installed");
@@ -75,26 +75,26 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         Log(first, 8, "discovered", Url + "5");
         first.Running(["S9", "S4"]); // S9's Discussion record is forgotten while its turn runs.
         clock.Advance(TimeSpan.FromSeconds(10));
-        actual["live"] = ControllerStatus.Render(first.Snapshot());
-        Assert.Equal(actual["live"], ControllerStatus.Render(ControllerStatus.Read(State, clock)!)); // As status reads it from the files.
+        actual["live"] = OperatorStatusJson.Text(first.Snapshot());
+        Assert.Equal(actual["live"], OperatorStatusJson.Text(StatusFiles.Read(State, clock)!)); // As status reads it from the files.
         clock.Advance(TimeSpan.FromSeconds(10));
         first.Dispose();
-        actual["record"] = File.ReadAllText(ControllerStatus.PathFor(State));
+        actual["record"] = File.ReadAllText(StatusFiles.PathFor(State));
         if (!OperatingSystem.IsWindows()) // The record holds failure messages; only its owner reads it.
-            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(ControllerStatus.PathFor(State)));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(StatusFiles.PathFor(State)));
         clock.Advance(TimeSpan.FromSeconds(10));
-        actual["stopped"] = ControllerStatus.Render(ControllerStatus.Read(State, clock)!);
+        actual["stopped"] = OperatorStatusJson.Text(StatusFiles.Read(State, clock)!);
 
-        var second = new ControllerStatus(State, Repository, "webhook", clock);
+        var second = StatusFiles.Open(State, Repository, "webhook", clock);
         clock.Advance(TimeSpan.FromSeconds(10));
         Log(second, 40, "app-refresh-error", "GitHub App installation token refresh failed: HTTP 401");
         clock.Advance(TimeSpan.FromSeconds(1));
         Log(second, 41, "codex-auth-failed", "turn failed: unexpected status 401 Unauthorized");
         clock.Advance(TimeSpan.FromSeconds(1));
         Log(second, 42, "fatal", "GitHub App installation token refresh failed: HTTP 401");
-        actual["restarted"] = ControllerStatus.Render(second.Snapshot());
+        actual["restarted"] = OperatorStatusJson.Text(second.Snapshot());
         second.Dispose();
-        actual["failed"] = File.ReadAllText(ControllerStatus.PathFor(State));
+        actual["failed"] = File.ReadAllText(StatusFiles.PathFor(State));
 
         Assert.Equal(golden.Keys, actual.Keys);
         foreach (var (name, text) in golden) Assert.Equal(text, actual[name]);
@@ -104,16 +104,16 @@ public sealed class ControllerStatusGoldenTests : IDisposable
     public void A_status_record_that_cannot_be_written_is_reported_on_stdout_at_the_clock_time_and_the_lifetime_continues()
     {
         WriteFiles();
-        Directory.CreateDirectory(ControllerStatus.PathFor(State) + ".tmp"); // The record's temporary file cannot be created.
+        Directory.CreateDirectory(StatusFiles.PathFor(State) + ".tmp"); // The record's temporary file cannot be created.
         var previous = Console.Out;
         var stdout = new StringWriter();
         Console.SetOut(TextWriter.Synchronized(stdout));
         string state;
         try
         {
-            using var status = new ControllerStatus(State, Repository, "polling", clock);
+            using var status = StatusFiles.Open(State, Repository, "polling", clock);
             Log(status, 1, "ready", "mode=polling");
-            state = status.Snapshot()["controller"]!["state"]!.GetValue<string>();
+            state = status.Snapshot().Controller.State;
         }
         finally { Console.SetOut(previous); }
 
@@ -122,7 +122,7 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         Assert.Equal(3, errors.Length);
         Assert.All(errors, line => Assert.Matches(@"^2026-10-25T09:00:00\.0000000\+00:00 status-error \S.*$", line));
         Assert.Equal("running", state);
-        Assert.False(File.Exists(ControllerStatus.PathFor(State)));
+        Assert.False(File.Exists(StatusFiles.PathFor(State)));
     }
 
     public void Dispose()
