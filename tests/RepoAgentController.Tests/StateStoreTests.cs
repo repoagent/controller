@@ -129,6 +129,7 @@ public sealed class StateStoreTests : IDisposable
         using var store = new StateStore(State, Repository);
         Assert.Equal(["D1", "D3", "D7"], store.Discussions.Where(entry => entry.Value.HoldsSession).Select(entry => entry.Key));
         Assert.Equal(["D4", "D5", "D7"], store.Discussions.Where(entry => entry.Value.HoldsPending).Select(entry => entry.Key));
+        Assert.Equal(7, JsonNode.Parse(File.ReadAllText(State))!["discussions"]!["D7"]!.GetValue<int>()); // Saved as read.
     }
 
     // What the BCL reports for this read, so its wording is not pinned here.

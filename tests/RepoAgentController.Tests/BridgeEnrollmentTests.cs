@@ -272,15 +272,19 @@ public sealed class BridgeEnrollmentTests
     [InlineData("url", "5")]
     [InlineData("sources", "5")]
     [InlineData("sources.D1", """{"content":{"body":"one"},"content":{"body":"two"},"state":{},"reactions":{}}""")]
-    public async Task A_Discussion_record_that_observation_cannot_read_is_kept_as_it_was_and_only_its_Discussion_fails_observation(string path, string json)
+    [InlineData("sources.D1.reactions", "5")]
+    [InlineData("sessionId", "4", true)] // Its waiting input fails delivery too, and starts no session.
+    [InlineData("waiting.inputs", "5", true)]
+    public async Task A_Discussion_record_that_observation_cannot_read_is_kept_as_it_was_and_only_its_Discussion_fails_observation(string path, string json,
+        bool waiting = false)
     {
         await using var world = new BridgeWorld();
-        await Damage(world, path, json);
-        var damaged = world.Record(1)!.ToJsonString();
+        await Damage(world, path, json, waiting);
 
         world.GitHub.Comment(1, "C1", "More context, please.");
         world.GitHub.Comment(2, "C2", "Still here.");
         await world.Begin();
+        var damaged = world.Record(1)!.ToJsonString(); // Less the turn that ended with its lifetime.
         Assert.False(await world.Poll());
         world.Finish(2);
         await world.Dispatch();
@@ -288,6 +292,7 @@ public sealed class BridgeEnrollmentTests
         // Never observed as new: no session starts for it and its input is not sent again; the other Discussion continues.
         Assert.Equal(["S1", "S2", "S2"], world.Turns.Select(turn => turn.SessionId));
         Assert.StartsWith(BridgeWorld.Url(1) + ": ", Assert.Single(world.Logged("observation-error")));
+        Assert.Equal(waiting, world.Logged("dispatch-error").Any(message => message.StartsWith(BridgeWorld.Url(1) + ": ")));
         Assert.Equal(damaged, world.Record(1)!.ToJsonString());
     }
 
@@ -298,8 +303,12 @@ public sealed class BridgeEnrollmentTests
     [InlineData("url", null, "comment.created")]
     [InlineData("sources.D1", "null", "discussion.created,reaction.added,comment.created")]
     [InlineData("sources.D1.content.body", "5", "discussion.changed,comment.created")]
-    [InlineData("sources.D1.state", null, "discussion.stateChanged,comment.created")]
+    [InlineData("sources.D1.content.extra", "1", "discussion.changed,comment.created")]
+    [InlineData("sources.D1.state", null, "discussion.stateChanged(title closed locked category),comment.created")]
+    [InlineData("sources.D1.state.closed", "\"yes\"", "discussion.stateChanged(closed),comment.created")]
+    [InlineData("sources.D1.state.extra", "1", "discussion.stateChanged(),comment.created")]
     [InlineData("sources.D1.reactions", null, "reaction.added,comment.created")]
+    [InlineData("sources.D1.reactions.R1", "5", "comment.created")]
     [InlineData("waiting", "5", "comment.created", true)] // Replaced by what observation found, as it was.
     [InlineData("waiting.discussion", "5", "comment.created,comment.created", true)]
     [InlineData("waiting.context", "5", "comment.created,comment.created", true)]
@@ -320,7 +329,9 @@ public sealed class BridgeEnrollmentTests
 
         Assert.Empty(world.Logged("observation-error"));
         Assert.Equal("S1", world.Turns[^1].SessionId);
-        Assert.Equal(kinds.Split(','), world.Envelope(world.Turns.Count - 1)["changes"]!.AsArray().Select(change => change!["kind"]!.GetValue<string>()));
+        // A state change also names the state fields it carries.
+        Assert.Equal(kinds.Split(','), world.Envelope(world.Turns.Count - 1)["changes"]!.AsArray().Select(change => change!["kind"]!.GetValue<string>() is var kind &&
+            kind == "discussion.stateChanged" ? $"{kind}({string.Join(' ', change["subject"]!.AsObject().Select(field => field.Key).Except(["id", "url", "author"]))})" : kind));
         if (json is not null && path.Split('.').Aggregate((JsonNode?)world.Record(1), (node, key) => node is JsonArray ? null : node?[key]) is { } value)
             Assert.NotEqual(json, value.ToJsonString());
     }
