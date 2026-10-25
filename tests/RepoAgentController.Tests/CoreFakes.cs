@@ -224,8 +224,6 @@ sealed class FakeAgentRuntime : IAgentRuntime
     public List<AgentTurnRequest> Requests { get; } = [];
     public List<string> Resumed { get; } = [];
     public AgentSessionStatus Resumes { get; set; } = AgentSessionStatus.Idle;
-    /// <summary>Runs while no runtime process does, with the next epoch.</summary>
-    public Action<int>? Stopped { get; set; }
 
     /// <summary>Answers the next turn request: <paramref name="answer"/> runs as the runtime handles it and can report events.</summary>
     public void Answer(Func<AgentTurnRequest, AgentTurnAccepted> answer) => answers.Enqueue(answer);
@@ -233,7 +231,6 @@ sealed class FakeAgentRuntime : IAgentRuntime
     public Task Restart(Action<int> whileStopped, CancellationToken ct)
     {
         whileStopped(++Epoch);
-        Stopped?.Invoke(Epoch);
         return Task.CompletedTask;
     }
 
