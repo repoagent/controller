@@ -66,12 +66,15 @@ sealed class InMemoryBaselineReleases : IBaselineReleases
 }
 
 /// <summary>
-/// The repository's Discussions as GitHub holds the App's EYES reactions and the Discussions in its categories, the App's
-/// dashboards among them. Each queued failure answers the next write, in order; an applied failure makes the write first, as
-/// GitHub does when only its response is lost.
+/// The repository's Discussions as GitHub holds them: the conversations the bridge reads, with their labels, the App's EYES
+/// reactions, and the Discussions in each category, the App's dashboards among them. Each queued failure answers the next
+/// write, in order; an applied failure makes the write first, as GitHub does when only its response is lost. A failed read
+/// kind answers every read of that kind until it is cleared.
 /// </summary>
-sealed class InMemoryDiscussions : IDiscussions
+sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
 {
+    public static readonly Actor Participant = new("participant", "User");
+    static readonly IReadOnlySet<string> NoMentions = new HashSet<string>();
     public const string RepositoryId = "R_repository";
     public static readonly AppIdentity App = new("test-app");
     /// <summary>The App as GitHub reports the author of a Discussion it created.</summary>
@@ -82,6 +85,10 @@ sealed class InMemoryDiscussions : IDiscussions
     readonly HashSet<string> eyes = [];
     readonly Queue<(GitHubRequestException Error, bool Applied)> failures = [];
     readonly List<string> calls = [];
+    // Conversations by Discussion number, in the order they were opened; comments in the order they were written.
+    readonly SortedList<int, Held> conversations = [];
+    readonly Dictionary<string, Exception> readFailures = [];
+    DateTimeOffset Now => (clock ?? throw new InvalidOperationException("Writing a conversation needs the test's clock")).GetUtcNow();
 
     /// <summary>A Discussion in a category, as GitHub holds it now.</summary>
     public sealed record Posted(string Id, string Url, string CategoryId, Actor? Author, string Title, string Body);
@@ -115,11 +122,93 @@ sealed class InMemoryDiscussions : IDiscussions
     /// <summary>The Discussions the App created, oldest first.</summary>
     public IReadOnlyList<Posted> Dashboards { get { lock (sync) return [.. posted.Where(post => post.Author == AppAccount)]; } }
 
-    // The outbox reads no conversations.
-    public Task<IReadOnlyList<Discussion>> List(CancellationToken ct) => throw new NotSupportedException();
-    public Task<Discussion?> Find(int number, CancellationToken ct) => throw new NotSupportedException();
-    public Task<DiscussionConversation> Read(Discussion discussion, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IReadOnlyList<string>> Labels(string discussionId, CancellationToken ct) => throw new NotSupportedException();
+    /// <summary>Opens Discussion <paramref name="number"/> as D<paramref name="number"/>, created now in <paramref name="category"/>.</summary>
+    public Discussion Open(int number, string body, string category = "General", Actor? author = null, DateTimeOffset? created = null) => Put(new(
+        new("D" + number, "https://github.com/owner/repository/discussions/" + number, body, author ?? Participant, created ?? Now, created ?? Now,
+            [new("EYES", false)], NoMentions, number, "Fixture", false, false, null, new(Category(category), category)), [], []));
+
+    /// <summary>Holds this whole conversation as Discussion <c>Number</c>, as GitHub returns it to reads.</summary>
+    public Discussion Put(DiscussionConversation conversation)
+    {
+        lock (sync) conversations[conversation.Discussion.Number] = new() { Discussion = conversation.Discussion, Reactions = [.. conversation.Reactions], Comments = [.. conversation.Comments] };
+        return conversation.Discussion;
+    }
+
+    /// <summary>Adds a top-level comment, or a reply in the thread of <paramref name="replyTo"/>; an existing ID is edited instead.</summary>
+    public void Comment(int number, string id, string body, Actor? author = null, string? replyTo = null) => Change(number, held =>
+    {
+        var index = held.Comments.FindIndex(comment => comment.Id == id);
+        if (index >= 0) held.Comments[index] = held.Comments[index] with { Body = body, UpdatedAt = Now };
+        else held.Comments.Add(new(id, $"https://github.com/owner/repository/discussions/{number}#discussioncomment-{id}", body, author ?? Participant,
+            Now, Now, [new("EYES", false)], NoMentions, replyTo, []));
+    });
+
+    /// <summary>Deletes a comment or reply, with its reactions.</summary>
+    public void Delete(int number, string id) => Change(number, held => held.Comments.RemoveAll(comment => comment.Id == id));
+
+    /// <summary>Adds <paramref name="user"/>'s reaction to the Discussion or one of its comments.</summary>
+    public void React(int number, string subject, string id, string content, string user) => Change(number, held =>
+    {
+        var reaction = new Reaction(id, content, new(user, "User"), Now);
+        var index = held.Comments.FindIndex(comment => comment.Id == subject);
+        if (index < 0) held.Reactions.Add(reaction);
+        else held.Comments[index] = held.Comments[index] with { Reactions = [.. held.Comments[index].Reactions, reaction] };
+    });
+
+    public void Answer(int number, string? comment) => Change(number, held => held.Discussion = held.Discussion with { AnswerId = comment });
+    public void Edit(int number, string body) => Change(number, held => held.Discussion = held.Discussion with { Body = body, UpdatedAt = Now });
+
+    /// <summary>Replaces the Discussion's labels; names are GitHub's, unvalidated.</summary>
+    public void Labels(int number, params string[] names) => Change(number, held => held.Labels = names);
+
+    /// <summary>GitHub deletes the Discussion: lists omit it and a lookup confirms it is gone.</summary>
+    public void Remove(int number) { lock (sync) conversations.Remove(number); }
+
+    /// <summary>Every later read of <paramref name="kind"/> (List, Find, Read or Labels) fails with <paramref name="error"/>, or succeeds again when it is null.</summary>
+    public void FailReads(string kind, Exception? error)
+    {
+        lock (sync)
+            if (error is null) readFailures.Remove(kind);
+            else readFailures[kind] = error;
+    }
+
+    void Change(int number, Action<Held> change) { lock (sync) change(conversations[number]); }
+
+    sealed class Held
+    {
+        public required Discussion Discussion;
+        public required List<Reaction> Reactions;
+        public required List<DiscussionComment> Comments;
+        public string[] Labels = [];
+    }
+
+    Task<T> Reading<T>(string kind, Func<T> read)
+    {
+        lock (sync) return readFailures.TryGetValue(kind, out var error) ? Task.FromException<T>(error) : Task.FromResult(read());
+    }
+
+    // As GitHub reads them now: the App's EYES receipts show in each message's reaction groups.
+    Discussion Seen(Discussion discussion) => eyes.Contains(discussion.Id) ? discussion with { ReactionGroups = Eyes(discussion.ReactionGroups) } : discussion;
+    DiscussionComment Seen(DiscussionComment comment) => eyes.Contains(comment.Id) ? comment with { ReactionGroups = Eyes(comment.ReactionGroups) } : comment;
+    static IReadOnlyList<ReactionGroup> Eyes(IReadOnlyList<ReactionGroup> groups) => [.. groups.Where(group => group.Content != "EYES"), new("EYES", true)];
+
+    public Task<IReadOnlyList<Discussion>> List(CancellationToken ct) =>
+        Reading<IReadOnlyList<Discussion>>("List", () => [.. conversations.Values.Select(held => Seen(held.Discussion))]);
+
+    public Task<Discussion?> Find(int number, CancellationToken ct) =>
+        Reading("Find", () => conversations.TryGetValue(number, out var held) ? Seen(held.Discussion) : null);
+
+    /// <summary>The top-level comments in order, then the replies to each in that order, as GitHub's pages return them.</summary>
+    public Task<DiscussionConversation> Read(Discussion discussion, CancellationToken ct) => Reading("Read", () =>
+    {
+        var held = conversations[discussion.Number];
+        var roots = held.Comments.Where(comment => comment.ReplyToId is null).ToArray();
+        var replies = roots.SelectMany(root => held.Comments.Where(comment => comment.ReplyToId == root.Id));
+        return new DiscussionConversation(discussion, [.. held.Reactions], [.. roots.Concat(replies).Select(Seen)]);
+    });
+
+    public Task<IReadOnlyList<string>> Labels(string discussionId, CancellationToken ct) =>
+        Reading<IReadOnlyList<string>>("Labels", () => conversations.Values.Single(held => held.Discussion.Id == discussionId).Labels);
 
     public Task AddEyesReceipt(string subjectId, CancellationToken ct) => Write("addReaction " + subjectId, () => eyes.Add(subjectId));
 
@@ -232,10 +321,9 @@ sealed class InMemoryControllerState : IControllerState
 /// next scripted answer, else is accepted as T1, T2, and so on; an answer can report events first, as the reader can deliver a
 /// completion before the request's response. Events are raised on the calling thread, in the order a test reports them.
 /// </summary>
-sealed class FakeAgentRuntime : IAgentRuntime
+sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
 {
     readonly Queue<Func<AgentTurnRequest, AgentTurnAccepted>> answers = new();
-    int sessions, turns;
 
     public event Action<AgentRuntimeEvent>? Changed;
     public int Epoch { get; private set; } = 1;
@@ -274,10 +362,17 @@ sealed class FakeAgentRuntime : IAgentRuntime
         finally { turns++; Requests.Add(request); }
     }
 
-    public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => Task.FromResult<(string?, string?)>((null, null));
+    /// <summary>Sessions started and turns requested so far, so a later runtime process can continue the numbering.</summary>
+    public (int Sessions, int Turns) Counts => (sessions, turns);
 
-    public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) =>
-        Task.FromResult<IReadOnlyList<NativeModel>>([new("gpt-6-luna", true, "medium", ["medium", "xhigh"])]);
+    /// <summary>The model and effort of the agent's own configuration.</summary>
+    public (string? Model, string? Effort) Configuration { get; set; }
+
+    public IReadOnlyList<NativeModel> Catalogue { get; set; } = [new("gpt-6-luna", true, "medium", ["medium", "xhigh"])];
+
+    public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => Task.FromResult(Configuration);
+
+    public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => Task.FromResult(Catalogue);
 
     public void Report(string session, AgentSessionStatus status) => Changed?.Invoke(new AgentSessionStatusChanged(Epoch, session, status));
     public void Started(string session, string turn) => Changed?.Invoke(new AgentTurnStarted(Epoch, session, turn));

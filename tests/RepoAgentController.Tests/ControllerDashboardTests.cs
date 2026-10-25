@@ -16,97 +16,6 @@ public sealed class ControllerDashboardTests
     const string Category = "Controller status";
     const string First = "https://github.com/owner/repository/discussions/1";
 
-    [Fact]
-    public async Task A_running_turn_and_the_input_waiting_for_it_are_listed_against_the_active_session_limit()
-    {
-        using var controller = new Controller();
-        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token, "--dashboard-category", Category);
-        try
-        {
-            var idle = await Until(() => controller.Turns == 1 && controller.Dashboard() is { } dashboard && dashboard.Body.Contains("0 of 4 turns running") ? dashboard : null);
-            Assert.Contains("### Active and queued sessions\nNone.", idle.Body);
-
-            // The next turn stays active, so a later comment waits in the controller instead of steering it.
-            // The clock moves in steps until the hourly poll that follows each comment has run.
-            controller.HoldTurns();
-            controller.Comment("C1", "Start the long task.");
-            await Until(() =>
-            {
-                controller.Clock.Advance(TimeSpan.FromMinutes(5));
-                return controller.Turns == 2 ? controller : null;
-            });
-            // Native turns are tracked in every mode, against the active-session limit (default 4).
-            var running = await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("1 of 4 turns running") ? dashboard : null);
-            Assert.Matches(@"\*\*Sessions:\*\* 1 stored; 1 of 4 turns running \(active-session limit\); 0 awaiting native acknowledgement; 0 inputs waiting\n", running.Body);
-            Assert.Matches(@"### Active and queued sessions\n- \[Discussion #1\]\(" + Regex.Escape(First) + @"\): running a turn since \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\n", running.Body);
-            controller.Comment("C2", "One more detail for it.");
-            var queued = await Until(() =>
-            {
-                controller.Clock.Advance(TimeSpan.FromMinutes(5));
-                return controller.Dashboard() is { } dashboard && dashboard.Body.Contains("1 inputs waiting") ? dashboard : null;
-            });
-            Assert.Matches(@"\*\*Sessions:\*\* 1 stored; 1 of 4 turns running[^\n]* 1 inputs waiting", queued.Body);
-            Assert.Matches(@"### Active and queued sessions\n- \[Discussion #1\]\(" + Regex.Escape(First) + @"\): running a turn since [^\n]*; 1 inputs waiting for that turn to finish\n", queued.Body);
-            Assert.DoesNotContain("checkout refresh", queued.Body);
-            Assert.Equal(2, controller.Turns);
-            Assert.False(controller.HasEyes("C2"));
-        }
-        finally { await shutdown.CancelAsync(); }
-        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
-    public async Task Owned_dashboard_is_found_again_and_never_becomes_agent_input_while_a_participant_copy_stays_ordinary()
-    {
-        using var controller = new Controller();
-        Assert.Equal(0, await controller.RunOnce("--dashboard-category", Category));
-        var dashboard = controller.Dashboard()!;
-        Assert.Equal(1, controller.Sessions);
-
-        // A participant asks the App about the dashboard, and copies its whole text into their own Discussion,
-        // which listings return first; the operator even names the dashboard for explicit enrollment.
-        controller.Comment("C9", "@test-app[bot] what does this status mean?", dashboard.Id, dashboard.Url);
-        controller.Discussion("D2", 2, dashboard.Body + "\n\n@test-app[bot] please explain this copy.", Category);
-        controller.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(0, await controller.RunOnce("--dashboard-category", Category, "--enroll", dashboard.Url));
-
-        Assert.Equal(1, controller.Writes("createDiscussion")); // The owned dashboard was found again, not duplicated.
-        Assert.All(controller.Requests("updateDiscussion"), write => Assert.Equal(dashboard.Id, write["subject"]!.GetValue<string>()));
-        Assert.Matches(@"stopped at [^\n]*graceful", controller.Dashboard()!.Body);
-        Assert.Equal(2, controller.Sessions); // Only the participant's copy started a session.
-        Assert.Equal(2, controller.Turns);
-        Assert.True(controller.HasEyes("D2"));
-        Assert.False(controller.HasEyes(dashboard.Id));
-        Assert.False(controller.HasEyes("C9"));
-    }
-
-    [Fact]
-    public async Task Input_held_by_the_active_session_limit_is_listed_with_that_reason()
-    {
-        using var controller = new Controller(direct: true);
-        controller.App!.Variables = true;
-        controller.Variable("REPOAGENT_MAX_ACTIVE_SESSIONS", "1");
-        controller.HoldTurns(); // The first Discussion's bootstrap turn keeps the only slot.
-        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        var run = controller.Run(shutdown.Token, "--dashboard-category", Category, "--repository-settings");
-        try
-        {
-            await Until(() => controller.Dashboard() is { } dashboard && dashboard.Body.Contains("1 of 1 turns running") ? dashboard : null);
-            var second = controller.Discussion("D2", 2, "@test-app[bot] please look at this as well.", "General");
-            var held = await Until(() =>
-            {
-                controller.Clock.Advance(TimeSpan.FromMinutes(5));
-                return controller.Dashboard() is { } dashboard && dashboard.Body.Contains(second) ? dashboard : null;
-            });
-            Assert.Matches(@"\*\*Sessions:\*\* 1 stored; 1 of 1 turns running \(active-session limit\);[^\n]* 1 inputs waiting\n", held.Body);
-            Assert.Contains($"- [Discussion #2]({second}): 1 inputs waiting for a free active-session slot\n", held.Body);
-            Assert.Equal(1, controller.Turns);
-        }
-        finally { await shutdown.CancelAsync(); }
-        Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-    }
-
     // The release check's one remaining process-level test, kept until the dashboard moves into the core (PR 4 of #203):
     // the controller's options reach the check, and a later hourly check's outcome reaches the republished dashboard.
     // BaselineReleaseCheckTests and ControllerDashboardUpdatesTests own the decisions and the rendered text.
@@ -157,34 +66,6 @@ public sealed class ControllerDashboardTests
         }
     }
 
-    // GitHub's App endpoints for direct key authentication, as a controlled transport (not provider evidence).
-    sealed class DirectApp(FakeTimeProvider clock) : HttpMessageHandler
-    {
-        int tokens;
-        /// <summary>The installation grants Variables: read, so --repository-settings can request it.</summary>
-        public volatile bool Variables;
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-        {
-            JsonNode? result = request.RequestUri!.AbsolutePath switch
-            {
-                "/app" => new JsonObject { ["id"] = 123, ["slug"] = "test-app" },
-                "/repos/owner/repository/installation" => new JsonObject
-                {
-                    ["id"] = 234, ["app_id"] = 123,
-                    ["permissions"] = Variables ? new JsonObject { ["discussions"] = "write", ["actions_variables"] = "read" } : new JsonObject { ["discussions"] = "write" }
-                },
-                "/app/installations/234/access_tokens" => new JsonObject
-                {
-                    ["token"] = "opaque-token-direct-" + Interlocked.Increment(ref tokens), ["expires_at"] = clock.GetUtcNow().AddHours(1).ToString("O")
-                },
-                _ => null
-            };
-            return Task.FromResult(result is null ? new HttpResponseMessage(System.Net.HttpStatusCode.Unauthorized)
-                : new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(result.ToJsonString(), System.Text.Encoding.UTF8, "application/json") });
-        }
-    }
-
     sealed record Published(string Id, string Url, string Title, string Body, string Category);
 
     /// <summary>Runs the real controller entrypoint against controlled GitHub and native peers across restarts.</summary>
@@ -193,23 +74,10 @@ public sealed class ControllerDashboardTests
         readonly BrokerAuthenticationTests.Fixture fixture = new();
         readonly string? path = Environment.GetEnvironmentVariable("PATH");
         readonly string world, requests, native;
-        readonly bool direct;
-        readonly HttpClient? appHttp;
         public FakeTimeProvider Clock => fixture.Clock;
-        /// <summary>The controlled GitHub App token endpoint, when the controller signs as the App itself.</summary>
-        public DirectApp? App { get; }
 
-        /// <param name="direct">Authenticate with the App's private key instead of the credential broker.</param>
-        public Controller(bool direct = false)
+        public Controller()
         {
-            this.direct = direct;
-            if (direct)
-            {
-                using var key = System.Security.Cryptography.RSA.Create(2048);
-                File.WriteAllText(Path.Combine(fixture.Directory, "app.pem"), key.ExportRSAPrivateKeyPem());
-                App = new DirectApp(fixture.Clock);
-                appHttp = new HttpClient(App);
-            }
             world = Path.Combine(fixture.Directory, "github-world.json");
             requests = Path.Combine(fixture.Directory, "github-requests.jsonl");
             native = Path.Combine(fixture.Directory, "native-requests.jsonl");
@@ -239,42 +107,6 @@ public sealed class ControllerDashboardTests
                 })
             }.ToJsonString());
             Environment.SetEnvironmentVariable("PATH", tools + Path.PathSeparator + path);
-        }
-
-        /// <summary>Sets a repository Actions variable, or with <paramref name="status"/> makes its read fail with that HTTP status.</summary>
-        public void Variable(string name, string? value, int? status = null) => Update(state =>
-        {
-            if (state["variables"] is not JsonObject variables) state["variables"] = variables = [];
-            variables[name] = status is null ? value : new JsonObject { ["status"] = status };
-        });
-
-        /// <summary>Adds a participant's top-level comment to a Discussion (the first by default) and returns its URL.</summary>
-        public string Comment(string id, string body, string discussion = "D1", string discussionUrl = First)
-        {
-            var url = discussionUrl + "#discussioncomment-" + id[1..];
-            Update(state => state["comments"]!.AsArray().Add(new JsonObject
-            {
-                ["id"] = id, ["discussion"] = discussion, ["url"] = url, ["body"] = body, ["bodyHTML"] = "<p>" + body + "</p>",
-                ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" }, ["replyTo"] = null
-            }));
-            return url;
-        }
-
-        /// <summary>Adds a participant's Discussion ahead of all others, so listings return it first.</summary>
-        public string Discussion(string id, int number, string body, string category)
-        {
-            var url = $"https://github.com/owner/repository/discussions/{number}";
-            Update(state =>
-            {
-                var categoryNode = state["categories"]!.AsArray().Single(c => c!["name"]!.GetValue<string>() == category)!.DeepClone();
-                state["discussions"]!.AsArray().Insert(0, new JsonObject
-                {
-                    ["id"] = id, ["number"] = number, ["url"] = url, ["title"] = "Participant copy", ["body"] = body, ["bodyHTML"] = "<p>copy</p>",
-                    ["closed"] = false, ["locked"] = false, ["answer"] = null, ["category"] = categoryNode,
-                    ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" }
-                });
-            });
-            return url;
         }
 
         /// <summary>Writes an image inventory, as image composition embeds it, with these bundled tool versions.</summary>
@@ -339,27 +171,20 @@ public sealed class ControllerDashboardTests
             print(json.dumps({'tag':value['release'],'body':publisher.notes(value)}))
             """;
 
-        public Task<int> RunOnce(params string[] extra) =>
-            BridgeCommand.Run([.. Arguments, "--once", .. extra], appHttp ?? fixture.Http, fixture.Gh, fixture.Clock, TestContext.Current.CancellationToken);
-
-        public int Sessions => Lines(native).Count(line => line["method"]?.GetValue<string>() == "thread/start");
-        public bool HasEyes(string subject) => World(state => state["eyes"]!.AsArray().Any(id => id!.GetValue<string>() == subject));
-
         void Update(Action<JsonObject> change) => World(state => { change(state); return true; }, write: true);
 
         // Holds the controlled peer's exclusive lock on its world while reading or changing it, as GitHub would serialize them.
         T World<T>(Func<JsonObject, T> use, bool write = false) => ControllerHarness.LockedJson(world, use, write);
 
         public Task<int> Run(CancellationToken shutdown, params string[] extra) =>
-            running = BridgeCommand.Run([.. Arguments, .. extra], appHttp ?? fixture.Http, fixture.Gh, fixture.Clock, shutdown);
+            running = BridgeCommand.Run([.. Arguments, .. extra], fixture.Http, fixture.Gh, fixture.Clock, shutdown);
 
         Task<int>? running;
 
         string[] Arguments =>
         [
             "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
-            .. direct ? ["--private-key", Path.Combine(fixture.Directory, "app.pem")]
-                : new[] { "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile },
+            "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
             "--workspace", fixture.Directory, "--interval", "3600", "--enroll", First, "--status-port", ControllerHarness.FreePort().ToString()
         ];
 
@@ -372,13 +197,6 @@ public sealed class ControllerDashboardTests
             return owned.SingleOrDefault() is { } d ? new(d["id"]!.GetValue<string>(), d["url"]!.GetValue<string>(), d["title"]!.GetValue<string>(), d["body"]!.GetValue<string>(),
                 d["category"]!["name"]!.GetValue<string>()) : null;
         }
-
-        public int Turns => Lines(native).Count(line => line["method"]?.GetValue<string>() == "turn/start");
-        public int Writes(string kind) => Requests(kind).Count;
-        public List<JsonNode> Requests(string kind) => Lines(requests).Where(line => line["kind"]!.GetValue<string>() == kind).ToList();
-
-        static IEnumerable<JsonNode> Lines(string file) => File.Exists(file)
-            ? File.ReadAllLines(file).Where(line => line.Length != 0).Select(line => JsonNode.Parse(line)!) : [];
 
         static string Quote(string value) => JsonValue.Create(value).ToJsonString();
 
@@ -394,12 +212,8 @@ public sealed class ControllerDashboardTests
             try { running?.Wait(TimeSpan.FromSeconds(10)); }
             catch (AggregateException) { }
             Environment.SetEnvironmentVariable("PATH", path);
-            appHttp?.Dispose();
             fixture.Dispose();
         }
-
-        /// <summary>Later native turns stay active instead of completing.</summary>
-        public void HoldTurns() => File.WriteAllText(native + ".hold", "");
 
         // Every thread is idle when started or resumed; each accepted turn reports idle and completes at once, unless held
         // or failed by a rejected account. Hold and rejection are read before the request is logged, so a test that has seen a

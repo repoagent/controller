@@ -10,36 +10,13 @@ namespace RepoAgentController.Tests;
 /// input. The conversation covers GitHub's field order, absent and <c>null</c> fields, a <c>null</c> author and reaction user,
 /// the App's own reply and reaction, escaped text, and between the observations a close with an answer, a lock, an edit, a new
 /// comment, a deleted reply and reaction changes. The bridge does not run here: these cases pin what the mapper gives it, and the
-/// saved changes it makes of that. 3c's in-process bridge tests replace them, the agent input case included.
+/// saved changes it makes of that. BridgeInputTests runs the same conversation through the bridge and compares the agent input.
 /// </summary>
 public sealed class DiscussionJsonGoldenTests
 {
     const string Root = "D_kwDOGolden7";
     static readonly AppIdentity App = new("test-app");
-    static readonly JsonNode Golden = Load();
-
-    [Fact]
-    public void Agent_input_carries_the_Discussion_its_comments_and_each_change_subject_as_ec1ccf7_sent_them()
-    {
-        var text = Golden["ec1ccf7"]!["first"]!["agentInput"]!.GetValue<string>();
-        var sent = JsonNode.Parse(text)!;
-        Assert.Equal(text, sent.ToJsonString()); // Reserializing is exact, so each part below compares the bytes sent.
-        var conversation = Observe("first");
-
-        Assert.Equal(sent["discussion"]!.ToJsonString(), DiscussionJson.Public(conversation.Discussion).ToJsonString());
-        Assert.Equal(sent["context"]!["existingComments"]!.AsArray().Select(comment => comment!.ToJsonString()),
-            conversation.Comments.Select(comment => DiscussionJson.Public(comment).ToJsonString()));
-        var changes = sent["changes"]!.AsArray().Select(change => change!).ToArray();
-        Assert.Equal(7, changes.Length);
-        var checkpoints = Checkpoints(conversation);
-        foreach (var change in changes)
-        {
-            var id = change["subject"]!["id"]!.GetValue<string>();
-            Assert.Equal(change["subject"]!.ToJsonString(), Subject(conversation, id).ToJsonString());
-            if (change["reaction"] is { } reaction)
-                Assert.Equal(reaction.ToJsonString(), checkpoints[id]!["reactions"]![reaction["id"]!.GetValue<string>()]!.ToJsonString());
-        }
-    }
+    internal static readonly JsonNode Golden = Load();
 
     [Theory]
     [InlineData("first")]
@@ -101,7 +78,7 @@ public sealed class DiscussionJsonGoldenTests
 
     // The records GitHubDiscussions reads from the observation's nodes: the Discussion, its top-level comments in order, then
     // the replies to each, each with its reactions. No mention user is configured.
-    static DiscussionConversation Observe(string observation)
+    internal static DiscussionConversation Observe(string observation)
     {
         var world = Golden["github"]![observation]!;
         IReadOnlyList<Reaction> Reactions(string id) => [.. world["reactions"]![id]?.AsArray().Select(node => DiscussionJson.ReadReaction(node!)) ?? []];
