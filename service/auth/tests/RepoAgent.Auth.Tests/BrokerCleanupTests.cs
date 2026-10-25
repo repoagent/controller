@@ -249,7 +249,7 @@ public sealed partial class BrokerCleanupTests
         var key = EnrollmentLedger.Key(id);
         // Each lane's first enrollment page, or the page after the ledger the lane then processed.
         var position = answer == "not-after-the-position" ? key.Name : "";
-        ListedRow Ledger(string scope, string name) => new(scope, name, f.State.Row(key)!, f.State.Version(key)!);
+        ListedRow Ledger(string scope, string name) => new(scope, name, f.State.Row(key), f.State.Version(key));
         f.State.Answer = page => page.Scope != IssuanceCapacity.EnrollmentScope || page.After != position ? page : answer switch
         {
             "before-range" => page with { Rows = [Ledger(page.Scope, "pending!" + id)] },
@@ -272,6 +272,52 @@ public sealed partial class BrokerCleanupTests
         {
             Assert.Equal(position, cursor.Enrollment.LastKey);
             Assert.Null(cursor.Enrollment.Continuation);
+            Assert.Equal(0L, cursor.Enrollment.Cycle);
+            Assert.Equal(1L, cursor.Issuance.Cycle);
+        }
+    }
+
+    // A listed ledger the store could not bound, or answered without a version, fails only the turns that read it: the
+    // ledgers before it on the same page are redacted and reclaimed, and both lanes' enrollment family then stays on the
+    // ledger before it.
+    [Theory]
+    [InlineData("unbounded")]
+    [InlineData("no-version")]
+    public async Task Listed_ledger_without_its_row_or_version_fails_only_the_turns_that_read_it(string answer)
+    {
+        var f = new InMemoryBroker();
+        AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
+        string[] ids = [1.ToString("x32"), 2.ToString("x32"), 3.ToString("x32")];
+        foreach (var id in ids)
+        {
+            Assert.Equal(HttpStatusCode.OK, (await f.Start(Retained.AgentRequest(id), 2)).StatusCode);
+            f.Clock.Advance(TimeSpan.FromMinutes(1));
+        }
+        f.Clock.Advance(TimeSpan.FromDays(2));
+        var bad = EnrollmentLedger.Key(ids[2]).Name;
+        var listed = 0;
+        f.State.Answer = page =>
+        {
+            if (page.Scope != IssuanceCapacity.EnrollmentScope) return page;
+            if (page.Rows.Any(row => row.Name == bad)) listed++;
+            return page with
+            {
+                Rows = [.. page.Rows.Select(row => row.Name != bad ? row : answer == "unbounded" ? row with { Row = null } : row with { Version = null })]
+            };
+        };
+
+        var run = await f.CleanupAsync(dispatches: 10_000, batches: 10_000);
+
+        Assert.Equal(1, run.Exit);
+        Assert.Equal(2, run.Int("failures"));
+        Assert.Equal("stream-failed", run.StopReason);
+        Assert.Equal(6, listed);
+        Assert.Equal([false, false, true], ids.Select(id => Stores(f, EnrollmentLedger.Key(id), "RecoveryHash")));
+        Assert.Equal([false, false, true], ids.Select(id => Stores(f, PendingControllerEnrollment.Key(Retained.Repository, id), "RecoveryHash")));
+        Assert.Equal([true, true, false], ids.Select(id => f.State.Get(EnrollmentLedger.Key(id))!.PendingCapacityReleased == true));
+        foreach (var cursor in new[] { f.State.Get(CleanupCursor.Payload)!, f.State.Get(CleanupCursor.Audit)! })
+        {
+            Assert.Equal(EnrollmentLedger.Key(ids[1]).Name, cursor.Enrollment.LastKey);
             Assert.Equal(0L, cursor.Enrollment.Cycle);
             Assert.Equal(1L, cursor.Issuance.Cycle);
         }

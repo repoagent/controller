@@ -9,7 +9,7 @@ namespace RepoAgent.Auth.Tests;
 // - listing is ordinal, at most 32 records a page, and can answer an empty page that still carries a continuation;
 //   a listed row is mapped only when the caller reads it, as the Table adapter does;
 // - a listing's answer is not checked against its query, as the Table adapter does not check it, so a test may change
-//   it (Answer) to a page the query could not have answered.
+//   it (Answer) to a page the query could not have answered, or to rows without their row or version.
 // Hooks run outside the store's lock: BeforeRead, BeforeList and BeforeCommit may throw or commit competing writes re-entrantly, and
 // AfterCommit may throw to lose the response of a transaction that did commit.
 internal sealed class InMemoryBrokerState : IBrokerState
@@ -181,5 +181,6 @@ internal sealed class InMemoryBrokerState : IBrokerState
 // continuation.
 internal sealed record ListingAnswer(string Scope, string After, IReadOnlyList<ListedRow> Rows, string? Continuation);
 
-// A listed row as the store answered it: its key, its row and its version.
-internal sealed record ListedRow(string Scope, string Name, IReadOnlyDictionary<string, object> Row, StateVersion Version);
+// A listed row as the store answered it: its key, its row (null when it broke the store's bounds) and its version (null
+// when the store answered none).
+internal sealed record ListedRow(string Scope, string Name, IReadOnlyDictionary<string, object>? Row, StateVersion? Version);
