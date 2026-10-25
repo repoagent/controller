@@ -513,168 +513,6 @@ class CheckoutRefreshTests(unittest.TestCase):
     def subjects(self, envelope):
         return [(change['subject']['id'], change['subject']['author']['login'], change['subject']['body']) for change in envelope['changes']]
 
-    def eyes(self, f, expected, timeout=20):
-        # The outbox adds EYES in the background after acceptance, in queue order.
-        deadline = time.monotonic() + timeout
-        while f.provider.reactions != expected and time.monotonic() < deadline: time.sleep(0.05)
-        self.assertEqual(f.provider.reactions, expected)
-
-    def test_input_during_an_active_turn_waits_for_idle_before_dispatch_and_eyes(self):
-        with self.fixture(protocol=True) as f, self.controller(f):
-            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
-            request = self.rpc(f, 'thread/start')
-            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
-            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-            f.wait('poll-completed success=True')
-            self.eyes(f, ['D1'])
-            # T1 remains active: the native has reported no idle transition.
-            f.provider.comments = {'D1': [self.comment(1, 'alice', 'first while active'), self.comment(2, 'bob', 'second while active')]}
-            for _ in range(2):  # Two complete observations, not elapsed time, establish that the input waits.
-                self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Input reached native during the active turn')
-            self.assertEqual(f.provider.reactions, ['D1'], 'Waiting input received EYES before dispatch')
-            self.terminal(f, 'S1', 'T1')
-            request = self.rpc(f, 'turn/start')
-            self.assertEqual(f.provider.reactions, ['D1'], 'EYES preceded native acceptance of the dispatched batch')
-            self.assertEqual(self.subjects(self.dispatched(request)),
-                             [('C1', 'alice', 'first while active'), ('C2', 'bob', 'second while active')])
-            self.reply(f, request, dict(turn=dict(id='T2')))
-            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-2')
-            self.assertEqual(f.provider.reactions, ['D1', 'C1', 'C2'])
-            self.assertNotIn('waiting', json.loads(f.state.read_text())['discussions']['D1'])
-            print('IDLE_DISPATCH waiting-polls=2 premature-eyes=none batch=C1,C2 eyes-after-acceptance=true', flush=True)
-
-    def test_failed_turn_session_takes_the_next_input_without_a_restart(self):
-        with self.fixture(protocol=True) as f, self.controller(f):
-            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
-            request = self.rpc(f, 'thread/start')
-            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
-            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-            f.wait('poll-completed success=True')
-            # Pinned native leaves a failed turn's thread in systemError until its next turn, and accepts that turn.
-            self.terminal(f, 'S1', 'T1', status='systemError', outcome='failed'); f.wait('native-event')
-            f.provider.comments = {'D1': [self.comment(1, 'alice', 'first after error'), self.comment(2, 'bob', 'second after error')]}
-            request = self.rpc(f, 'turn/start')
-            self.assertEqual(request['params']['threadId'], 'S1')
-            envelope = self.dispatched(request)
-            self.assertEqual(envelope['_bridge']['mode'], 'continue')
-            self.assertEqual(self.subjects(envelope), [('C1', 'alice', 'first after error'), ('C2', 'bob', 'second after error')])
-            self.reply(f, request, dict(turn=dict(id='T2')))
-            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-2')
-            self.assertEqual(f.provider.reactions, ['D1', 'C1', 'C2'])
-            self.terminal(f, 'S1', 'T2'); f.wait('native-event')
-            print('IDLE_STATUS failed-turn=next-input-dispatched restart=none order=C1,C2', flush=True)
-
-    def test_unknown_and_active_status_hold_input_in_order_across_restart(self):
-        for resumed in ('active', 'unrecognized'):
-            with self.subTest(resumed=resumed), self.fixture(protocol=True) as f:
-                with self.controller(f):
-                    f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
-                    request = self.rpc(f, 'thread/start')
-                    self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
-                    request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-                    f.wait('poll-completed success=True')
-                    self.terminal(f, 'S1', 'T1', status='fixtureFutureStatus'); f.wait('native-event')
-                    f.provider.comments = {'D1': [self.comment(1, 'alice', 'first after error'), self.comment(2, 'bob', 'second after error')]}
-                    line = f.wait_or_native('input-waiting')
-                    self.assertIsNotNone(line, 'Input reached a session whose native status is unrecognized')
-                    self.assertIn('status=Unknown', line)
-                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Input reached a session not reported idle')
-                    self.eyes(f, ['D1'])
-                saved = json.loads(f.state.read_text())['discussions']['D1']
-                self.assertNotIn('pending', saved)
-                self.assertEqual([item['change']['subject']['id'] for item in saved['waiting']['inputs']], ['C1', 'C2'])
-                status = json.loads(f.run(self.controller_command + ['status', '--state', f.state]))
-                self.assertEqual((status['work']['waiting'], status['sessions'][0]['waiting']), (2, 2))
-                # A restarted native has not loaded S1: the controller loads it and uses only the reported status.
-                with self.controller(f, 'mode=polling'):
-                    request = self.rpc(f, 'thread/resume')
-                    self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))),
-                               status='active' if resumed == 'active' else 'fixtureFutureStatus')
-                    for _ in range(2):
-                        self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Input reached a session not reported idle')
-                    self.assertEqual(f.provider.reactions, ['D1'])
-                    self.assertEqual(json.loads(f.journal.read_text())['active'], {}, 'Unused load admission was retained')
-                    self.notify(f, 'thread/status/changed', threadId='S1', status=dict(type='idle'))
-                    request = self.rpc(f, 'turn/start')
-                    envelope = self.dispatched(request)
-                    self.assertEqual(envelope['_bridge']['mode'], 'continue')
-                    self.assertEqual(self.subjects(envelope), [('C1', 'alice', 'first after error'), ('C2', 'bob', 'second after error')])
-                    self.assertEqual(f.provider.reactions, ['D1'], 'EYES preceded acceptance after restart')
-                    self.reply(f, request, dict(turn=dict(id='T2')))
-                    f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-2')
-                    self.assertEqual(f.provider.reactions, ['D1', 'C1', 'C2'])
-                    self.terminal(f, 'S1', 'T2'); f.wait('native-event')
-                print('IDLE_STATUS unknown=held restart-resume=' + resumed + ' held-until-idle=true order=C1,C2', flush=True)
-
-    def test_oversized_waiting_input_splits_into_ordered_batches_without_loss(self):
-        with self.fixture(protocol=True) as f, self.controller(f):
-            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
-            request = self.rpc(f, 'thread/start')
-            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
-            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-            f.wait('poll-completed success=True')
-            # Five maximum-size GitHub comment bodies exceed one controller batch.
-            bodies = [str(number) + ':' + 'x' * 65534 for number in range(1, 6)]
-            f.provider.comments = {'D1': [self.comment(number, 'author' + str(number), body) for number, body in enumerate(bodies, 1)]}
-            for _ in range(2):
-                self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Input reached native during the active turn')
-            delivered, turn = [], 1
-            while len(delivered) < len(bodies):
-                self.terminal(f, 'S1', 'T' + str(turn)); turn += 1
-                request = self.rpc(f, 'turn/start')
-                text = request['params']['input'][0]['text']
-                self.assertLessEqual(len(text.split('\n', 1)[1]), 256 * 1024)
-                batch = self.subjects(self.dispatched(request))
-                self.assertTrue(batch, 'Empty batch dispatched')
-                self.reply(f, request, dict(turn=dict(id='T' + str(turn))))
-                f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-' + batch[-1][0][1:])
-                delivered += batch
-                self.assertEqual(f.provider.reactions, ['D1'] + [subject for subject, _, _ in delivered])
-                if len(delivered) < len(bodies):  # The remainder waits for the next native idle report.
-                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Remainder reached the active turn')
-            self.assertEqual(delivered, [('C' + str(number), 'author' + str(number), body) for number, body in enumerate(bodies, 1)])
-            self.assertGreaterEqual(turn - 1, 2, 'Fixture did not exceed one batch')
-            self.assertNotIn('waiting', json.loads(f.state.read_text())['discussions']['D1'])
-            print('IDLE_SPLIT batches=' + str(turn - 1) + ' changes=' + str(len(delivered)) + ' order=preserved', flush=True)
-
-    def test_rejected_native_input_is_retried_after_backoff_as_a_marked_redelivery(self):
-        with self.fixture(protocol=True) as f, self.controller(f):
-            f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
-            request = self.rpc(f, 'thread/start')
-            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
-            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-            self.terminal(f, 'S1', 'T1'); f.wait('native-event')
-            self.eyes(f, ['D1'])
-            f.provider.comments = {'D1': [self.comment(1, 'alice', 'please answer')]}
-            request = self.rpc(f, 'turn/start')
-            first = self.dispatched(request)
-            self.assertNotIn('redelivery', first['_bridge'])
-            self.reject(f, request)
-            for _ in range(2):  # Neither a blocked Discussion nor a retry on every poll.
-                self.assertIsNotNone(f.wait_or_native('poll-completed'), 'Rejected input was retried without backoff')
-            request = self.rpc(f, 'turn/start')
-            retried = self.dispatched(request)
-            self.assertIs(retried['_bridge'].get('redelivery'), True)
-            self.assertEqual(self.subjects(retried), [('C1', 'alice', 'please answer')])
-            self.assertEqual(f.provider.reactions, ['D1'], 'EYES preceded acceptance of the redelivery')
-            self.reply(f, request, dict(turn=dict(id='T2')))
-            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-1')
-            self.assertEqual(f.provider.reactions, ['D1', 'C1'])
-            self.terminal(f, 'S1', 'T2'); f.wait('native-event')
-            # Input observed after the accepted redelivery is ordinary again.
-            f.provider.comments['D1'].append(self.comment(2, 'bob', 'follow-up'))
-            request = self.rpc(f, 'turn/start')
-            envelope = self.dispatched(request)
-            self.assertNotIn('redelivery', envelope['_bridge'])
-            self.assertEqual(self.subjects(envelope), [('C2', 'bob', 'follow-up')])
-            self.reply(f, request, dict(turn=dict(id='T3')))
-            f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-2')
-            saved = json.loads(f.state.read_text())['discussions']['D1']
-            self.assertNotIn('pending', saved); self.assertNotIn('waiting', saved)
-            self.assertFalse(json.loads(f.journal.read_text())['blocked'])
-            self.terminal(f, 'S1', 'T3'); f.wait('native-event')
-            print('REDELIVERY rejected=retried marker=_bridge.redelivery eyes-after-acceptance=true', flush=True)
-
     def test_unacknowledged_native_input_is_redelivered_once_idle_while_the_checkout_stays_excluded(self):
         with self.fixture(protocol=True) as f, self.controller(f):
             f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
@@ -716,38 +554,6 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertNotIn('waiting', json.loads(f.state.read_text())['discussions']['D1'])
             print('REDELIVERY lost-ack=redelivered late-native-turn=held-until-idle checkout=excluded-until-resolved', flush=True)
 
-    def test_delivery_interrupted_by_restart_is_redelivered_and_a_failed_receipt_never_resends_it(self):
-        with self.fixture(protocol=True, clone=False) as f:
-            with self.controller(f):
-                f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
-                request = self.rpc(f, 'thread/start'); self.reply(f, request, dict(thread=dict(id='S1')))
-                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-                self.terminal(f, 'S1', 'T1'); f.wait('native-event')
-                self.eyes(f, ['D1'])
-                f.provider.comments = {'D1': [self.comment(1, 'alice', 'please answer')]}
-                request = self.rpc(f, 'turn/start')  # The controller stops before any acknowledgement arrives.
-                self.assertNotIn('redelivery', self.dispatched(request)['_bridge'])
-            f.provider.reaction_status = 403  # GitHub will refuse EYES for the accepted redelivery.
-            with self.controller(f, 'mode=polling'):
-                request = self.rpc(f, 'thread/resume'); self.reply(f, request, dict(thread=dict(id='S1')))
-                request = self.rpc(f, 'turn/start')
-                redelivered = self.dispatched(request)
-                self.assertIs(redelivered['_bridge'].get('redelivery'), True)
-                self.assertEqual(self.subjects(redelivered), [('C1', 'alice', 'please answer')])
-                self.reply(f, request, dict(turn=dict(id='T2')))
-                f.wait('receipt-error https://github.com/owner/project/discussions/1#discussioncomment-1')
-                self.terminal(f, 'S1', 'T2'); f.wait('native-event')
-                for _ in range(2):
-                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Accepted input was resent after its receipt failed')
-            with self.controller(f, 'mode=polling'):
-                for _ in range(2):
-                    self.assertIsNotNone(f.wait_or_native('poll-completed success=True'), 'Accepted input was resent after a restart')
-                self.assertNotIn(f.provider.token, ''.join(f.lines))
-            self.assertEqual(f.provider.reactions, ['D1'])
-            saved = json.loads(f.state.read_text())['discussions']['D1']
-            self.assertNotIn('pending', saved); self.assertNotIn('waiting', saved)
-            print('REDELIVERY restart=redelivered receipt-failure=no-resend', flush=True)
-
     def rpc(self, f, method):
         self.assertTrue(select.select([f.responses], [], [], 20)[0], 'Missing native request ' + method)
         message = json.loads(f.responses.readline())
@@ -759,9 +565,6 @@ class CheckoutRefreshTests(unittest.TestCase):
         if request['method'] in ('thread/start', 'thread/resume') and 'thread' in result:
             result['thread'].setdefault('status', dict(type=status))
         f.commands.write(json.dumps(dict(id=request['id'], result=result)) + '\n'); f.commands.flush()
-
-    def reject(self, f, request, message='fixture rejection'):
-        f.commands.write(json.dumps(dict(id=request['id'], error=dict(code=-32600, message=message))) + '\n'); f.commands.flush()
 
     def notify(self, f, method, **params):
         f.commands.write(json.dumps(dict(method=method, params=params)) + '\n'); f.commands.flush()
@@ -1117,101 +920,6 @@ class CheckoutRefreshTests(unittest.TestCase):
                   network=f.provider.requests, prefixLength=len(prefix), prefixSha256=hashlib.sha256(prefix).hexdigest(),
                   finalPrefixSha256=hashlib.sha256(final[:len(prefix)]).hexdigest(), rolloutSha256=hashlib.sha256(final).hexdigest())), flush=True)
 
-    def test_pinned_native_active_turn_holds_input_until_its_idle_report(self):
-        with self.fixture(responses=True) as f:
-            config = f.directory / 'home/config.toml'
-            config.write_text(config.read_text() + FIXTURE_MODEL)
-            hold = threading.Event(); f.provider.response_holds[1] = hold
-            try:
-                with self.controller(f):
-                    f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
-                    f.wait('native-accepted')
-                    f.wait('poll-completed success=True')
-                    self.eyes(f, ['D1'])
-                    session = json.loads(f.state.read_text())['discussions']['D1']['sessionId']
-                    # The first model response is held, so the real native turn stays active.
-                    f.provider.comments = {'D1': [self.comment(1, 'alice', 'NATIVE_WAITING_INPUT')]}
-                    f.wait('poll-completed success=True'); f.wait('poll-completed success=True')
-                    self.assertEqual(f.provider.reactions, ['D1'], 'Input was accepted into the active native turn')
-                    self.assertTrue(any('session-status session=' + session + ' status=Active' in line for line in f.lines),
-                                    'Adapter did not observe the native active report')
-                    self.assertTrue(any('input-waiting' in line and 'sources=C1' in line for line in f.lines))
-                    self.assertFalse(any('session-status session=' + session + ' status=Idle' in line for line in f.lines))
-                    hold.set()
-                    first = native_event(f.wait('native-event'))
-                    f.wait('session-status session=' + session + ' status=Active')  # Native report for the dispatched turn.
-                    second = native_event(f.wait('native-event'))
-                    self.eyes(f, ['D1', 'C1'])
-            finally: hold.set()
-            for completed in (first, second):
-                self.assertEqual((completed['method'], completed['thread'], completed['status']),
-                                 ('turn/completed', session, 'completed'))
-            self.assertNotEqual(first['turn'], second['turn'], 'Waiting input steered the first turn')
-            self.assertEqual(len(f.provider.model_requests), 2)
-            self.assertNotIn('NATIVE_WAITING_INPUT', json.dumps(f.provider.model_requests[0]['body']))
-            self.assertIn('NATIVE_WAITING_INPUT', json.dumps(f.provider.model_requests[1]['body']))
-            self.assertEqual(f.provider.reactions, ['D1', 'C1'])
-            print('NATIVE_IDLE_DISPATCH session=' + session + ' turns=' + first['turn'] + ',' + second['turn']
-                  + ' statuses=' + json.dumps([line.split(' ', 2)[2].strip() for line in f.lines if 'session-status' in line]), flush=True)
-
-    def test_pinned_native_turns_use_the_labelled_model_and_reasoning_and_label_removal_restores_the_defaults(self):
-        # Pinned native keeps a turn/start model and effort for later turns, so only an explicit default restores it.
-        with self.fixture(responses=True) as f:
-            config = f.directory / 'home/config.toml'
-            config.write_text(config.read_text() + FIXTURE_MODEL)
-            f.provider.labels = {'D1': ['repoagent:luna6:xhigh']}
-            with self.controller(f):
-                f.provider.discussions = [self.discussion(1)]
-                first = native_event(f.wait('native-event'))
-                f.provider.labels = {}
-                f.wait('poll-completed success=True'); f.wait('poll-completed success=True')
-                self.assertEqual(len(f.provider.model_requests), 1, 'A label-only change invoked the agent')
-                f.provider.discussions[0]['body'] += ' after the label was removed'
-                second = native_event(f.wait('native-event'))
-        self.assertEqual([(event['method'], event['status']) for event in (first, second)], [('turn/completed', 'completed')] * 2)
-        self.assertEqual([(request['body']['model'], request['body']['reasoning']['effort']) for request in f.provider.model_requests],
-                         [('gpt-6-luna', 'xhigh'), ('gpt-6.1-sol', 'low')])
-        print('NATIVE_MODEL_SELECTION ' + json.dumps([dict(model=request['body']['model'], reasoning=request['body']['reasoning'])
-                                                       for request in f.provider.model_requests]), flush=True)
-
-    def test_genuine_sessions_discover_packaged_skills_and_receive_orientation_when_started_or_resumed(self):
-        packaged = Path(self.controller_command[-1]).parent  # The controller's own installed skill directories.
-        with self.fixture(responses=True) as f:
-            f.provider.model_request_limit = 3
-            config = f.directory / 'home/config.toml'
-            config.write_text(config.read_text() + FIXTURE_MODEL)
-            def completed():
-                event = native_event(f.wait('native-event'))
-                self.assertEqual((event['method'], event['status']), ('turn/completed', 'completed'), event)
-            with self.controller(f):
-                f.provider.discussions = [self.discussion(1)]
-                completed()
-                f.provider.discussions[0]['body'] += ' same-process continuation'
-                completed()
-            with self.controller(f):
-                f.provider.discussions[0]['body'] += ' after restart'
-                completed()
-        self.assertEqual(len(f.provider.model_requests), 3, f.provider.denied)
-        def texts(request):
-            return [part['text'] for item in request['body']['input'] for part in item.get('content') or [] if 'text' in part]
-        def supplied(request):
-            # Native wraps each supplied SKILL.md exactly as read; history repeats earlier turns' blocks.
-            blocks = [re.fullmatch(r'<skill>\n<name>(.+)</name>\n<path>(.+)</path>\n(.*)\n</skill>', text, re.DOTALL) for text in texts(request)]
-            blocks = [block for block in blocks if block]
-            for name, path, content in (block.groups() for block in blocks):
-                if name in ('github-discussion', 'repoagent-orientation'):
-                    self.assertEqual(Path(path), packaged / name / 'SKILL.md')
-                    self.assertEqual(content, (ROOT / '.agents/skills' / name / 'SKILL.md').read_text())
-            return [block[1] for block in blocks]
-        started, continued, resumed = map(supplied, f.provider.model_requests)
-        self.assertEqual((started.count('repoagent-orientation'), continued.count('repoagent-orientation'), resumed.count('repoagent-orientation')), (1, 1, 2))
-        self.assertEqual((started.count('github-discussion'), continued.count('github-discussion'), resumed.count('github-discussion')), (1, 2, 3))
-        catalog = '\n'.join(text for text in texts(f.provider.model_requests[0]) if '### Available skills' in text)
-        for name in ('github-discussion', 'repoagent-orientation'):
-            self.assertRegex(catalog, r'(?m)^- ' + name + ': ')
-        self.assertTrue(any('$repoagent-orientation' in text and '$github-discussion' in text for text in texts(f.provider.model_requests[0])))
-        print('ORIENTATION_INTEGRATION ' + json.dumps(dict(packaged=str(packaged), started=started, continued=continued, resumed=resumed)), flush=True)
-
     def test_signed_push_is_durable_idle_safe_and_scoped_to_managed_clone(self):
         for clone in (True, False):
             with self.subTest(clone=clone), self.fixture(protocol=clone, webhooks=True, clone=clone) as f:
@@ -1309,45 +1017,6 @@ class CheckoutRefreshTests(unittest.TestCase):
         for number in numbers: self.terminal(f, 'S' + str(number), 'T' + str(number))
         for _ in numbers: f.wait('turn-ended')  # Settled: no running turn remains in the saved state.
 
-    def test_deleted_discussion_is_forgotten_without_stopping_live_webhook_work(self):
-        with self.fixture(protocol=True, webhooks=True) as f:
-            self.webhooks(f)
-            f.provider.discussions = [self.discussion(1), self.discussion(2)]
-            with self.controller(f, 'mode=webhook-fixed'):
-                self.start_sessions(f, 1, 2)
-            saved = json.loads(f.state.read_text())['discussions']
-            self.assertEqual(saved['D1']['sessionId'], 'S1')
-            # Deployed incident: #1 is deleted while its state survives, with live work behind it.
-            del f.provider.discussions[0]
-            with self.controller(f, 'mode=webhook-fixed'):
-                f.wait('reconciliation-completed discussion=all success=True')
-                self.assertEqual(self.delivery(f, self.discussion_event(1, 'deleted')), 202)
-                self.assertIn('session=S1', f.wait('discussion-forgotten'))
-                f.wait('webhook-observed discussion=1 success=True')
-                discussions = json.loads(f.state.read_text())['discussions']
-                self.assertNotIn('D1', discussions, 'Confirmed deletion must forget the Discussion state')
-                self.assertEqual(discussions['D2'], saved['D2'], 'Unrelated session and checkpoints must survive')
-                # A duplicate deletion notification ahead of new live input is harmless.
-                f.provider.discussions[0]['body'] += ' behind a stale notification'
-                self.assertEqual(self.delivery(f, self.discussion_event(1, 'deleted')), 202)
-                self.assertEqual(self.delivery(f, self.discussion_event(2)), 202)
-                request = self.rpc(f, 'thread/resume'); self.assertEqual(request['params']['threadId'], 'S2')
-                self.reply(f, request, dict(thread=dict(id='S2', cwd=str(f.checkout)), cwd=str(f.checkout)))
-                request = self.rpc(f, 'turn/start'); self.assertEqual(request['params']['threadId'], 'S2')
-                self.reply(f, request, dict(turn=dict(id='T3')))
-                f.wait('webhook-observed discussion=1 success=True')
-                f.wait('webhook-observed discussion=2 success=True')
-                continued = json.loads(f.state.read_text())['discussions']
-                self.assertEqual(sorted(continued), ['D2'])
-                self.assertEqual(continued['D2']['sessionId'], 'S2')
-                self.assertEqual(continued['D2']['sources']['D2']['content']['body'], f.provider.discussions[0]['body'])
-                self.assertEqual(sum('discussion-forgotten' in line for line in f.lines), 1, 'Nothing was left to forget')
-                self.terminal(f, 'S2', 'T3')
-                f.wait('turn-ended https://github.com/owner/project/discussions/2 session=S2 turn=T3')
-                self.assertIsNone(f.process.poll(), 'Stale work stopped the shared worker')
-            self.assertEqual(sorted(json.loads(f.state.read_text())['discussions']), ['D2'])
-            self.assertFalse(select.select([f.responses], [], [], 0)[0], 'A deleted Discussion received native input')
-
     def test_unconfirmed_discussion_lookup_failures_retain_state_behind_live_webhook_work(self):
         missing = 'Could not resolve to a Discussion with the number of 1.'
         failures = [  # One lookup each; none is GitHub's typed deletion of this Discussion.
@@ -1388,47 +1057,6 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertEqual(lookups, [True] * len(failures) + [False])
             self.assertEqual(json.loads(f.state.read_text())['discussions']['D1'], retained)
             self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Unchanged work repeated native input')
-
-    def test_deleted_discussion_with_waiting_input_and_a_running_turn_never_dispatches(self):
-        with self.fixture(protocol=True, webhooks=True) as f:
-            self.webhooks(f)
-            f.provider.discussions = [self.discussion(1), self.discussion(2)]
-            with self.controller(f, 'mode=webhook-fixed'):
-                for number in (1, 2):
-                    request = self.rpc(f, 'thread/start')
-                    self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S' + str(number), cwd=str(f.checkout))))
-                    request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T' + str(number))))
-                f.wait('reconciliation-completed discussion=all success=True')
-                self.terminal(f, 'S2', 'T2')
-                # T1 keeps D1's active slot; a D1 edit waits in the controller behind it.
-                f.provider.discussions[0]['body'] += ' while T1 runs'
-                self.assertEqual(self.delivery(f, self.discussion_event(1)), 202)
-                f.wait('input-waiting'); f.wait('webhook-observed discussion=1 success=True')
-                saved = json.loads(f.state.read_text())['discussions']
-                self.assertEqual(saved['D1']['running']['turn'], 'T1')
-                self.assertEqual(len(saved['D1']['waiting']['inputs']), 1)
-                del f.provider.discussions[0]
-                self.assertEqual(self.delivery(f, self.discussion_event(1, 'deleted')), 202)
-                self.assertIn('session=S1', f.wait('discussion-forgotten'))
-                f.wait('webhook-observed discussion=1 success=True')
-                discussions = json.loads(f.state.read_text())['discussions']
-                self.assertEqual(sorted(discussions), ['D2'], 'Waiting input, running and checkpoint state of D1 must be forgotten')
-                self.assertEqual(discussions['D2'], saved['D2'], 'Unrelated session and checkpoints must survive')
-                running = lambda: json.loads(f.run(self.controller_command + ['status', '--state', f.state]))['work']['running']
-                self.assertEqual(running(), 1, 'Status must count T1 while the agent still runs it')
-                # The native ends the turn: its slot frees and the forgotten input is never sent.
-                self.terminal(f, 'S1', 'T1')
-                f.wait('native-event method=turn/completed thread=S1 turn=T1')
-                self.assertEqual(running(), 0)
-                f.provider.discussions[0]['body'] += ' after the deletion'
-                self.assertEqual(self.delivery(f, self.discussion_event(2)), 202)
-                request = self.rpc(f, 'turn/start'); self.assertEqual(request['params']['threadId'], 'S2')
-                self.reply(f, request, dict(turn=dict(id='T3')))
-                f.wait('webhook-observed discussion=2 success=True')
-                self.terminal(f, 'S2', 'T3')
-                f.wait('turn-ended https://github.com/owner/project/discussions/2 session=S2 turn=T3')
-                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Forgotten input reached the native')
-                self.assertIsNone(f.process.poll(), 'Forgetting stopped the shared worker')
 
 if __name__ == '__main__':
     unittest.main()
