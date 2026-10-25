@@ -70,14 +70,14 @@ The same image can run behind external HTTP ingress in Azure Container Apps or a
 
 A Cloudflare named tunnel can be the HTTPS ingress for fixed-URL mode. The operator owns the Cloudflare account, the domain and the tunnel. The controller and image do not run `cloudflared` for this mode.
 
-1. In Cloudflare, create a remotely managed tunnel and add a **Published application** route, for example `agent.example.com`, with service URL `http://localhost:8080` (the listener port the local Docker wrapper publishes on 127.0.0.1).
+1. In Cloudflare, create a remotely managed tunnel and add a **Published application** route, for example `agent.example.com`, with service URL `http://127.0.0.1:8080` (the listener port the local Docker wrapper publishes on 127.0.0.1).
 2. On the Docker host, save the tunnel token to a file only the connector's user can read, and run the connector from it (`cloudflared` 2025.4.0 or later). The token then stays out of command arguments and shell history:
 
    ```sh
    cloudflared tunnel run --token-file /path/to/tunnel-token
    ```
 
-3. Configure the instance with `--mode fixed-url --public-url https://agent.example.com --listen-port 8080`, then `check` and `start` as above.
+3. Run the `configure` command above with `--mode fixed-url --public-url https://agent.example.com --listen-port 8080`, then `check` and `start`.
 
 Anyone holding the token can run the tunnel, so treat it as a secret. Keep it out of the instance configuration, the state volume and logs. Restarting the container or the connector keeps the hostname, so the saved hook ID and URL stay unchanged. Moving an existing Quick Tunnel or fixed-URL instance to the tunnel hostname follows the hostname change above: stop, configure the new origin, start. See [Create a remotely managed tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/), [tunnel tokens](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/remote-tunnel-permissions/) and [run parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/).
 
