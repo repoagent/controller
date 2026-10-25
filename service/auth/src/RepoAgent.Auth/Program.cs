@@ -1,5 +1,6 @@
 using Azure.Data.Tables;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using RepoAgent.Auth;
 
 if (args.FirstOrDefault() == "cleanup")
@@ -27,8 +28,8 @@ builder.Services.AddSingleton<IBrokerState>(services => new TableBrokerState(ser
 builder.Services.AddSingleton(services => new DeviceRevocation(services.GetRequiredService<IBrokerState>(),
     services.GetRequiredService<BrokerOptions>().DeploymentEpoch, services.GetRequiredService<TimeProvider>()));
 RequestProtection.Add(builder);
-IssuanceServices.Add(builder);
-builder.Services.AddHealthChecks().AddCheck<BrokerReadiness>("composition");
+var ready = BrokerSettings.Ready(IssuanceServices.Add(builder));
+builder.Services.AddHealthChecks().AddCheck("composition", () => ready ? HealthCheckResult.Healthy() : HealthCheckResult.Unhealthy());
 var app = builder.Build();
 _ = app.Services.GetRequiredService<BrokerOptions>(); // Fail startup on invalid security/budget configuration.
 app.UseRouting();
@@ -49,5 +50,3 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 }).DisableRateLimiting().DisableRequestTimeout();
 BrokerEndpoints.Map(app);
 app.Run();
-
-public partial class Program;

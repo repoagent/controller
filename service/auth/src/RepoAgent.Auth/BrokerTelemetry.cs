@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
-using System.Text.Json;
 using Azure.Core;
 using Azure.Identity;
 using Azure.Monitor.OpenTelemetry.Exporter;
@@ -54,22 +53,11 @@ public static class BrokerTelemetry
 
     internal static AzureMonitorExporterOptions? CreateOptions(IConfiguration configuration, string? clientId)
     {
-        var connection = configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
-        if (string.IsNullOrEmpty(connection)) return null;
-        var fields = connection.Split(';', StringSplitOptions.RemoveEmptyEntries)
-            .Select(value => value.Split('=', 2)).ToDictionary(value => value[0], value => value[1], StringComparer.OrdinalIgnoreCase);
-        if (fields.Keys.Any(field => field is not ("InstrumentationKey" or "IngestionEndpoint" or "LiveEndpoint" or "ApplicationId"))
-            || !fields.TryGetValue("InstrumentationKey", out var key) || !Guid.TryParse(key, out _)
-            || !fields.TryGetValue("IngestionEndpoint", out var endpoint)
-            || !Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) || uri.Scheme != "https"
-            || !uri.Host.EndsWith(".in.applicationinsights.azure.com", StringComparison.OrdinalIgnoreCase)
-            || !uri.IsDefaultPort || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0
-            || uri.AbsolutePath != "/" || !Guid.TryParse(clientId, out _))
-            throw new InvalidOperationException("Invalid monitoring configuration.");
+        if (BrokerSettings.Monitoring(configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"], clientId) is not { } monitoring) return null;
         return new AzureMonitorExporterOptions
         {
-            ConnectionString = connection,
-            Credential = new ManagedIdentityCredential(new ManagedIdentityCredentialOptions(ManagedIdentityId.FromUserAssignedClientId(clientId))
+            ConnectionString = monitoring.Connection,
+            Credential = new ManagedIdentityCredential(new ManagedIdentityCredentialOptions(ManagedIdentityId.FromUserAssignedClientId(monitoring.ClientId))
             { Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(1) } }),
             SamplingRatio = 0.01F, TracesPerSecond = null, EnableTraceBasedLogsSampler = false,
             EnableLiveMetrics = false, EnableStandardMetrics = false, EnablePerformanceCounters = false,
@@ -91,7 +79,7 @@ public static class BrokerTelemetry
     }
 
     /// <summary>One completed invocation, including failures. SDK options are supplied by the trusted composition.</summary>
-    public static void ExportCleanupOnce(JsonElement summary, AzureMonitorExporterOptions options)
+    public static void ExportCleanupOnce(IReadOnlyList<CleanupObservation> observations, AzureMonitorExporterOptions options)
     {
         try
         {
@@ -109,23 +97,7 @@ public static class BrokerTelemetry
             using var provider = Sdk.CreateMeterProviderBuilder().AddMeter(meter.Name)
                 .SetResourceBuilder(ResourceBuilder.CreateEmpty().AddService("repoagent-auth-cleanup", serviceInstanceId: "repoagent-auth-cleanup"))
                 .AddReader(reader).Build();
-            void Record(string name, double? value)
-            {
-                if (value is { } number) meter.CreateHistogram<double>("repoagent.auth.cleanup." + name).Record(number);
-            }
-            static double? Number(JsonElement item) => item.ValueKind == JsonValueKind.Number ? item.GetDouble() : null;
-            var ages = summary.GetProperty("cursorAndCycleAges").EnumerateArray().ToArray();
-            var cursor = ages.Select(age => Number(age.GetProperty("cursorAgeSeconds"))).Max();
-            var cycle = ages.Select(age => Number(age.GetProperty("cycleAgeSeconds"))).Max();
-            var overdue = Number(summary.GetProperty("oldestObservedOverduePayloadAgeSeconds"));
-            Record("completed", 1);
-            Record("failures", summary.GetProperty("failures").GetInt32());
-            Record("unknown_deadlines", summary.GetProperty("unknownDeadlineCount").GetInt32());
-            Record("cursor_age_max_seconds", cursor);
-            Record("cycle_age_max_seconds", cycle);
-            Record("cycle_age_unknown", ages.Count(age => age.GetProperty("cycleAgeSeconds").ValueKind == JsonValueKind.Null));
-            Record("overdue_payload_age_max_seconds", overdue);
-            Record("stale_cursor_with_overdue_observation", cursor >= 900 && overdue >= 900 ? 1 : 0);
+            foreach (var observation in observations) meter.CreateHistogram<double>(observation.Metric).Record(observation.Value);
             reader.Collect(2000); // This alone is not a deadline: the credential adapter also bounds SDK refresh.
         }
         catch (Exception)
