@@ -208,6 +208,65 @@ sealed class InMemoryControllerState : IControllerState
     }
 }
 
+/// <summary>
+/// The agent runtime as its process answers and reports. Sessions start idle as S1, S2, and so on. Each turn request takes the
+/// next scripted answer, else is accepted as T1, T2, and so on; an answer can report events first, as the reader can deliver a
+/// completion before the request's response. Events are raised on the calling thread, in the order a test reports them.
+/// </summary>
+sealed class FakeAgentRuntime : IAgentRuntime
+{
+    readonly Queue<Func<AgentTurnRequest, AgentTurnAccepted>> answers = new();
+    int sessions, turns;
+
+    public event Action<AgentRuntimeEvent>? Changed;
+    public int Epoch { get; private set; } = 1;
+    /// <summary>Each turn request, recorded once its answer is decided.</summary>
+    public List<AgentTurnRequest> Requests { get; } = [];
+    public List<string> Resumed { get; } = [];
+    public AgentSessionStatus Resumes { get; set; } = AgentSessionStatus.Idle;
+
+    /// <summary>Answers the next turn request: <paramref name="answer"/> runs as the runtime handles it and can report events.</summary>
+    public void Answer(Func<AgentTurnRequest, AgentTurnAccepted> answer) => answers.Enqueue(answer);
+
+    public Task Restart(Action<int> whileStopped, CancellationToken ct)
+    {
+        whileStopped(++Epoch);
+        return Task.CompletedTask;
+    }
+
+    public Task<(string SessionId, AgentSessionStatus Status)> StartSession(CancellationToken ct) =>
+        Task.FromResult(($"S{++sessions}", AgentSessionStatus.Idle));
+
+    /// <summary>Runs as the runtime handles a resume, before its response; it can report events.</summary>
+    public Action<string>? Resuming { get; set; }
+
+    public Task<AgentSessionStatus> ResumeSession(string sessionId, CancellationToken ct)
+    {
+        Resuming?.Invoke(sessionId);
+        Resumed.Add(sessionId);
+        return Task.FromResult(Resumes);
+    }
+
+    public Task<AgentTurnAccepted> StartTurn(AgentTurnRequest request, CancellationToken ct)
+    {
+        var answer = answers.TryDequeue(out var scripted) ? scripted : _ => new($"T{turns + 1}", false);
+        try { return Task.FromResult(answer(request)); }
+        catch (Exception error) { return Task.FromException<AgentTurnAccepted>(error); }
+        finally { turns++; Requests.Add(request); }
+    }
+
+    public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => Task.FromResult<(string?, string?)>((null, null));
+
+    public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<NativeModel>>([new("gpt-6-luna", true, "medium", ["medium", "xhigh"])]);
+
+    public void Report(string session, AgentSessionStatus status) => Changed?.Invoke(new AgentSessionStatusChanged(Epoch, session, status));
+    public void Started(string session, string turn) => Changed?.Invoke(new AgentTurnStarted(Epoch, session, turn));
+    public void Completed(string session, string turn, string status = "completed", string? rejection = null, int? epoch = null) =>
+        Changed?.Invoke(new AgentTurnCompleted(epoch ?? Epoch, session, turn, status, rejection));
+    public void Disconnect() => Changed?.Invoke(new AgentRuntimeDisconnected(Epoch));
+}
+
 /// <summary>The controller's log, as kind and message pairs in the order the core wrote them.</summary>
 sealed class RecordingLog : IControllerLog
 {

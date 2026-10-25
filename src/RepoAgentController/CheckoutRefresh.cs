@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 namespace RepoAgentController;
 
 /// <summary>Excludes checkout updates from all admitted native work, including uncertain work.</summary>
-sealed class CheckoutRefresh : IAsyncDisposable
+sealed class CheckoutRefresh : IAgentTurnJournal, IAsyncDisposable
 {
     readonly ManagedCheckout checkout;
     readonly string path;
@@ -14,7 +14,7 @@ sealed class CheckoutRefresh : IAsyncDisposable
     readonly JsonObject journal, active;
     readonly Dictionary<(string Thread, string Turn), (bool Done, long Sequence)> turns = [];
     Task worker = Task.CompletedTask;
-    Codex? codex;
+    AgentSessions? sessions;
     bool blocked, eligible;
     long sequence;
     long retryStarted;
@@ -74,9 +74,9 @@ sealed class CheckoutRefresh : IAsyncDisposable
         Signal();
     }
 
-    public async Task Start(Codex native, TimeSpan interval, CancellationToken ct)
+    public async Task Start(AgentSessions native, TimeSpan interval, CancellationToken ct)
     {
-        codex = native;
+        sessions = native;
         Request();
         await exclusion.WaitAsync(ct);
         try { await Reconcile(ct); }
@@ -128,7 +128,7 @@ sealed class CheckoutRefresh : IAsyncDisposable
                     Save();
                 }
             }, ct);
-            if (changed) await codex!.Reload(ct);
+            if (changed) await sessions!.Reload(ct);
             lock (journalLock)
             {
                 if (blocked) throw new IOException("Native refresh became uncertain");
@@ -307,25 +307,27 @@ sealed class CheckoutRefresh : IAsyncDisposable
             epoch = value; turns.Clear();
         }
     }
-    public void Observe(int sourceEpoch, string method, JsonNode? parameters)
+    public void Observe(AgentRuntimeEvent change)
     {
         lock (journalLock)
         {
-            if (sourceEpoch != epoch) return;
+            if (change.Epoch != epoch) return;
             try
             {
-                if (method == "disconnect") { Fault("Native transport disconnected; completion unknown"); return; }
-                if (method is not ("turn/started" or "turn/completed")) return;
-                var thread = parameters?.Text("threadId") ?? "";
-                var turn = parameters?["turn"]?.Text("id") ?? "";
+                if (change is AgentRuntimeDisconnected) { Fault("Native transport disconnected; completion unknown"); return; }
+                string thread, turn;
+                bool completed;
+                if (change is AgentTurnStarted started) (thread, turn, completed) = (started.SessionId, started.TurnId ?? "", false);
+                else if (change is AgentTurnCompleted ended) (thread, turn, completed) = (ended.SessionId, ended.TurnId ?? "", true);
+                else return;
                 var key = (thread, turn);
                 if (!Valid(thread) || !Valid(turn)) throw new IOException("Malformed native lifecycle identity");
                 var known = turns.TryGetValue(key, out var previous);
                 var awaiting = active.Any(item => item.Value!.Text("thread") == thread && item.Value!.Text("turn") == "");
                 if (!known && !awaiting) throw new IOException("Unmatched native lifecycle event");
-                if (method == "turn/completed" && known && previous.Done) return;
-                if (method == "turn/started" && known && previous.Done) throw new IOException("Native restarted a completed turn identity");
-                Track(key, method == "turn/completed" || previous.Done, ++sequence);
+                if (completed && known && previous.Done) return;
+                if (!completed && known && previous.Done) throw new IOException("Native restarted a completed turn identity");
+                Track(key, completed || previous.Done, ++sequence);
                 Complete(); Save();
             }
             catch (Exception error) { blocked = true; try { Fault(error.Message); } catch { } }
