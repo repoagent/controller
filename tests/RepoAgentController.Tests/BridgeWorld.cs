@@ -5,8 +5,9 @@ namespace RepoAgentController.Tests;
 
 /// <summary>
 /// The bridge in-process as the controller composes it, across controller lifetimes: the real Bridge, AgentSessions,
-/// RepositorySettings, GitHubOutbox and ControllerStatus over state files in a temporary directory, the readable Discussions
-/// fake, and a new agent runtime fake for each lifetime, as each lifetime owns its runtime process. Time moves only when a test
+/// RepositorySettings, GitHubOutbox and ControllerStatus, the Discussion state in memory (or, with <see cref="Files"/>, in the
+/// state file) and the other state in files in a temporary directory, the readable Discussions fake, and a new agent runtime fake
+/// for each lifetime, as each lifetime owns its runtime process. Time moves only when a test
 /// advances it. What a loop would do on its next wake is a call here: <see cref="Dispatch"/> for the dispatch loop,
 /// <see cref="Deliver"/> for the outbox and <see cref="Refresh"/> for the settings refresh.
 /// </summary>
@@ -30,6 +31,13 @@ sealed class BridgeWorld : IAsyncDisposable
     /// <summary>Whether lifetimes read the REPOAGENT_ variables, as <c>--repository-settings</c> selects.</summary>
     public bool RepositorySettings { get; set; } = true;
     public string StatePath { get; }
+    /// <summary>The Discussion state each lifetime reads and saves, unless <see cref="Files"/> keeps it in the state file.</summary>
+    public InMemoryDiscussionStore State { get; } = new();
+    /// <summary>
+    /// Whether lifetimes keep the Discussion state in the state file, leased as a controller leases it, for tests of how it reads
+    /// a file or of what status reports from it.
+    /// </summary>
+    public bool Files { get; set; }
     /// <summary>The managed checkout's admission, as a lifetime with a managed checkout has one; none by default.</summary>
     public RecordingCheckoutAdmission? Admission { get; set; }
     /// <summary>Prepares each lifetime's agent runtime before the bridge uses it, as the agent's catalogue and configuration.</summary>
@@ -56,7 +64,7 @@ sealed class BridgeWorld : IAsyncDisposable
         });
     }
 
-    sealed record Lifetime(CancellationTokenSource Stop, LeasedStateStore Lease, ControllerStatus Status, RepositorySettings Settings, GitHubOutbox Outbox,
+    sealed record Lifetime(CancellationTokenSource Stop, LeasedStateStore? Lease, StateStore Store, ControllerStatus Status, RepositorySettings Settings, GitHubOutbox Outbox,
         FakeAgentRuntime Runtime, AgentSessions Sessions)
     {
         public Bridge Bridge { get; set; } = null!;
@@ -80,7 +88,8 @@ sealed class BridgeWorld : IAsyncDisposable
         var runtime = new FakeAgentRuntime(counts.Sessions, counts.Turns);
         PrepareRuntime?.Invoke(runtime);
         while (answers.TryDequeue(out var answer)) runtime.Answer(answer);
-        var current = new Lifetime(stop, new LeasedStateStore(StatePath, Repository), new ControllerStatus(StatePath, Repository, "polling", Clock),
+        var lease = Files ? new LeasedStateStore(StatePath, Repository) : null;
+        var current = new Lifetime(stop, lease, lease?.Store ?? new StateStore(State, Repository), new ControllerStatus(StatePath, Repository, "polling", Clock),
             new RepositorySettings(RepositorySettingsCatalogue.Settings, RepositorySettings ? Variables : null, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             new GitHubOutbox(Repository, GitHub, InMemoryDiscussions.App, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             runtime, new AgentSessions(runtime, new ControllerLog()));
@@ -88,7 +97,7 @@ sealed class BridgeWorld : IAsyncDisposable
         current.Sessions.TurnsChanged += current.Status.Running;
         current.Sessions.TurnsChanged += running => { lock (log) mostActive = Math.Max(mostActive, running.Length); };
         await current.Settings.Refresh(stop.Token);
-        current.Bridge = new(Repository, GitHub, InMemoryDiscussions.App, current.Sessions, current.Lease.Store, current.Outbox, [.. enroll], current.Settings,
+        current.Bridge = new(Repository, GitHub, InMemoryDiscussions.App, current.Sessions, current.Store, current.Outbox, [.. enroll], current.Settings,
             new AgentInputJson(), new ControllerLog(), Clock, Admission);
         current.Bridge.ResumeInterrupted();
     }
@@ -103,7 +112,7 @@ sealed class BridgeWorld : IAsyncDisposable
         await ending.Stop.CancelAsync();
         await ending.Outbox.DisposeAsync();
         ending.Status.Dispose();
-        ending.Lease.Dispose();
+        ending.Lease?.Dispose();
         ending.Stop.Dispose();
     }
 
@@ -156,8 +165,12 @@ sealed class BridgeWorld : IAsyncDisposable
         Finish(session, turn, failed);
     }
 
-    public (string Session, string Turn) Running(int number) =>
-        (Record(number)!["sessionId"]!.GetValue<string>(), Record(number)!["running"]!["turn"]!.GetValue<string>());
+    public (string Session, string Turn) Running(int number) => Files
+        ? (Record(number)!["sessionId"]!.GetValue<string>(), Record(number)!["running"]!["turn"]!.GetValue<string>())
+        : (Saved(number)!.SessionId!, Saved(number)!.Running!.Turn);
+
+    /// <summary>The Discussion's record as last saved in memory.</summary>
+    public DiscussionRecord? Saved(int number) => State.Saved?.Discussions.GetValueOrDefault("D" + number);
 
     /// <summary>Every turn request of every lifetime so far, in order.</summary>
     public IReadOnlyList<AgentTurnRequest> Turns => [.. ended, .. lifetime?.Runtime.Requests ?? []];
@@ -186,15 +199,32 @@ sealed class BridgeWorld : IAsyncDisposable
         }
     }
 
-    /// <summary>The Discussion's record as the state file holds it.</summary>
-    public JsonObject? Record(int number) => JsonNode.Parse(File.ReadAllText(StatePath))!["discussions"]!["D" + number] as JsonObject;
+    /// <summary>The Discussion's record as the state file holds it, or without <see cref="Files"/> as the file adapter writes the last save.</summary>
+    public JsonObject? Record(int number)
+    {
+        Mirror();
+        return JsonNode.Parse(File.ReadAllText(StatePath))!["discussions"]!["D" + number] as JsonObject;
+    }
 
-    /// <summary>The Discussion IDs with an agent session, as the state file holds them.</summary>
-    public IReadOnlyList<string> WithSessions => [.. JsonNode.Parse(File.ReadAllText(StatePath))!["discussions"]!.AsObject()
-        .Where(entry => entry.Value!["sessionId"]?.GetValue<string>() is { Length: > 0 }).Select(entry => entry.Key).Order()];
+    /// <summary>The Discussion IDs with an agent session, as last saved.</summary>
+    public IReadOnlyList<string> WithSessions => Files
+        ? [.. JsonNode.Parse(File.ReadAllText(StatePath))!["discussions"]!.AsObject()
+            .Where(entry => entry.Value!["sessionId"]?.GetValue<string>() is { Length: > 0 }).Select(entry => entry.Key).Order()]
+        : State.Saved is { } saved ? [.. saved.Discussions.Where(entry => entry.Value.SessionId is { Length: > 0 }).Select(entry => entry.Key).Order()] : [];
 
     /// <summary>The operator status of the running lifetime, or as the last one left it.</summary>
-    public JsonObject Status() => lifetime?.Status.Snapshot() ?? ControllerStatus.Read(StatePath, Clock)!;
+    public JsonObject Status()
+    {
+        Mirror();
+        return lifetime?.Status.Snapshot() ?? ControllerStatus.Read(StatePath, Clock)!;
+    }
+
+    // ControllerStatus reads the state file until it moves to the core, and the record assertions predate the fake, so without
+    // Files the last save is written there as the file adapter writes it. No lifetime reads it back.
+    void Mirror()
+    {
+        if (!Files && State.Saved is { } saved) new ControllerStateFiles(StatePath).WriteDiscussions(saved);
+    }
 
     /// <summary>The numbers of the Discussions with input waiting, as status reports them.</summary>
     public int[] Waiting()

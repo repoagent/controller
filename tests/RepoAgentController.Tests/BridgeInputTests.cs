@@ -31,7 +31,7 @@ public sealed class BridgeInputTests
     [Fact]
     public async Task Agent_input_and_checkpoints_are_the_bytes_ec1ccf7_sent_and_saved_for_the_golden_conversation()
     {
-        await using var world = new BridgeWorld();
+        await using var world = new BridgeWorld { Files = true }; // The saved bytes are the file's.
         var golden = DiscussionJsonGoldenTests.Golden["ec1ccf7"]!;
         JsonNode Saved() => JsonNode.Parse(File.ReadAllText(world.StatePath))!["discussions"]!["D_kwDOGolden7"]!;
         world.GitHub.Put(DiscussionJsonGoldenTests.Observe("first"));
@@ -275,7 +275,7 @@ public sealed class BridgeInputTests
         Assert.Empty(retained!); // No receipt was retained before the agent accepted the batch carrying its source.
         await world.Deliver();
         Assert.True(world.GitHub.HasEyes("C1") && world.GitHub.HasEyes("C2"));
-        Assert.Null(world.Record(1)!["waiting"]);
+        Assert.Null(world.Saved(1)!.Waiting);
     }
 
     [Fact]
@@ -312,7 +312,7 @@ public sealed class BridgeInputTests
         }
         Assert.Equal(bodies, delivered);
         Assert.InRange(world.Turns.Count - 1, 2, 5);
-        Assert.Null(world.Record(1)!["waiting"]);
+        Assert.Null(world.Saved(1)!.Waiting);
     }
 
     [Fact]
@@ -344,8 +344,8 @@ public sealed class BridgeInputTests
         await world.Poll();
         Assert.Null(world.Envelope(3)["_bridge"]!["redelivery"]);
         Assert.Equal(["C2"], BridgeWorld.Subjects(world.Envelope(3)));
-        Assert.Null(world.Record(1)!["pending"]);
-        Assert.Null(world.Record(1)!["waiting"]);
+        Assert.Null(world.Saved(1)!.Pending);
+        Assert.Null(world.Saved(1)!.Waiting);
     }
 
     [Fact]
@@ -435,9 +435,9 @@ public sealed class BridgeInputTests
         await world.Dispatch();
 
         Assert.Equal(["C1"], BridgeWorld.Subjects(world.Envelope(2)));
-        var waiting = world.Record(1)!["waiting"]!;
-        Assert.Equal(["C2"], waiting["inputs"]!.AsArray().Select(input => input!["change"]!["subject"]!["id"]!.GetValue<string>()));
-        Assert.Null(waiting["retry"]);
+        var waiting = world.Saved(1)!.Waiting!;
+        Assert.Equal(["C2"], waiting.Inputs.Select(input => JsonNode.Parse(input.ChangeJson)!["subject"]!["id"]!.GetValue<string>()));
+        Assert.Null(waiting.Retry);
     }
 
     [Fact]
@@ -482,14 +482,15 @@ public sealed class BridgeInputTests
         Assert.Equal(3, world.Turns.Count);
         Assert.Equal(1, world.GitHub.Writes("C1"));
         Assert.False(world.GitHub.HasEyes("C1"));
-        Assert.Null(world.Record(1)!["pending"]);
-        Assert.Null(world.Record(1)!["waiting"]);
+        Assert.Null(world.Saved(1)!.Pending);
+        Assert.Null(world.Saved(1)!.Waiting);
     }
 
     [Fact]
     public async Task A_delivery_a_controller_from_before_the_waiting_queue_left_pending_ends_at_the_next_start_and_its_input_is_observed_again()
     {
         await using var world = Enrolled();
+        world.Files = true; // A hand edit of the state file.
         await world.Begin(1);
         await world.Poll();
         await world.Deliver();
@@ -514,6 +515,7 @@ public sealed class BridgeInputTests
     public async Task A_checkpoint_holding_a_key_no_writer_writes_is_kept_until_the_next_observation_rewrites_it_without_input()
     {
         await using var world = Enrolled();
+        world.Files = true; // A hand edit of the state file.
         await world.Begin(1);
         await world.Poll();
         world.Finish(1);

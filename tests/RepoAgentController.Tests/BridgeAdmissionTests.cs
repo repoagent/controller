@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace RepoAgentController.Tests;
@@ -223,8 +224,8 @@ public sealed class BridgeAdmissionTests
         Assert.Contains(world.Logged("input-waiting"), line => line.Contains(" session=S1 status=Unknown "));
         await world.End();
 
-        Assert.Null(world.Record(1)!["pending"]);
-        Assert.Equal(["C1", "C2"], world.Record(1)!["waiting"]!["inputs"]!.AsArray().Select(input => input!["change"]!["subject"]!["id"]!.GetValue<string>()));
+        Assert.Null(world.Saved(1)!.Pending);
+        Assert.Equal(["C1", "C2"], world.Saved(1)!.Waiting!.Inputs.Select(input => JsonNode.Parse(input.ChangeJson)!["subject"]!["id"]!.GetValue<string>()));
         Assert.Equal((2, 2), (world.Status()["work"]!["waiting"]!.GetValue<int>(), world.Status()["sessions"]![0]!["waiting"]!.GetValue<int>()));
 
         // A restarted runtime has not loaded S1: the bridge loads it and uses only the status it reports.

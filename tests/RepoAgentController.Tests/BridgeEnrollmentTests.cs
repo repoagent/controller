@@ -152,13 +152,35 @@ public sealed class BridgeEnrollmentTests
         Assert.Equal(["D2"], Delivered(world));
     }
 
+    [Fact]
+    public async Task Category_starts_that_could_not_be_saved_stay_reconciled_and_are_saved_with_the_next_state_change()
+    {
+        await using var world = new BridgeWorld();
+        world.Variables.Set(Setting, "Agents");
+        await world.Begin();
+        Assert.True(await world.Poll());
+        Assert.Equal(["Agents"], world.State.Saved!.CategoryStarts.Keys);
+
+        world.State.FailWrites = true; // As a full disk fails the save.
+        world.Variables.Set(Setting, null);
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        await world.Refresh();
+        Assert.Equal(["the category enrollment starts could not be saved: No space left on device"], world.Logged("repository-settings-error"));
+        Assert.Equal(["Agents"], world.State.Saved!.CategoryStarts.Keys);
+
+        world.State.FailWrites = false;
+        world.GitHub.Open(1, Mention);
+        Assert.True(await world.Poll());
+        Assert.Empty(world.State.Saved!.CategoryStarts);
+    }
+
     // Starts that are not an object of text, as only a hand edit leaves them, are replaced by the first start recorded.
     [Theory]
     [InlineData("5")]
     [InlineData("""{"Agents":"2026-10-24T08:00:00Z","Q&A":7}""")]
     public async Task Category_starts_no_writer_leaves_are_gone_once_their_replacement_is_forgotten(string starts)
     {
-        await using var world = new BridgeWorld();
+        await using var world = new BridgeWorld { Files = true }; // A state file a controller left.
         Directory.CreateDirectory(Path.GetDirectoryName(world.StatePath)!);
         File.WriteAllText(world.StatePath, """{"version":1,"repository":"owner/repository","discussions":{},"enrollmentCategories":""" + starts + "}");
         world.Variables.Set(Setting, "Agents");
@@ -276,6 +298,7 @@ public sealed class BridgeEnrollmentTests
     // then changes its record at this dotted path: the JSON text replaces the value there, or null removes it.
     static async Task Damage(BridgeWorld world, string path, string? json, bool waiting = false)
     {
+        world.Files = true;
         world.GitHub.Open(1, Mention);
         world.GitHub.React(1, "D1", "R1", "HEART", "octocat");
         world.GitHub.Open(2, Mention);
