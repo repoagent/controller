@@ -128,25 +128,24 @@ public sealed class ControllerStatusProjectionTests
     }
 
     [Theory]
-    [InlineData("input-waiting", true, 0)]
-    [InlineData("input-requeued", true, 0)]
-    [InlineData("turn-ended", true, 0)]
-    [InlineData("discovered", false, 0)]
-    [InlineData("ready", true, 1)]
-    [InlineData("poll-error", true, 1)]
-    [InlineData("forwarded", true, 1)]
-    public void A_work_event_only_notifies_consumers_and_an_event_status_reports_is_recorded(string kind, bool notified, int writes)
+    [InlineData("input-waiting", true, false)]
+    [InlineData("input-requeued", true, false)]
+    [InlineData("turn-ended", true, false)]
+    [InlineData("discovered", false, false)]
+    [InlineData("ready", true, true)]
+    [InlineData("poll-error", true, true)]
+    [InlineData("forwarded", true, true)]
+    public void A_work_event_only_notifies_consumers_and_an_event_status_reports_is_recorded(string kind, bool notified, bool recorded)
     {
         using var status = Open();
         var changes = 0;
         status.Changed += () => changes++;
-        var before = (record.Writes, record.Recorded);
+        var before = record.Recorded;
 
         status.Record(Entry(1, kind, "https://github.com/owner/repository/discussions/1"));
 
         Assert.Equal(notified ? 1 : 0, changes);
-        Assert.Equal(before.Writes + writes, record.Writes);
-        if (writes == 0) Assert.Same(before.Recorded, record.Recorded);
+        if (!recorded) Assert.Same(before, record.Recorded);
         else Assert.Equal(At(1), record.Recorded!.Controller!.UpdatedAt);
     }
 
@@ -181,13 +180,15 @@ public sealed class ControllerStatusProjectionTests
             status.Running(["S2", "S1"]);
             Assert.Equal(["S1", "S2"], record.Recorded!.RunningSessions);
             Assert.Equal((1, 1), (status.Snapshot().Work.Sessions, status.Snapshot().Work.Running)); // S1's record holds no turn.
-            var (writes, changes) = (record.Writes, 0);
+            var (before, changes) = (record.Recorded, 0);
             status.Changed += () => changes++;
             status.Running(["S1", "S2"]); // The same sessions in another order change nothing.
-            Assert.Equal((writes, 0), (record.Writes, changes));
+            Assert.Same(before, record.Recorded);
+            Assert.Equal(0, changes);
             status.Running(["S1"]);
+            Assert.Equal(["S1"], record.Recorded!.RunningSessions);
+            Assert.Equal(1, changes);
             Assert.Equal(0, status.Snapshot().Work.Running);
-            Assert.Equal((writes + 1, 1), (record.Writes, changes));
             status.Running(["S1", "S3"]);
         }
 

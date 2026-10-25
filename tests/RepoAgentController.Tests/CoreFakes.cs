@@ -338,15 +338,9 @@ sealed class InMemoryStatusRecord : IStatusRecord
     /// <summary>The status as last written, or as an earlier lifetime left it.</summary>
     public LifetimeStatus? Recorded { get; set; }
 
-    public int Writes { get; private set; }
-
     public LifetimeStatus? Read() => Recorded;
 
-    public void Write(LifetimeStatus status)
-    {
-        Writes++;
-        Recorded = status;
-    }
+    public void Write(LifetimeStatus status) => Recorded = status;
 }
 
 /// <summary>The managed checkout's recorded agent turns and admission, as a test sets them; none by default.</summary>
