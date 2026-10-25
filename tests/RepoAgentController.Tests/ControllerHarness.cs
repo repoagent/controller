@@ -24,12 +24,25 @@ static class ControllerHarness
     public const string Setting = "REPOAGENT_MAX_ACTIVE_SESSIONS";
     public static string Url(int discussion) => "https://github.com/owner/repository/discussions/" + discussion;
 
-    /// <summary>A loopback port that was free just now, for a controller listener in a test.</summary>
-    public static int FreePort()
+    /// <summary>
+    /// A loopback port that was free just now and is none of <paramref name="taken"/>, for a controller listener in a test.
+    /// A probe that lands on a taken port stays open until the end, so the next probe can't be given it again.
+    /// </summary>
+    public static int FreePort(params int[] taken)
     {
-        using var probe = new TcpListener(System.Net.IPAddress.Loopback, 0);
-        probe.Start();
-        return ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        var probes = new List<TcpListener>();
+        try
+        {
+            while (true)
+            {
+                var probe = new TcpListener(System.Net.IPAddress.Loopback, 0);
+                probes.Add(probe);
+                probe.Start();
+                var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+                if (!taken.Contains(port)) return port;
+            }
+        }
+        finally { foreach (var probe in probes) probe.Dispose(); }
     }
 
     /// <summary>
@@ -175,7 +188,7 @@ static class ControllerHarness
         /// </summary>
         public async Task StartWebhooks(params string[] options)
         {
-            WebhookPort = FreePort();
+            WebhookPort = FreePort(StatusPort);
             Run(new RepositorySettingsTests.Provider { HooksPermission = "write" },
                 ["--webhook-url", "https://fixture.invalid", "--listen-port", WebhookPort.ToString(), "--reconcile-interval", "3600", .. options]);
             await Logged(" reconciliation-completed discussion=all success=True");
