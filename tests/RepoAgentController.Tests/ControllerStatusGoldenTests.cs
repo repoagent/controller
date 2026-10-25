@@ -5,6 +5,8 @@ namespace RepoAgentController.Tests;
 
 // The status output and the status record file, byte for byte, for files a controller wrote: the Discussion state, settings
 // and refresh journal beside the state file, over two lifetimes. ControllerStatusGolden.txt holds what 1f36818 produced.
+// Not parallel: one test captures stdout.
+[Collection("Managed checkout environment")]
 public sealed class ControllerStatusGoldenTests : IDisposable
 {
     const string Repository = "owner/repository", Url = "https://github.com/owner/repository/discussions/";
@@ -89,6 +91,41 @@ public sealed class ControllerStatusGoldenTests : IDisposable
 
         Assert.Equal(golden.Keys, actual.Keys);
         foreach (var (name, text) in golden) Assert.Equal(text, actual[name]);
+    }
+
+    [Fact]
+    public void A_status_record_that_cannot_be_written_is_reported_on_stdout_at_the_clock_time_and_the_lifetime_continues()
+    {
+        WriteFiles();
+        Directory.CreateDirectory(ControllerStatus.PathFor(State) + ".tmp"); // The record's temporary file cannot be created.
+        var previous = Console.Out;
+        var stdout = new StringWriter();
+        Console.SetOut(TextWriter.Synchronized(stdout));
+        ControllerStatus status;
+        try
+        {
+            status = new ControllerStatus(State, Repository, "polling", clock);
+            Log(status, 1, "ready", "mode=polling");
+        }
+        finally { Console.SetOut(previous); }
+
+        var errors = stdout.ToString().Split('\n').Where(line => line.Contains(" status-error ", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(2, errors.Length);
+        Assert.All(errors, line => Assert.Matches(@"^2026-10-25T09:00:00\.0000000\+00:00 status-error \S.*$", line));
+        Assert.Equal("running", status.Snapshot()["controller"]!["state"]!.GetValue<string>());
+        Assert.False(File.Exists(ControllerStatus.PathFor(State)));
+        status.Dispose();
+    }
+
+    [Fact]
+    public void The_status_record_is_private_to_its_owner()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        WriteFiles();
+
+        using var status = new ControllerStatus(State, Repository, "polling", clock);
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(ControllerStatus.PathFor(State)));
     }
 
     public void Dispose()
