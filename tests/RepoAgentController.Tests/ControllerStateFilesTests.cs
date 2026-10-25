@@ -35,8 +35,42 @@ public sealed class ControllerStateFilesTests : IDisposable
     [Fact]
     public void Retained_outbox_operations_round_trip_unchanged()
     {
-        // As GitHubOutbox wrote it before the core owned it: indented, and its JSON encoder escapes HTML-sensitive and non-ASCII text.
-        const string Recorded = """
+        // As GitHubOutbox wrote them before the core owned it: indented, and its JSON encoder escapes HTML-sensitive and non-ASCII
+        // text. The usual file has no rate-limit pause: a receipt waits to retry a certain failure, and a dashboard publication is due.
+        const string Usual = """
+            {
+              "version": 1,
+              "repository": "owner/repository",
+              "pausedUntil": null,
+              "operations": [
+                {
+                  "key": "receipt:D_kwDOAbc",
+                  "kind": "receipt",
+                  "subjectId": "D_kwDOAbc",
+                  "url": "https://github.com/owner/repository/discussions/2",
+                  "attempts": 1,
+                  "dueAt": "2026-10-24T11:00:15.0000000\u002B00:00",
+                  "uncertain": false,
+                  "lastError": "HTTP 401: Bad credentials"
+                },
+                {
+                  "key": "dashboard",
+                  "kind": "dashboard",
+                  "subjectId": "",
+                  "url": "",
+                  "category": "Controller status",
+                  "title": "RepoAgent controller status",
+                  "body": "\u003C!-- repoagent:controller-dashboard --\u003E\nHeartbeat\n",
+                  "attempts": 0,
+                  "dueAt": "2026-10-24T11:00:03.0000000\u002B00:00",
+                  "uncertain": false,
+                  "lastError": null
+                }
+              ]
+            }
+            """;
+        // A rate-limited, uncertain receipt and a dashboard publication with text the encoder escapes.
+        const string Paused = """
             {
               "version": 1,
               "repository": "owner/repository",
@@ -69,9 +103,19 @@ public sealed class ControllerStateFilesTests : IDisposable
             }
             """;
         var statePath = Path.Combine(directory, "bridge.json");
-        File.WriteAllText(ControllerStateFiles.OutboxPath(statePath), Recorded);
         var files = new ControllerStateFiles(statePath);
 
+        File.WriteAllText(ControllerStateFiles.OutboxPath(statePath), Usual);
+        var usual = files.ReadOutbox()!;
+        files.WriteOutbox(usual);
+        Assert.Equal(Usual, File.ReadAllText(ControllerStateFiles.OutboxPath(statePath)));
+        Assert.Equal(("owner/repository", (DateTimeOffset?)null), (usual.Repository, usual.PausedUntil));
+        Assert.Equal(new OutboxOperation("receipt:D_kwDOAbc", "receipt", "D_kwDOAbc", "https://github.com/owner/repository/discussions/2", null, null, null, 1,
+            new DateTimeOffset(2026, 10, 24, 11, 0, 15, TimeSpan.Zero), false, "HTTP 401: Bad credentials"), usual.Operations[0]);
+        Assert.Equal(new OutboxOperation("dashboard", "dashboard", "", "", "Controller status", "RepoAgent controller status", "<!-- repoagent:controller-dashboard -->\nHeartbeat\n", 0,
+            new DateTimeOffset(2026, 10, 24, 11, 0, 3, TimeSpan.Zero), false, null), usual.Operations[1]);
+
+        File.WriteAllText(ControllerStateFiles.OutboxPath(statePath), Paused);
         var outbox = files.ReadOutbox()!;
         files.WriteOutbox(outbox);
 
@@ -82,7 +126,7 @@ public sealed class ControllerStateFilesTests : IDisposable
         Assert.Equal(("dashboard", "Controller status", "Attention: RepoAgent controller authentication failed", 0, new DateTimeOffset(2026, 10, 24, 10, 0, 30, 250, TimeSpan.Zero), false, (string?)null),
             (outbox.Operations[1].Kind, outbox.Operations[1].Category, outbox.Operations[1].Title, outbox.Operations[1].Attempts, outbox.Operations[1].DueAt, outbox.Operations[1].Uncertain, outbox.Operations[1].LastError));
         Assert.EndsWith("1 inputs waiting \u2014 caf\u00e9\n", outbox.Operations[1].Body);
-        Assert.Equal(Recorded, File.ReadAllText(ControllerStateFiles.OutboxPath(statePath)));
+        Assert.Equal(Paused, File.ReadAllText(ControllerStateFiles.OutboxPath(statePath)));
     }
 
     public void Dispose() => Directory.Delete(directory, true);
