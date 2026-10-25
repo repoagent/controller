@@ -181,8 +181,13 @@ public sealed class ControllerStatusProjectionTests
             status.Running(["S2", "S1"]);
             Assert.Equal(["S1", "S2"], record.Recorded!.RunningSessions);
             Assert.Equal((1, 1), (status.Snapshot().Work.Sessions, status.Snapshot().Work.Running)); // S1's record holds no turn.
+            var (writes, changes) = (record.Writes, 0);
+            status.Changed += () => changes++;
+            status.Running(["S1", "S2"]); // The same sessions in another order change nothing.
+            Assert.Equal((writes, 0), (record.Writes, changes));
             status.Running(["S1"]);
             Assert.Equal(0, status.Snapshot().Work.Running);
+            Assert.Equal((writes + 1, 1), (record.Writes, changes));
             status.Running(["S1", "S3"]);
         }
 
@@ -276,6 +281,33 @@ public sealed class ControllerStatusProjectionTests
         var status = Stopped();
 
         Assert.Equal((new ControllerRun("unknown"), Repository, 1), (status.Controller, status.Repository, status.Sessions.Count));
+    }
+
+    [Fact]
+    public void A_saved_state_that_cannot_be_read_reports_no_work_and_a_stopped_controller_still_has_status()
+    {
+        discussions.WriteDiscussions(State(("D1", Record(1, "S1"))));
+        discussions.ReadFailure = new InvalidOperationException("State belongs to a different repository or unsupported version");
+
+        var stopped = Stopped();
+
+        Assert.Equal((new ControllerRun("unknown"), (string?)null, 0), (stopped.Controller, stopped.Repository, stopped.Sessions.Count));
+        using var status = Open();
+        Assert.Equal((Repository, 0), (status.Snapshot().Repository, status.Snapshot().Sessions.Count));
+    }
+
+    [Theory]
+    [InlineData(0, 0, 0, 0, "idle")]
+    [InlineData(1, 0, 0, 0, "busy")]
+    [InlineData(0, 1, 0, 0, "busy")]
+    [InlineData(0, 0, 1, 0, "busy")]
+    [InlineData(0, 0, 0, 1, "busy")]
+    public void The_status_endpoint_is_busy_while_a_turn_runs_or_input_is_pending_retrying_or_waiting(int running, int pending, int retrying, int waiting, string state)
+    {
+        var work = new WorkCounts(3, pending, retrying, waiting, running, 4, null);
+        using var status = Open();
+
+        Assert.Equal(new StatusSnapshot(state, work), StatusSnapshot.From(status.Snapshot() with { Work = work }));
     }
 
     [Fact]

@@ -126,7 +126,8 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         Assert.False(File.Exists(StatusFiles.PathFor(State)));
     }
 
-    // Each damaged form that 1f36818's lenient JSON readers read differently from the typed readers that replaced them: (file
+    // Each damaged form that 1f36818's lenient JSON readers read differently from the typed readers that replaced them, and the
+    // status record forms it read as they are still read: (file
     // beside the state file, dotted path in it, JSON put there or null to remove it, whether a running lifetime reads it, the
     // status parts it changes, those parts as status now reports them). The pull request body lists what 1f36818 reported.
     public static TheoryData<string, string, string?, bool, string, string> DamagedForms => new()
@@ -163,6 +164,15 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         // A recorded controller that once failed status is reported as read.
         { ".status.json", "controller", "5", false, "controller", """ 5 """ },
         { ".status.json", "controller.state", "5", false, "controller", """ {"state":5,"mode":"polling","startedAt":"2026-10-25T09:00:00.0000000\u002B00:00","updatedAt":"2026-10-25T09:00:00.0000000\u002B00:00","stoppedAt":"2026-10-25T09:00:00.0000000\u002B00:00"} """ },
+        // A record with a repeated key reads as none, so the next lifetime starts; 1f36818 failed that start.
+        { ".status.json", "", """{"version":1,"controller":{"state":"running"},"controller":{"state":"stopped"}}""", true, "controller.state failures", """ "running" [] """ },
+        // Read as 1f36818 read them: recorded parts in a form no writer leaves are reported as read.
+        { ".status.json", "authentication", "5", false, "authentication", """ 5 """ },
+        { ".status.json", "failures", "5", false, "failures", """ 5 """ },
+        { ".status.json", "failures", "[5]", false, "failures", """ [5] """ },
+        { ".status.json", "failures.0", "null", false, "failures", """ [null] """ },
+        { ".status.json", "failures.0.extra", "1", false, "failures", """ [{"at":"2026-10-25T09:00:06.0000000\u002B00:00","kind":"delivery-retry","message":"https://github.com/owner/repository/discussions/3 attempt=2: native refused","extra":1}] """ },
+        { ".status.json", "latestActivity", "5", false, "latestActivity", """ 5 """ },
         // Settings are reported as the typed reader reads them, and the limit from that.
         { ".settings.json", "", "5", false, "settings work.limit", """ null 4 """ },
         { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS", "5", false, "settings work.limit", """ {"REPOAGENT_MODEL":{"state":"invalid","reason":"must be a model name"}} 4 """ },

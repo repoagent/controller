@@ -371,7 +371,10 @@ sealed class InMemoryDiscussionStore : IDiscussionStore
     /// <summary>The Discussion state as last written, or null when none was ever written.</summary>
     public DiscussionState? Saved => saved is null ? null : Copy(saved);
 
-    public DiscussionState? ReadDiscussions() => Saved;
+    /// <summary>Thrown by later reads, as a state file that cannot be read throws.</summary>
+    public Exception? ReadFailure { get; set; }
+
+    public DiscussionState? ReadDiscussions() => ReadFailure is { } failure ? throw failure : Saved;
 
     public void WriteDiscussions(DiscussionState state)
     {
