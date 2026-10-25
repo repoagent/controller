@@ -259,8 +259,6 @@ public sealed partial class IssuanceStore(IBrokerState state, string epoch, long
     }
 
     // The App authorization window a still-reserved attempt reserved. Only such an attempt may be signed.
-    public static AppAuthorizationWindow ReservedWindow(StoredAttempt attempt) => ReservedWindow(attempt.Value);
-
     public static AppAuthorizationWindow ReservedWindow(IssuanceAttempt attempt) => Text(attempt.State) == "reserved"
         ? AppAuthorizationWindow.Reserved(Date(attempt.ReservedAt), Date(attempt.JwtIssuedAt), Date(attempt.JwtExpiresAt))
         : throw new IssuanceDenied();

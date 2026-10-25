@@ -33,7 +33,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
             (grant, runtime) = await store.ReserveAsync(grant, "runtime", work);
             verifier = await store.VerifierAsync(grant, work.Cancellation) ?? throw new IssuanceDenied();
             var verifierToken = store.Recover(grant, verifier);
-            var app = await observer.AuthorizeAsync(IssuanceStore.ReservedWindow(runtime), work.Cancellation);
+            var app = await observer.AuthorizeAsync(IssuanceStore.ReservedWindow(runtime.Value), work.Cancellation);
             work.Check();
             var admission = await ObserveAsync(grant, app, verifierToken, work);
             work.Fresh(admission);
@@ -106,7 +106,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
         try
         {
             (grant, attempt) = await store.ReserveAsync(grant, "verification", work);
-            var app = await observer.AuthorizeAsync(IssuanceStore.ReservedWindow(attempt), work.Cancellation);
+            var app = await observer.AuthorizeAsync(IssuanceStore.ReservedWindow(attempt.Value), work.Cancellation);
             work.Check();
             attempt = await store.ClaimSendAsync(grant, attempt, work.Cancellation);
             token = await minter.MintAsync(app, grant.InstallationId, grant.BoundRepository,
