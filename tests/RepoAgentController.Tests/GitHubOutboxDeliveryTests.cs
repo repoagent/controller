@@ -17,7 +17,7 @@ public sealed class GitHubOutboxDeliveryTests
     readonly InMemoryControllerState state = new();
     readonly RecordingLog log = new();
 
-    GitHubOutbox Lifetime(TimeProvider? time = null) => new(Repository, github, state, time ?? clock, log);
+    GitHubOutbox Lifetime(TimeProvider? time = null) => new(Repository, github, InMemoryDiscussions.App, state, time ?? clock, log);
 
     [Theory]
     [InlineData("retry-after", 61)]

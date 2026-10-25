@@ -28,8 +28,8 @@ public interface IDiscussions
     /// <summary>The repository and the named Discussion category that hold the dashboard.</summary>
     Task<DashboardLocation> DashboardCategory(string name, CancellationToken ct);
 
-    /// <summary>The oldest Discussion in the category that is the App's dashboard (<see cref="AppIdentity.IsDashboard"/>), if any.</summary>
-    Task<DashboardDiscussion?> FindDashboard(DashboardLocation at, CancellationToken ct);
+    /// <summary>The category's Discussions, oldest first, each page read as the enumeration reaches it.</summary>
+    IAsyncEnumerable<CategoryDiscussion> CategoryDiscussions(DashboardLocation at, CancellationToken ct);
 
     Task<DashboardDiscussion> CreateDashboard(DashboardLocation at, string title, string body, CancellationToken ct);
 

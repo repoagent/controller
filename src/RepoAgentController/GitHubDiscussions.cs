@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
@@ -96,8 +97,8 @@ sealed class GitHubDiscussions(GitHub github) : IDiscussions
         return new(repository.Text("id"), category.Text("id"));
     }
 
-    /// <summary>Finds the oldest owned dashboard in the category, which also settles an uncertain earlier creation.</summary>
-    public async Task<DashboardDiscussion?> FindDashboard(DashboardLocation at, CancellationToken ct)
+    /// <summary>Reads the category's Discussions oldest first, one page of 50 at a time; an enumeration that stops reads no more pages.</summary>
+    public async IAsyncEnumerable<CategoryDiscussion> CategoryDiscussions(DashboardLocation at, [EnumeratorCancellation] CancellationToken ct)
     {
         var parts = github.Repository.Split('/');
         string? cursor = null;
@@ -106,11 +107,10 @@ sealed class GitHubDiscussions(GitHub github) : IDiscussions
             var connection = (await github.Send("query($owner:String!,$name:String!,$category:ID!,$cursor:String) { repository(owner:$owner,name:$name) { discussions(first:50,after:$cursor,categoryId:$category,orderBy:{field:CREATED_AT,direction:ASC}) { nodes { id url body author { __typename login } } " + GitHub.PageInfo + " } } }",
                 Json.Object(("owner", parts[0]), ("name", parts[1]), ("category", at.CategoryId), ("cursor", cursor)), ct))["repository"]?["discussions"]
                 ?? throw new GitHubRequestException(GitHubFailure.Permanent, "repository Discussions are not readable");
-            if (connection["nodes"]!.AsArray().FirstOrDefault(node => github.Identity.IsDashboard(DiscussionJson.ReadActor(node!["author"]), node.Text("body"))) is { } owned)
-                return new(owned.Text("id"), owned.Text("url"));
+            foreach (var node in connection["nodes"]!.AsArray())
+                yield return new(node!["id"].OptionalText() ?? "", node["url"].OptionalText() ?? "", DiscussionJson.ReadActor(node["author"]), node["body"].OptionalText() ?? "");
             cursor = GitHub.Next(connection);
         } while (cursor is not null);
-        return null;
     }
 
     public async Task<DashboardDiscussion> CreateDashboard(DashboardLocation at, string title, string body, CancellationToken ct)

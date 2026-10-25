@@ -10,6 +10,7 @@ public sealed class GitHubOutbox : IAsyncDisposable
     static readonly TimeSpan FirstRetry = TimeSpan.FromSeconds(15), LongestRetry = TimeSpan.FromMinutes(15),
         UnsignalledRateLimit = TimeSpan.FromMinutes(1);
     readonly IDiscussions discussions;
+    readonly AppIdentity identity;
     readonly IControllerState store;
     readonly TimeProvider clock;
     readonly IControllerLog log;
@@ -25,11 +26,11 @@ public sealed class GitHubOutbox : IAsyncDisposable
     string? dashboardCategory;
     bool dashboardRejected;
 
-    /// <summary>Resumes the operations an earlier lifetime retained for <paramref name="repository"/>.</summary>
-    public GitHubOutbox(string repository, IDiscussions discussions, IControllerState store, TimeProvider clock, IControllerLog log)
+    /// <summary>Resumes the operations an earlier lifetime retained for <paramref name="repository"/>, whose App is <paramref name="identity"/>.</summary>
+    public GitHubOutbox(string repository, IDiscussions discussions, AppIdentity identity, IControllerState store, TimeProvider clock, IControllerLog log)
     {
         loop = new(clock);
-        (this.discussions, this.store, this.clock, this.log) = (discussions, store, clock, log);
+        (this.discussions, this.identity, this.store, this.clock, this.log) = (discussions, identity, store, clock, log);
         var retained = store.ReadOutbox();
         if (retained is not null && !string.Equals(retained.Repository, repository, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("GitHub outbox belongs to a different repository or unsupported version; preserve it for manual inspection");
@@ -207,7 +208,7 @@ public sealed class GitHubOutbox : IAsyncDisposable
                 }
                 var target = await discussions.DashboardCategory(category, ct);
                 // Finding first also settles an uncertain earlier creation, so a lost response never adds a second dashboard.
-                var found = await discussions.FindDashboard(target, ct);
+                var found = await FindDashboard(target, ct);
                 if (found is { } existing) await discussions.UpdateDashboard(existing.Id, title, body, ct);
                 var owned = found ?? await discussions.CreateDashboard(target, title, body, ct);
                 (dashboard, dashboardCategory) = (owned, category);
@@ -215,6 +216,15 @@ public sealed class GitHubOutbox : IAsyncDisposable
             default:
                 throw new GitHubRequestException(GitHubFailure.Permanent, $"unsupported outbox operation kind '{operation.Kind}'");
         }
+    }
+
+    // The oldest Discussion in the category that is the App's dashboard. Participants cannot author as the App, so a copy of
+    // the marker in their Discussion is not it. Pages after the dashboard's are not read.
+    async Task<DashboardDiscussion?> FindDashboard(DashboardLocation at, CancellationToken ct)
+    {
+        await foreach (var candidate in discussions.CategoryDiscussions(at, ct))
+            if (identity.IsDashboard(candidate.Author, candidate.Body)) return new(candidate.Id, candidate.Url);
+        return null;
     }
 
     OutboxOperation? Find(string key) => operations.FirstOrDefault(retained => retained.Key == key);

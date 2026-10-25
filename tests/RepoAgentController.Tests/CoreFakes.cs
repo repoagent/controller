@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
@@ -65,21 +66,25 @@ sealed class InMemoryBaselineReleases : IBaselineReleases
 }
 
 /// <summary>
-/// The repository's Discussions as GitHub holds the App's EYES reactions and dashboards. Each queued failure answers the next write,
-/// in order; an applied failure makes the write first, as GitHub does when only its response is lost.
+/// The repository's Discussions as GitHub holds the App's EYES reactions and the Discussions in its categories, the App's
+/// dashboards among them. Each queued failure answers the next write, in order; an applied failure makes the write first, as
+/// GitHub does when only its response is lost.
 /// </summary>
 sealed class InMemoryDiscussions : IDiscussions
 {
     public const string RepositoryId = "R_repository";
+    public static readonly AppIdentity App = new("test-app");
+    /// <summary>The App as GitHub reports the author of a Discussion it created.</summary>
+    public static readonly Actor AppAccount = new(App.AgentLogin, "Bot");
     readonly Lock sync = new();
     readonly Dictionary<string, string> categories = new(StringComparer.OrdinalIgnoreCase);
-    readonly List<Dashboard> dashboards = [];
+    readonly List<Posted> posted = [];
     readonly HashSet<string> eyes = [];
     readonly Queue<(GitHubRequestException Error, bool Applied)> failures = [];
     readonly List<string> calls = [];
 
-    /// <summary>A Discussion the App authored as its dashboard, as GitHub holds it now.</summary>
-    public sealed record Dashboard(string Id, string Url, string CategoryId, string Title, string Body);
+    /// <summary>A Discussion in a category, as GitHub holds it now.</summary>
+    public sealed record Posted(string Id, string Url, string CategoryId, Actor? Author, string Title, string Body);
 
     /// <summary>Adds a Discussion category; returns its ID.</summary>
     public string Category(string name)
@@ -87,10 +92,10 @@ sealed class InMemoryDiscussions : IDiscussions
         lock (sync) return categories.TryGetValue(name, out var id) ? id : categories[name] = "DIC_" + name.Replace(' ', '_');
     }
 
-    /// <summary>A dashboard an earlier lifetime created in <paramref name="category"/>.</summary>
-    public Dashboard Created(string category, string title, string body)
+    /// <summary>A Discussion <paramref name="author"/> posted in <paramref name="category"/> before; later posts are newer.</summary>
+    public Posted Post(string category, Actor? author, string title, string body)
     {
-        lock (sync) return Add(Category(category), title, body);
+        lock (sync) return Add(Category(category), author, title, body);
     }
 
     /// <summary>The next write fails with <paramref name="error"/>, after taking effect when <paramref name="applied"/>.</summary>
@@ -104,7 +109,8 @@ sealed class InMemoryDiscussions : IDiscussions
 
     public bool HasEyes(string subject) { lock (sync) return eyes.Contains(subject); }
 
-    public IReadOnlyList<Dashboard> Dashboards { get { lock (sync) return [.. dashboards]; } }
+    /// <summary>The Discussions the App created, oldest first.</summary>
+    public IReadOnlyList<Posted> Dashboards { get { lock (sync) return [.. posted.Where(post => post.Author == AppAccount)]; } }
 
     // The outbox reads no conversations.
     public Task<IReadOnlyList<Discussion>> List(CancellationToken ct) => throw new NotSupportedException();
@@ -133,34 +139,38 @@ sealed class InMemoryDiscussions : IDiscussions
         }
     }
 
-    public Task<DashboardDiscussion?> FindDashboard(DashboardLocation at, CancellationToken ct)
+    /// <summary>The category's Discussions, oldest first, in one page.</summary>
+    public async IAsyncEnumerable<CategoryDiscussion> CategoryDiscussions(DashboardLocation at, [EnumeratorCancellation] CancellationToken ct)
     {
+        await Task.CompletedTask;
+        Posted[] page;
         lock (sync)
         {
             calls.Add("discussions " + at.CategoryId);
-            return Task.FromResult(dashboards.FirstOrDefault(dashboard => dashboard.CategoryId == at.CategoryId) is { } owned ? new DashboardDiscussion(owned.Id, owned.Url) : null);
+            page = [.. posted.Where(post => post.CategoryId == at.CategoryId)];
         }
+        foreach (var post in page) yield return new(post.Id, post.Url, post.Author, post.Body);
     }
 
     public async Task<DashboardDiscussion> CreateDashboard(DashboardLocation at, string title, string body, CancellationToken ct)
     {
-        Dashboard? created = null;
-        await Write("createDiscussion " + at.CategoryId, () => created = Add(at.CategoryId, title, body));
+        Posted? created = null;
+        await Write("createDiscussion " + at.CategoryId, () => created = Add(at.CategoryId, AppAccount, title, body));
         return new(created!.Id, created.Url);
     }
 
     public Task UpdateDashboard(string id, string title, string body, CancellationToken ct) => Write("updateDiscussion " + id, () =>
     {
-        var index = dashboards.FindIndex(dashboard => dashboard.Id == id);
-        dashboards[index] = dashboards[index] with { Title = title, Body = body };
+        var index = posted.FindIndex(post => post.Id == id);
+        posted[index] = posted[index] with { Title = title, Body = body };
     });
 
-    Dashboard Add(string category, string title, string body)
+    Posted Add(string category, Actor? author, string title, string body)
     {
-        var number = 100 + dashboards.Count;
-        var dashboard = new Dashboard("DD" + number, "https://github.com/owner/repository/discussions/" + number, category, title, body);
-        dashboards.Add(dashboard);
-        return dashboard;
+        var number = 100 + posted.Count;
+        var post = new Posted("DD" + number, "https://github.com/owner/repository/discussions/" + number, category, author, title, body);
+        posted.Add(post);
+        return post;
     }
 
     Task Write(string call, Action apply)

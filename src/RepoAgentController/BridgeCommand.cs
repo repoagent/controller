@@ -149,7 +149,7 @@ public static class BridgeCommand
                     if (result.GetValue(checkAuth)) return 0;
                     agentCredentials?.Install(); // Before any owned native process starts.
                     var discussions = new GitHubDiscussions(github);
-                    await using var outbox = new GitHubOutbox(github.Repository, discussions, new ControllerStateFiles(statePath), time, new ControllerLog());
+                    await using var outbox = new GitHubOutbox(github.Repository, discussions, github.Identity, new ControllerStateFiles(statePath), time, new ControllerLog());
                     // Disposed before the outbox: a stop this lifetime handles is published, then delivery drains within a bound.
                     await using var dashboard = result.GetValue(dashboardCategory) is { } category
                         ? new ControllerDashboard(category, status, outbox,
