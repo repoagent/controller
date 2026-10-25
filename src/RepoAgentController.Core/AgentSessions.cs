@@ -52,8 +52,8 @@ public sealed class AgentSessions
     /// </summary>
     public event Action<string[]>? TurnsChanged;
 
-    /// <summary>A turn the native reported completed with its native status, and whether the provider rejected the Codex account credentials for it.</summary>
-    public sealed record TurnOutcome(string Session, string Turn, string Status, bool CredentialsRejected);
+    /// <summary>A turn the native reported completed with its status, and whether the provider rejected the Codex account credentials for it.</summary>
+    public sealed record TurnOutcome(string Session, string Turn, AgentTurnStatus Status, bool CredentialsRejected);
 
     public AgentSessions(IAgentRuntime runtime, IControllerLog log, IAgentTurnJournal? journal = null, CancellationToken credentialLost = default,
         bool suppliedCredentials = false)
@@ -87,7 +87,7 @@ public sealed class AgentSessions
                         else { if (finished.Count >= 256) finished.Clear(); finished.Add((id, turn)); }
                         completion = completed;
                         // Held before the outcome is visible, so input returned from a rejected turn waits for new credentials.
-                        var rejection = completed.Status == "failed" ? completed.CredentialRejection : null;
+                        var rejection = completed.Status == AgentTurnStatus.Failed ? completed.CredentialRejection : null;
                         if (rejection is not null) authenticationFailure = rejection;
                         if (ended.Count >= 256) ended.RemoveAt(0);
                         ended.Add(new(id, turn, completed.Status, rejection is not null));
@@ -167,12 +167,12 @@ public sealed class AgentSessions
 
     void Authentication(AgentTurnCompleted turn)
     {
-        if (turn.Status == "completed")
+        if (turn.Status == AgentTurnStatus.Completed)
         {
             authenticationFailure = null;
             if (Interlocked.Exchange(ref authenticated, 1) == 0) log.Write("codex-auth-verified", "Codex account credentials authenticated a completed turn");
         }
-        else if (turn.Status == "failed" && turn.CredentialRejection is { } message)
+        else if (turn.Status == AgentTurnStatus.Failed && turn.CredentialRejection is { } message)
         {
             Volatile.Write(ref authenticated, 0);
             authenticationFailure = message;

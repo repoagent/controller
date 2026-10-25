@@ -51,11 +51,8 @@ sealed class Codex : IAgentRuntime, IAsyncDisposable
         if (change is not null) Changed?.Invoke(change);
     }
 
-    static AgentTurnCompleted Completed(int source, string thread, JsonObject? turn)
-    {
-        var status = turn?["status"].OptionalText() ?? "";
-        return new(source, thread, turn?["id"].OptionalText(), status, Rejection(turn?["error"] as JsonObject));
-    }
+    static AgentTurnCompleted Completed(int source, string thread, JsonObject? turn) =>
+        new(source, thread, turn?["id"].OptionalText(), AgentTurnStatuses.Parse(turn?["status"].OptionalText()), Rejection(turn?["error"] as JsonObject));
 
     static AgentSessionStatus Parse(JsonNode? status) =>
         status is JsonObject value && value["type"] is JsonValue type && type.TryGetValue<string>(out var name) ? name switch

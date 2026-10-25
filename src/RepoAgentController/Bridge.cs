@@ -457,7 +457,7 @@ sealed class Bridge(string repository, IDiscussions discussions, AppIdentity ide
                 .FirstOrDefault(record => record?["running"]?.Text("turn") == outcome.Turn);
             if (record is null) continue;
             record.Remove("running");
-            events.Add(("turn-ended", $"{record.Text("url")} session={outcome.Session} turn={outcome.Turn} status={outcome.Status}"));
+            events.Add(("turn-ended", $"{record.Text("url")} session={outcome.Session} turn={outcome.Turn} status={outcome.Status.Name()}"));
             if (outcome.CredentialsRejected && batch is not null) events.Add(("input-requeued", Requeue(record, batch, outcome.Turn)));
         }
         // A turn lost with its native process (disconnect) reports no outcome.
