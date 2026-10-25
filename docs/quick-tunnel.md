@@ -1,6 +1,6 @@
 # Local development with a Quick Tunnel
 
-Quick Tunnel mode gives a local container a temporary public HTTPS origin without a Cloudflare account, domain, credentials, host-installed `cloudflared` or inbound router configuration. It is for development/testing: hostnames change on replacement and Cloudflare provides no uptime guarantee. Use a fixed URL or the planned [named tunnel](https://github.com/repoagent/controller/issues/22) for stable hosting.
+Quick Tunnel mode gives a local container a temporary public HTTPS origin without a Cloudflare account, domain, credentials, host-installed `cloudflared` or inbound router configuration. It is for development/testing: hostnames change on replacement and Cloudflare provides no uptime guarantee. For stable hosting, use a fixed URL, for example through a [Cloudflare named tunnel](webhooks.md#stable-hostname-through-a-cloudflare-named-tunnel).
 
 ## Setup
 
