@@ -167,6 +167,27 @@ public sealed class GitHubOutboxDeliveryTests
     }
 
     [Fact]
+    public async Task The_dashboard_is_the_oldest_marked_Discussion_the_App_wrote_and_never_a_participant_copy_of_the_marker()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var category = github.Category(Category);
+        var copy = github.Post(Category, new("participant", "User"), "Status", Marked + "copied by a participant");
+        var unmarked = github.Post(Category, InMemoryDiscussions.AppAccount, "Release notes", "the App's, without the marker");
+        // GitHub reports the App's own Discussions either as its [bot] login or as a Bot with the bare slug.
+        var dashboard = github.Post(Category, new(InMemoryDiscussions.App.AppSlug, "Bot"), "Status", Marked + "first");
+        var newer = github.Post(Category, InMemoryDiscussions.AppAccount, "Status", Marked + "a later copy");
+        await using (var outbox = Lifetime())
+        {
+            outbox.Dashboard(Category, "Attention", Marked + "second");
+            Assert.True(await outbox.Flush(ct));
+        }
+
+        Assert.Equal([copy, unmarked, dashboard with { Title = "Attention", Body = Marked + "second" }, newer], github.Posts);
+        Assert.Equal([$"discussionCategories {Category}", $"discussions {category}", $"updateDiscussion {dashboard.Id}"], github.Calls);
+        Assert.Equal([("dashboard", dashboard.Url)], log.Entries);
+    }
+
+    [Fact]
     public async Task Dashboard_publications_superseded_during_a_rate_limit_are_written_once_as_the_latest_without_dropping_receipts()
     {
         var ct = TestContext.Current.CancellationToken;

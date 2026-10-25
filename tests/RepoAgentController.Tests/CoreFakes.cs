@@ -109,6 +109,9 @@ sealed class InMemoryDiscussions : IDiscussions
 
     public bool HasEyes(string subject) { lock (sync) return eyes.Contains(subject); }
 
+    /// <summary>The Discussions in every category, oldest first.</summary>
+    public IReadOnlyList<Posted> Posts { get { lock (sync) return [.. posted]; } }
+
     /// <summary>The Discussions the App created, oldest first.</summary>
     public IReadOnlyList<Posted> Dashboards { get { lock (sync) return [.. posted.Where(post => post.Author == AppAccount)]; } }
 
