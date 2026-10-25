@@ -98,7 +98,8 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
         catch (Exception error) when (Damaged(error)) { return new("") { Unreadable = new(node?.ToJsonString() ?? "null", error.Message) }; }
     }
 
-    // Every start ends a pending delivery, so one in a form no writer leaves still says how many leading inputs it carried.
+    // Every start ends a pending delivery, so one in a form no writer leaves still says how many leading inputs it carried;
+    // one whose keys cannot be read (a duplicate key) carries none.
     static PendingDelivery Pending(JsonNode node)
     {
         try
@@ -107,10 +108,10 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
             return new(Required(pending, "operation"), At(pending, "since"), [.. Part<JsonArray>(pending, "sourceIds").Select(source =>
                 source?.GetValue<string>() ?? throw Missing("sourceIds"))], pending["inputs"]?.GetValue<int>()) { Unknown = Unknown(pending, PendingKeys) };
         }
-        catch (Exception error) when (error is not ArgumentException && Damaged(error))
+        catch (Exception error) when (Damaged(error))
         {
-            return new("", default, [], node is JsonObject pending && pending["inputs"] is JsonValue inputs && inputs.TryGetValue<int>(out var count) ? count : null)
-                { AsRead = node.ToJsonString() };
+            return new("", default, [], error is not ArgumentException && node is JsonObject pending && pending["inputs"] is JsonValue inputs &&
+                inputs.TryGetValue<int>(out var count) ? count : null) { AsRead = node.ToJsonString() };
         }
     }
 

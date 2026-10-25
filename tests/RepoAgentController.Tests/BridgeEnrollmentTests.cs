@@ -317,6 +317,8 @@ public sealed class BridgeEnrollmentTests
     [InlineData("running", """{"turn":5}""", "comment.created")]
     [InlineData("pending", """{"operation":5}""", "comment.created")]
     [InlineData("pending", """{"operation":5,"inputs":1}""", "comment.created", true)] // Its input is redelivered alone.
+    [InlineData("pending", """{"operation":"send","operation":"send"}""", "comment.created")] // Its keys cannot be read.
+    [InlineData("pending", """{"inputs":1,"inputs":1}""", "comment.created,comment.created", true)] // It carries no inputs, so none is redelivered alone.
     [InlineData("url", null, "comment.created")]
     [InlineData("sources.D1", "null", "discussion.created,reaction.added,comment.created")]
     [InlineData("sources.D1.content.body", "5", "discussion.changed,comment.created")]
