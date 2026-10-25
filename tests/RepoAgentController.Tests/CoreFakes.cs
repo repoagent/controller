@@ -336,13 +336,13 @@ sealed class InMemoryControllerState : IControllerState
 sealed class InMemoryStatusRecord : IStatusRecord
 {
     /// <summary>The status as last written, or as an earlier lifetime left it.</summary>
-    public RuntimeStatus? Recorded { get; set; }
+    public LifetimeStatus? Recorded { get; set; }
 
     public int Writes { get; private set; }
 
-    public RuntimeStatus? Read() => Recorded;
+    public LifetimeStatus? Read() => Recorded;
 
-    public void Write(RuntimeStatus status)
+    public void Write(LifetimeStatus status)
     {
         Writes++;
         Recorded = status;

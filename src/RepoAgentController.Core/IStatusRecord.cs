@@ -4,18 +4,18 @@ namespace RepoAgentController;
 public interface IStatusRecord
 {
     /// <summary>The last recorded status, or null when none was recorded or it cannot be read.</summary>
-    RuntimeStatus? Read();
+    LifetimeStatus? Read();
 
     /// <summary>Replaces the recorded status. A failed write is reported by the record itself, never through the controller log,
     /// whose events status records; the lifetime continues.</summary>
-    void Write(RuntimeStatus status);
+    void Write(LifetimeStatus status);
 }
 
 /// <summary>
 /// What a controller lifetime records of itself: its repository, the controller's and both credentials' states, its recent
 /// failures and latest activity, and the agent sessions running a turn. Times are the recorded text (<c>O</c>).
 /// </summary>
-public sealed record RuntimeStatus(string? Repository, ControllerRun? Controller, CredentialStatus? Authentication, CredentialStatus? CodexAuthentication)
+public sealed record LifetimeStatus(string? Repository, ControllerRun? Controller, CredentialStatus? Authentication, CredentialStatus? CodexAuthentication)
 {
     /// <summary>The recent failures, oldest first.</summary>
     public IReadOnlyList<StatusEvent> Failures { get; init; } = [];

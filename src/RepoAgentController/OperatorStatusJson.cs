@@ -55,7 +55,7 @@ static class OperatorStatusJson
     }
 
     /// <summary>The status record as its file holds it.</summary>
-    public static JsonObject Record(RuntimeStatus status)
+    public static JsonObject Record(LifetimeStatus status)
     {
         var record = new JsonObject
         {
@@ -69,7 +69,7 @@ static class OperatorStatusJson
     }
 
     /// <summary>The status record its file holds, each part read leniently: one that is not in a writer's form is kept as read.</summary>
-    public static RuntimeStatus ReadRecord(JsonObject record) => new(record["repository"].OptionalText(), Controller(record["controller"]),
+    public static LifetimeStatus ReadRecord(JsonObject record) => new(record["repository"].OptionalText(), Controller(record["controller"]),
         Credential(record["authentication"]), Credential(record["codexAuthentication"]))
     {
         Failures = record["failures"] is JsonArray failures ? [.. failures.Select(failure => Event(failure) ?? new("", "", "") { AsRead = "null" })] : [],

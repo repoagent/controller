@@ -24,10 +24,10 @@ public sealed class ControllerStatus : IDisposable
     readonly ICheckoutWork checkout;
     readonly TimeProvider clock;
     readonly Lock gate = new();
-    RuntimeStatus runtime;
+    LifetimeStatus lifetime;
     bool closed;
 
-    /// <summary>Raised after recorded runtime status or composed work changes. Handlers run on the logging thread and must not log.</summary>
+    /// <summary>Raised after recorded lifetime status or composed work changes. Handlers run on the logging thread and must not log.</summary>
     public event Action? Changed;
 
     /// <summary>
@@ -42,9 +42,9 @@ public sealed class ControllerStatus : IDisposable
         var previous = record.Read();
         var now = Time(clock.GetUtcNow());
         // Earlier failures stay visible after a restart; their timestamps place them before startedAt.
-        runtime = new(repository, new("starting") { Mode = mode, StartedAt = now, UpdatedAt = now }, new("unknown"), new("unknown"))
+        lifetime = new(repository, new("starting") { Mode = mode, StartedAt = now, UpdatedAt = now }, new("unknown"), new("unknown"))
             { Failures = previous?.Failures ?? [], LatestActivity = previous?.LatestActivity };
-        record.Write(runtime);
+        record.Write(lifetime);
     }
 
     public void Record(LogEntry entry)
@@ -54,27 +54,27 @@ public sealed class ControllerStatus : IDisposable
             if (closed) return;
             var at = Time(entry.At);
             var item = new StatusEvent(at, entry.Kind, entry.Message.Length <= MaximumMessage ? entry.Message : entry.Message[..MaximumMessage] + " <truncated>");
-            var controller = runtime.Controller!;
+            var controller = lifetime.Controller!;
             bool changed = true, notifyOnly = false;
             switch (entry.Kind)
             {
-                case "ready": runtime = runtime with { Controller = controller with { State = "running" } }; break;
-                case "fatal": runtime = runtime with { Controller = controller with { State = "failed" } }; break;
-                case "app-token-refreshed": runtime = runtime with { Authentication = new("healthy") { UpdatedAt = at } }; break;
-                case "app-refresh-error": runtime = runtime with { Authentication = new("failed") { UpdatedAt = at, Error = item.Message } }; break;
+                case "ready": lifetime = lifetime with { Controller = controller with { State = "running" } }; break;
+                case "fatal": lifetime = lifetime with { Controller = controller with { State = "failed" } }; break;
+                case "app-token-refreshed": lifetime = lifetime with { Authentication = new("healthy") { UpdatedAt = at } }; break;
+                case "app-refresh-error": lifetime = lifetime with { Authentication = new("failed") { UpdatedAt = at, Error = item.Message } }; break;
                 // Agent account credentials, separate from the GitHub App: supplied, healthy (a turn completed) or failed.
-                case "codex-auth-supplied" or "codex-auth-applied": runtime = runtime with { CodexAuthentication = new("supplied") { UpdatedAt = at } }; break;
-                case "codex-auth-verified": runtime = runtime with { CodexAuthentication = new("healthy") { UpdatedAt = at } }; break;
-                case "codex-auth-failed": runtime = runtime with { CodexAuthentication = new("failed") { UpdatedAt = at, Error = item.Message } }; break;
+                case "codex-auth-supplied" or "codex-auth-applied": lifetime = lifetime with { CodexAuthentication = new("supplied") { UpdatedAt = at } }; break;
+                case "codex-auth-verified": lifetime = lifetime with { CodexAuthentication = new("healthy") { UpdatedAt = at } }; break;
+                case "codex-auth-failed": lifetime = lifetime with { CodexAuthentication = new("failed") { UpdatedAt = at, Error = item.Message } }; break;
                 default: changed = false; break;
             }
-            if (FailureKinds.Contains(entry.Kind)) runtime = runtime with { Failures = [.. runtime.Failures.Append(item).TakeLast(MaximumFailures)] };
+            if (FailureKinds.Contains(entry.Kind)) lifetime = lifetime with { Failures = [.. lifetime.Failures.Append(item).TakeLast(MaximumFailures)] };
             else if (ActivityKinds.Contains(entry.Kind))
             {
                 // The latest processed message, else its Discussion: the activity message's leading GitHub URL.
                 var link = Regex.Match(entry.Message, @"(?:^|\s)latest=(https://github\.com/\S+)") is { Success: true } latest ? latest.Groups[1].Value
                     : Regex.Match(entry.Message, @"^https://github\.com/\S+") is { Success: true } leading ? leading.Value : null;
-                runtime = runtime with { LatestActivity = item with { Url = link } };
+                lifetime = lifetime with { LatestActivity = item with { Url = link } };
             }
             else if (!changed)
             {
@@ -84,8 +84,8 @@ public sealed class ControllerStatus : IDisposable
             }
             if (!notifyOnly)
             {
-                runtime = runtime with { Controller = runtime.Controller! with { UpdatedAt = at } };
-                record.Write(runtime);
+                lifetime = lifetime with { Controller = lifetime.Controller! with { UpdatedAt = at } };
+                record.Write(lifetime);
             }
         }
         Changed?.Invoke();
@@ -101,10 +101,10 @@ public sealed class ControllerStatus : IDisposable
         lock (gate)
         {
             var current = sessions.Order(StringComparer.Ordinal).ToArray();
-            if (closed || runtime.RunningSessions.SequenceEqual(current)) return;
+            if (closed || lifetime.RunningSessions.SequenceEqual(current)) return;
             // Recorded only while a turn runs. Status output copies named fields only, so this stays internal.
-            runtime = runtime with { RunningSessions = current };
-            record.Write(runtime);
+            lifetime = lifetime with { RunningSessions = current };
+            record.Write(lifetime);
         }
         Changed?.Invoke();
     }
@@ -112,8 +112,8 @@ public sealed class ControllerStatus : IDisposable
     /// <summary>A snapshot for in-process consumers such as status publication.</summary>
     public OperatorStatus Snapshot()
     {
-        RuntimeStatus copy;
-        lock (gate) copy = runtime;
+        LifetimeStatus copy;
+        lock (gate) copy = lifetime;
         return Compose(copy, Saved(discussions).State, settings, checkout, clock.GetUtcNow());
     }
 
@@ -141,7 +141,7 @@ public sealed class ControllerStatus : IDisposable
         catch (Exception error) when (error is not OperationCanceledException) { return null; }
     }
 
-    static OperatorStatus Compose(RuntimeStatus? recorded, DiscussionState? state, IControllerState settingsRecord, ICheckoutWork checkout, DateTimeOffset now)
+    static OperatorStatus Compose(LifetimeStatus? recorded, DiscussionState? state, IControllerState settingsRecord, ICheckoutWork checkout, DateTimeOffset now)
     {
         // Managed clone mode also records agent turns in its refresh journal, for checkout refresh admission.
         var journal = checkout.Read();
@@ -202,10 +202,10 @@ public sealed class ControllerStatus : IDisposable
         lock (gate)
         {
             if (closed) return;
-            var controller = runtime.Controller!;
+            var controller = lifetime.Controller!;
             var now = Time(clock.GetUtcNow());
-            runtime = runtime with { Controller = controller with { State = controller.State != "failed" ? "stopped" : controller.State, StoppedAt = now, UpdatedAt = now } };
-            record.Write(runtime);
+            lifetime = lifetime with { Controller = controller with { State = controller.State != "failed" ? "stopped" : controller.State, StoppedAt = now, UpdatedAt = now } };
+            record.Write(lifetime);
             closed = true;
         }
     }

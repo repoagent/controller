@@ -36,14 +36,14 @@ sealed class StatusRecordFile(string statePath, TimeProvider clock) : IStatusRec
 {
     readonly string path = StatusFiles.PathFor(statePath);
 
-    public RuntimeStatus? Read()
+    public LifetimeStatus? Read()
     {
         // A key repeated in the record reads only when it is reached, so the whole record then reads as none.
         try { return StatusFiles.ReadObject(path) is { } record ? OperatorStatusJson.ReadRecord(record) : null; }
         catch (ArgumentException) { return null; }
     }
 
-    public void Write(RuntimeStatus status)
+    public void Write(LifetimeStatus status)
     {
         var temporary = path + ".tmp";
         try
