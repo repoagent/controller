@@ -33,6 +33,28 @@ public sealed class StateStoreTests : IDisposable
         Assert.Equal(["D2"], new StateStore(files, Repository).Discussions.Keys);
     }
 
+    [Fact]
+    public void Discussions_whose_removal_failed_to_save_stay_in_memory_and_a_retry_removes_them_from_the_file()
+    {
+        using (var store = new StateStore(State, Repository))
+        {
+            store.Discussions["D1"] = new("https://github.com/owner/repository/discussions/1") { SessionId = "S1" };
+            store.Discussions["D2"] = new("https://github.com/owner/repository/discussions/2") { SessionId = "S2" };
+            store.Save();
+            Directory.CreateDirectory(State + ".tmp"); // The next save cannot write its replacement file.
+
+            var error = Record.Exception(() => store.Remove(["D1"]));
+
+            // The exceptions the port documents for a failed write, which its callers filter on.
+            Assert.True(error is IOException or UnauthorizedAccessException, $"Expected a failed save, not {error}");
+            Assert.Equal(["D1", "D2"], store.Discussions.Keys.Order());
+            Directory.Delete(State + ".tmp");
+            store.Remove(["D1"]);
+        }
+        using var restarted = new StateStore(State, Repository);
+        Assert.Equal(["D2"], restarted.Discussions.Keys);
+    }
+
     // As a startup opens it: the lease is taken and the file read, then the App identity is checked and saved.
     Exception? Open(string recorded, string login = "test-app[bot]")
     {
@@ -58,7 +80,7 @@ public sealed class StateStoreTests : IDisposable
     public void A_state_file_that_is_not_a_JSON_object_stops_startup_as_its_parser_reports_and_releases_the_lease()
     {
         Assert.IsAssignableFrom<JsonException>(Open("""{"version":1,"""));
-        Assert.Equal("The node must be of type 'JsonObject'.", Assert.IsType<InvalidOperationException>(Open("[]")).Message);
+        Assert.Equal(Reported(() => JsonNode.Parse("[]")!.AsObject()), Assert.IsType<InvalidOperationException>(Open("[]")).Message);
         Assert.Null(Open("""{"version":1,"repository":"owner/repository","discussions":{}}"""));
     }
 
@@ -67,7 +89,7 @@ public sealed class StateStoreTests : IDisposable
     {
         Assert.StartsWith("State belongs to a different GitHub identity;", Assert.IsType<InvalidOperationException>(
             Open("""{"version":1,"repository":"owner/repository","discussions":{},"agentLogin":"other-app[bot]"}""")).Message);
-        Assert.Equal("An element of type 'Number' cannot be converted to a 'System.String'.", Assert.IsType<InvalidOperationException>(
+        Assert.Equal(Reported(() => JsonNode.Parse("7")!.GetValue<string>()), Assert.IsType<InvalidOperationException>(
             Open("""{"version":1,"repository":"owner/repository","discussions":{},"agentLogin":7}""")).Message);
     }
 
@@ -77,7 +99,7 @@ public sealed class StateStoreTests : IDisposable
         Assert.Null(Open("""{"version":1,"repository":"owner/repository","discussions":[],"later":true}"""));
 
         using var store = new StateStore(State, Repository);
-        Assert.ThrowsAny<Exception>(() => store.Discussions.Count);
+        Assert.Equal("the state file's discussions are missing or not an object", Assert.Throws<InvalidDataException>(() => store.Discussions.Count).Message);
         var saved = JsonNode.Parse(File.ReadAllText(State))!;
         Assert.Equal("[]", saved["discussions"]!.ToJsonString());
         Assert.Equal("test-app[bot]", saved["agentLogin"]!.GetValue<string>());
@@ -108,6 +130,9 @@ public sealed class StateStoreTests : IDisposable
         Assert.Equal(["D1", "D3", "D7"], store.Discussions.Where(entry => entry.Value.HoldsSession).Select(entry => entry.Key));
         Assert.Equal(["D4", "D5", "D7"], store.Discussions.Where(entry => entry.Value.HoldsPending).Select(entry => entry.Key));
     }
+
+    // What the BCL reports for this read, so its wording is not pinned here.
+    static string Reported(Action read) => Assert.IsType<InvalidOperationException>(Record.Exception(read)).Message;
 
     public void Dispose()
     {
