@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 namespace RepoAgentController;
 
 /// <summary>Excludes checkout updates from all admitted native work, including uncertain work.</summary>
-sealed class CheckoutRefresh : IAgentTurnJournal, IAsyncDisposable
+sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisposable
 {
     readonly ManagedCheckout checkout;
     readonly string path;
@@ -158,7 +158,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, IAsyncDisposable
         }
     }
 
-    public async Task<Admission> Admit(CancellationToken ct)
+    public async Task<ICheckoutTurn> Admit(CancellationToken ct)
     {
         await exclusion.WaitAsync(ct);
         try
@@ -170,7 +170,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, IAsyncDisposable
                 if (active.Count >= 64) throw new IOException("Too many unresolved native admissions");
                 var record = Json.Object(("thread", ""), ("turn", ""), ("since", ++sequence), ("confirmed", false));
                 var id = Guid.NewGuid().ToString("N"); active[id] = record; Save();
-                return new(this, id, record);
+                return new Admission(this, id, record);
             }
         }
         catch { exclusion.Release(); throw; }
@@ -194,7 +194,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, IAsyncDisposable
         finally { exclusion.Release(); }
     }
 
-    public sealed class Admission(CheckoutRefresh owner, string id, JsonObject record) : IDisposable
+    sealed class Admission(CheckoutRefresh owner, string id, JsonObject record) : ICheckoutTurn
     {
         bool confirmed;
         public void Bind(string thread)

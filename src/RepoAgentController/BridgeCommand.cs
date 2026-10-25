@@ -106,7 +106,8 @@ public static class BridgeCommand
                 }).ToHashSet();
                 var statePath = result.GetValue(state)!.FullName;
                 var credentialDirectory = statePath + ".github-app";
-                using var store = new StateStore(statePath, repo, () => GitHubAppCredentials.ClearCache(credentialDirectory));
+                using var leased = new LeasedStateStore(statePath, repo, () => GitHubAppCredentials.ClearCache(credentialDirectory));
+                var store = leased.Store;
                 // Only the lease holder retains logs and records status for this state.
                 using var retained = new RetainedLog(RetainedLog.DirectoryFor(statePath), result.GetValue(logFileBytes), result.GetValue(logFiles));
                 using var status = new ControllerStatus(statePath, repo, result.GetValue(checkAuth) ? "check-auth" : result.GetValue(disableWebhook) ? "disable-webhook" :
@@ -178,7 +179,8 @@ public static class BridgeCommand
                         await codex.Initialize(runtimeToken);
                         if (reconciliation is not null) await reconciliation.Start(sessions,
                             TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)), runtimeToken);
-                        var bridge = new Bridge(github.Repository, discussions, github.Identity, sessions, store, outbox, numbers, settings, reconciliation, time);
+                        var bridge = new Bridge(github.Repository, discussions, github.Identity, sessions, store, outbox, numbers, settings, new AgentInputJson(), new ControllerLog(),
+                            time, reconciliation);
                         bridge.ResumeInterrupted();
                         settingsRefresh = settings.RefreshUntilCancelled(bridge.ReconcileCategoryEnrollment, runtimeToken);
                         dashboard?.Start(runtimeToken);

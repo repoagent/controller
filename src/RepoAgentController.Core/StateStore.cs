@@ -1,32 +1,21 @@
 namespace RepoAgentController;
 
-/// <summary>The controller's Discussion state, held in memory by the one controller that leases its state file, and saved whole.</summary>
-sealed class StateStore : IDisposable
+/// <summary>The controller's Discussion state, held in memory by the one controller that leases it, and saved whole.</summary>
+public sealed class StateStore
 {
-    readonly IControllerState files;
-    readonly FileStream lease;
+    readonly IDiscussionStore store;
     public DiscussionState State { get; }
 
-    /// <summary>Throws as reading the untyped file's records threw when they are unreadable (<see cref="DiscussionState.Unreadable"/>).</summary>
+    /// <summary>Throws as reading the untyped records threw when they are unreadable (<see cref="DiscussionState.Unreadable"/>).</summary>
     public OrderedDictionary<string, DiscussionRecord> Discussions =>
         State.Unreadable is { } problem ? throw new InvalidDataException(problem) : State.Discussions;
 
-    public StateStore(string path, string repository, Action? onLockAcquired = null)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        lease = ExclusiveFileLease.Open(path + ".lock");
-        try
-        {
-            onLockAcquired?.Invoke();
-            files = new ControllerStateFiles(path);
-            State = Read(files, repository);
-        }
-        catch { lease.Dispose(); throw; }
-    }
+    /// <summary>Reads the state <paramref name="store"/> keeps for <paramref name="repository"/>; the caller holds its lease.</summary>
+    public StateStore(IDiscussionStore store, string repository) => (this.store, State) = (store, Read(store, repository));
 
-    static DiscussionState Read(IControllerState files, string repository)
+    static DiscussionState Read(IDiscussionStore store, string repository)
     {
-        var state = files.ReadDiscussions() ?? new DiscussionState(repository);
+        var state = store.ReadDiscussions() ?? new DiscussionState(repository);
         if (!string.Equals(state.Repository, repository, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("State belongs to a different repository or unsupported version");
         return state;
@@ -41,7 +30,7 @@ sealed class StateStore : IDisposable
     }
 
     /// <summary>Removes these Discussion records and saves. When the save fails they are restored before the error propagates,
-    /// so memory still matches the state file and a retry removes and saves them again.</summary>
+    /// so memory still matches the saved state and a retry removes and saves them again.</summary>
     public void Remove(IReadOnlyCollection<string> ids)
     {
         var removed = ids.Where(Discussions.ContainsKey).Select(id => (Id: id, Record: Discussions[id])).ToArray();
@@ -54,7 +43,5 @@ sealed class StateStore : IDisposable
         }
     }
 
-    public void Save() => files.WriteDiscussions(State);
-
-    public void Dispose() => lease.Dispose();
+    public void Save() => store.WriteDiscussions(State);
 }

@@ -297,8 +297,7 @@ sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
 }
 
 /// <summary>The controller's settings and outbox as its files hold them: only what was written survives into another lifetime.
-/// A write can fail on demand, as a full or read-only disk does. The Discussion state is not held: the state store reads it
-/// through the file adapter, and no core reads it yet.</summary>
+/// A write can fail on demand, as a full or read-only disk does.</summary>
 sealed class InMemoryControllerState : IControllerState
 {
     RecordedSettings? settings;
@@ -330,11 +329,49 @@ sealed class InMemoryControllerState : IControllerState
         OutboxWrites++;
         Outbox = outbox with { Operations = [.. outbox.Operations] };
     }
+}
 
-    // The state store keeps the Discussion state in the state file it leases.
-    public DiscussionState? ReadDiscussions() => throw new NotSupportedException();
+/// <summary>
+/// The Discussion state as the state file holds it: only what was written survives into another lifetime, so a change that was
+/// never saved is lost on restart. A write can fail on demand, as a full or read-only disk does.
+/// </summary>
+sealed class InMemoryDiscussionStore : IDiscussionStore
+{
+    DiscussionState? saved;
 
-    public void WriteDiscussions(DiscussionState state) => throw new NotSupportedException();
+    /// <summary>Later writes throw <see cref="IOException"/>, leaving the earlier state in place.</summary>
+    public bool FailWrites { get; set; }
+
+    /// <summary>The Discussion state as last written, or null when none was ever written.</summary>
+    public DiscussionState? Saved => saved is null ? null : Copy(saved);
+
+    public DiscussionState? ReadDiscussions() => Saved;
+
+    public void WriteDiscussions(DiscussionState state)
+    {
+        if (FailWrites) throw new IOException("No space left on device");
+        saved = Copy(state);
+    }
+
+    // Every part the bridge changes in place is copied; the records it replaces whole are shared.
+    static DiscussionState Copy(DiscussionState state)
+    {
+        var copy = new DiscussionState(state.Repository)
+            { AgentLogin = state.AgentLogin, CategoryStartsAsRead = state.CategoryStartsAsRead, Unknown = state.Unknown, Unreadable = state.Unreadable };
+        foreach (var (name, since) in state.CategoryStarts) copy.CategoryStarts[name] = since;
+        foreach (var (id, record) in state.Discussions)
+        {
+            var waiting = record.Waiting is { } held ? new WaitingInput(held.DiscussionJson) { ContextJson = held.ContextJson, Retry = held.Retry, Unknown = held.Unknown } : null;
+            waiting?.Inputs.AddRange(record.Waiting!.Inputs);
+            var kept = copy.Discussions[id] = new(record.Url)
+            {
+                Sources = new(record.Sources), Labels = record.Labels, SessionId = record.SessionId, Waiting = waiting, Pending = record.Pending,
+                Running = record.Running, Unknown = record.Unknown, Unreadable = record.Unreadable
+            };
+            foreach (var (key, value) in record.UnreadableKeys) kept.UnreadableKeys[key] = value;
+        }
+        return copy;
+    }
 }
 
 /// <summary>
@@ -362,8 +399,11 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
         return Task.CompletedTask;
     }
 
-    public Task<(string SessionId, AgentSessionStatus Status)> StartSession(CancellationToken ct) =>
-        Task.FromResult(($"S{++sessions}", AgentSessionStatus.Idle));
+    /// <summary>When set, starting a session fails with it and starts none.</summary>
+    public Exception? SessionStartFailure { get; set; }
+
+    public Task<(string SessionId, AgentSessionStatus Status)> StartSession(CancellationToken ct) => SessionStartFailure is { } failure
+        ? Task.FromException<(string, AgentSessionStatus)>(failure) : Task.FromResult(($"S{++sessions}", AgentSessionStatus.Idle));
 
     /// <summary>Runs as the runtime handles a resume, before its response; it can report events.</summary>
     public Action<string>? Resuming { get; set; }
@@ -393,7 +433,11 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
 
     public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => Task.FromResult(Configuration);
 
-    public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => Task.FromResult(Catalogue);
+    /// <summary>When set, reading the model catalogue fails with it, as a native that cannot answer does.</summary>
+    public Exception? ModelsFailure { get; set; }
+
+    public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => ModelsFailure is { } failure
+        ? Task.FromException<IReadOnlyList<NativeModel>>(failure) : Task.FromResult(Catalogue);
 
     public void Report(string session, AgentSessionStatus status) => Changed?.Invoke(new AgentSessionStatusChanged(Epoch, session, status));
     public void Started(string session, string turn) => Changed?.Invoke(new AgentTurnStarted(Epoch, session, turn));
@@ -464,4 +508,33 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 
     /// <summary>Whether a timer was armed since the last <see cref="Armed"/>, without waiting.</summary>
     public bool WasArmed() => armed.CurrentCount != 0;
+}
+
+/// <summary>
+/// The managed checkout's admission as the bridge resolves it: every admission and resolution, in order, as "admit", "bind S1",
+/// "accepted S1 T1", "abandon", "unconfirmed", "confirm" and "dispose". Every admission succeeds.
+/// </summary>
+sealed class RecordingCheckoutAdmission : ICheckoutAdmission
+{
+    readonly List<string> calls = [];
+
+    public IReadOnlyList<string> Calls { get { lock (calls) return [.. calls]; } }
+
+    public Task<ICheckoutTurn> Admit(CancellationToken ct)
+    {
+        Add("admit");
+        return Task.FromResult<ICheckoutTurn>(new Turn(this));
+    }
+
+    void Add(string call) { lock (calls) calls.Add(call); }
+
+    sealed class Turn(RecordingCheckoutAdmission owner) : ICheckoutTurn
+    {
+        public void Bind(string session) => owner.Add("bind " + session);
+        public void Accepted(string session, string turn) => owner.Add($"accepted {session} {turn}");
+        public void Abandon() => owner.Add("abandon");
+        public void Unconfirmed() => owner.Add("unconfirmed");
+        public void Confirm() => owner.Add("confirm");
+        public void Dispose() => owner.Add("dispose");
+    }
 }

@@ -152,13 +152,37 @@ public sealed class BridgeEnrollmentTests
         Assert.Equal(["D2"], Delivered(world));
     }
 
+    [Fact]
+    public async Task Category_starts_that_could_not_be_saved_stay_reconciled_and_are_saved_with_the_next_state_change()
+    {
+        await using var world = new BridgeWorld();
+        world.Variables.Set(Setting, "Agents");
+        await world.Begin();
+        Assert.True(await world.Poll());
+        Assert.Equal(["Agents"], world.State.Saved!.CategoryStarts.Keys);
+        await world.End();
+        await world.Begin(); // This lifetime holds the saved starts as it read them.
+
+        world.State.FailWrites = true; // As a full disk fails the save.
+        world.Variables.Set(Setting, null);
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        await world.Refresh();
+        Assert.Equal(["the category enrollment starts could not be saved: No space left on device"], world.Logged("repository-settings-error"));
+        Assert.Equal(["Agents"], world.State.Saved!.CategoryStarts.Keys);
+
+        world.State.FailWrites = false;
+        world.GitHub.Open(1, Mention);
+        Assert.True(await world.Poll());
+        Assert.Empty(world.State.Saved!.CategoryStarts);
+    }
+
     // Starts that are not an object of text, as only a hand edit leaves them, are replaced by the first start recorded.
     [Theory]
     [InlineData("5")]
     [InlineData("""{"Agents":"2026-10-24T08:00:00Z","Q&A":7}""")]
     public async Task Category_starts_no_writer_leaves_are_gone_once_their_replacement_is_forgotten(string starts)
     {
-        await using var world = new BridgeWorld();
+        await using var world = new BridgeWorld { Files = true }; // A state file a controller left.
         Directory.CreateDirectory(Path.GetDirectoryName(world.StatePath)!);
         File.WriteAllText(world.StatePath, """{"version":1,"repository":"owner/repository","discussions":{},"enrollmentCategories":""" + starts + "}");
         world.Variables.Set(Setting, "Agents");
@@ -203,19 +227,19 @@ public sealed class BridgeEnrollmentTests
 
         // A later lifetime, as when the deployed Discussion was deleted: a failed lookup is not a deletion and keeps its state.
         await world.Begin();
-        var retained = world.Record(1)!.ToJsonString();
-        var unrelated = world.Record(2)!.ToJsonString();
+        var retained = world.Saved(1)!;
+        var unrelated = world.Saved(2)!;
         world.GitHub.FailReads("Find", new GitHubRequestException(GitHubFailure.Permanent, "FORBIDDEN: Resource not accessible by integration"));
         Assert.False(await world.Observe(1));
-        Assert.Equal(retained, world.Record(1)!.ToJsonString());
+        Assert.Equivalent(retained, world.Saved(1), strict: true);
 
         // GitHub confirms the deletion: the whole record goes, and the other Discussion's session and checkpoints stay.
         world.GitHub.FailReads("Find", null);
         world.GitHub.Remove(1);
         Assert.True(await world.Observe(1));
         Assert.Equal(BridgeWorld.Url(1) + " reason=not-found session=S1", Assert.Single(world.Logged("discussion-forgotten")));
-        Assert.Null(world.Record(1));
-        Assert.Equal(unrelated, world.Record(2)!.ToJsonString());
+        Assert.Null(world.Saved(1));
+        Assert.Equivalent(unrelated, world.Saved(2), strict: true);
 
         // A duplicate deletion notification ahead of new live input is harmless.
         world.GitHub.Edit(2, Mention + " behind a stale notification");
@@ -238,14 +262,14 @@ public sealed class BridgeEnrollmentTests
         // T1 keeps D1's session active; a D1 edit waits in the controller behind it.
         world.GitHub.Edit(1, Mention + " while T1 runs");
         Assert.True(await world.Observe(1));
-        Assert.Equal("T1", world.Record(1)!["running"]!["turn"]!.GetValue<string>());
-        Assert.Single(world.Record(1)!["waiting"]!["inputs"]!.AsArray());
-        var unrelated = world.Record(2)!.ToJsonString();
+        Assert.Equal("T1", world.Saved(1)!.Running!.Turn);
+        Assert.Single(world.Saved(1)!.Waiting!.Inputs);
+        var unrelated = world.Saved(2)!;
 
         world.GitHub.Remove(1);
         Assert.True(await world.Observe(1));
         Assert.Equal(["D2"], world.WithSessions); // Its waiting input, running turn and checkpoints are forgotten.
-        Assert.Equal(unrelated, world.Record(2)!.ToJsonString());
+        Assert.Equivalent(unrelated, world.Saved(2), strict: true);
         Assert.Equal(1, world.Status()["work"]!["running"]!.GetValue<int>()); // Counted while the agent still runs it.
 
         // The agent ends the turn: its slot frees and the forgotten input is never sent.
@@ -276,6 +300,7 @@ public sealed class BridgeEnrollmentTests
     // then changes its record at this dotted path: the JSON text replaces the value there, or null removes it.
     static async Task Damage(BridgeWorld world, string path, string? json, bool waiting = false)
     {
+        world.Files = true;
         world.GitHub.Open(1, Mention);
         world.GitHub.React(1, "D1", "R1", "HEART", "octocat");
         world.GitHub.Open(2, Mention);

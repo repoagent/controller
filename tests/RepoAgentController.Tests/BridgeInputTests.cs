@@ -31,7 +31,7 @@ public sealed class BridgeInputTests
     [Fact]
     public async Task Agent_input_and_checkpoints_are_the_bytes_ec1ccf7_sent_and_saved_for_the_golden_conversation()
     {
-        await using var world = new BridgeWorld();
+        await using var world = new BridgeWorld { Files = true }; // The saved bytes are the file's.
         var golden = DiscussionJsonGoldenTests.Golden["ec1ccf7"]!;
         JsonNode Saved() => JsonNode.Parse(File.ReadAllText(world.StatePath))!["discussions"]!["D_kwDOGolden7"]!;
         world.GitHub.Put(DiscussionJsonGoldenTests.Observe("first"));
@@ -121,6 +121,9 @@ public sealed class BridgeInputTests
             .Concat(input.Envelope["changes"]!.AsArray().Select(change => change!["subject"]!["body"]?.GetValue<string>()).OfType<string>())));
         Assert.Equal(Enumerable.Range(1, 20).Select(index => $"C{index}"), inputs.SelectMany(input => input.Envelope["changes"]!.AsArray())
             .Where(change => change!["kind"]!.GetValue<string>() == "comment.created").Select(change => change!["subject"]!["id"]!.GetValue<string>()));
+        // The context counts the comments it leaves to their own changes.
+        var context = inputs[0].Envelope["context"]!;
+        Assert.Equal(bodies.Length - context["existingComments"]!.AsArray().Count, context["laterComments"]!.GetValue<int>());
     }
 
     [Fact]
@@ -152,6 +155,7 @@ public sealed class BridgeInputTests
         Assert.Equal("Also check the installer.", changes[2]!["subject"]!["body"]!.GetValue<string>());
         Assert.Equal(("RE1", "THUMBS_UP", "bob", "C1"), (changes[3]!["reaction"]!["id"]!.GetValue<string>(), changes[3]!["reaction"]!["content"]!.GetValue<string>(),
             changes[3]!["subject"]!["author"]!["login"]!.GetValue<string>(), changes[3]!["subject"]!["replyTo"]!["id"]!.GetValue<string>()));
+        Assert.EndsWith(" latest=" + changes[3]!["subject"]!["url"]!.GetValue<string>(), world.Logged("forwarded")[^1]);
     }
 
     [Fact]
@@ -182,6 +186,7 @@ public sealed class BridgeInputTests
             ("comment.deleted", "R1", "bob", "C1", "C1"),
             ("comment.deleted", "R2", "erin", "C2", null) // Its thread root is gone too, so a response goes top-level.
         ], Deletions(envelope));
+        Assert.EndsWith(" latest=", world.Logged("forwarded")[^1]); // A deletion names no subject URL.
         Assert.Equal(receipts, Receipts()); // A deleted source cannot carry an EYES receipt.
 
         Assert.True(await world.RunOnce(1));
@@ -275,7 +280,7 @@ public sealed class BridgeInputTests
         Assert.Empty(retained!); // No receipt was retained before the agent accepted the batch carrying its source.
         await world.Deliver();
         Assert.True(world.GitHub.HasEyes("C1") && world.GitHub.HasEyes("C2"));
-        Assert.Null(world.Record(1)!["waiting"]);
+        Assert.Null(world.Saved(1)!.Waiting);
     }
 
     [Fact]
@@ -312,7 +317,7 @@ public sealed class BridgeInputTests
         }
         Assert.Equal(bodies, delivered);
         Assert.InRange(world.Turns.Count - 1, 2, 5);
-        Assert.Null(world.Record(1)!["waiting"]);
+        Assert.Null(world.Saved(1)!.Waiting);
     }
 
     [Fact]
@@ -344,8 +349,8 @@ public sealed class BridgeInputTests
         await world.Poll();
         Assert.Null(world.Envelope(3)["_bridge"]!["redelivery"]);
         Assert.Equal(["C2"], BridgeWorld.Subjects(world.Envelope(3)));
-        Assert.Null(world.Record(1)!["pending"]);
-        Assert.Null(world.Record(1)!["waiting"]);
+        Assert.Null(world.Saved(1)!.Pending);
+        Assert.Null(world.Saved(1)!.Waiting);
     }
 
     [Fact]
@@ -362,6 +367,24 @@ public sealed class BridgeInputTests
         var change = Assert.Single(world.Envelope(1)["changes"]!.AsArray())!;
         Assert.Equal("discussion.stateChanged", change["kind"]!.GetValue<string>());
         Assert.Equal("""{"id":"D1","url":"https://github.com/owner/repository/discussions/1","author":{"__typename":"User","login":"participant"},"title":"Renamed","category":{"id":"DIC_Q\u0026A","name":"Q\u0026A"}}""",
+            change["subject"]!.ToJsonString());
+    }
+
+    [Fact]
+    public async Task An_edit_that_comes_with_a_rename_sends_one_content_change_carrying_its_body_and_new_title_and_category()
+    {
+        await using var world = Enrolled();
+        await world.Begin(1);
+        await world.Poll();
+        world.Finish(1);
+        world.GitHub.Edit(1, "Edited body.");
+        world.GitHub.Move(1, "Renamed", "Q&A");
+
+        await world.Poll();
+
+        var change = Assert.Single(world.Envelope(1)["changes"]!.AsArray())!;
+        Assert.Equal("discussion.changed", change["kind"]!.GetValue<string>());
+        Assert.Equal("""{"id":"D1","url":"https://github.com/owner/repository/discussions/1","author":{"__typename":"User","login":"participant"},"body":"Edited body.","title":"Renamed","category":{"id":"DIC_Q\u0026A","name":"Q\u0026A"}}""",
             change["subject"]!.ToJsonString());
     }
 
@@ -435,9 +458,9 @@ public sealed class BridgeInputTests
         await world.Dispatch();
 
         Assert.Equal(["C1"], BridgeWorld.Subjects(world.Envelope(2)));
-        var waiting = world.Record(1)!["waiting"]!;
-        Assert.Equal(["C2"], waiting["inputs"]!.AsArray().Select(input => input!["change"]!["subject"]!["id"]!.GetValue<string>()));
-        Assert.Null(waiting["retry"]);
+        var waiting = world.Saved(1)!.Waiting!;
+        Assert.Equal(["C2"], waiting.Inputs.Select(input => JsonNode.Parse(input.ChangeJson)!["subject"]!["id"]!.GetValue<string>()));
+        Assert.Null(waiting.Retry);
     }
 
     [Fact]
@@ -482,14 +505,15 @@ public sealed class BridgeInputTests
         Assert.Equal(3, world.Turns.Count);
         Assert.Equal(1, world.GitHub.Writes("C1"));
         Assert.False(world.GitHub.HasEyes("C1"));
-        Assert.Null(world.Record(1)!["pending"]);
-        Assert.Null(world.Record(1)!["waiting"]);
+        Assert.Null(world.Saved(1)!.Pending);
+        Assert.Null(world.Saved(1)!.Waiting);
     }
 
     [Fact]
     public async Task A_delivery_a_controller_from_before_the_waiting_queue_left_pending_ends_at_the_next_start_and_its_input_is_observed_again()
     {
         await using var world = Enrolled();
+        world.Files = true; // A hand edit of the state file.
         await world.Begin(1);
         await world.Poll();
         await world.Deliver();
@@ -514,6 +538,7 @@ public sealed class BridgeInputTests
     public async Task A_checkpoint_holding_a_key_no_writer_writes_is_kept_until_the_next_observation_rewrites_it_without_input()
     {
         await using var world = Enrolled();
+        world.Files = true; // A hand edit of the state file.
         await world.Begin(1);
         await world.Poll();
         world.Finish(1);

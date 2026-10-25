@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace RepoAgentController.Tests;
@@ -223,8 +224,8 @@ public sealed class BridgeAdmissionTests
         Assert.Contains(world.Logged("input-waiting"), line => line.Contains(" session=S1 status=Unknown "));
         await world.End();
 
-        Assert.Null(world.Record(1)!["pending"]);
-        Assert.Equal(["C1", "C2"], world.Record(1)!["waiting"]!["inputs"]!.AsArray().Select(input => input!["change"]!["subject"]!["id"]!.GetValue<string>()));
+        Assert.Null(world.Saved(1)!.Pending);
+        Assert.Equal(["C1", "C2"], world.Saved(1)!.Waiting!.Inputs.Select(input => JsonNode.Parse(input.ChangeJson)!["subject"]!["id"]!.GetValue<string>()));
         Assert.Equal((2, 2), (world.Status()["work"]!["waiting"]!.GetValue<int>(), world.Status()["sessions"]![0]!["waiting"]!.GetValue<int>()));
 
         // A restarted runtime has not loaded S1: the bridge loads it and uses only the status it reports.
@@ -401,5 +402,82 @@ public sealed class BridgeAdmissionTests
         await world.Poll();
         Assert.Equal(2, world.Turns.Count);
         Assert.Equal(["S1"], world.Runtime.Resumed); // Loaded again into the restarted runtime before its turn.
+    }
+
+    // With a managed checkout, each delivery is admitted before it reaches a session and resolved once by what the native did:
+    // confirmed with its acknowledged turn, abandoned when no turn can hold its input, or left unconfirmed when one may.
+    [Fact]
+    public async Task An_acknowledged_delivery_binds_its_session_and_confirms_its_turn()
+    {
+        await using var world = Mentioned(1);
+        world.Admission = new();
+        await world.Begin();
+        Assert.True(await world.Poll());
+        world.Finish(1);
+        world.GitHub.Comment(1, "C1", "More, please.");
+        Assert.True(await world.Poll());
+
+        string[] delivery(string turn) => ["admit", "bind S1", $"accepted S1 {turn}", "confirm", "dispose"];
+        Assert.Equal([.. delivery("T1"), .. delivery("T2")], world.Admission.Calls);
+    }
+
+    [Theory]
+    [InlineData(true, "abandon")] // The native refused the input, so no turn holds it.
+    [InlineData(false, "unconfirmed")] // No acknowledgement: the native may hold the input.
+    public async Task A_delivery_the_native_refused_is_abandoned_and_one_it_may_hold_stays_unconfirmed(bool refused, string resolution)
+    {
+        await using var world = Mentioned(1);
+        world.Admission = new();
+        world.Answer(_ => throw (refused ? new AgentRequestRejected("refused") : new TimeoutException("no acknowledgement")));
+        await world.Begin();
+        await world.Poll();
+
+        Assert.Equal(["admit", "bind S1", resolution, "dispose"], world.Admission.Calls);
+        Assert.Single(world.Logged("delivery-retry"));
+    }
+
+    [Fact]
+    public async Task A_delivery_that_offers_no_input_is_abandoned()
+    {
+        // The session cannot start.
+        await using (var world = Mentioned(1))
+        {
+            world.Admission = new();
+            world.PrepareRuntime = runtime => runtime.SessionStartFailure = new IOException("no session");
+            await world.Begin();
+            await world.Poll();
+            Assert.Equal(["admit", "abandon", "dispose"], world.Admission.Calls);
+        }
+        // The selection is unusable, so the input waits.
+        await using (var world = Mentioned(1))
+        {
+            world.Admission = new();
+            world.GitHub.Labels(1, "repoagent:luna6");
+            await world.Begin();
+            await world.Poll();
+            Assert.Equal(["admit", "abandon", "dispose"], world.Admission.Calls);
+        }
+        // The model catalogue cannot be read, so no selection is made.
+        await using (var world = Mentioned(1))
+        {
+            world.Admission = new();
+            world.PrepareRuntime = runtime => runtime.ModelsFailure = new IOException("no catalogue");
+            await world.Begin();
+            await world.Poll();
+            Assert.Equal(["admit", "abandon", "dispose"], world.Admission.Calls);
+        }
+        // A restarted runtime reports the session active once it loads it.
+        await using (var world = Mentioned(1))
+        {
+            await world.Begin();
+            await world.Poll();
+            world.Finish(1);
+            world.GitHub.Comment(1, "C1", "More, please.");
+            world.Admission = new();
+            world.PrepareRuntime = runtime => runtime.Resumes = AgentSessionStatus.Active;
+            await world.Begin();
+            await world.Poll();
+            Assert.Equal(["admit", "bind S1", "abandon", "dispose"], world.Admission.Calls);
+        }
     }
 }
