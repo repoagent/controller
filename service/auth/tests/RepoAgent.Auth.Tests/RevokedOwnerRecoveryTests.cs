@@ -6,7 +6,7 @@ using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed partial class CapacityReclamationTests
+public sealed partial class AzuriteReclamationTests
 {
     [Theory]
     [InlineData("polling")]
@@ -154,37 +154,5 @@ public sealed partial class CapacityReclamationTests
             pause.Release.TrySetResult();
             try { await stale; } catch (Exception ex) when (ex is StateConflict or BrokerStateUnavailable) { }
         }
-    }
-
-    private static async Task<ActiveJourney> AcknowledgedOwner(EnrollmentFixture f, string profile = "polling")
-    {
-        CloneEnrollmentContractTests.ConfigureGitHub(f, profile);
-        var id = Guid.NewGuid().ToString("N");
-        using var start = await f.Send("/v2/enrollments", new { idempotencyId = id, repositoryId = 123456,
-            repository = "owner/project", variable = "APPROVAL", profile });
-        Assert.Equal(HttpStatusCode.OK, start.StatusCode);
-        var status = await start.Content.ReadFromJsonAsync<JsonElement>(Token);
-        f.GitHub.Marker = status.GetProperty("marker").GetString()!;
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var complete = await f.Send($"/v2/enrollments/{status.GetProperty("pendingId").GetString()}/completion");
-        Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
-        var receipt = await complete.Content.ReadFromJsonAsync<JsonElement>(Token);
-        var device = receipt.GetProperty("enrollment");
-        var owner = new ActiveJourney(id, device.GetProperty("deviceId").GetString()!, device.GetProperty("deviceSecret").GetString()!,
-            receipt.GetProperty("completionId").GetString()!);
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var ack = await f.Send($"/v2/devices/{owner.Device}/acknowledgment", new { completionId = owner.Completion }, owner.Secret);
-        Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var runtime = await f.Send($"/v{(profile == "polling-clone" ? 2 : 1)}/devices/{owner.Device}/installation-token", secret: owner.Secret);
-        Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        return owner;
-    }
-
-    private static async Task SettleOwnerCapabilities(EnrollmentFixture f)
-    {
-        f.Clock.Advance(TimeSpan.FromMinutes(66));
-        foreach (var ledger in await IssuanceLedgers(f)) await Reclaim(f, ledger);
     }
 }

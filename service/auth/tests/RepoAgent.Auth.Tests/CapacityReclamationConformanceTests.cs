@@ -8,9 +8,8 @@ using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed partial class CapacityReclamationTests
+public sealed partial class AzuriteReclamationTests
 {
-    private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Theory]
     [InlineData("pending")]
@@ -406,63 +405,5 @@ public sealed partial class CapacityReclamationTests
         Assert.Equal(attempt.ETag, (await Read(f, attempt.PartitionKey, attempt.RowKey)).ETag);
         Assert.Equal(1L, (await Read(f, "global:issuance-v1", "quota")).GetInt64("Slots"));
         Assert.False((await f.Storage.Table.GetEntityIfExistsAsync<TableEntity>(RevocationFixture.Partition, "release:" + ledger.GetString("OperationId"), cancellationToken: Token)).HasValue);
-    }
-
-    private static object Request(string id) => new { idempotencyId = id, repositoryId = 123456, repository = "owner/project", variable = "APPROVAL", profile = "polling" };
-    private sealed record ActiveJourney(string Id, string Device, string Secret, string Completion);
-    private static async Task<ActiveJourney> Active(EnrollmentFixture f)
-    {
-        var start = await Start(f);
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var completion = await f.Send($"/v2/enrollments/{start.Pending}/completion");
-        Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
-        var receipt = await completion.Content.ReadFromJsonAsync<JsonElement>(Token);
-        var envelope = receipt.GetProperty("enrollment");
-        var j = new ActiveJourney(start.Id, envelope.GetProperty("deviceId").GetString()!, envelope.GetProperty("deviceSecret").GetString()!, receipt.GetProperty("completionId").GetString()!);
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var ack = await f.Send($"/v2/devices/{j.Device}/acknowledgment", new { completionId = j.Completion }, j.Secret);
-        Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        return j;
-    }
-    private static async Task<(string Id, string Pending)> Start(EnrollmentFixture f)
-    {
-        AgentVariableEnrollmentTests.ConfigureGitHub(f);
-        var id = Guid.NewGuid().ToString("N");
-        using var response = await f.Send("/v2/enrollments", Request(id));
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var json = await response.Content.ReadFromJsonAsync<JsonElement>(Token);
-        f.GitHub.Marker = json.GetProperty("marker").GetString()!;
-        return (id, json.GetProperty("pendingId").GetString()!);
-    }
-    private static BrokerOptions Options(EnrollmentFixture f) => new(new Uri("https://example.table.core.windows.net"), f.Storage.TableName, RevocationFixture.Epoch, null, 120, 8, 15);
-    private static CapacityReclamation Cleanup(EnrollmentFixture f, TableClient? table = null) => new(new TableBrokerState(table ?? f.Storage.CreateClient()), Options(f).DeploymentEpoch, f.Clock);
-    private static Task Reclaim(EnrollmentFixture f, TableEntity ledger, TableClient? table = null) => Cleanup(f, table).ReclaimIssuanceAsync(ledger.GetString("OperationId")!, ledger.GetString("Generation")!, Token);
-    private static async Task<TableEntity> Read(EnrollmentFixture f, string partition, string key) => (await f.Storage.CreateClient().GetEntityAsync<TableEntity>(partition, key, cancellationToken: Token)).Value;
-    private static async Task<List<TableEntity>> Rows(EnrollmentFixture f)
-    {
-        var rows = new List<TableEntity>();
-        await foreach (var row in f.Storage.CreateClient().QueryAsync<TableEntity>(cancellationToken: Token)) rows.Add(row);
-        return rows;
-    }
-    private static async Task<List<TableEntity>> IssuanceLedgers(EnrollmentFixture f) => (await Rows(f)).Where(x => x.PartitionKey == "global:issuance-v1" && x.RowKey.StartsWith("operation:", StringComparison.Ordinal)).ToList();
-    private sealed class CapacityPause
-    {
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public ObservedTransport Transport { get; }
-        public CapacityPause(Func<string, bool> matches)
-        {
-            var paused = 0;
-            Transport = new() { Before = async message =>
-            {
-                if (!ObservedTransport.IsBatch(message) || message.Request.Content is null) return;
-                using var stream = new MemoryStream();
-                await message.Request.Content.WriteToAsync(stream, Token);
-                if (!matches(Encoding.UTF8.GetString(stream.ToArray())) || Interlocked.CompareExchange(ref paused, 1, 0) != 0) return;
-                Entered.TrySetResult();
-                await Release.Task.WaitAsync(TimeSpan.FromSeconds(12), Token);
-            }};
-        }
     }
 }

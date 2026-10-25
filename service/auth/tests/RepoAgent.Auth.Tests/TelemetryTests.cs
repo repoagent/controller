@@ -80,7 +80,7 @@ public sealed class TelemetryTests(ITestOutputHelper output)
         Environment.SetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING", scenario == "disabled" ? null : scenario == "malformed" ? "private-malformed" : capture.Connection);
         Environment.SetEnvironmentVariable("Broker__ManagedIdentityClientId", "11111111-1111-1111-1111-111111111111");
         Environment.SetEnvironmentVariable("ASPNETCORE_URLS", "http://127.0.0.1:0");
-        await using var factory = new RevocationFixture().CreateHost(settings: new Dictionary<string, string?>
+        await using var factory = InMemoryHost.Create(new InMemoryBrokerState(), new Dictionary<string, string?>
         {
             ["Broker:ManagedIdentityClientId"] = "11111111-1111-1111-1111-111111111111"
         }).WithWebHostBuilder(builder => builder.ConfigureServices(services =>

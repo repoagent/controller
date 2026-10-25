@@ -8,7 +8,7 @@ using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed partial class CapacityReclamationTests
+public sealed partial class AzuriteReclamationTests
 {
     [Theory]
     [InlineData(1, false)] [InlineData(2, false)] [InlineData(3, false)] [InlineData(4, false)] [InlineData(5, false)]
@@ -456,60 +456,5 @@ public sealed partial class CapacityReclamationTests
         Assert.Equal(current.ETag, (await Read(f, current.PartitionKey, current.RowKey)).ETag);
         Assert.Equal(pending.ETag, (await Read(f, pending.PartitionKey, pending.RowKey)).ETag);
         Assert.Equal(1L, (await Read(f, current.PartitionKey, "quota")).GetInt64("RetainedEnrollmentCount"));
-    }
-
-    private static string RetainedCounter(bool enrollment) => enrollment ? "RetainedEnrollmentCount" : "RetainedIssuanceCount";
-    private static string Target(TableEntity ledger, bool enrollment) => enrollment ? ledger.RowKey : ledger.GetString("AttemptRowKey")!;
-    private static string Release(TableEntity ledger, bool enrollment) => "release:" + (enrollment ? ledger.RowKey : ledger.GetString("OperationId"));
-    private static Task Retirement(EnrollmentFixture f, TableEntity ledger, TableClient? client = null) => ledger.PartitionKey == "global:enrollment-v1"
-        ? Cleanup(f, client).ReclaimEnrollmentAsync(ledger.RowKey[8..], ledger.GetString("Generation")!, Token) : Reclaim(f, ledger, client);
-    private static async Task RetirementGone(EnrollmentFixture f, TableEntity ledger, bool enrollment)
-    {
-        await AssertAbsent(f, ledger.PartitionKey, ledger.RowKey);
-        await AssertAbsent(f, RevocationFixture.Partition, Target(ledger, enrollment));
-        await AssertAbsent(f, RevocationFixture.Partition, Release(ledger, enrollment));
-        Assert.Equal(0L, (await Read(f, ledger.PartitionKey, "quota")).GetInt64(RetainedCounter(enrollment)));
-    }
-    private static async Task<string> Body(HttpMessage message)
-    {
-        using var stream = new MemoryStream();
-        if (message.Request.Content is not null) await message.Request.Content.WriteToAsync(stream, Token);
-        return Encoding.UTF8.GetString(stream.ToArray());
-    }
-    private static async Task<TableEntity> UnpublishedEnrollment(EnrollmentFixture f, string? id = null)
-    {
-        var interrupted = false;
-        await f.RestartAsync(new ObservedTransport { After = message =>
-        {
-            if (ObservedTransport.IsBatch(message) && !interrupted) { interrupted = true; throw new HttpRequestException("Lost new allocation response"); }
-            return Task.CompletedTask;
-        }});
-        id ??= Guid.NewGuid().ToString("N");
-        using var response = await f.Send("/v2/enrollments", Request(id));
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        Assert.True(interrupted);
-        await f.RestartAsync();
-        return await Read(f, "global:enrollment-v1", "pending:" + id);
-    }
-    private static async Task<TableEntity> RetirementEligible(EnrollmentFixture f, bool enrollment, bool lateSettlement = false)
-    {
-        TableEntity ledger;
-        DateTimeOffset resolved;
-        if (enrollment)
-        {
-            ledger = await UnpublishedEnrollment(f);
-            Assert.Equal(1L, ledger.GetInt64("ReclamationVersion"));
-            resolved = ledger.GetDateTimeOffset("Deadline")!.Value;
-        }
-        else
-        {
-            _ = await Start(f);
-            ledger = Assert.Single(await IssuanceLedgers(f));
-            resolved = (await Read(f, RevocationFixture.Partition, Target(ledger, false))).GetDateTimeOffset("ExpiresAt")!.Value.AddMinutes(5);
-        }
-        f.Clock.Advance(resolved.AddDays(lateSettlement ? 31 : 0) - f.Clock.GetUtcNow());
-        await Retirement(f, ledger);
-        if (!lateSettlement) f.Clock.Advance(TimeSpan.FromDays(30));
-        return ledger;
     }
 }

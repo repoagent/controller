@@ -6,7 +6,7 @@ using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed partial class CapacityReclamationTests
+public sealed partial class AzuriteReclamationTests
 {
     [Theory]
     [InlineData(false)]
@@ -155,36 +155,5 @@ public sealed partial class CapacityReclamationTests
             pause.Release.TrySetResult();
             try { await stale; } catch (Exception ex) when (ex is StateConflict or BrokerStateUnavailable) { }
         }
-    }
-
-    private static async Task<(string Id, string Device, string Secret, string Completion)> Unacknowledged(EnrollmentFixture f)
-    {
-        var start = await Start(f);
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        using var response = await f.Send($"/v2/enrollments/{start.Pending}/completion");
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var receipt = await response.Content.ReadFromJsonAsync<JsonElement>(Token);
-        var enrollment = receipt.GetProperty("enrollment");
-        return (start.Id, enrollment.GetProperty("deviceId").GetString()!, enrollment.GetProperty("deviceSecret").GetString()!,
-            receipt.GetProperty("completionId").GetString()!);
-    }
-
-    private static async Task SettleVerifiers(EnrollmentFixture f)
-    {
-        var ledgers = await IssuanceLedgers(f);
-        var expiry = DateTimeOffset.MinValue;
-        foreach (var ledger in ledgers)
-        {
-            var attempt = await Read(f, RevocationFixture.Partition, ledger.GetString("AttemptRowKey")!);
-            expiry = new[] { expiry, attempt.GetDateTimeOffset("ExpiresAt")!.Value.AddMinutes(5) }.Max();
-        }
-        if (expiry > f.Clock.GetUtcNow()) f.Clock.Advance(expiry - f.Clock.GetUtcNow());
-        foreach (var ledger in ledgers) await Reclaim(f, ledger);
-    }
-
-    private static async Task ReclaimPending(EnrollmentFixture f, string id, TableClient? table = null)
-    {
-        var ledger = await Read(f, "global:enrollment-v1", "pending:" + id);
-        await Cleanup(f, table).ReclaimEnrollmentAsync(id, ledger.GetString("Generation")!, Token);
     }
 }

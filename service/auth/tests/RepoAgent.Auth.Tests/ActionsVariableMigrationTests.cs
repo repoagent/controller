@@ -5,7 +5,7 @@ using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed partial class CapacityReclamationTests
+public sealed partial class AzuriteReclamationTests
 {
     // Deliberate migration: an Agent-variable (setup v2) owner keeps working and blocks
     // Actions-variable (setup v3) completion until it is revoked, its capabilities settle

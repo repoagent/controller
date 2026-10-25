@@ -4,7 +4,7 @@ using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed partial class CapacityReclamationTests
+public sealed partial class AzuriteReclamationTests
 {
     [Fact]
     public async Task Retired_positive_issuance_deletes_its_rows_and_reuses_retained_capacity()
@@ -91,8 +91,4 @@ public sealed partial class CapacityReclamationTests
         Assert.Equal(HttpStatusCode.OK, replacement.StatusCode);
         Assert.Equal(1L, (await Read(f, "global:enrollment-v1", "quota")).GetInt64("RetainedEnrollmentCount"));
     }
-
-    private static async Task AssertAbsent(EnrollmentFixture f, string partition, string rowKey) =>
-        Assert.False((await f.Storage.CreateClient().GetEntityIfExistsAsync<TableEntity>(partition, rowKey,
-            cancellationToken: Token)).HasValue, $"Retirement must physically delete {partition}/{rowKey}");
 }

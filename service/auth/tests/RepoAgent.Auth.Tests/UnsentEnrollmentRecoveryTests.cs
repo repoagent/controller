@@ -6,7 +6,7 @@ using Xunit;
 
 namespace RepoAgent.Auth.Tests;
 
-public sealed partial class CapacityReclamationTests
+public sealed partial class AzuriteReclamationTests
 {
     [Theory]
     [InlineData("polling")]
@@ -105,28 +105,5 @@ public sealed partial class CapacityReclamationTests
             Assert.Equal(1, f.GitHub.Mints);
         }
         finally { pause.Release.TrySetResult(); using var response = await stale; }
-    }
-
-    private static async Task<(string Id, object Request, TableEntity Ledger)> FencedEnrollment(EnrollmentFixture f, string profile = "polling")
-    {
-        CloneEnrollmentContractTests.ConfigureGitHub(f, profile);
-        var id = Guid.NewGuid().ToString("N");
-        var request = new { idempotencyId = id, repositoryId = 123456,
-            repository = "owner/project", variable = "APPROVAL", profile };
-        var pause = new CapacityPause(body => body.Contains("\"State\":\"sending\"", StringComparison.Ordinal));
-        await f.RestartAsync(pause.Transport);
-        var writer = f.Send("/v2/enrollments", request);
-        try
-        {
-            await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(8), Token);
-            var ledger = Assert.Single(await IssuanceLedgers(f));
-            await Reclaim(f, ledger);
-            pause.Release.TrySetResult();
-            using var interrupted = await writer;
-            Assert.Equal(HttpStatusCode.ServiceUnavailable, interrupted.StatusCode);
-            Assert.Equal(0, f.GitHub.Mints);
-            return (id, request, ledger);
-        }
-        finally { pause.Release.TrySetResult(); using var response = await writer; }
     }
 }
