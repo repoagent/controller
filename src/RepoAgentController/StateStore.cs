@@ -1,37 +1,42 @@
-using System.Text.Json.Nodes;
-
 namespace RepoAgentController;
 
+/// <summary>The controller's Discussion state, held in memory by the one controller that leases its state file, and saved whole.</summary>
 sealed class StateStore : IDisposable
 {
-    readonly string path;
+    readonly IControllerState files;
     readonly FileStream lease;
-    public JsonObject State { get; }
-    public JsonObject Discussions => State["discussions"]!.AsObject();
+    public DiscussionState State { get; }
+
+    /// <summary>Throws as reading the untyped file's records threw when they are unreadable (<see cref="DiscussionState.Unreadable"/>).</summary>
+    public OrderedDictionary<string, DiscussionRecord> Discussions =>
+        State.Unreadable is { } problem ? throw new InvalidDataException(problem) : State.Discussions;
 
     public StateStore(string path, string repository, Action? onLockAcquired = null)
     {
-        this.path = path;
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         lease = ExclusiveFileLease.Open(path + ".lock");
         try
         {
             onLockAcquired?.Invoke();
-            State = File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path))!.AsObject() : new JsonObject
-            {
-                ["version"] = 1, ["repository"] = repository, ["discussions"] = new JsonObject()
-            };
-            if (State["version"]?.GetValue<int>() != 1 || !string.Equals(State.Text("repository"), repository, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("State belongs to a different repository or unsupported version");
+            files = new ControllerStateFiles(path);
+            State = Read(files, repository);
         }
         catch { lease.Dispose(); throw; }
     }
 
+    static DiscussionState Read(IControllerState files, string repository)
+    {
+        var state = files.ReadDiscussions() ?? new DiscussionState(repository);
+        if (!string.Equals(state.Repository, repository, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("State belongs to a different repository or unsupported version");
+        return state;
+    }
+
     public void VerifyIdentity(string login)
     {
-        if (State["agentLogin"] is not null && !string.Equals(State.Text("agentLogin"), login, StringComparison.OrdinalIgnoreCase))
+        if (State.AgentLogin is { } recorded && !string.Equals(recorded, login, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("State belongs to a different GitHub identity; use a fresh state file when moving from a user login to a GitHub App");
-        State["agentLogin"] = login;
+        State.AgentLogin = login;
         Save();
     }
 
@@ -49,12 +54,7 @@ sealed class StateStore : IDisposable
         }
     }
 
-    public void Save()
-    {
-        var temporary = path + ".tmp";
-        File.WriteAllText(temporary, State.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
-        File.Move(temporary, path, true);
-    }
+    public void Save() => files.WriteDiscussions(State);
 
     public void Dispose() => lease.Dispose();
 }

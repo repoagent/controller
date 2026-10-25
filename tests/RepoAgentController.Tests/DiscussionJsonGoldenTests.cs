@@ -40,10 +40,10 @@ public sealed class DiscussionJsonGoldenTests
         Assert.Equal(5, receipts.Length); // A deletion has no receipt.
         foreach (var receipt in receipts)
             Assert.Equal(receipt.ToJsonString(),
-                DiscussionJson.Receipt(conversation.Messages.Single(source => source.Message.Id == receipt["id"]!.GetValue<string>()).Message).ToJsonString());
+                ControllerStateFiles.Receipt(EyesReceipt.Of(conversation.Messages.Single(source => source.Message.Id == receipt["id"]!.GetValue<string>()).Message)).ToJsonString());
         // Dispatch reads a saved receipt back to decide whether the App's EYES is still to add; only the first comment has it.
         Assert.Equal([false, true, false, false, false],
-            receipts.Select(receipt => DiscussionMessage.HasEyes(DiscussionJson.ReadReactionGroups(receipt["reactionGroups"]))));
+            receipts.Select(receipt => DiscussionMessage.HasEyes(ControllerStateFiles.ReadReceipt(receipt.AsObject()).ReactionGroups)));
     }
 
     [Fact]
@@ -91,7 +91,7 @@ public sealed class DiscussionJsonGoldenTests
 
     // Each message's checkpoint by ID, in the conversation's order, as the bridge saves them.
     static JsonObject Checkpoints(DiscussionConversation conversation) => new(conversation.Messages.Select(source =>
-        KeyValuePair.Create(source.Message.Id, (JsonNode?)DiscussionJson.Checkpoint(source.Message, source.Reactions, App))));
+        KeyValuePair.Create(source.Message.Id, (JsonNode?)ControllerStateFiles.Checkpoint(SourceCheckpoint.Of(source.Message, source.Reactions, App)))));
 
     static JsonObject Subject(DiscussionConversation conversation, string id) =>
         DiscussionJson.Subject(conversation.Messages.Single(source => source.Message.Id == id).Message);

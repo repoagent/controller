@@ -366,6 +366,24 @@ public sealed class BridgeAdmissionTests
     }
 
     [Fact]
+    public async Task A_bootstrap_whose_credentials_were_rejected_is_redelivered_as_the_bootstrap_with_its_context()
+    {
+        await using var world = Mentioned(1);
+        await world.Begin();
+        await world.Poll();
+        world.Finish("S1", "T1", failed: true, rejection: "unexpected status 401 Unauthorized");
+        await world.Dispatch();
+
+        Assert.True(await world.Bridge.ExcludingDispatch(() => world.Sessions.RestartWhenIdle(() => { }, world.Token), world.Token));
+        await world.Dispatch();
+
+        var redelivered = world.Envelope(1);
+        Assert.True(redelivered["_bridge"]!["redelivery"]!.GetValue<bool>());
+        Assert.Equal("bootstrap", redelivered["_bridge"]!["mode"]!.GetValue<string>());
+        Assert.Equal(world.Envelope(0)["context"]!.ToJsonString(), redelivered["context"]!.ToJsonString());
+    }
+
+    [Fact]
     public async Task A_credential_replacement_waits_for_the_running_turn_and_later_input_reaches_the_restarted_runtime()
     {
         await using var world = Mentioned(1);

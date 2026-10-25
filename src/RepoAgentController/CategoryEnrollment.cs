@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
 
@@ -26,23 +25,21 @@ sealed class CategoryEnrollment
         var starts = Starts();
         if (identity.IsAgentActor(discussion.Author) || discussion.Category?.Name is not { } category ||
             starts.FirstOrDefault(start => string.Equals(start.Key, category, StringComparison.OrdinalIgnoreCase)).Value is not { } since) return false;
-        return discussion.CreatedAt >= DateTimeOffset.Parse(since.GetValue<string>(), CultureInfo.InvariantCulture);
+        return discussion.CreatedAt >= DateTimeOffset.Parse(since, CultureInfo.InvariantCulture);
     }
 
     /// <summary>Records starts for newly selected categories and forgets those of removed ones.</summary>
     public void Reconcile() => Starts();
 
     // Applies the core's reconciliation of the recorded starts with the effective setting, saving any change.
-    JsonObject Starts()
+    OrderedDictionary<string, string> Starts()
     {
-        var starts = store.State["enrollmentCategories"] as JsonObject;
-        if (CategoryEnrollmentStarts.Reconcile(starts?.Select(start => start.Key).ToList() ?? [], settings[Setting]) is not { } changes)
-            return starts ?? new JsonObject();
-        if (starts is null) store.State["enrollmentCategories"] = starts = new JsonObject();
+        var starts = store.State.CategoryStarts;
+        if (CategoryEnrollmentStarts.Reconcile([.. starts.Keys], settings[Setting]) is not { } changes) return starts;
+        store.State.CategoryStartsAsRead = null;
         foreach (var name in changes.Forgotten) starts.Remove(name);
         var since = changes.Since.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
         foreach (var name in changes.Started) starts[name] = since;
-        if (starts.Count == 0) store.State.Remove("enrollmentCategories");
         store.Save();
         return starts;
     }

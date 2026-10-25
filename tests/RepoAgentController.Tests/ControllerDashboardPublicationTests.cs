@@ -339,9 +339,10 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     // Discussion records as the bridge keeps them in the state file the status reads.
     void Store(params (string Id, JsonObject Record)[] records)
     {
-        using var store = new StateStore(statePath, "owner/repository");
-        foreach (var (id, record) in records) store.Discussions[id] = record;
-        store.Save();
+        var state = File.Exists(statePath) ? JsonNode.Parse(File.ReadAllText(statePath))!.AsObject()
+            : new JsonObject { ["version"] = 1, ["repository"] = "owner/repository", ["discussions"] = new JsonObject() };
+        foreach (var (id, record) in records) state["discussions"]![id] = record;
+        File.WriteAllText(statePath, state.ToJsonString());
     }
 
     // Observed input waiting for its session, as the bridge queues it; a failed delivery also schedules its retry there.

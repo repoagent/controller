@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace RepoAgentController.Tests;
@@ -151,6 +152,25 @@ public sealed class BridgeEnrollmentTests
         Assert.Equal(["D2"], Delivered(world));
     }
 
+    // Starts that are not an object of text, as only a hand edit leaves them, are replaced by the first start recorded.
+    [Theory]
+    [InlineData("5")]
+    [InlineData("""{"Agents":"2026-10-24T08:00:00Z","Q&A":7}""")]
+    public async Task Category_starts_no_writer_leaves_are_gone_once_their_replacement_is_forgotten(string starts)
+    {
+        await using var world = new BridgeWorld();
+        Directory.CreateDirectory(Path.GetDirectoryName(world.StatePath)!);
+        File.WriteAllText(world.StatePath, """{"version":1,"repository":"owner/repository","discussions":{},"enrollmentCategories":""" + starts + "}");
+        world.Variables.Set(Setting, "Agents");
+        await world.Begin();
+
+        world.Variables.Set(Setting, null);
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        await world.Refresh();
+
+        Assert.False(JsonNode.Parse(File.ReadAllText(world.StatePath))!.AsObject().ContainsKey("enrollmentCategories"));
+    }
+
     [Fact]
     public async Task The_owned_dashboard_never_becomes_agent_input_however_it_is_enrolled_while_a_participant_copy_stays_ordinary()
     {
@@ -235,5 +255,133 @@ public sealed class BridgeEnrollmentTests
         world.GitHub.Edit(2, Mention + " after the deletion");
         Assert.True(await world.Observe(2));
         Assert.Equal(["S1", "S2", "S2"], world.Turns.Select(turn => turn.SessionId));
+    }
+
+    [Fact]
+    public async Task Model_labels_that_cannot_be_read_hold_delivery_until_observation_replaces_them()
+    {
+        await using var world = new BridgeWorld();
+        await Damage(world, "labels", "[4]", waiting: true);
+
+        await world.Begin();
+        await world.Dispatch(); // Before any observation.
+        Assert.StartsWith(BridgeWorld.Url(1) + ": ", Assert.Single(world.Logged("dispatch-error")));
+        Assert.Equal(2, world.Turns.Count);
+        Assert.True(await world.Poll());
+
+        Assert.Equal(["S1", "S2", "S1"], world.Turns.Select(turn => turn.SessionId));
+    }
+
+    // Discussion 1 has a session that took its first input and is idle, or with waiting input while that turn ran; a hand edit
+    // then changes its record at this dotted path: the JSON text replaces the value there, or null removes it.
+    static async Task Damage(BridgeWorld world, string path, string? json, bool waiting = false)
+    {
+        world.GitHub.Open(1, Mention);
+        world.GitHub.React(1, "D1", "R1", "HEART", "octocat");
+        world.GitHub.Open(2, Mention);
+        await world.Begin();
+        Assert.True(await world.Poll());
+        if (waiting)
+        {
+            world.GitHub.Comment(1, "C0", "Queued while the turn runs.");
+            Assert.True(await world.Poll());
+        }
+        else
+        {
+            world.Finish(1);
+            await world.Dispatch();
+        }
+        await world.End();
+        var state = JsonNode.Parse(File.ReadAllText(world.StatePath))!;
+        var keys = path.Split('.');
+        var parent = keys[..^1].Aggregate(state["discussions"]!["D1"]!, (node, key) => node is JsonArray array ? array[int.Parse(key)]! : node[key]!);
+        if (json is null) parent.AsObject().Remove(keys[^1]);
+        else if (parent is JsonArray array) array[int.Parse(keys[^1])] = "\u0001"; // Replaced as text, so the edit can repeat a key.
+        else parent[keys[^1]] = "\u0001";
+        File.WriteAllText(world.StatePath, state.ToJsonString().Replace("\"\\u0001\"", json));
+    }
+
+    [Theory]
+    [InlineData("sessionId", "4")]
+    [InlineData("url", "5")]
+    [InlineData("sources", null)]
+    [InlineData("sources", "5")]
+    [InlineData("sources.D1", """{"content":{"body":"one"},"content":{"body":"two"},"state":{},"reactions":{}}""")]
+    [InlineData("sources.D1.reactions", "5")]
+    [InlineData("sessionId", "4", true)] // Its waiting input fails delivery too, and starts no session.
+    [InlineData("waiting.inputs", "5", true)]
+    public async Task A_Discussion_record_that_observation_cannot_read_is_kept_as_it_was_and_only_its_Discussion_fails_observation(string path, string? json,
+        bool waiting = false)
+    {
+        await using var world = new BridgeWorld();
+        await Damage(world, path, json, waiting);
+
+        world.GitHub.Comment(1, "C1", "More context, please.");
+        world.GitHub.Comment(2, "C2", "Still here.");
+        await world.Begin();
+        var damaged = world.Record(1)!.ToJsonString(); // Less the turn that ended with its lifetime.
+        Assert.False(await world.Poll());
+        world.Finish(2);
+        await world.Dispatch();
+
+        // Never observed as new: no session starts for it and its input is not sent again; the other Discussion continues.
+        Assert.Equal(["S1", "S2", "S2"], world.Turns.Select(turn => turn.SessionId));
+        Assert.StartsWith(BridgeWorld.Url(1) + ": ", Assert.Single(world.Logged("observation-error")));
+        Assert.Equal(waiting, world.Logged("dispatch-error").Any(message => message.StartsWith(BridgeWorld.Url(1) + ": ")));
+        Assert.Equal(damaged, world.Record(1)!.ToJsonString());
+    }
+
+    [Theory]
+    [InlineData("labels", "[4]", "comment.created")]
+    [InlineData("running", """{"turn":5}""", "comment.created")]
+    [InlineData("pending", """{"operation":5}""", "comment.created")]
+    [InlineData("pending", """{"operation":5,"inputs":1}""", "comment.created", true)] // Its input is redelivered alone.
+    [InlineData("pending", """{"operation":"send","operation":"send"}""", "comment.created")] // Its keys cannot be read.
+    [InlineData("pending", """{"inputs":1,"inputs":1}""", "comment.created,comment.created", true)] // It carries no inputs, so none is redelivered alone.
+    [InlineData("url", null, "comment.created")]
+    [InlineData("sources.D1", "null", "discussion.created,reaction.added,comment.created")]
+    [InlineData("sources.D1.content.body", "5", "discussion.changed,comment.created")]
+    [InlineData("sources.D1.content.extra", "1", "discussion.changed,comment.created")]
+    [InlineData("sources.D1.state", null, "discussion.stateChanged(title closed locked category),comment.created")]
+    [InlineData("sources.D1.state.closed", "\"yes\"", "discussion.stateChanged(closed),comment.created")]
+    [InlineData("sources.D1.state.extra", "1", "discussion.stateChanged(),comment.created")]
+    [InlineData("sources.D1.state.extra", "null", "discussion.stateChanged(),comment.created")]
+    [InlineData("sources.D1.state.answer", null, "discussion.stateChanged(),comment.created")]
+    [InlineData("sources.D1.reactions", null, "reaction.added,comment.created")]
+    [InlineData("sources.D1.reactions.R1", "5", "comment.created")]
+    [InlineData("waiting", "5", "comment.created", true)] // Replaced by what observation found, as it was.
+    [InlineData("waiting.discussion", "5", "comment.created,comment.created", true)]
+    [InlineData("waiting.context", "5", "comment.created,comment.created", true)]
+    [InlineData("waiting.inputs.0.observedAt", "5", "comment.created,comment.created", true)]
+    [InlineData("waiting.retry", """{"attempts":"x"}""", "comment.created,comment.created", true)]
+    [InlineData("waiting.inputs.0.receipt.reactionGroups", "null", "comment.created,comment.created", true)] // As an earlier controller copied it.
+    [InlineData("waiting.inputs.0.receipt.reactionGroups", """[{"content":"EYES"}]""", "comment.created,comment.created", true)]
+    [InlineData("waiting.inputs.0.receipt.url", null, "comment.created,comment.created", true)]
+    public async Task A_Discussion_record_key_that_observation_replaces_or_a_start_ends_is_replaced_and_its_Discussion_continues(string path, string? json, string kinds,
+        bool waiting = false)
+    {
+        await using var world = new BridgeWorld();
+        await Damage(world, path, json, waiting);
+
+        world.GitHub.Comment(1, "C1", "More context, please.");
+        await world.Begin();
+        // Turns and deliveries end with their lifetime, so status reports neither.
+        Assert.Null(world.Record(1)!["running"]);
+        Assert.Null(world.Record(1)!["pending"]);
+        Assert.True(await world.Poll());
+
+        Assert.Empty(world.Logged("observation-error"));
+        Assert.Equal("S1", world.Turns[^1].SessionId);
+        // A state change also names the state fields it carries.
+        Assert.Equal(kinds.Split(','), world.Envelope(world.Turns.Count - 1)["changes"]!.AsArray().Select(change => change!["kind"]!.GetValue<string>() is var kind &&
+            kind == "discussion.stateChanged" ? $"{kind}({string.Join(' ', change["subject"]!.AsObject().Select(field => field.Key).Except(["id", "url", "author"]))})" : kind));
+        // A damaged value is replaced or removed; a removed key has no damaged value to replace.
+        var value = path.Split('.').Aggregate((JsonNode?)world.Record(1), (node, key) => node switch
+        {
+            JsonArray items => items.ElementAtOrDefault(int.Parse(key)),
+            JsonObject item => item[key],
+            _ => null
+        });
+        if (json is not null) Assert.NotEqual(json, value?.ToJsonString());
     }
 }
