@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using static RepoAgent.Auth.IssuancePolicy;
 using static RepoAgent.Auth.IssuanceValues;
@@ -67,7 +66,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
                 if (!known.ScopeValid) throw new IssuanceDenied();
                 existing = attempt;
             }
-            catch (Exception ex) when (Expected(ex))
+            catch (Exception ex) when (Answerable(ex))
             {
                 if (known is not null) await RevokeKnownAsync(s, attempt, known.Token);
                 throw;
@@ -293,20 +292,13 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
             attempt.Value.ProtectedToken = null;
             await store.CommitAsync(s, [attempt], allowance.Token);
         }
-        catch (Exception ex) when (Expected(ex)) { /* Retain unresolved evidence; never compensate counters. */ }
+        catch (Exception ex) when (Answerable(ex)) { /* Retain unresolved evidence; never compensate counters. */ }
     }
 
     private async Task<IssuanceResult> Run(Func<IssuanceWork, Task<IssuanceResult>> action)
     {
         using var work = new IssuanceWork(clock);
         try { return await action(work); }
-        catch (Exception ex) when (Expected(ex)) { return new(ex is IssuanceDenied denied ? denied.Status : 503); }
+        catch (Exception ex) when (Answerable(ex)) { return new(ex is IssuanceDenied denied ? denied.Status : 503); }
     }
-
-    // What an operation may fail with and still answer, as for issuance (InstallationTokenIssuer), plus a confirmed
-    // approval change and unreadable completion JSON. The adapters wrap their providers' exceptions into these.
-    private static bool Expected(Exception ex) => ex is IssuanceDenied or ApprovalChanged or BrokerStateUnavailable or BrokerRecordUnreadable
-        or StateConflict or IOException or InvalidDataException or InvalidCastException or FormatException or JsonException
-        or OverflowException or OperationCanceledException or CryptographicException or KeyNotFoundException or InvalidOperationException or ArgumentException
-        or SecretProtectionFailed or GitHubUnavailable;
 }
