@@ -50,8 +50,9 @@ public sealed class ControllerStatusGoldenTests : IDisposable
             ["REPOAGENT_MAX_ACTIVE_SESSIONS"] = new(SettingState.Configured, "3") { Since = Start },
             ["REPOAGENT_MODEL"] = new(SettingState.Invalid, null, "must be a model name")
         }));
-        // As CheckoutRefresh saves its journal: a native turn of S6 that the refresh journal records.
-        File.WriteAllText(State + ".refresh.json", """{"version":1,"root":"/workspace/repository","owner":"owner","repositoryId":7,"requested":1,"completed":1,"active":{"1":{"thread":"S6","turn":"T6","since":1,"confirmed":true}},"blocked":true,"running":1}""");
+        // As CheckoutRefresh saves its journal when it starts over an earlier lifetime's admission: S6's native turn is still
+        // recorded, so admission is blocked with its reason.
+        File.WriteAllText(State + ".refresh.json", """{"version":1,"root":"/workspace/repository","owner":"owner","repositoryId":7,"requested":1,"completed":1,"active":{"6f1c2a9e0b7d4e5f8a3c1d2e4f6a8b0c":{"thread":"S6","turn":"T6","since":1,"confirmed":true}},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":1}""");
     }
 
     void Log(ControllerStatus status, int seconds, string kind, string message) => status.Record(new(Start.AddSeconds(seconds), kind, message));
@@ -75,9 +76,12 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         first.Running(["S9", "S4"]); // S9's Discussion record is forgotten while its turn runs.
         clock.Advance(TimeSpan.FromSeconds(10));
         actual["live"] = ControllerStatus.Render(first.Snapshot());
+        Assert.Equal(actual["live"], ControllerStatus.Render(ControllerStatus.Read(State, clock)!)); // As status reads it from the files.
         clock.Advance(TimeSpan.FromSeconds(10));
         first.Dispose();
         actual["record"] = File.ReadAllText(ControllerStatus.PathFor(State));
+        if (!OperatingSystem.IsWindows()) // The record holds failure messages; only its owner reads it.
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(ControllerStatus.PathFor(State)));
         clock.Advance(TimeSpan.FromSeconds(10));
         actual["stopped"] = ControllerStatus.Render(ControllerStatus.Read(State, clock)!);
 
@@ -101,31 +105,21 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         var previous = Console.Out;
         var stdout = new StringWriter();
         Console.SetOut(TextWriter.Synchronized(stdout));
-        ControllerStatus status;
+        string state;
         try
         {
-            status = new ControllerStatus(State, Repository, "polling", clock);
+            using var status = new ControllerStatus(State, Repository, "polling", clock);
             Log(status, 1, "ready", "mode=polling");
+            state = status.Snapshot()["controller"]!["state"]!.GetValue<string>();
         }
         finally { Console.SetOut(previous); }
 
+        // Its start, ready and stop each fail to write the record.
         var errors = stdout.ToString().Split('\n').Where(line => line.Contains(" status-error ", StringComparison.Ordinal)).ToArray();
-        Assert.Equal(2, errors.Length);
+        Assert.Equal(3, errors.Length);
         Assert.All(errors, line => Assert.Matches(@"^2026-10-25T09:00:00\.0000000\+00:00 status-error \S.*$", line));
-        Assert.Equal("running", status.Snapshot()["controller"]!["state"]!.GetValue<string>());
+        Assert.Equal("running", state);
         Assert.False(File.Exists(ControllerStatus.PathFor(State)));
-        status.Dispose();
-    }
-
-    [Fact]
-    public void The_status_record_is_private_to_its_owner()
-    {
-        if (OperatingSystem.IsWindows()) return;
-        WriteFiles();
-
-        using var status = new ControllerStatus(State, Repository, "polling", clock);
-
-        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(ControllerStatus.PathFor(State)));
     }
 
     public void Dispose()
