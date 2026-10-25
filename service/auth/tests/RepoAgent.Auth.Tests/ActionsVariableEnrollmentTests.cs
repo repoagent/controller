@@ -299,8 +299,6 @@ public sealed class ActionsVariableEnrollmentTests
         public string? VerifierPermission;
         public List<Dictionary<string, string>> RuntimePermissions { get; } = [];
 
-        public static Repository Configure(EnrollmentFixture f) => Configure(f.GitHub);
-
         public static Repository Configure(InMemoryGitHub github)
         {
             var repository = new Repository(github);

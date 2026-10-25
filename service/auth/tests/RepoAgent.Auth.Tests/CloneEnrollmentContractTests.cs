@@ -156,8 +156,6 @@ public sealed class CloneEnrollmentContractTests
     }
 
     // Runtime tokens of clone enrollments carry exactly the clone profile's authority.
-    internal static void ConfigureGitHub(EnrollmentFixture f, string profile) => ConfigureGitHub(f.GitHub, profile);
-
     internal static void ConfigureGitHub(InMemoryGitHub github, string profile)
     {
         AgentVariableEnrollmentTests.ConfigureGitHub(github);
