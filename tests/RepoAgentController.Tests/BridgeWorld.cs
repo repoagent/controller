@@ -6,7 +6,8 @@ namespace RepoAgentController.Tests;
 /// <summary>
 /// The bridge in-process as the controller composes it, across controller lifetimes: the real Bridge, AgentSessions,
 /// RepositorySettings, GitHubOutbox and ControllerStatus, the Discussion state in memory (or, with <see cref="Files"/>, in the
-/// state file) and the other state in files in a temporary directory, the readable Discussions fake, and a new agent runtime fake
+/// state file), the status record and the checkout's turns in memory, the settings and outbox in files in a temporary
+/// directory, the readable Discussions fake, and a new agent runtime fake
 /// for each lifetime, as each lifetime owns its runtime process. Time moves only when a test
 /// advances it. What a loop would do on its next wake is a call here: <see cref="Dispatch"/> for the dispatch loop,
 /// <see cref="Deliver"/> for the outbox and <see cref="Refresh"/> for the settings refresh.
@@ -38,6 +39,10 @@ sealed class BridgeWorld : IAsyncDisposable
     /// a file or of what status reports from it.
     /// </summary>
     public bool Files { get; set; }
+    /// <summary>The status each lifetime records and a stopped controller's status reads.</summary>
+    public InMemoryStatusRecord StatusRecord { get; } = new();
+    /// <summary>The managed checkout's recorded native turns, as status reads them; none by default.</summary>
+    public InMemoryCheckoutWork Checkout { get; } = new();
     /// <summary>The managed checkout's admission, as a lifetime with a managed checkout has one; none by default.</summary>
     public RecordingCheckoutAdmission? Admission { get; set; }
     /// <summary>Prepares each lifetime's agent runtime before the bridge uses it, as the agent's catalogue and configuration.</summary>
@@ -89,7 +94,8 @@ sealed class BridgeWorld : IAsyncDisposable
         PrepareRuntime?.Invoke(runtime);
         while (answers.TryDequeue(out var answer)) runtime.Answer(answer);
         var lease = Files ? new LeasedStateStore(StatePath, Repository) : null;
-        var current = new Lifetime(stop, lease, lease?.Store ?? new StateStore(State, Repository), StatusFiles.Open(StatePath, Repository, "polling", Clock),
+        var current = new Lifetime(stop, lease, lease?.Store ?? new StateStore(State, Repository),
+            new ControllerStatus(Repository, "polling", StatusRecord, Discussions, new ControllerStateFiles(StatePath), Checkout, Clock),
             new RepositorySettings(RepositorySettingsCatalogue.Settings, RepositorySettings ? Variables : null, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             new GitHubOutbox(Repository, GitHub, InMemoryDiscussions.App, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             runtime, new AgentSessions(runtime, new ControllerLog()));
@@ -212,18 +218,11 @@ sealed class BridgeWorld : IAsyncDisposable
         LastSaved is { } saved ? [.. saved.Discussions.Where(entry => entry.Value.SessionId is { Length: > 0 }).Select(entry => entry.Key).Order()] : [];
 
     /// <summary>The operator status of the running lifetime, or as the last one left it.</summary>
-    public JsonObject Status()
-    {
-        Mirror();
-        return OperatorStatusJson.Render(lifetime?.Status.Snapshot() ?? StatusFiles.Read(StatePath, Clock)!);
-    }
+    public JsonObject Status() => OperatorStatusJson.Render(lifetime?.Status.Snapshot() ??
+        ControllerStatus.Read(StatusRecord, Discussions, new ControllerStateFiles(StatePath), Checkout, Clock)!);
 
-    // ControllerStatus reads the state file until it moves to the core, so without Files the last save is written there as the
-    // file adapter writes it before status is read. No lifetime reads it back.
-    void Mirror()
-    {
-        if (!Files && State.Saved is { } saved) new ControllerStateFiles(StatePath).WriteDiscussions(saved);
-    }
+    // The saved Discussions status reads, where lifetimes save them.
+    IDiscussionStore Discussions => Files ? new ControllerStateFiles(StatePath) : State;
 
     /// <summary>The numbers of the Discussions with input waiting, as status reports them.</summary>
     public int[] Waiting()

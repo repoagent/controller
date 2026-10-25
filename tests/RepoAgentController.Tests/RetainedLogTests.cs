@@ -35,6 +35,21 @@ public sealed class RetainedLogTests : IDisposable
         Assert.Equal(Lines(76, 9), RetainedLog.Read(directory));
     }
 
+    [Fact]
+    public void Retained_lines_survive_restarts_and_rotation_keeps_the_newest_within_the_bound()
+    {
+        for (var lifetime = 0; lifetime < 6; lifetime++)
+        {
+            using var log = new RetainedLog(directory, 1024, 2);
+            for (var line = 0; line < 5; line++) log.Append(Entry(lifetime * 5 + line));
+            if (lifetime == 1) Assert.Equal(Lines(0, 10), RetainedLog.Read(directory)); // The earlier lifetime's lines survived.
+        }
+
+        Assert.InRange(Directory.GetFiles(directory).Length, 1, 2);
+        Assert.InRange(Directory.GetFiles(directory).Sum(file => new FileInfo(file).Length), 1, 2 * 1024);
+        Assert.Equal(Lines(16, 14), RetainedLog.Read(directory)); // The oldest files rotated out; the newest archive and the active file remain.
+    }
+
     // A 128-byte line with its newline, so eight fill a 1,024-byte file.
     static LogEntry Entry(int line) => new(At, "test", $"line {line:D3} " + new string('x', 79));
 
