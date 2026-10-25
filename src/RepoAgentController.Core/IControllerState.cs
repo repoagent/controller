@@ -11,8 +11,7 @@ public interface IControllerState
     void WriteSettings(RecordedSettings settings);
 
     /// <summary>The GitHub operations the outbox retains, or null when none were ever retained. Throws
-    /// <see cref="InvalidOperationException"/> for a record of another version or with an unreadable operation, such as a receipt
-    /// or dashboard in a form the outbox never writes.</summary>
+    /// <see cref="InvalidOperationException"/> for a record of another version or with an unreadable operation.</summary>
     OutboxState? ReadOutbox();
 
     /// <summary>Replaces the retained operations. Throws <see cref="IOException"/> when they cannot be written.</summary>
@@ -37,11 +36,14 @@ public abstract record OutboxOperation(string Key)
     public string? LastError { get; init; }
 }
 
-/// <summary>An EYES receipt for accepted input from the subject at <paramref name="Url"/>.</summary>
+/// <summary>An EYES receipt for accepted input from the subject at <paramref name="Url"/>, keyed by that subject unless retained under another key.</summary>
 public sealed record ReceiptOperation(string SubjectId, string Url) : OutboxOperation("receipt:" + SubjectId);
 
-/// <summary>The dashboard's complete category, title and body.</summary>
+/// <summary>The dashboard's complete category, title and body, keyed "dashboard" unless retained under another key.</summary>
 public sealed record DashboardOperation(string Category, string Title, string Body) : OutboxOperation("dashboard");
 
-/// <summary>An operation of a kind this controller does not deliver, as a later controller might retain it: kept as read until delivery drops it.</summary>
+/// <summary>
+/// A retained operation this controller does not deliver, kept as read until delivery drops it: one of a kind a later controller
+/// might retain, or a receipt or dashboard with fields those records do not hold.
+/// </summary>
 public sealed record UnsupportedOperation(string Key, string Kind, string SubjectId, string Url, string? Category, string? Title, string? Body) : OutboxOperation(Key);

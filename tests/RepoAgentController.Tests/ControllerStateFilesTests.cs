@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace RepoAgentController.Tests;
@@ -5,7 +7,7 @@ namespace RepoAgentController.Tests;
 // The one golden round trip per persisted format (owner decision): a recorded file is read and written back unchanged, except
 // that a settings entry of a state this controller does not know keeps its value and reads as pending. Status reports this record under
 // "settings" verbatim, so an unchanged file also keeps that part of status unchanged. An outbox operation of a kind this controller
-// does not deliver is kept as read, and a receipt or dashboard in any form the controller never writes is unreadable.
+// does not deliver, or a receipt or dashboard in a form the controller never writes, is also written back unchanged.
 public sealed class ControllerStateFilesTests : IDisposable
 {
     readonly string directory = Path.Combine(Path.GetTempPath(), "controller-state-files-" + Guid.NewGuid().ToString("N"));
@@ -156,20 +158,29 @@ public sealed class ControllerStateFilesTests : IDisposable
         files.WriteOutbox(files.ReadOutbox()!);
         Assert.Equal(Later, File.ReadAllText(ControllerStateFiles.OutboxPath(statePath)));
 
-        // Another key, subject or set of fields than GitHubOutbox writes for the kind: the next write would change it.
-        string[] unwritten =
+        // A receipt or dashboard under another key, subject or set of fields than GitHubOutbox writes for its kind. One its record
+        // holds keeps its key and is delivered as before; the rest are kept as read, as Later is, and delivery drops them.
+        const string Retry = "\"attempts\":0,\"dueAt\":\"2026-10-24T11:00:03.0000000+00:00\",\"uncertain\":false,\"lastError\":null";
+        (string Operation, Type Read)[] unwritten =
         [
-            """{"key":"receipt:D1","kind":"receipt","subjectId":"D2","url":"u","attempts":0,"uncertain":false}""",
-            """{"key":"receipt:D1","kind":"receipt","subjectId":"D1","url":"u","body":"b","attempts":0,"uncertain":false}""",
-            """{"key":"dashboard:2","kind":"dashboard","subjectId":"","url":"","category":"c","title":"t","body":"b","attempts":0,"uncertain":false}""",
-            """{"key":"dashboard","kind":"dashboard","subjectId":"D1","url":"","category":"c","title":"t","body":"b","attempts":0,"uncertain":false}""",
-            """{"key":"dashboard","kind":"dashboard","subjectId":"","url":"","category":"c","title":"t","attempts":0,"uncertain":false}"""
+            ($$"""{"key":"receipt:D1","kind":"receipt","subjectId":"D2","url":"u",{{Retry}}}""", typeof(ReceiptOperation)),
+            ($$"""{"key":"receipt:D1","kind":"receipt","subjectId":"D1","url":"u","body":"b",{{Retry}}}""", typeof(UnsupportedOperation)),
+            ($$"""{"key":"dashboard:2","kind":"dashboard","subjectId":"","url":"","category":"c","title":"t","body":"b",{{Retry}}}""", typeof(DashboardOperation)),
+            ($$"""{"key":"dashboard","kind":"dashboard","subjectId":"D1","url":"","category":"c","title":"t","body":"b",{{Retry}}}""", typeof(UnsupportedOperation)),
+            ($$"""{"key":"dashboard","kind":"dashboard","subjectId":"","url":"u","category":"c","title":"t","body":"b",{{Retry}}}""", typeof(UnsupportedOperation)),
+            ($$"""{"key":"dashboard","kind":"dashboard","subjectId":"","url":"","title":"t","body":"b",{{Retry}}}""", typeof(UnsupportedOperation)),
+            ($$"""{"key":"dashboard","kind":"dashboard","subjectId":"","url":"","category":"c","title":"t",{{Retry}}}""", typeof(UnsupportedOperation))
         ];
-        foreach (var operation in unwritten)
+        foreach (var (operation, read) in unwritten)
         {
-            File.WriteAllText(ControllerStateFiles.OutboxPath(statePath), $$"""{"version":1,"repository":"owner/repository","pausedUntil":null,"operations":[{{operation}}]}""");
-            Assert.Equal("GitHub outbox contains an unreadable operation; preserve it for manual inspection",
-                Assert.Throws<InvalidOperationException>(files.ReadOutbox).Message);
+            // Indented and escaped as the writer's encoder writes it.
+            var file = JsonNode.Parse($$"""{"version":1,"repository":"owner/repository","pausedUntil":null,"operations":[{{operation}}]}""")!
+                .ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(ControllerStateFiles.OutboxPath(statePath), file);
+            var retained = Assert.Single(files.ReadOutbox()!.Operations);
+            files.WriteOutbox(new("owner/repository", null, [retained]));
+            Assert.Equal((read, JsonNode.Parse(operation)!["key"]!.GetValue<string>(), file),
+                (retained.GetType(), retained.Key, File.ReadAllText(ControllerStateFiles.OutboxPath(statePath))));
         }
     }
 

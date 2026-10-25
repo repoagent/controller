@@ -76,13 +76,12 @@ sealed class ControllerStateFiles(string statePath) : IControllerState
                 var (key, kind, subject, url) = (operation.Text("key"), operation.Text("kind"), operation.Text("subjectId"), operation.Text("url"));
                 _ = key[0];
                 var (category, title, body) = (Optional(operation, "category"), Optional(operation, "title"), Optional(operation, "body"));
-                // Each kind as GitHubOutbox writes it; any other shape of a known kind is unreadable rather than changed on the next write.
-                OutboxOperation read = kind switch
+                // A receipt or dashboard with fields its record does not hold is kept as read, like an operation of another kind, so
+                // the next write keeps them.
+                OutboxOperation read = (kind, category, title, body) switch
                 {
-                    "receipt" when key == "receipt:" + subject && (category, title, body) is (null, null, null) => new ReceiptOperation(subject, url),
-                    "dashboard" when key == "dashboard" && (subject, url) is ("", "") && category is not null && title is not null && body is not null =>
-                        new DashboardOperation(category, title, body),
-                    "receipt" or "dashboard" => throw new InvalidDataException($"outbox operation '{key}' is not a {kind} as the controller writes it"),
+                    ("receipt", null, null, null) => new ReceiptOperation(subject, url) { Key = key },
+                    ("dashboard", not null, not null, not null) when (subject, url) is ("", "") => new DashboardOperation(category, title, body) { Key = key },
                     _ => new UnsupportedOperation(key, kind, subject, url, category, title, body)
                 };
                 return read with
