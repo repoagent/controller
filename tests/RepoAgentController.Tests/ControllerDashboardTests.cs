@@ -402,7 +402,8 @@ public sealed class ControllerDashboardTests
         public void HoldTurns() => File.WriteAllText(native + ".hold", "");
 
         // Every thread is idle when started or resumed; each accepted turn reports idle and completes at once, unless held
-        // or failed by a rejected account.
+        // or failed by a rejected account. Hold and rejection are read before the request is logged, so a test that has seen a
+        // turn/start logged can change them for later turns without racing that one.
         const string Native = """
             #!/usr/bin/python3
             import json,os,sys
@@ -410,6 +411,7 @@ public sealed class ControllerDashboardTests
             def send(value):print(json.dumps(value),flush=True)
             for line in sys.stdin:
              request=json.loads(line)
+             held=os.path.exists(NATIVE_LOG+'.hold');unauthorized=os.path.exists(NATIVE_LOG+'.unauthorized')
              with open(NATIVE_LOG,'a') as log:log.write(line)
              if 'id' not in request:continue
              method=request['method'];idle={'type':'idle'}
@@ -419,10 +421,10 @@ public sealed class ControllerDashboardTests
              if method=='turn/start':
               turns+=1;thread=request['params']['threadId'];turn={'id':'native-turn-%d'%turns,'status':'inProgress','items':[]}
               send({'id':request['id'],'result':{'turn':turn}})
-              if os.path.exists(NATIVE_LOG+'.hold'):send({'method':'thread/status/changed','params':{'threadId':thread,'status':{'type':'active','activeFlags':[]}}});continue
+              if held:send({'method':'thread/status/changed','params':{'threadId':thread,'status':{'type':'active','activeFlags':[]}}});continue
               send({'method':'thread/status/changed','params':{'threadId':thread,'status':idle}})
               rejected={'message':'unexpected status 401 Unauthorized','codexErrorInfo':'unauthorized'}
-              done=dict(turn,status='failed',error=rejected) if os.path.exists(NATIVE_LOG+'.unauthorized') else dict(turn,status='completed')
+              done=dict(turn,status='failed',error=rejected) if unauthorized else dict(turn,status='completed')
               send({'method':'turn/completed','params':{'threadId':thread,'turn':done}})
               continue
              if method=='thread/start':threads+=1
