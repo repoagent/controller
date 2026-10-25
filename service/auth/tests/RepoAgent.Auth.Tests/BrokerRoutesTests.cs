@@ -126,9 +126,18 @@ public sealed class BrokerRoutesTests
     {
         var f = new InMemoryBroker();
         if (setupVersion == 2) AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
-        var answer = await BrokerRoutes.StartAsync(Request([Bearer(Secret)], StartBody(setupVersion, "8192-bytes")), f.Enrollment, setupVersion);
+        var read = InMemoryBroker.Body(StartBody(setupVersion, "8192-bytes"));
+        var requested = new List<int>();
+        var answer = await BrokerRoutes.StartAsync(new([Bearer(Secret)], true, async count =>
+        {
+            var bytes = await read(count);
+            requested.Add(count);
+            return bytes;
+        }, Token), f.Enrollment, setupVersion);
         Assert.Equal(200, answer.Status);
         Assert.NotNull(answer.Body);
+        // One byte past the limit is enough to refuse a larger body, so the adapter never waits for a byte after that.
+        Assert.Equal([8193], requested);
     }
 
     [Theory]
