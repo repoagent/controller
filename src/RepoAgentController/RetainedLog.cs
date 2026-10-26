@@ -59,7 +59,7 @@ sealed partial class RetainedLog : IDisposable
                 // Stdout remains the operational record; never recurse into Log from its own sink. A failed rotation has
                 // already closed the active file.
                 current?.Dispose(); current = null;
-                Console.WriteLine($"{clock.GetUtcNow().ToUniversalTime():O} retained-log-error retention stopped for this lifetime: {error.Message}");
+                Console.WriteLine(new LogEntry(clock.GetUtcNow().ToUniversalTime(), "retained-log-error", $"retention stopped for this lifetime: {error.Message}").Line);
             }
         }
     }
