@@ -42,7 +42,7 @@ public static class BrokerRoutes
         return result.Status == 200 ? result : new(result.Status);
     }
 
-    // POST /v{setupVersion}/enrollments. Setup v1 takes the approval environment's body; v2 and v3 the approval variable's.
+    // POST /v{setupVersion}/enrollments. Setup v1 takes the approval environment's body; v2 to v4 the approval variable's.
     public static async Task<IssuanceResult> StartAsync(BrokerRequest request, Func<EnrollmentService?> enrollment, int setupVersion)
     {
         if (Secret(request) is not { } secret) return new(401);

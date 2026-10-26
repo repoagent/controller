@@ -29,7 +29,7 @@ public sealed class GitHubTokenMinterTests
 
         var mint = Assert.Single(github.MintRequests);
         Assert.Equal((789L, Project), (mint.InstallationId, mint.Repository));
-        Assert.Equal(RuntimeAuthority.For(profile), mint.Authority);
+        Assert.Equal(Authority(profile), mint.Authority);
         Assert.True(known.ScopeValid);
     }
 
@@ -99,7 +99,7 @@ public sealed class GitHubTokenMinterTests
     [InlineData("polling", "permissions-unreadable", false)]
     public async Task Token_carries_exactly_the_runtime_authority_asked_for(string profile, string answer, bool inScope)
     {
-        var asked = RuntimeAuthority.For(profile).Permissions;
+        var asked = Authority(profile).Permissions;
         IReadOnlyDictionary<string, string?>? Reported() => answer switch
         {
             "exact" => With(),
@@ -184,6 +184,14 @@ public sealed class GitHubTokenMinterTests
     {
         var now = clock.GetUtcNow();
         var app = await github.AuthorizeAsync(AppAuthorizationWindow.Reserved(now, now.AddSeconds(-60), now.AddSeconds(120)), Token);
-        return await Minter.MintAsync(app, 789, Project, RuntimeAuthority.For(profile), Token);
+        return await Minter.MintAsync(app, 789, Project, Authority(profile), Token);
     }
+
+    // A verifier's authority by its contract's verifier profile, or a runtime profile's under setup v3.
+    private static RuntimeAuthority Authority(string profile) => profile switch
+    {
+        "agent-variable-verification" => RuntimeAuthority.Verifier(ApprovalContract.Agent),
+        "actions-variable-verification" => RuntimeAuthority.Verifier(ApprovalContract.Actions),
+        _ => RuntimeAuthority.For(ApprovalContract.ForSetup(3, profile), profile)
+    };
 }

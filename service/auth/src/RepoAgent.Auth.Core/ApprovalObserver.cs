@@ -189,8 +189,8 @@ public sealed class ApprovalObserver(IAppInstallations installations, IControlle
         var installation = Value(read);
         if (installation.Id <= 0 || installation.AppId != AppId || installation.AppSlug != AppSlug || installation.Suspended)
             throw new IssuanceDenied();
-        var runtime = RuntimeAuthority.For(profile);
-        var verifier = RuntimeAuthority.For(contract.VerifierProfile);
+        var runtime = RuntimeAuthority.For(contract, profile);
+        var verifier = RuntimeAuthority.Verifier(contract);
         if (!runtime.IsGrantedBy(installation.Permissions) || !verifier.IsGrantedBy(installation.Permissions)) throw new IssuanceDenied();
         return installation.Id;
     }

@@ -175,7 +175,7 @@ internal sealed class InMemoryGitHub(TimeProvider? clock = null) : IAppInstallat
 internal sealed record TokenMint(int Number, AppAuthorization App, long InstallationId, RepositoryIdentity Repository, RuntimeAuthority Authority)
 {
     private static readonly RuntimeAuthority[] Verifiers =
-        [.. new[] { "verification", "agent-variable-verification", "actions-variable-verification" }.Select(RuntimeAuthority.For)];
+        [.. new[] { ApprovalContract.Legacy, ApprovalContract.Agent, ApprovalContract.Actions }.Select(RuntimeAuthority.Verifier)];
 
     // The broker's verifier token carries one of the approval contracts' verifier authorities.
     public bool Verifier => Verifiers.Contains(Authority);

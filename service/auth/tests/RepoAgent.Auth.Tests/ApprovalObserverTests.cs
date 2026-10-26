@@ -113,6 +113,17 @@ public sealed class ApprovalObserverTests
         Assert.Equal("approved", await ObserveAsync(approval));
     }
 
+    // Setup v4 keeps settings beside approval: the installation's Agent variables read serves both, and the
+    // Actions variables a v3 settings profile reads are never required.
+    [Fact]
+    public async Task Agent_settings_approval_needs_no_Actions_variables_grant()
+    {
+        var approval = Approval("agent-settings", "polling-settings");
+        Publish(approval, approval.Marker);
+        github.Installation = GitHubRead.Found(Installation(""));
+        Assert.Equal("approved", await ObserveAsync(approval));
+    }
+
     [Fact]
     public async Task Write_permission_satisfies_a_read_requirement()
     {
@@ -408,6 +419,7 @@ public sealed class ApprovalObserverTests
     {
         "legacy" => new(ApprovalContract.Legacy, InMemoryGitHub.Project, 789, profile, "APPROVAL", "bound-marker", "approval/environment", 987),
         "agent" => new(ApprovalContract.Agent, InMemoryGitHub.Project, 789, profile, "APPROVAL", "bound-marker"),
+        "agent-settings" => new(ApprovalContract.AgentSettingsV4, InMemoryGitHub.Project, 789, profile, "REPOAGENT_APPROVAL", "bound-marker"),
         _ => new(ApprovalContract.Actions, InMemoryGitHub.Project, 789, profile, "REPOAGENT_APPROVAL", "bound-marker")
     };
 

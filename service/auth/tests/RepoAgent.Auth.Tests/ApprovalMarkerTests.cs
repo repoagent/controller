@@ -19,6 +19,13 @@ public sealed class ApprovalMarkerTests
         ApprovalMarker.Create(ApprovalContract.Agent, "123456", "owner/project", 789, "702cd26275d2447f9150342e6ada61a4",
             "x-ux5CXgQqQ2JWtbZuRYclXufobG8ocVPI4tgxL4k_o", "polling", "test-epoch", "APPROVAL", null, null));
 
+    // Setup v4 (ADR 0012) has no recorded marker yet; this literal is the format the installer publishes.
+    [Fact]
+    public void Setup_v4_marker_keeps_the_v2_field_order_with_its_version_and_policy() => Assert.Equal(
+        """{"version":4,"approvalKind":"repository-agent-variable","githubHost":"github.com","appId":5387625,"appSlug":"repo-agent-connector","repositoryId":123456,"repository":"owner/project","installationId":789,"deviceId":"702cd26275d2447f9150342e6ada61a4","challenge":"x-ux5CXgQqQ2JWtbZuRYclXufobG8ocVPI4tgxL4k_o","profile":"webhook-clone-settings","policyVersion":"repository-agent-settings-approval-v4","epoch":"test-epoch","variable":"REPOAGENT_APPROVAL"}""",
+        ApprovalMarker.Create(ApprovalContract.AgentSettingsV4, "123456", "owner/project", 789, "702cd26275d2447f9150342e6ada61a4",
+            "x-ux5CXgQqQ2JWtbZuRYclXufobG8ocVPI4tgxL4k_o", "webhook-clone-settings", "test-epoch", "REPOAGENT_APPROVAL", null, null));
+
     [Theory]
     [InlineData("A-E_jX5JlQiRWuUNd-PToEfu4AG9UfAaKUQB2j7JBi")]
     [InlineData("A-E_jX5JlQiRWuUNd-PToEfu4AG9UfAaKUQB2j7JBi+")]

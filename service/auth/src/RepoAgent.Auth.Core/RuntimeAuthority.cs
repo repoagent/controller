@@ -1,7 +1,7 @@
 namespace RepoAgent.Auth;
 
-// The permissions a GitHub token carries, fixed by its controller enrollment's profile: each permission as GitHub
-// names it, with its level. The broker's verifier token carries the authority of its contract's verifier profile.
+// The permissions a GitHub token carries, fixed by its controller enrollment's approval contract and profile together:
+// each permission as GitHub names it, with its level. The broker's verifier token carries its contract's verifier authority.
 // Two authorities are equal when they carry the same permissions at the same levels.
 public sealed class RuntimeAuthority : IEquatable<RuntimeAuthority>
 {
@@ -9,8 +9,26 @@ public sealed class RuntimeAuthority : IEquatable<RuntimeAuthority>
 
     public IReadOnlyDictionary<string, string> Permissions { get; }
 
-    // A profile the broker does not know has no authority, and the operation is denied.
-    public static RuntimeAuthority For(string profile) => new(Profile(profile));
+    // A profile its contract does not allow has no authority, and the operation is denied. A repository-settings profile
+    // adds exactly read of the variables store its contract's approval lives in, never the profile name's choice.
+    public static RuntimeAuthority For(ApprovalContract contract, string profile)
+    {
+        if (!contract.Allows(profile)) throw new IssuanceDenied();
+        if (!contract.IsSettings) return new(Frozen(profile));
+        return new(new Dictionary<string, string>(Frozen(profile[..^"-settings".Length]))
+        {
+            [contract.IsAgent ? "agent_variables" : "actions_variables"] = "read"
+        });
+    }
+
+    // The broker-internal verifier reads its contract's approval location and nothing else.
+    public static RuntimeAuthority Verifier(ApprovalContract contract) => new(contract.VerifierProfile switch
+    {
+        "agent-variable-verification" => new Dictionary<string, string> { ["agent_variables"] = "read" },
+        "actions-variable-verification" => new Dictionary<string, string> { ["actions_variables"] = "read" },
+        "verification" => new Dictionary<string, string> { ["environments"] = "read", ["actions"] = "read" },
+        _ => throw new IssuanceDenied()
+    });
 
     // An installation grants the authority when it grants every permission at its level or higher: write satisfies read.
     // A level GitHub did not give as a string grants nothing.
@@ -28,18 +46,13 @@ public sealed class RuntimeAuthority : IEquatable<RuntimeAuthority>
     public override bool Equals(object? obj) => Equals(obj as RuntimeAuthority);
     public override int GetHashCode() => Permissions.Aggregate(0, (hash, p) => hash ^ HashCode.Combine(p.Key, p.Value));
 
-    private static IReadOnlyDictionary<string, string> Profile(string profile) => profile switch
+    // The frozen profiles never grant variables access.
+    private static Dictionary<string, string> Frozen(string profile) => profile switch
     {
-        "polling-clone" => new Dictionary<string, string> { ["discussions"] = "write", ["contents"] = "read" },
-        "webhook-clone" => new Dictionary<string, string> { ["discussions"] = "write", ["contents"] = "read", ["repository_hooks"] = "write" },
-        "polling" => new Dictionary<string, string> { ["discussions"] = "write" },
-        "webhook" => new Dictionary<string, string> { ["discussions"] = "write", ["repository_hooks"] = "write" },
-        // Repository-settings profiles: the frozen profile above plus exactly Actions variables read.
-        "polling-settings" or "webhook-settings" or "polling-clone-settings" or "webhook-clone-settings" =>
-            new Dictionary<string, string>(Profile(profile[..^"-settings".Length])) { ["actions_variables"] = "read" },
-        "agent-variable-verification" => new Dictionary<string, string> { ["agent_variables"] = "read" },
-        "actions-variable-verification" => new Dictionary<string, string> { ["actions_variables"] = "read" },
-        "verification" => new Dictionary<string, string> { ["environments"] = "read", ["actions"] = "read" },
+        "polling-clone" => new() { ["discussions"] = "write", ["contents"] = "read" },
+        "webhook-clone" => new() { ["discussions"] = "write", ["contents"] = "read", ["repository_hooks"] = "write" },
+        "polling" => new() { ["discussions"] = "write" },
+        "webhook" => new() { ["discussions"] = "write", ["repository_hooks"] = "write" },
         _ => throw new IssuanceDenied()
     };
 }
