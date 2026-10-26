@@ -218,38 +218,54 @@ public sealed class RefreshJournalGoldenTests : IDisposable
 
     // Journals the controller's own writers leave, whose bytes differ from what f742e2b wrote for the same path: the fixed key
     // order moves the reason, after "blocked" and "running" and before "applying". Each is the same JSON as f742e2b wrote. The
-    // f742e2b bytes are what f742e2b's writers left on the same path. The last two rows start over a journal f742e2b left; f742e2b's
-    // own next start kept its order.
-    // What f742e2b's writers left after an unsafe failure once applying began, and at a first start after earlier sessions.
+    // f742e2b bytes are what f742e2b's writers left on the same path, each start over the journal the rest of the path left. The
+    // last two rows start over a journal f742e2b left; f742e2b's own next start kept its order.
+    // What f742e2b's writers left after an unsafe failure once applying began, at a first start after earlier sessions, and at a
+    // start over a journal holding an applying record.
     const string LeftByFault = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"boom"}""";
     const string LeftByBlockedStart = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":0}""";
+    const string LeftByStartOverApplying = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""";
+    // What this controller writes at the same two starts.
+    const string WrittenByBlockedStart = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""";
+    const string WrittenByStartOverApplying = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""";
+    const string ThenAStart = ", then a start";
 
     public static TheoryData<string, string, string> Written() => new()
     {
-        { "a first start after earlier sessions",
-            LeftByBlockedStart,
-            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""" },
-        { "a first start with a Discussion delivery pending",
-            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":0}""",
-            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""" },
+        { "a first start after earlier sessions", LeftByBlockedStart, WrittenByBlockedStart },
+        { "a first start after earlier sessions, then a start", LeftByBlockedStart, WrittenByBlockedStart },
+        { "a first start after earlier sessions, then a start, then a start", LeftByBlockedStart, WrittenByBlockedStart },
+        { "a first start with a Discussion delivery pending", LeftByBlockedStart, WrittenByBlockedStart },
+        { "a first start with a Discussion delivery pending, then a start", LeftByBlockedStart, WrittenByBlockedStart },
+        // The one row whose bytes match f742e2b's: the journal a process killed mid-refresh leaves, which the next row starts over.
+        { "the applying record saved before applying",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":false,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":false,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "the applying record saved before applying, then a start", LeftByStartOverApplying, WrittenByStartOverApplying },
         { "an unsafe failure after applying began",
             LeftByFault,
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"boom","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "an unsafe failure after applying began, then a start", LeftByStartOverApplying, WrittenByStartOverApplying },
+        { "an unsafe failure after applying began, then a start, then a start", LeftByStartOverApplying, WrittenByStartOverApplying },
         { "a deferral after applying began",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"fetch refused: changed"}""",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"fetch refused: changed","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "a deferral after applying began, then a start", LeftByStartOverApplying, WrittenByStartOverApplying },
+        { "a deferral after applying began, then a start, then a start", LeftByStartOverApplying, WrittenByStartOverApplying },
         { "a stop while applying",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Refresh interrupted while applying"}""",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Refresh interrupted while applying","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "a stop while applying, then a start", LeftByStartOverApplying, WrittenByStartOverApplying },
+        { "a lost transport saved while applying",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Native transport disconnected; completion unknown"}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native transport disconnected; completion unknown","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "a lost transport saved while applying, then a start", LeftByStartOverApplying, WrittenByStartOverApplying },
         { "a lost transport while applying",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Native refresh became uncertain"}""",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native refresh became uncertain","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
-        { "the next start after f742e2b's unsafe failure after applying",
-            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""",
-            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
-        { "the next start after f742e2b's first start after earlier sessions",
-            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":0}""",
-            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""" },
+        { "a lost transport while applying, then a start", LeftByStartOverApplying, WrittenByStartOverApplying },
+        { "the next start after f742e2b's unsafe failure after applying", LeftByStartOverApplying, WrittenByStartOverApplying },
+        { "the next start after f742e2b's first start after earlier sessions", LeftByBlockedStart, WrittenByBlockedStart },
     };
 
     [Theory]
@@ -261,22 +277,40 @@ public sealed class RefreshJournalGoldenTests : IDisposable
     }
 
     // The journal the writer path leaves: a start, or a refresh that began applying and then failed, deferred, stopped or lost its
-    // agent transport, at the idle boundary an admission takes. A next start begins over the journal f742e2b left.
+    // agent transport, at the idle boundary an admission takes. Two paths end where a process killed mid-refresh leaves the
+    // journal: with the applying record saved, and with the lost transport saved before the checkout returned. A path ending
+    // ", then a start" starts again over the journal the rest of the path left, as the controller does after its process ends. A
+    // next start begins over the journal f742e2b left.
     async Task<string> Write(string path)
     {
+        if (path.EndsWith(ThenAStart, StringComparison.Ordinal))
+        {
+            Record(await Write(path[..^ThenAStart.Length]));
+            await using (Open(priorSessions: true)) { }
+            return File.ReadAllText(JournalPath);
+        }
         using var stopping = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         CheckoutRefresh? refresh = null;
+        string? applyingSaved = null, lostTransportSaved = null;
         Task<bool> Applying(Action<string, string> beforeApply, Exception? then)
         {
             beforeApply("1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222");
+            applyingSaved = File.ReadAllText(JournalPath);
             return then is null ? Task.FromResult(false) : Task.FromException<bool>(then);
         }
         IRepositoryCheckout? checkout = path switch
         {
-            "an unsafe failure after applying began" => new Refreshing((apply, _) => Applying(apply, new IOException("boom"))),
+            "an unsafe failure after applying began" or "the applying record saved before applying" =>
+                new Refreshing((apply, _) => Applying(apply, new IOException("boom"))),
             "a deferral after applying began" => new Refreshing((apply, _) => Applying(apply, new CheckoutDeferred("fetch refused: changed"))),
             "a stop while applying" => new Refreshing((apply, ct) => { _ = Applying(apply, null); stopping.Cancel(); return Task.FromCanceled<bool>(ct); }),
-            "a lost transport while applying" => new Refreshing((apply, _) => { var applied = Applying(apply, null); refresh!.Observe(new AgentRuntimeDisconnected(1)); return applied; }),
+            "a lost transport while applying" or "a lost transport saved while applying" => new Refreshing((apply, _) =>
+            {
+                var applied = Applying(apply, null);
+                refresh!.Observe(new AgentRuntimeDisconnected(1));
+                lostTransportSaved = File.ReadAllText(JournalPath);
+                return applied;
+            }),
             _ => null
         };
         var next = path.StartsWith("the next start", StringComparison.Ordinal);
@@ -289,7 +323,12 @@ public sealed class RefreshJournalGoldenTests : IDisposable
                 await Assert.ThrowsAnyAsync<Exception>(async () => (await refresh.Admit(stopping.Token)).Dispose());
             }
         }
-        return File.ReadAllText(JournalPath);
+        return path switch
+        {
+            "the applying record saved before applying" => applyingSaved!,
+            "a lost transport saved while applying" => lostTransportSaved!,
+            _ => File.ReadAllText(JournalPath)
+        };
     }
 
     [Fact]
