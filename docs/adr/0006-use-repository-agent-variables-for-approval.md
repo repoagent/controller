@@ -1,6 +1,6 @@
 # Use repository GitHub Agent variables for approval
 
-The Agent-variable location was superseded on 2026-10-23 by [ADR 0007](0007-use-repository-actions-variables-for-approval.md). Fresh enrollments now use direct repository Actions variables (setup v3). Existing v2 Agent-variable grants stay valid and explicit, and the invariants below still apply.
+The Agent-variable location was superseded on 2026-10-23 by [ADR 0007](0007-use-repository-actions-variables-for-approval.md). Fresh enrollments now use direct repository Actions variables (setup v3). Existing v2 Agent-variable grants stay valid and explicit, and the invariants below still apply. On 2026-10-26 [ADR 0012](0012-use-repository-agent-variables-for-settings-and-approval.md) returned fresh approval to direct repository Agent variables under setup v4; fresh v2 setup is no longer offered.
 
 Accepted on 2026-10-20. Supersedes only the GitHub Environment storage choice in [ADR 0003](0003-use-repository-held-approval-for-a-ui-free-broker.md): use a direct repository GitHub Agent variable to avoid creating or configuring deployment environments. Preserve UI-free controller approval, GitHub-authorized writer authority without named-human/admin attestation, separate private possession, durable observed closure and the existing token/recovery barriers.
 
