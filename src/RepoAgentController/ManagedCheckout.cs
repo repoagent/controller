@@ -129,7 +129,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
         public async Task<IReadOnlyList<string>> ConfigurationKeys(CancellationToken ct) =>
             Keys(await Git(ct, "config", "--no-includes", "--local", "--null", "--list"));
         public async Task<string> TopLevel(CancellationToken ct) => (await Git(ct, "rev-parse", "--show-toplevel")).TrimEnd();
-        public async Task<bool> IsBare(CancellationToken ct) => (await Git(ct, "rev-parse", "--is-bare-repository")).Trim() != "false";
+        public async Task<bool> IsBare(CancellationToken ct) => Bare(await Git(ct, "rev-parse", "--is-bare-repository"));
         public async Task<IReadOnlyList<string>> OriginUrls(CancellationToken ct) =>
             Lines(await Git(ct, "config", "--get-all", "remote.origin.url"));
         public async Task<string> HeadBranch(CancellationToken ct) => (await Git(ct, "symbolic-ref", "--quiet", "HEAD")).Trim();
@@ -153,6 +153,9 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
         /// <summary>The keys in <c>git config --null --list</c> output: entries ended by NUL, each its key, a newline and its value.</summary>
         internal static IReadOnlyList<string> Keys(string listed) =>
             [.. listed.Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(entry => entry.Split('\n', 2)[0])];
+
+        /// <summary>Whether <c>git rev-parse --is-bare-repository</c> output says anything but false.</summary>
+        internal static bool Bare(string output) => output.Trim() != "false";
 
         /// <summary>The values in <c>git config --get-all</c> output, one per line.</summary>
         internal static IReadOnlyList<string> Lines(string listed) => listed.TrimEnd().Split('\n');
