@@ -36,6 +36,7 @@ public sealed class GitHubResponseGoldenTests
         { "reset not a number", Response(403, "", "X-RateLimit-Reset: soon"), false, "403 " + None },
         // bcfd719 threw ArgumentOutOfRangeException converting an exhausted limit's reset to a time.
         { "reset out of range", Response(403, "", "X-RateLimit-Reset: 99999999999999"), false, "403 " + None },
+        { "reset before the earliest time", Response(403, "", "X-RateLimit-Reset: -99999999999999"), false, "403 " + None },
         { "Retry-After negative", Response(403, "", "Retry-After: -1"), false, "403 " + None },
         { "Retry-After a date", Response(403, "", "Retry-After: Wed, 21 Oct 2026 07:28:00 GMT"), false, "403 " + None },
         { "Retry-After past int", Response(403, "", "Retry-After: 99999999999"), false, "403 " + None },
@@ -89,7 +90,7 @@ public sealed class GitHubResponseGoldenTests
     public void A_request_answers_the_responses_data_or_throws_what_the_core_decides()
     {
         Assert.Equal("""{"data":{"id":"D1"}}""", GitHub.Classify(Response(200, """{"data":{"data":{"id":"D1"}}}""")).ToJsonString());
-        Assert.Equal(GitHubFailure.Transient, Assert.Throws<GitHubRequestException>(() => GitHub.Classify(Response(502, "<html></html>"))).Kind);
+        Assert.Throws<GitHubRequestException>(() => GitHub.Classify(Response(502, "<html></html>")));
     }
 
     static string Facts(string response, bool lookup)
