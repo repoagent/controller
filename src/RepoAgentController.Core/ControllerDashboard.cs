@@ -156,8 +156,8 @@ public sealed class ControllerDashboard : IAsyncDisposable
         return text.ToString();
     }
 
-    // An event recorded in a form no writer leaves is shown with what reads from it, unless it is not a JSON object at all.
-    static StatusEvent? Listed(StatusEvent? item) => item?.AsRead is { } json && !json.StartsWith('{') ? null : item;
+    // An event recorded in a form no writer leaves is shown with what reads from it, unless it is not an object at all.
+    static StatusEvent? Listed(StatusEvent? item) => item is { AsRead: not null, AsReadIsObject: false } ? null : item;
 
     // Invalid and unreadable settings stay listed until a read succeeds; raw invalid values are never recorded.
     static void Settings(StringBuilder text, RecordedSettings? settings)
