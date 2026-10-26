@@ -171,6 +171,35 @@ public sealed class CheckoutRecordGoldenTests
         Assert.Equal(before, fixture.Snapshot());
     }
 
+    // Records no writer leaves, with an unknown value that is not valid text. 3a52528 started over each, leaving it as read,
+    // and every refresh then failed when it compared the record, before it changed anything. The typed record keeps the
+    // unknown value as read, so a start still does not fail on it.
+    [Theory]
+    [InlineData("lone high surrogate")]
+    [InlineData("lone low surrogate")]
+    [InlineData("lone surrogate nested")]
+    public async Task A_restart_accepts_a_record_with_an_unknown_value_that_is_not_valid_text_and_its_refresh_fails_changing_nothing(string form)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (fixture, owner) = await Cloned();
+        using var _ = fixture;
+        var later = form switch
+        {
+            "lone high surrogate" => "\"\\ud800\"",
+            "lone low surrogate" => "\"\\udc00\"",
+            _ => "{\"kept\":[1,\"\\ud800\"]}",
+        };
+        File.WriteAllText(fixture.Record, Written(fixture, owner, fixture.Commit)[..^1] + ",\"later\":" + later + "}");
+        await fixture.Advance("advanced");
+        var before = fixture.Snapshot();
+
+        using var checkout = await fixture.Open();
+        Assert.Equal(before, fixture.Snapshot());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => checkout.Refresh((_, _) => { }, Token));
+        Assert.Equal(before, fixture.Snapshot());
+    }
+
     // A record changed after the checkout opened, compared as JSON with the record as read or last written, as on 3a52528.
     static string Changed(CheckoutFixture fixture, string owner, string atOpen, string form)
     {

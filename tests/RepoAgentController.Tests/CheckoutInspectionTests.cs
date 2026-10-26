@@ -21,7 +21,8 @@ public sealed class CheckoutInspectionTests
         Assert.Empty(checkout.Writes);
     }
 
-    // dirty also stands for staged, and untracked for ignored: Git reports each pair as the same fact.
+    // dirty also stands for staged, which Git reports as the same fact; untracked also stands for ignored, since a restart reads
+    // no working-tree state.
     [Theory]
     [InlineData("reuse")]
     [InlineData("dirty")]

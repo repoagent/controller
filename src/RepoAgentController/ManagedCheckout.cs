@@ -181,13 +181,16 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
         try
         {
             if (JsonNode.Parse(text) is not JsonObject read) return new() { Unreadable = true };
+            // Unknown values keep their text as read: a value the writer cannot write, such as a lone surrogate, fails the
+            // refresh that writes it, as 3a52528 did, and not the start.
+            using var raw = JsonDocument.Parse(text);
             return new()
             {
                 Version = Value<int>(read["version"]), State = read["state"].OptionalText(), Root = read["root"].OptionalText(),
                 Owner = read["owner"].OptionalText(), RepositoryId = Value<long>(read["repositoryId"]),
                 Repository = read["repository"].OptionalText(), Remote = read["remote"].OptionalText(), Branch = read["branch"].OptionalText(),
                 Commit = read["commit"] is null ? "" : read["commit"].OptionalText(),
-                Unknown = [.. read.Where(key => !RecordKeys.Contains(key.Key)).Select(key => new UnknownKey(key.Key, key.Value?.ToJsonString() ?? "null"))]
+                Unknown = [.. raw.RootElement.EnumerateObject().Where(key => !RecordKeys.Contains(key.Name)).Select(key => new UnknownKey(key.Name, key.Value.GetRawText()))]
             };
         }
         catch (JsonException) { return new() { Unreadable = true }; }
