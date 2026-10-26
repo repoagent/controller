@@ -53,8 +53,20 @@ sealed class RefreshJournalFile(string statePath) : IRefreshJournal
             else result.ReasonAsRead = Encode(journal["reason"]);
         }
         if (journal["applying"] is { } applying) result.Applying = new("", "", 0) { AsRead = Encode(applying) };
-        foreach (var (id, admission) in active) result.Active[id] = Admission(admission);
+        foreach (var (id, admission) in Admissions(active, text)) result.Active[id] = Admission(admission);
         return result;
+    }
+
+    // Each admission by its ID, as read. JsonObject refuses an ID read twice, so such a map is read again from the text; the ID
+    // keeps its first place and its last admission. The journal still starts blocked, as it did before it was typed.
+    static IEnumerable<(string Id, JsonNode? Admission)> Admissions(JsonObject active, string text)
+    {
+        try { return [.. active.Select(item => (item.Key, item.Value))]; }
+        catch (ArgumentException)
+        {
+            using var document = JsonDocument.Parse(text);
+            return [.. document.RootElement.GetProperty("active").EnumerateObject().Select(item => (item.Name, JsonNode.Parse(item.Value.GetRawText())))];
+        }
     }
 
     // An admission as its writer leaves it: thread, turn and since, whether it is confirmed, and unconfirmed only when true.
