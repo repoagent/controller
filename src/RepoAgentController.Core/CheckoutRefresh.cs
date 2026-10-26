@@ -32,7 +32,9 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             journal.Completed < 0 || journal.Requested < journal.Completed)
             throw new IOException(RefreshJournal.Unusable);
         active = journal.Active;
-        blocked = journal.Blocked || active.Count != 0 || journal.Applying is not null || journal.Running != 0 || pendingDiscussion ||
+        // The running count is read only when nothing before it blocks; one no writer leaves is then refused.
+        blocked = journal.Blocked || active.Count != 0 || journal.Applying is not null ||
+            (journal.RunningUnreadable ? throw new IOException(RefreshJournal.Unusable) : journal.Running != 0) || pendingDiscussion ||
             (recorded is null && priorSessions);
         if (blocked) journal.Reason = "Native activity or checkout update is uncertain; inspect state before recovery";
         Save();

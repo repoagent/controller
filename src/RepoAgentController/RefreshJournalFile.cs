@@ -28,7 +28,8 @@ sealed class RefreshJournalFile(string statePath) : IRefreshJournal
 
     /// <summary>
     /// The journal in <paramref name="text"/>. Each key the controller decides from must hold its writer's type; a missing
-    /// <c>blocked</c> or <c>running</c> reads as false or 0. An admission, a reason or a refresh applying in a form no writer
+    /// <c>blocked</c> or <c>running</c> reads as false or 0. A <c>running</c> of another type is left for the start to refuse,
+    /// which it does only when nothing before it blocks. An admission, a reason or a refresh applying in a form no writer
     /// leaves is kept as read, and so is every key this controller does not write.
     /// </summary>
     internal static RefreshJournal Parse(string text)
@@ -39,12 +40,13 @@ sealed class RefreshJournalFile(string statePath) : IRefreshJournal
             Text(journal["owner"]) is not { } owner || Value<long>(journal["repositoryId"]) is not { } repositoryId ||
             Value<long>(journal["requested"]) is not { } requested || Value<long>(journal["completed"]) is not { } completed ||
             journal["active"] is not JsonObject active ||
-            (journal["blocked"] is null ? false : Value<bool>(journal["blocked"])) is not { } blocked ||
-            (journal["running"] is null ? 0 : Value<int>(journal["running"])) is not { } running)
+            (journal["blocked"] is null ? false : Value<bool>(journal["blocked"])) is not { } blocked)
             throw new IOException(RefreshJournal.Unusable);
+        var running = journal["running"] is null ? 0 : Value<int>(journal["running"]);
         var result = new RefreshJournal(root, owner, repositoryId)
         {
-            Requested = requested, Completed = completed, Blocked = blocked, Running = running,
+            // Running before RunningUnreadable, which setting Running clears.
+            Requested = requested, Completed = completed, Blocked = blocked, Running = running ?? 0, RunningUnreadable = running is null,
             Unknown = [.. journal.Where(key => !Keys.Contains(key.Key)).Select(key => new UnknownKey(key.Key, Encode(key.Value)))]
         };
         if (journal.ContainsKey("reason"))

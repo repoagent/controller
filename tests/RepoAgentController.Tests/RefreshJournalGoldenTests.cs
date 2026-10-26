@@ -186,6 +186,14 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         // f742e2b recorded the error reading this admission as the reason.
         { "admission key repeated", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{{\"thread\":\"S1\",\"thread\":\"S2\",\"turn\":\"\",\"since\":3,\"confirmed\":false}}}},\"blocked\":true,\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"thread\":\"S2\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Unmatched native lifecycle event\"" },
+        // f742e2b placed the turn with the awaiting admission, then recorded the error reading the other as the reason
+        // (Object reference not set to an instance of an object.).
+        { "admission null beside one awaiting the turn", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{Entry},\"b\":null}},\"blocked\":false,\"running\":0"),
+            "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false},\"b\":null},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
+        // f742e2b placed the turn with the awaiting admission, then recorded the error reading the other as the reason
+        // (The node must be of type 'JsonObject'.).
+        { "admission a number beside one awaiting the turn", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{Entry},\"b\":5}},\"blocked\":false,\"running\":0"),
+            "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false},\"b\":5},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
         // f742e2b wrote every admission back as read, and recorded the error reading them as the reason.
         { "an admission ID repeated", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{Entry},\"b\":{Entry},\"a\":5}},\"blocked\":true,\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":5,\"b\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
@@ -198,8 +206,30 @@ public sealed class RefreshJournalGoldenTests : IDisposable
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false,\"unconfirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
     };
 
+    // A running count no writer leaves, beside a record that blocks the start before it: a recorded block, an admission, a refresh
+    // applying, or all three. f742e2b read the count only when nothing
+    // before it blocked, so each of these started blocked and wrote the count of running turns, 0; the same JSON as below. With
+    // nothing before it, the count stops the start (the "running text" and "running 1.5" rows).
+    public static TheoryData<string, string?, string> RunningNoWriterLeavesBehindABlock()
+    {
+        var rows = new TheoryData<string, string?, string>();
+        foreach (var running in new[] { "\"0\"", "1.5", "true", "{}", "[]", "3000000000" })
+        {
+            rows.Add($"running {running} with a recorded block", Journal($"{Bound},{Settled},\"blocked\":true,\"running\":{running}"),
+                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Unmatched native lifecycle event\"");
+            rows.Add($"running {running} with an admission", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{Entry}}},\"blocked\":false,\"running\":{running}"),
+                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"");
+            rows.Add($"running {running} with a refresh applying", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":{running},\"applying\":{{\"previous\":\"1111111111111111111111111111111111111111\",\"target\":\"2222222222222222222222222222222222222222\",\"generation\":4}}"),
+                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\",\"applying\":{\"previous\":\"1111111111111111111111111111111111111111\",\"target\":\"2222222222222222222222222222222222222222\",\"generation\":4}} | \"Unmatched native lifecycle event\"");
+            rows.Add($"running {running} with all three", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{Entry}}},\"blocked\":true,\"running\":{running},\"applying\":{{\"previous\":\"1111111111111111111111111111111111111111\",\"target\":\"2222222222222222222222222222222222222222\",\"generation\":4}}"),
+                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\",\"applying\":{\"previous\":\"1111111111111111111111111111111111111111\",\"target\":\"2222222222222222222222222222222222222222\",\"generation\":4}} | \"Native activity or checkout update is uncertain; inspect state before recovery\"");
+        }
+        return rows;
+    }
+
     [Theory]
     [MemberData(nameof(Damaged))]
+    [MemberData(nameof(RunningNoWriterLeavesBehindABlock))]
     public async Task A_journal_in_a_form_no_writer_leaves_starts_as_pinned(string form, string? journal, string expected)
     {
         Assert.NotEmpty(form);

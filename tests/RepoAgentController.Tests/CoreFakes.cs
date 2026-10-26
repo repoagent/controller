@@ -689,6 +689,7 @@ sealed class InMemoryRefreshJournal : IRefreshJournal
             Reason = journal.Reason, Applying = journal.Applying, Unknown = journal.Unknown
         };
         copy.ReasonAsRead = journal.ReasonAsRead;
+        copy.RunningUnreadable = journal.RunningUnreadable;
         foreach (var (id, admission) in journal.Active)
             copy.Active[id] = new(admission.Since)
             {

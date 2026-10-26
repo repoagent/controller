@@ -121,6 +121,38 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         Assert.Equal(Uncertain, (await Assert.ThrowsAsync<IOException>(() => opened.CommitAtIdle(_ => Task.CompletedTask, Token))).Message);
     }
 
+    public static TheoryData<string> BlocksBeforeTheRunningCount() => ["a recorded block", "a recorded admission", "a recorded refresh applying"];
+
+    // As before the move, the start reads the running count only when nothing before it blocks.
+    [Theory]
+    [MemberData(nameof(BlocksBeforeTheRunningCount))]
+    public void A_running_count_no_writer_leaves_beside_an_earlier_block_starts_blocked_and_is_rewritten(string form)
+    {
+        journal.Saved = Recorded(saved =>
+        {
+            saved.RunningUnreadable = true;
+            if (form == "a recorded block") saved.Blocked = true;
+            if (form == "a recorded admission") saved.Active["a"] = new(1) { Thread = "S1" };
+            if (form == "a recorded refresh applying") saved.Applying = new("C1", "C2", 2);
+        });
+
+        Open();
+
+        Assert.Equal((true, 0, false), (Saved.Blocked, Saved.Running, Saved.RunningUnreadable));
+        Assert.Equal("Native activity or checkout update is uncertain; inspect state before recovery", Saved.Reason);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_running_count_no_writer_leaves_with_no_earlier_block_stops_the_start_before_it_writes(bool pendingDiscussion)
+    {
+        journal.Saved = Recorded(saved => saved.RunningUnreadable = true);
+        journal.WriteFailure = new IOException("written");
+
+        Assert.Equal(RefreshJournal.Unusable, Assert.Throws<IOException>(() => Open(pendingDiscussion: pendingDiscussion)).Message);
+    }
+
     [Fact]
     public async Task Earlier_sessions_with_a_settled_journal_start_unblocked()
     {

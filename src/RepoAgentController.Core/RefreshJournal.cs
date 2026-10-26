@@ -20,6 +20,7 @@ public sealed class RefreshJournal(string root, string owner, long repositoryId)
     public const string Unusable = "Refresh journal binding or format differs; manual recovery required";
 
     string? reason;
+    int running;
 
     public string Root => root;
     public string Owner => owner;
@@ -30,7 +31,15 @@ public sealed class RefreshJournal(string root, string owner, long repositoryId)
     /// <summary>Each unresolved admission by its ID, in the order admitted.</summary>
     public OrderedDictionary<string, RefreshAdmission> Active { get; } = [];
     public bool Blocked { get; set; }
-    public int Running { get; set; }
+    public int Running
+    {
+        get => running;
+        set { running = value; RunningUnreadable = false; }
+    }
+
+    /// <summary>Whether <c>running</c> was read in a form no writer leaves. A start reads it only when nothing before it blocks,
+    /// and then refuses the journal; setting <see cref="Running"/> clears it.</summary>
+    public bool RunningUnreadable { get; set; }
 
     /// <summary>Why refresh is held back or blocked; setting it replaces a reason read in a form no writer leaves.</summary>
     public string? Reason
