@@ -102,8 +102,8 @@ public sealed class CheckoutRecordGoldenTests
         Assert.Equal(Written(fixture, owner, target)[..^1] + ",\"later\":{\"kept\":[1,\"two\"]}}", File.ReadAllText(fixture.Record));
     }
 
-    // Records no writer leaves, which a restart failed on with an unhandled JSON exception before the record was typed. A
-    // restart now refuses each with a managed checkout refusal and changes nothing.
+    // Records no writer leaves, which a restart failed on with an unhandled exception before the record was typed. A restart
+    // now refuses each with a managed checkout refusal and changes nothing.
     [Theory]
     [InlineData("not JSON", "invalid ownership record")]
     [InlineData("a list", "invalid ownership record")]
@@ -122,6 +122,12 @@ public sealed class CheckoutRecordGoldenTests
     [InlineData("repositoryId 345.0", "ownership or repository binding differs")]
     [InlineData("repository number", "ownership or repository binding differs")]
     [InlineData("branch number", "ownership or repository binding differs")]
+    [InlineData("unknown deep nesting 64", "invalid ownership record")]
+    [InlineData("unknown key lone surrogate", "invalid ownership record")]
+    [InlineData("state lone surrogate", "invalid ownership record")]
+    [InlineData("commit lone surrogate", "invalid ownership record")]
+    // 3a52528 read the version first and refused this one as "ownership or repository binding differs".
+    [InlineData("version 2 and state lone surrogate", "invalid ownership record")]
     public async Task A_restart_refuses_a_record_of_a_type_no_writer_leaves_and_changes_nothing(string form, string reason)
     {
         if (OperatingSystem.IsWindows()) return;
@@ -138,7 +144,14 @@ public sealed class CheckoutRecordGoldenTests
             "commit number" => Replaced("commit", "5"), "version text" => Replaced("version", "\"1\""), "version 1.0" => Replaced("version", "1.0"),
             "state number" => Replaced("state", "5"), "root number" => Replaced("root", "5"), "owner number" => Replaced("owner", "5"),
             "repositoryId text" => Replaced("repositoryId", "\"345\""), "repositoryId 345.0" => Replaced("repositoryId", "345.0"),
-            "repository number" => Replaced("repository", "5"), _ => Replaced("branch", "5"),
+            "repository number" => Replaced("repository", "5"),
+            "unknown deep nesting 64" => written[..^1] + ",\"later\":" + new string('[', 64) + new string(']', 64) + "}",
+            "unknown key lone surrogate" => written[..^1] + ",\"\\ud800\":1}",
+            "state lone surrogate" => written.Replace("\"" + fixture.Broker.State + "\"", "\"\\ud800\"", StringComparison.Ordinal),
+            "commit lone surrogate" => written.Replace("\"" + fixture.Commit + "\"", "\"\\ud800\"", StringComparison.Ordinal),
+            "version 2 and state lone surrogate" => written.Replace("\"version\":1", "\"version\":2", StringComparison.Ordinal)
+                .Replace("\"" + fixture.Broker.State + "\"", "\"\\ud800\"", StringComparison.Ordinal),
+            _ => Replaced("branch", "5"),
         });
         var before = fixture.Snapshot();
 

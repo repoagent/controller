@@ -174,7 +174,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
     /// <summary>
     /// The ownership record in <paramref name="text"/>. A key that is absent or holds another type reads as null, and the commit
     /// as empty when absent or null; keys this controller does not write are kept as read. Text that is not one JSON object of
-    /// distinct keys is unreadable.
+    /// distinct keys, or a key or known value that is not valid text, is unreadable.
     /// </summary>
     internal static CheckoutRecord ParseRecord(string text)
     {
@@ -195,6 +195,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
         }
         catch (JsonException) { return new() { Unreadable = true }; }
         catch (ArgumentException) { return new() { Unreadable = true }; } // A key repeated in the record.
+        catch (InvalidOperationException) { return new() { Unreadable = true }; } // A key or known value that is not valid text.
     }
 
     static T? Value<T>(JsonNode? node) where T : struct => node is JsonValue value && value.TryGetValue<T>(out var read) ? read : null;
