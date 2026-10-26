@@ -503,7 +503,7 @@ public sealed class BrokerAuthenticationTests
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, true)]
-    public async Task A_retired_v3_settings_enrollment_is_refused_before_broker_contact_and_names_re_enrollment(bool clone, bool repositorySettings)
+    public async Task A_retired_v3_repository_settings_profile_file_is_refused_before_broker_contact_and_names_re_enrollment(bool clone, bool repositorySettings)
     {
         // Setup v3 kept settings in Actions variables (ADR 0007, 0008). ADR 0012 retires it: its token cannot read Agent variables.
         using var fixture = new Fixture(clone: clone, settings: true) { RepositorySettings = repositorySettings };

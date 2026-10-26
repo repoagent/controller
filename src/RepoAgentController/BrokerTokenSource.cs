@@ -13,6 +13,9 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
     // Setup v4 Agent-variable approval; its settings profiles read Agent variables (ADR 0012).
     const string SettingsPolicy = "repository-agent-settings-approval-v4";
     // Setup v3 Actions-variable policies, retired by ADR 0012.
+    const string ClonePolicy = "repository-agent-clone-approval-v4";
+    // Setup v2 Agent-variable clone grants keep renewing.
+    const string LegacyClonePolicy = "repository-agent-clone-approval-v2";
     const string RetiredClonePolicy = "repository-actions-clone-approval-v3";
     const string RetiredSettingsPolicy = "repository-actions-settings-approval-v3";
     static readonly string[] BindingFields = ["protocolVersion", "appId", "appSlug", "installationId", "repositoryId", "repository", "permissions"];
@@ -201,7 +204,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
             Text(value, "policyVersion") != SettingsPolicy))
             throw Invalid("repository-settings policy differs");
         if (clone && !settings && (Text(value, "profile") != profile.Name ||
-            Text(value, "policyVersion") is not ("repository-agent-clone-approval-v4" or "repository-agent-clone-approval-v2")))
+            Text(value, "policyVersion") is not (ClonePolicy or LegacyClonePolicy)))
             throw Invalid("clone policy differs");
         var permissions = value.GetProperty("permissions");
         var required = profile.Permissions();

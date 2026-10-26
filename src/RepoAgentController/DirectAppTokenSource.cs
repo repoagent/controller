@@ -71,12 +71,12 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
         if (profile.Webhooks && installation["permissions"]?.Text("repository_hooks") != "write")
             throw new InvalidOperationException("Webhook mode requires Webhooks: read and write; approve the updated App installation permissions");
         // Settings need Agent variables: read. Without it the controller still starts: the token requests no more than the
-        // installation grants, and the settings keep their last values until the installation accepts the permission.
+        // installation grants, and the settings keep their last values. The grant is checked once, so accepting it takes effect at the next start.
         if (profile.Settings && installation["permissions"]?.Text("agent_variables") is not ("read" or "write"))
         {
             profile = profile with { Settings = false };
             SettingsUnreadable = "the App installation does not grant Agent variables: read";
-            Log.Write("repository-settings", $"state=unreadable reason=\"{SettingsUnreadable}; approve the updated App installation permissions\"");
+            Log.Write("repository-settings", $"state=unreadable reason=\"{SettingsUnreadable}; approve the updated App installation permissions, then restart the controller\"");
         }
 
         Log.Write("app-installation", $"app={slug} installation={installationId} repository={repository} actor={appSlug}[bot]");
