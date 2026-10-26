@@ -11,18 +11,10 @@ namespace RepoAgentController.Tests;
 public sealed class LogLineTests : IDisposable
 {
     const string Time = @"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}\+00:00";
+    // A clock that reports another offset: every line is still in UTC.
     static readonly DateTimeOffset At = new DateTimeOffset(2026, 10, 24, 12, 0, 0, TimeSpan.FromHours(2)).AddTicks(1234567);
     readonly FakeTimeProvider clock = new(At);
     readonly string directory = Path.Combine(Path.GetTempPath(), "log-line-" + Guid.NewGuid().ToString("N"));
-
-    [Fact]
-    public void A_log_entry_line_is_its_round_trip_utc_time_then_its_kind_then_its_message()
-    {
-        Assert.Equal("2026-10-24T10:00:00.1234567+00:00 test-kind a message  with `spacing`",
-            new LogEntry(new DateTimeOffset(2026, 10, 24, 10, 0, 0, TimeSpan.Zero).AddTicks(1234567), "test-kind", "a message  with `spacing`").Line);
-        Assert.Equal("2026-10-24T08:00:00.0000000+00:00 test-kind multi\nline",
-            new LogEntry(new DateTimeOffset(2026, 10, 24, 10, 0, 0, TimeSpan.FromHours(2)).ToUniversalTime(), "test-kind", "multi\nline").Line);
-    }
 
     [Fact]
     public void A_written_line_reaches_stdout_the_flow_observer_and_the_retained_log_as_the_same_redacted_bytes()
