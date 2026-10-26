@@ -105,7 +105,7 @@ static class OperatorStatusJson
         var item = node as JsonObject;
         var read = new StatusEvent(item?["at"].OptionalText() ?? "", item?["kind"].OptionalText() ?? "", item?["message"].OptionalText() ?? "")
             { Url = item?["url"].OptionalText() };
-        return Same(Event(read), node) ? read : read with { AsRead = node.ToJsonString() };
+        return Same(Event(read), node) ? read : read with { AsRead = node.ToJsonString(), AsReadIsObject = item is not null };
     }
 
     static bool Same(JsonNode? written, JsonNode read) => written?.ToJsonString() == read.ToJsonString();

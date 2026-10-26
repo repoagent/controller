@@ -10,6 +10,7 @@ public static class BridgeCommand
         TimeProvider? clock = null, CancellationToken shutdownToken = default)
     {
         var time = clock ?? TimeProvider.System;
+        using var stamping = Log.Clock(time);
         if (args.Length > 0 && args[0] is "git-helper" or "git-clone-child" or "git-fetch")
             return await AppGitCredential.Run(args, CancellationToken.None);
         var repository = new Option<string>("--repo") { Required = true, Description = "GitHub owner/repository" };
@@ -109,7 +110,7 @@ public static class BridgeCommand
                 using var leased = new LeasedStateStore(statePath, repo, () => GitHubAppCredentials.ClearCache(credentialDirectory));
                 var store = leased.Store;
                 // Only the lease holder retains logs and records status for this state.
-                using var retained = new RetainedLog(RetainedLog.DirectoryFor(statePath), result.GetValue(logFileBytes), result.GetValue(logFiles));
+                using var retained = new RetainedLog(RetainedLog.DirectoryFor(statePath), result.GetValue(logFileBytes), result.GetValue(logFiles), time);
                 using var status = StatusFiles.Open(statePath, repo, result.GetValue(checkAuth) ? "check-auth" : result.GetValue(disableWebhook) ? "disable-webhook" :
                     publicUrl is not null ? "webhook" : "polling", time);
                 using var observation = Log.Observe(entry => { retained.Append(entry); status.Record(entry); });
@@ -155,7 +156,7 @@ public static class BridgeCommand
                     await using var dashboard = result.GetValue(dashboardCategory) is { } category
                         ? new ControllerDashboard(category, status, outbox,
                             new BaselineReleases(new GitHubBaselineReleases(github), ImageInventory.Sha256(result.GetValue(imageInventory)?.FullName), result.GetValue(startupToolUpdates), time, new ControllerLog(), Log.Redact),
-                            time) : null;
+                            time, new ControllerLog(), Log.Redact) : null;
                     using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, credentials.BrokerCredentialLost);
                     var runtimeToken = refreshCancellation.Token;
                     var refresh = credentials.RefreshUntilCancelled(runtimeToken);

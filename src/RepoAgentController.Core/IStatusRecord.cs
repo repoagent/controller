@@ -59,4 +59,7 @@ public sealed record StatusEvent(string At, string Kind, string Message)
 
     /// <summary>The recorded JSON as read, when it is not in the form a writer leaves; it is reported as read.</summary>
     public string? AsRead { get; init; }
+
+    /// <summary>Whether the JSON kept as read is an object, whose text fields the other properties hold; anything else holds none.</summary>
+    public bool AsReadIsObject { get; init; }
 }

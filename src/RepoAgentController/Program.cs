@@ -10,6 +10,8 @@ namespace RepoAgentController
         static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> secrets = new();
         // Scoped to one controller lifetime's async flow, so concurrent in-process lifetimes stay separate.
         static readonly AsyncLocal<Action<LogEntry>?> observer = new();
+        // Also scoped to a lifetime's flow: its entries carry that lifetime's time.
+        static readonly AsyncLocal<TimeProvider?> time = new();
         public static void Protect(string secret) => secrets.TryAdd(secret, 0);
         /// <summary>Removes every known secret, as every log entry does.</summary>
         public static string Redact(string message)
@@ -21,7 +23,8 @@ namespace RepoAgentController
         public static void Write(string kind, string message)
         {
             message = Redact(message);
-            var entry = new LogEntry(DateTimeOffset.UtcNow, kind, message);
+            // In UTC whatever offset a clock reports, as every line has been.
+            var entry = new LogEntry((time.Value ?? TimeProvider.System).GetUtcNow().ToUniversalTime(), kind, message);
             Console.WriteLine(entry.Line);
             observer.Value?.Invoke(entry);
         }
@@ -32,6 +35,15 @@ namespace RepoAgentController
             var previous = observer.Value;
             observer.Value = receive;
             return new Restore(() => observer.Value = previous);
+        }
+
+        /// <summary>Stamps this flow's entries with <paramref name="clock"/>'s time until disposed; otherwise they carry the
+        /// system's.</summary>
+        public static IDisposable Clock(TimeProvider clock)
+        {
+            var previous = time.Value;
+            time.Value = clock;
+            return new Restore(() => time.Value = previous);
         }
 
         sealed class Restore(Action restore) : IDisposable

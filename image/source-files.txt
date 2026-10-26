@@ -20,7 +20,6 @@ src/RepoAgentController/CredentialHandoff.cs
 src/RepoAgentController/CodexCredentials.cs
 src/RepoAgentController/OperatorStatusJson.cs
 src/RepoAgentController/StatusFiles.cs
-src/RepoAgentController/ControllerDashboard.cs
 src/RepoAgentController/ControllerHttpServer.cs
 src/RepoAgentController/GitHubBaselineReleases.cs
 src/RepoAgentController/ImageInventory.cs
@@ -68,6 +67,7 @@ src/RepoAgentController.Core/IStatusRecord.cs
 src/RepoAgentController.Core/OperatorStatus.cs
 src/RepoAgentController.Core/ICheckoutWork.cs
 src/RepoAgentController.Core/LogEntry.cs
+src/RepoAgentController.Core/ControllerDashboard.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs
 tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj
