@@ -1,0 +1,117 @@
+--- running ---
+Attention: RepoAgent controller authentication failed
+<!-- repoagent:controller-dashboard -->
+Operational status of this repository's RepoAgent controller. The controller replaces this text on every update; comments and reactions here are never delivered to the agent.
+
+- **Controller:** running (polling) since 2026-10-24T10:00:00Z
+- **Heartbeat:** 2026-10-24T10:00:00Z. Refreshed about every 30 seconds while the controller runs, even when idle. An older heartbeat means this status is unconfirmed, not that a particular failure occurred.
+- **Authentication:** failed at 2026-10-24T10:00:02Z: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`. Check the controller's approval and credentials, then restart it.
+- **Codex authentication:** supplied credentials installed; not yet verified by a completed turn
+- **Repository settings:** 2 unusable
+  - `REPOAGENT_MODEL` could not be read: `HTTP 503`; the earlier value `gpt-5.5` still applies
+  - `REPOAGENT_REASONING` is invalid: `must be one of low, medium, high`; no repository value applies
+- **Sessions:** 5 stored; 2 of 1 turns running (active-session limit); 1 awaiting native acknowledgement; 8 inputs waiting; new turns are held for a checkout refresh
+- **Latest activity:** session started for [Discussion #4](https://github.com/owner/repository/discussions/4) at 2026-10-24T10:00:10Z
+
+### Updates
+**Update available:** baseline release [baseline-103.1](https://github.com/repoagent/controller/releases/tag/baseline-103.1) is newer than this controller's [baseline-101.1](https://github.com/repoagent/controller/releases/tag/baseline-101.1) (2 newer releases; checked at 2026-10-24T10:00:00Z).
+- Image `ghcr.io/repoagent/controller@sha256:11d6de2c4e83b36c64f2d58c44aaa10bf5d737bc1b918e3b6347b54a938e4ef7` ([package](https://github.com/repoagent/controller/pkgs/container/controller)) with gh `2.103.1` and Codex `0.164.0`.
+- Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.
+- To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see [baseline releases](https://github.com/repoagent/controller/blob/94c417d3c69ddf80b9162932e159900749c6a573/docs/ci-cd.md#baseline-releases).
+
+### Active and queued sessions
+- [Discussion #1](https://github.com/owner/repository/discussions/1): running a turn since 2026-10-24T09:30:00Z; 1 inputs waiting for that turn to finish
+- [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting
+- [Discussion #3](https://github.com/owner/repository/discussions/3): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 2 inputs waiting
+- [Discussion #4](https://github.com/owner/repository/discussions/4): 3 inputs waiting for a free active-session slot
+- an unlinked Discussion: 1 inputs waiting for a free active-session slot
+
+### Recent failures
+- 2026-10-24T10:00:02Z `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`
+- 2026-10-24T10:00:01Z `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...`
+- 2026-10-24T10:00:00Z `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 8`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 7`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 6`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 5`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 4`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 3`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 2`
+--- stopped ---
+Attention: RepoAgent controller authentication failed
+<!-- repoagent:controller-dashboard -->
+Operational status of this repository's RepoAgent controller. The controller replaces this text on every update; comments and reactions here are never delivered to the agent.
+
+- **Controller:** stopped at 2026-10-24T10:00:15Z after a graceful shutdown; it had started at 2026-10-24T10:00:00Z
+- **Heartbeat:** none while stopped.
+- **Authentication:** failed at 2026-10-24T10:00:02Z: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`. Check the controller's approval and credentials, then restart it.
+- **Codex authentication:** supplied credentials installed; not yet verified by a completed turn
+- **Repository settings:** 2 unusable
+  - `REPOAGENT_MODEL` could not be read: `HTTP 503`; the earlier value `gpt-5.5` still applies
+  - `REPOAGENT_REASONING` is invalid: `must be one of low, medium, high`; no repository value applies
+- **Sessions:** 5 stored; no turns run while the controller is stopped; 1 awaiting native acknowledgement; 8 inputs waiting; new turns are held for a checkout refresh
+- **Latest activity:** session started for [Discussion #4](https://github.com/owner/repository/discussions/4) at 2026-10-24T10:00:10Z
+
+### Updates
+**Update available:** baseline release [baseline-103.1](https://github.com/repoagent/controller/releases/tag/baseline-103.1) is newer than this controller's [baseline-101.1](https://github.com/repoagent/controller/releases/tag/baseline-101.1) (2 newer releases; checked at 2026-10-24T10:00:00Z).
+- Image `ghcr.io/repoagent/controller@sha256:11d6de2c4e83b36c64f2d58c44aaa10bf5d737bc1b918e3b6347b54a938e4ef7` ([package](https://github.com/repoagent/controller/pkgs/container/controller)) with gh `2.103.1` and Codex `0.164.0`.
+- Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.
+- To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see [baseline releases](https://github.com/repoagent/controller/blob/94c417d3c69ddf80b9162932e159900749c6a573/docs/ci-cd.md#baseline-releases).
+
+### Active and queued sessions
+- [Discussion #1](https://github.com/owner/repository/discussions/1): its turn ended with the controller; 1 inputs waiting
+- [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting
+- [Discussion #3](https://github.com/owner/repository/discussions/3): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 2 inputs waiting
+- [Discussion #4](https://github.com/owner/repository/discussions/4): 3 inputs waiting for dispatch
+- an unlinked Discussion: 1 inputs waiting for dispatch
+
+### Recent failures
+- 2026-10-24T10:00:02Z `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`
+- 2026-10-24T10:00:01Z `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...`
+- 2026-10-24T10:00:00Z `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 8`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 7`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 6`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 5`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 4`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 3`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 2`
+--- failed ---
+Attention: RepoAgent controller authentication failed
+<!-- repoagent:controller-dashboard -->
+Operational status of this repository's RepoAgent controller. The controller replaces this text on every update; comments and reactions here are never delivered to the agent.
+
+- **Controller:** stopped at 2026-10-24T10:01:15Z after a failure: `Repository webhook registration failed: 'hooks' returned HTTP 422`
+- **Heartbeat:** none while stopped.
+- **Authentication:** unknown
+- **Codex authentication:** failed at 2026-10-24T10:01:15Z: `turn failed: unexpected status 401 Unauthorized`. New Discussion input is held until the Codex account credentials are replaced.
+- **Repository settings:** 2 unusable
+  - `REPOAGENT_MODEL` could not be read: `HTTP 503`; the earlier value `gpt-5.5` still applies
+  - `REPOAGENT_REASONING` is invalid: `must be one of low, medium, high`; no repository value applies
+- **Sessions:** 5 stored; no turns run while the controller is stopped; 1 awaiting native acknowledgement; 8 inputs waiting; new turns are held for a checkout refresh
+- **Latest activity:** session started for [Discussion #4](https://github.com/owner/repository/discussions/4) at 2026-10-24T10:00:10Z
+
+### Updates
+**Update available:** baseline release [baseline-103.1](https://github.com/repoagent/controller/releases/tag/baseline-103.1) is newer than this controller's [baseline-101.1](https://github.com/repoagent/controller/releases/tag/baseline-101.1) (2 newer releases; checked at 2026-10-24T10:01:15Z).
+- Image `ghcr.io/repoagent/controller@sha256:11d6de2c4e83b36c64f2d58c44aaa10bf5d737bc1b918e3b6347b54a938e4ef7` ([package](https://github.com/repoagent/controller/pkgs/container/controller)) with gh `2.103.1` and Codex `0.164.0`.
+- Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.
+- To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see [baseline releases](https://github.com/repoagent/controller/blob/94c417d3c69ddf80b9162932e159900749c6a573/docs/ci-cd.md#baseline-releases).
+
+### Active and queued sessions
+- [Discussion #1](https://github.com/owner/repository/discussions/1): its turn ended with the controller; 1 inputs waiting
+- [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting
+- [Discussion #3](https://github.com/owner/repository/discussions/3): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 2 inputs waiting
+- [Discussion #4](https://github.com/owner/repository/discussions/4): 3 inputs held until the Codex account credentials are replaced
+- an unlinked Discussion: 1 inputs held until the Codex account credentials are replaced
+
+### Recent failures
+- 2026-10-24T10:01:15Z `codex-auth-failed`: `turn failed: unexpected status 401 Unauthorized`
+- 2026-10-24T10:00:02Z `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`
+- 2026-10-24T10:00:01Z `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...`
+- 2026-10-24T10:00:00Z `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 8`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 7`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 6`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 5`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 4`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 3`

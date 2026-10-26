@@ -2,6 +2,7 @@ repoagent text eol=lf
 *.sh text eol=lf
 *.ps1 text eol=lf
 # Golden fixtures are compared byte for byte or split on LF.
+tests/RepoAgentController.Tests/ControllerDashboardGolden.txt text eol=lf
 tests/RepoAgentController.Tests/ControllerStatusGolden.txt text eol=lf
 tests/RepoAgentController.Tests/DiscussionJsonGolden.json text eol=lf
 tests/RepoAgentController.Tests/StateFileWritten.json text eol=lf
