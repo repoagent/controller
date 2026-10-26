@@ -45,6 +45,11 @@ sealed class BridgeWorld : IAsyncDisposable
     public InMemoryCheckoutWork Checkout { get; } = new();
     /// <summary>The managed checkout's admission, as a lifetime with a managed checkout has one; none by default.</summary>
     public RecordingCheckoutAdmission? Admission { get; set; }
+    /// <summary>
+    /// The managed checkout's refresh, as a lifetime with a managed checkout composes it: it admits each delivery in place of
+    /// <see cref="Admission"/> and records the agent's turns. One lifetime's; none by default.
+    /// </summary>
+    public CheckoutRefresh? CheckoutRefresh { get; set; }
     /// <summary>Prepares each lifetime's agent runtime before the bridge uses it, as the agent's catalogue and configuration.</summary>
     public Action<FakeAgentRuntime>? PrepareRuntime { get; set; }
 
@@ -98,13 +103,13 @@ sealed class BridgeWorld : IAsyncDisposable
             new ControllerStatus(Repository, "polling", StatusRecord, Discussions, new ControllerStateFiles(StatePath), Checkout, Clock),
             new RepositorySettings(RepositorySettingsCatalogue.Settings, RepositorySettings ? Variables : null, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             new GitHubOutbox(Repository, GitHub, InMemoryDiscussions.App, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
-            runtime, new AgentSessions(runtime, new ControllerLog()));
+            runtime, new AgentSessions(runtime, new ControllerLog(), CheckoutRefresh));
         lifetime = current;
         current.Sessions.TurnsChanged += current.Status.Running;
         current.Sessions.TurnsChanged += running => { lock (log) mostActive = Math.Max(mostActive, running.Length); };
         await current.Settings.Refresh(stop.Token);
         current.Bridge = new(Repository, GitHub, InMemoryDiscussions.App, current.Sessions, current.Store, current.Outbox, [.. enroll], current.Settings,
-            new AgentInputJson(), new ControllerLog(), Clock, Admission);
+            new AgentInputJson(), new ControllerLog(), Clock, (ICheckoutAdmission?)CheckoutRefresh ?? Admission);
         current.Bridge.ResumeInterrupted();
     }
 
