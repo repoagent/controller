@@ -228,7 +228,7 @@ public sealed class RefreshJournalGoldenTests : IDisposable
     // What this controller writes at the same two starts.
     const string WrittenByBlockedStart = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""";
     const string WrittenByStartOverApplying = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""";
-    const string ThenAStart = ", then a start";
+    const string ThenAStart = ", then a start", ThenARequest = ", then a request";
 
     public static TheoryData<string, string, string> Written() => new()
     {
@@ -264,6 +264,23 @@ public sealed class RefreshJournalGoldenTests : IDisposable
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Native refresh became uncertain"}""",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native refresh became uncertain","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
         { "a lost transport while applying, then a start", LeftByStartOverApplying, WrittenByStartOverApplying },
+        { "an unmatched turn event saved while applying",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Unmatched native lifecycle event"}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Unmatched native lifecycle event","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "an unmatched turn event saved while applying, then a start", LeftByStartOverApplying, WrittenByStartOverApplying },
+        { "a malformed turn identity saved while applying",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Malformed native lifecycle identity"}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Malformed native lifecycle identity","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "a running worker that finds the block a deferral after applying left",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Checkout/native state uncertain; manual recovery required"}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Checkout/native state uncertain; manual recovery required","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "a running worker that finds the block a deferral after applying left, then a start", LeftByStartOverApplying, WrittenByStartOverApplying },
+        { "an unsafe failure after applying began, then a request",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":2,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"boom"}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":2,"completed":0,"active":{},"blocked":true,"running":0,"reason":"boom","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "a first start after earlier sessions, then a request",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":0}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""" },
         { "the next start after f742e2b's unsafe failure after applying", LeftByStartOverApplying, WrittenByStartOverApplying },
         { "the next start after f742e2b's first start after earlier sessions", LeftByBlockedStart, WrittenByBlockedStart },
     };
@@ -276,11 +293,13 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         Assert.Equal(Canonical(JsonNode.Parse(f742e2b)), Canonical(JsonNode.Parse(written)));
     }
 
-    // The journal the writer path leaves: a start, or a refresh that began applying and then failed, deferred, stopped or lost its
-    // agent transport, at the idle boundary an admission takes. Two paths end where a process killed mid-refresh leaves the
-    // journal: with the applying record saved, and with the lost transport saved before the checkout returned. A path ending
-    // ", then a start" starts again over the journal the rest of the path left, as the controller does after its process ends. A
-    // next start begins over the journal f742e2b left.
+    // The journal the writer path leaves: a start, or a refresh that began applying and then failed, deferred, stopped, lost its
+    // agent transport or saw a turn event it could not place, at the idle boundary an admission takes; or a running worker that
+    // finds a block. The paths ending "saved while applying" end where a process killed mid-refresh leaves the journal: with the
+    // applying record, the lost transport or the turn event's fault saved before the checkout returned. A path ending
+    // ", then a request" requests a refresh over the journal the rest of the path left, in the same lifetime. A path ending
+    // ", then a start" starts again over it, as the controller does after its process ends. A next start begins over the journal
+    // f742e2b left.
     async Task<string> Write(string path)
     {
         if (path.EndsWith(ThenAStart, StringComparison.Ordinal))
@@ -289,46 +308,56 @@ public sealed class RefreshJournalGoldenTests : IDisposable
             await using (Open(priorSessions: true)) { }
             return File.ReadAllText(JournalPath);
         }
+        var thenRequest = path.EndsWith(ThenARequest, StringComparison.Ordinal);
+        if (thenRequest) path = path[..^ThenARequest.Length];
         using var stopping = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         CheckoutRefresh? refresh = null;
-        string? applyingSaved = null, lostTransportSaved = null;
+        string? saved = null;
         Task<bool> Applying(Action<string, string> beforeApply, Exception? then)
         {
             beforeApply("1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222");
-            applyingSaved = File.ReadAllText(JournalPath);
+            saved = File.ReadAllText(JournalPath);
             return then is null ? Task.FromResult(false) : Task.FromException<bool>(then);
         }
+        Refreshing Observing(AgentRuntimeEvent change) => new((apply, _) =>
+        {
+            var applied = Applying(apply, null);
+            refresh!.Observe(change);
+            saved = File.ReadAllText(JournalPath);
+            return applied;
+        });
         IRepositoryCheckout? checkout = path switch
         {
             "an unsafe failure after applying began" or "the applying record saved before applying" =>
                 new Refreshing((apply, _) => Applying(apply, new IOException("boom"))),
-            "a deferral after applying began" => new Refreshing((apply, _) => Applying(apply, new CheckoutDeferred("fetch refused: changed"))),
+            "a deferral after applying began" or "a running worker that finds the block a deferral after applying left" =>
+                new Refreshing((apply, _) => Applying(apply, new CheckoutDeferred("fetch refused: changed"))),
             "a stop while applying" => new Refreshing((apply, ct) => { _ = Applying(apply, null); stopping.Cancel(); return Task.FromCanceled<bool>(ct); }),
-            "a lost transport while applying" or "a lost transport saved while applying" => new Refreshing((apply, _) =>
-            {
-                var applied = Applying(apply, null);
-                refresh!.Observe(new AgentRuntimeDisconnected(1));
-                lostTransportSaved = File.ReadAllText(JournalPath);
-                return applied;
-            }),
+            "a lost transport while applying" or "a lost transport saved while applying" => Observing(new AgentRuntimeDisconnected(1)),
+            "an unmatched turn event saved while applying" => Observing(new AgentTurnStarted(1, "S9", "T9")),
+            "a malformed turn identity saved while applying" => Observing(new AgentTurnStarted(1, "", "T9")),
             _ => null
         };
         var next = path.StartsWith("the next start", StringComparison.Ordinal);
         if (next) Record(path.EndsWith("unsafe failure after applying", StringComparison.Ordinal) ? LeftByFault : LeftByBlockedStart);
-        await using (refresh = Open(priorSessions: next || path == "a first start after earlier sessions", path == "a first start with a Discussion delivery pending", checkout))
+        var log = new RecordingLog();
+        await using (refresh = Open(priorSessions: next || path == "a first start after earlier sessions", path == "a first start with a Discussion delivery pending", checkout, log))
         {
-            if (checkout is not null)
+            if (path == "a running worker that finds the block a deferral after applying left")
+            {
+                // The start's refresh defers once applying began; the worker, woken by the start's request, then finds the block.
+                await refresh.Start(new AgentSessions(new FakeAgentRuntime(), log, refresh), TimeSpan.FromMinutes(5), stopping.Token);
+                await log.Written(2);
+            }
+            else if (checkout is not null)
             {
                 refresh.Request();
                 await Assert.ThrowsAnyAsync<Exception>(async () => (await refresh.Admit(stopping.Token)).Dispose());
             }
+            if (thenRequest) refresh.Request();
         }
-        return path switch
-        {
-            "the applying record saved before applying" => applyingSaved!,
-            "a lost transport saved while applying" => lostTransportSaved!,
-            _ => File.ReadAllText(JournalPath)
-        };
+        return path.EndsWith("saved while applying", StringComparison.Ordinal) || path == "the applying record saved before applying"
+            ? saved! : File.ReadAllText(JournalPath);
     }
 
     [Fact]
@@ -363,9 +392,9 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(JournalPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
-    CheckoutRefresh Open(bool priorSessions = false, bool pendingDiscussion = false, IRepositoryCheckout? checkout = null) => new(checkout ?? new UnusedCheckout(),
-        new(Root, Owner, 345, "refs/heads/main"), new RefreshJournalFile(statePath), priorSessions, pendingDiscussion, new SteppedClock(DateTimeOffset.UnixEpoch),
-        new RecordingLog());
+    CheckoutRefresh Open(bool priorSessions = false, bool pendingDiscussion = false, IRepositoryCheckout? checkout = null, RecordingLog? log = null) =>
+        new(checkout ?? new UnusedCheckout(), new(Root, Owner, 345, "refs/heads/main"), new RefreshJournalFile(statePath), priorSessions, pendingDiscussion,
+            new SteppedClock(DateTimeOffset.UnixEpoch), log ?? new RecordingLog());
 
     // A checkout whose refresh is scripted.
     sealed class Refreshing(Func<Action<string, string>, CancellationToken, Task<bool>> refresh) : IRepositoryCheckout
