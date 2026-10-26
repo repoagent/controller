@@ -73,6 +73,54 @@ public sealed class ManagedCheckoutAdapterTests
     }
 
     [Fact]
+    public async Task A_restart_refuses_a_Git_file_in_place_of_the_checkouts_own_Git_directory_and_changes_nothing()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await Cloned();
+        var dotGit = Path.Combine(fixture.Root, ".git");
+        var saved = Path.Combine(fixture.Broker.Directory, "saved-git");
+        Directory.Move(dotGit, saved);
+        File.WriteAllText(dotGit, "gitdir: " + saved + "\n");
+        var before = fixture.Snapshot();
+
+        Assert.Equal("Managed checkout blocked: checkout must have its own Git directory; preserve this workspace and inspect it before retrying",
+            (await Assert.ThrowsAsync<IOException>(() => fixture.Open())).Message);
+
+        Assert.Equal(before, fixture.Snapshot());
+    }
+
+    [Fact]
+    public async Task A_clone_refuses_repository_metadata_other_than_the_approved_repository_and_clones_nothing()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = new CheckoutFixture();
+        await fixture.Start();
+        File.WriteAllText(fixture.Metadata, File.ReadAllText(fixture.Metadata).Replace("\"trunk\"", "\"../trunk\"", StringComparison.Ordinal));
+
+        Assert.Equal("Repository metadata does not match the approved checkout",
+            (await Assert.ThrowsAsync<CheckoutIdentityException>(() => fixture.Open())).Message);
+
+        Assert.False(File.Exists(fixture.CloneLog));
+        Assert.Equal(["lock"], fixture.Snapshot().Values);
+    }
+
+    [Fact]
+    public async Task A_refresh_refuses_repository_metadata_other_than_the_approved_repository_and_changes_nothing()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await Cloned();
+        await fixture.Advance("advanced");
+        using var checkout = await fixture.Open();
+        File.WriteAllText(fixture.Metadata, File.ReadAllText(fixture.Metadata).Replace("\"trunk\"", "\"../trunk\"", StringComparison.Ordinal));
+        var before = fixture.Snapshot();
+
+        Assert.Equal("Repository metadata does not match the approved checkout",
+            (await Assert.ThrowsAsync<CheckoutIdentityException>(() => checkout.Refresh((_, _) => { }, TestContext.Current.CancellationToken))).Message);
+
+        Assert.Equal(before, fixture.Snapshot());
+    }
+
+    [Fact]
     public void Git_output_is_read_as_Git_writes_it()
     {
         Assert.Equal(["core.bare", "branch.trunk.merge", "Remote.origin.url"],
