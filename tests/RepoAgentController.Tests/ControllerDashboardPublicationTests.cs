@@ -381,6 +381,45 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
         Assert.Equal("- and 2 more", listed[20]);
     }
 
+    // An earlier lifetime's failures and latest activity in forms no writer leaves, as the status record file reads them: an
+    // object is shown with the text fields that read from it, and anything else is not shown. Where a field was not text, the
+    // dashboard's JSON rendering threw instead, so it published nothing that lifetime and its stop failed.
+    [Theory]
+    [InlineData("""{"failures":[{"at":5,"kind":"poll-error","message":"m"}]}""", "none recorded", "- an unknown time `poll-error`: `m`")]
+    [InlineData("""{"failures":[{"at":"x","kind":true,"message":"m"}]}""", "none recorded", "- an unknown time (none): `m`")]
+    [InlineData("""{"failures":[{"message":{"a":1}}]}""", "none recorded", "- an unknown time (none): (none)")]
+    [InlineData("""{"failures":[{"kind":7,"message":"m"}]}""", "none recorded", "- an unknown time (none): `m`")]
+    [InlineData("""{"failures":[{"at":"2026-10-24T09:00:00.0000000+00:00","kind":"poll-error","message":"m"},5,{},{"at":5},{"at":"2026-10-24T09:00:00.0000000+00:00","kind":"poll-error","message":"n"}]}""",
+        "none recorded", "- 2026-10-24T09:00:00Z `poll-error`: `n`\n- an unknown time (none): (none)\n- an unknown time (none): (none)\n- 2026-10-24T09:00:00Z `poll-error`: `m`")]
+    [InlineData("""{"latestActivity":5}""", "none recorded", "None recorded.")]
+    [InlineData("""{"latestActivity":"text"}""", "none recorded", "None recorded.")]
+    [InlineData("""{"latestActivity":[]}""", "none recorded", "None recorded.")]
+    [InlineData("""{"latestActivity":{"at":"2026-10-24T09:00:00.0000000+00:00","kind":"session-created","message":"m","url":5}}""",
+        "session started for an unlinked Discussion at 2026-10-24T09:00:00Z", "None recorded.")]
+    [InlineData("""{"latestActivity":{"kind":"forwarded","at":7}}""", "input delivered from an unlinked Discussion at an unknown time", "None recorded.")]
+    // Forms the JSON rendering also showed so.
+    [InlineData("""{"failures":[{}]}""", "none recorded", "- an unknown time (none): (none)")]
+    [InlineData("""{"failures":[{"url":"https://github.com/owner/repository/discussions/1"}]}""", "none recorded", "- an unknown time (none): (none)")]
+    [InlineData("""{"failures":[5]}""", "none recorded", "None recorded.")]
+    [InlineData("""{"latestActivity":{}}""", "input delivered from an unlinked Discussion at an unknown time", "None recorded.")]
+    public async Task Damaged_failures_and_latest_activity_carried_from_an_earlier_lifetime_are_shown_from_what_reads_from_them(string record, string activity, string failures)
+    {
+        var json = System.Text.Json.Nodes.JsonNode.Parse(record)!.AsObject();
+        json["version"] = 1;
+        json["repository"] = "owner/repository";
+        using var restarted = new ControllerStatus("owner/repository", "polling", new InMemoryStatusRecord { Recorded = OperatorStatusJson.ReadRecord(json) },
+            discussions, state, new InMemoryCheckoutWork(), clock);
+        await using (var dashboard = new ControllerDashboard(Category, restarted, outbox, new BaselineReleases(new InMemoryBaselineReleases(),
+            async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text), clock, log))
+        {
+            dashboard.Start(TestContext.Current.CancellationToken);
+            await clock.Armed();
+            Assert.Contains($"\n- **Latest activity:** {activity}\n", Published().Body);
+            Assert.EndsWith($"\n### Recent failures\n{failures}\n", Published().Body);
+        }
+        Assert.EndsWith($"\n### Recent failures\n{failures}\n", Assert.Single(github.Dashboards).Body);
+    }
+
     static string Url(int number) => $"https://github.com/owner/repository/discussions/{number}";
 
     // The dashboard's session list, from the last publication handed to the outbox unless another body is given.
