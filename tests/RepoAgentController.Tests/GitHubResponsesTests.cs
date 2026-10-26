@@ -43,8 +43,9 @@ public sealed class GitHubResponsesTests
         Classified(Failure(limited with { RateLimitReset = null }), GitHubFailure.RateLimited, false, "HTTP 403: API rate limit exceeded for installation ID 234.");
         Classified(Failure(limited with { RateLimitRemaining = 1 }), GitHubFailure.RateLimited, false, "HTTP 403: API rate limit exceeded for installation ID 234.");
         Classified(Failure(Response(403, "x") with { RateLimitRemaining = 1, RateLimitReset = reset }), GitHubFailure.Permanent, false, "HTTP 403: x");
-        // A success is never rate limited, even when its request used the last of the limit.
+        // A success is never rate limited, even when its request used the last of the limit or GitHub asked for a wait.
         GitHubResponses.Check(Response(200, data: true) with { RateLimitRemaining = 0, RateLimitReset = Now.AddMinutes(80) });
+        GitHubResponses.Check(Response(200, data: true) with { RetryAfter = TimeSpan.FromSeconds(5) });
     }
 
     [Fact]

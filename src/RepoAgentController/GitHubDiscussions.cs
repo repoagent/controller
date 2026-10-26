@@ -34,7 +34,7 @@ sealed class GitHubDiscussions(GitHub github) : IDiscussions
         return Discussion(response) is { } discussion ? DiscussionJson.ReadDiscussion(discussion, github.MentionUser) : null;
     }
 
-    static readonly string[] Lookup = ["repository", "discussion"];
+    internal static readonly string[] Lookup = ["repository", "discussion"];
 
     /// <summary>The Discussion a lookup's gh --include output returned; null only when GitHub confirmed it absent. Any other
     /// output throws its classified failure.</summary>
