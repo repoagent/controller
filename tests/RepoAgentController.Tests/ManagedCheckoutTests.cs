@@ -21,49 +21,14 @@ public sealed class ManagedCheckoutTests
     public async Task Startup_uses_the_owned_default_branch_only_with_explicit_clone_authority(bool clone, bool checkAuth)
         => await Exercise(clone, checkAuth, "");
 
+    // The checkout decisions are CheckoutInspectionTests, and the adapter's file refusals ManagedCheckoutAdapterTests.
     [Theory]
-    [InlineData("metadata-id")]
-    [InlineData("metadata-name")]
-    [InlineData("metadata-url")]
-    [InlineData("metadata-default")]
-    [InlineData("unmanaged")]
-    [InlineData("partial")]
-    [InlineData("reuse")]
-    [InlineData("executable-owner-mismatch")]
-    [InlineData("record-group-readable")]
-    [InlineData("marker-other-executable")]
-    [InlineData("lock-group-writable")]
     [InlineData("executable-private-config")]
     [InlineData("shutdown-leases")]
     [InlineData("shutdown-forced")]
     [InlineData("trust-malformed")]
-    [InlineData("dirty")]
-    [InlineData("staged")]
-    [InlineData("untracked")]
-    [InlineData("ignored")]
-    [InlineData("branch")]
-    [InlineData("commit")]
-    [InlineData("assume-unchanged")]
-    [InlineData("skip-worktree")]
-    [InlineData("operation/MERGE_HEAD")]
-    [InlineData("operation/rebase-merge")]
-    [InlineData("operation/sequencer")]
-    [InlineData("owner")]
-    [InlineData("state")]
-    [InlineData("record-missing")]
-    [InlineData("root-missing")]
-    [InlineData("root-replaced")]
-    [InlineData("marker-missing")]
-    [InlineData("root-symlink")]
-    [InlineData("index-symlink")]
-    [InlineData("linked-git")]
-    [InlineData("unsafe-config")]
-    public async Task Checkout_restart_accepts_owned_local_state_and_blocks_unsafe_reuse(string scenario)
+    public async Task Restart_keeps_its_leases_and_refuses_unsafe_agent_configuration(string scenario)
         => await Exercise(true, false, scenario);
-
-    [Fact]
-    public async Task Owner_only_executable_checkout_metadata_supports_restart()
-        => await Exercise(true, false, "owner-executable-metadata");
 
     [Fact]
     public async Task Start_and_resume_transport_preserve_verified_cwd_and_developer_instructions()
@@ -112,8 +77,7 @@ public sealed class ManagedCheckoutTests
         Directory.CreateDirectory(bin);
         var capture = Path.Combine(fixture.Directory, "native.jsonl");
         var metadataFile = Path.Combine(fixture.Directory, "metadata.json");
-        var metadata = JsonNode.Parse("""{"id":345,"full_name":"owner/repository","clone_url":"https://github.com/owner/repository.git","default_branch":"trunk"}""")!;
-        File.WriteAllText(metadataFile, metadata.ToJsonString());
+        File.WriteAllText(metadataFile, """{"id":345,"full_name":"owner/repository","clone_url":"https://github.com/owner/repository.git","default_branch":"trunk"}""");
         var cloneLog = Path.Combine(fixture.Directory, "clone.log");
         var native = Environment.GetEnvironmentVariable("CHECKOUT_NATIVE") ?? Environment.GetEnvironmentVariable("PATH")!
             .Split(Path.PathSeparator).Select(path => Path.Combine(path, "codex")).First(File.Exists);
@@ -203,26 +167,9 @@ public sealed class ManagedCheckoutTests
             foreach (var pair in environment) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
             if (clone && !checkAuth)
             {
-                // Install the real helpers through the no-native public entry; a live lifetime then holds the lease.
+                // Install the real helpers through the check-auth entry, which starts no agent runtime.
                 Assert.Equal(0, await fixture.Start());
                 Assert.False(File.Exists(capture));
-                // Exercise actual PrepareClone isolation through the agent's wrapper; the gh peer asserts the HTTPS-only parent policy.
-                var hostileGit = Path.Combine(bin, "git");
-                File.WriteAllText(hostileGit, "#!/bin/sh\nexit 97\n");
-                Executable(hostileGit);
-                var adapterRoot = Path.Combine(fixture.Directory, "adapter-control");
-                var isolatedClone = new ProcessStartInfo(Path.Combine(fixture.CredentialDirectory, "bin", "gh"))
-                    { ArgumentList = { "repo", "clone", "https://github.com/owner/repository.git", adapterRoot } };
-                using (var live = fixture.Credentials())
-                {
-                    await live.Initialize(null, TestContext.Current.CancellationToken);
-                    try { await Run(isolatedClone); }
-                    finally { File.Delete(hostileGit); }
-                }
-                Assert.Equal("approved repository\n", File.ReadAllText(Path.Combine(adapterRoot, "tracked-sentinel")));
-                Assert.Equal("https://github.com/owner/repository.git", await Git("-C", adapterRoot, "remote", "get-url", "origin"));
-                Assert.Equal(commit, await Git("-C", adapterRoot, "rev-parse", "HEAD"));
-                Console.WriteLine("adapter-proof actual-Create HTTPS-parent real-clone sentinel canonical-remote commit passed");
             }
             var args = new List<string> { "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
                 "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
@@ -235,25 +182,6 @@ public sealed class ManagedCheckoutTests
                 args.AddRange(["--private-key", ownKeyFile]);
             }
             async Task<int> Start() => await BridgeCommand.Run(args.ToArray(), ownKey is null ? fixture.Http : ownApp, fixture.Gh);
-            if (scenario.StartsWith("metadata-", StringComparison.Ordinal))
-            {
-                var field = scenario switch { "metadata-id" => "id", "metadata-name" => "full_name", "metadata-url" => "clone_url", _ => "default_branch" };
-                metadata[field] = scenario switch { "metadata-id" => JsonValue.Create(346), "metadata-name" => JsonValue.Create("other/repository"),
-                    "metadata-url" => JsonValue.Create("https://github.com/owner/repository.git?unsafe"), _ => JsonValue.Create("../trunk") };
-                File.WriteAllText(metadataFile, metadata.ToJsonString());
-            }
-            if (scenario == "unmanaged") File.WriteAllText(Path.Combine(workspace, "user-work"), "preserve me");
-            if (scenario == "partial") Directory.CreateDirectory(Path.Combine(workspace, "repository"));
-            if (scenario.StartsWith("metadata-", StringComparison.Ordinal) || scenario is "unmanaged" or "partial")
-            {
-                var before = Snapshot(workspace);
-                Assert.NotEqual(0, await Start());
-                Assert.False(File.Exists(capture));
-                Assert.Equal(before.Where(p => !p.Key.EndsWith(".repoagent-checkout.lock")).ToArray(),
-                    Snapshot(workspace).Where(p => !p.Key.EndsWith(".repoagent-checkout.lock")).ToArray());
-                Assert.Single(File.ReadAllLines(cloneLog)); // Only the independently proved adapter control cloned.
-                return;
-            }
             if (scenario is "trust-cas" or "trust-malformed")
             {
                 var config = Path.Combine(home, "config.toml");
@@ -353,73 +281,13 @@ public sealed class ManagedCheckoutTests
             if (scenario.Length == 0) return;
             File.Delete(capture);
             var clones = File.ReadAllText(cloneLog);
-            var record = Path.Combine(workspace, ".repoagent-checkout.json");
-            var tracked = Path.Combine(expected, "tracked-sentinel");
-            var dotGit = Path.Combine(expected, ".git");
-            switch (scenario)
-            {
-                case "owner-executable-metadata":
-                    foreach (var path in new[] { record, Path.Combine(workspace, ".repoagent-checkout.lock"), Path.Combine(dotGit, "repoagent-owner") })
-                        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-                    break;
-                case "executable-owner-mismatch":
-                    File.WriteAllText(Path.Combine(dotGit, "repoagent-owner"), Guid.NewGuid().ToString("N"));
-                    File.SetUnixFileMode(Path.Combine(dotGit, "repoagent-owner"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-                    break;
-                case "record-group-readable": File.SetUnixFileMode(record, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead); break;
-                case "marker-other-executable": File.SetUnixFileMode(Path.Combine(dotGit, "repoagent-owner"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.OtherExecute); break;
-                case "lock-group-writable": File.SetUnixFileMode(Path.Combine(workspace, ".repoagent-checkout.lock"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupWrite); break;
-                case "executable-private-config": File.SetUnixFileMode(Path.Combine(home, "config.toml"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); break;
-                case "reuse":
-                    File.WriteAllText(Path.Combine(origin, "remote-advance"), "new remote commit");
-                    await Git("-C", origin, "add", ".");
-                    await Git("-C", origin, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "remote advanced");
-                    break;
-                case "dirty": File.AppendAllText(tracked, "local edit"); break;
-                case "staged": File.AppendAllText(tracked, "staged edit"); await Git("-C", expected, "add", "."); break;
-                case "untracked": File.WriteAllText(Path.Combine(expected, "local-only"), "user bytes"); break;
-                case "ignored": File.WriteAllText(Path.Combine(expected, "ignored-local"), "ignored user bytes"); break;
-                case "branch": await Git("-C", expected, "checkout", "-b", "local-branch"); break;
-                case "commit":
-                    File.AppendAllText(tracked, "local commit"); await Git("-C", expected, "add", ".");
-                    await Git("-C", expected, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "local"); break;
-                case "assume-unchanged": case "skip-worktree":
-                    await Git("-C", expected, "update-index", "--" + scenario, "tracked-sentinel"); File.AppendAllText(tracked, "hidden local edit"); break;
-                case "owner": File.WriteAllText(Path.Combine(dotGit, "repoagent-owner"), Guid.NewGuid().ToString("N")); break;
-                case "state": args[args.IndexOf("--state") + 1] = Path.Combine(fixture.Directory, "other-state.json"); break;
-                case "record-missing": File.Delete(record); break;
-                case "root-missing": Directory.Move(expected, Path.Combine(fixture.Directory, "saved-root")); break;
-                case "root-replaced":
-                    Directory.Move(expected, Path.Combine(fixture.Directory, "saved-root")); await Git("clone", origin, expected);
-                    await Git("-C", expected, "remote", "set-url", "origin", "https://github.com/owner/repository.git"); break;
-                case "marker-missing": File.Delete(Path.Combine(dotGit, "repoagent-owner")); break;
-                case "root-symlink":
-                    var target = Path.Combine(fixture.Directory, "saved-root"); Directory.Move(expected, target); Directory.CreateSymbolicLink(expected, target); break;
-                case "index-symlink":
-                    var indexTarget = Path.Combine(fixture.Directory, "saved-index"); File.Move(Path.Combine(dotGit, "index"), indexTarget); File.CreateSymbolicLink(Path.Combine(dotGit, "index"), indexTarget); break;
-                case "linked-git":
-                    var gitTarget = Path.Combine(fixture.Directory, "saved-git"); Directory.Move(dotGit, gitTarget); File.WriteAllText(dotGit, "gitdir: " + gitTarget + "\n"); break;
-                case "unsafe-config": await Git("-C", expected, "config", "core.fsmonitor", "/must-not-run"); break;
-                default:
-                    Assert.StartsWith("operation/", scenario); var marker = Path.Combine(dotGit, scenario[10..]);
-                    if (scenario == "operation/MERGE_HEAD") File.WriteAllText(marker, commit + "\n"); else Directory.CreateDirectory(marker);
-                    break;
-            }
+            Assert.Equal("executable-private-config", scenario);
+            File.SetUnixFileMode(Path.Combine(home, "config.toml"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             var snapshot = Snapshot(workspace);
-            // Local work inside the owned checkout is the idle refresh's to replace, never a reason to refuse restart.
-            // This fixture has no authoritative origin lookup, so the refresh stays pending and nothing is replaced.
-            var localState = scenario is "dirty" or "staged" or "untracked" or "branch" or "commit" or
-                "assume-unchanged" or "skip-worktree" or "operation/MERGE_HEAD";
-            var restartAllowed = localState || scenario is "reuse" or "ignored" or "owner-executable-metadata";
-            Assert.Equal(restartAllowed ? 0 : 1, await Start());
+            Assert.Equal(1, await Start());
             Assert.Equal(snapshot.ToArray(), Snapshot(workspace).ToArray());
             Assert.Equal(clones, File.ReadAllText(cloneLog));
-            if (restartAllowed)
-            {
-                if (!localState) Assert.Equal(commit, await Git("-C", expected, "rev-parse", "HEAD"));
-                Assert.All(File.ReadAllLines(capture), line => Assert.Equal(expected, JsonNode.Parse(line)!["cwd"]!.GetValue<string>()));
-            }
-            else Assert.False(File.Exists(capture));
+            Assert.False(File.Exists(capture));
         }
         finally { foreach (var pair in previous) Environment.SetEnvironmentVariable(pair.Key, pair.Value); }
     }
