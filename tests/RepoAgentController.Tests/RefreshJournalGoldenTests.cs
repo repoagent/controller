@@ -298,15 +298,18 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         const UnixFileMode Private = UnixFileMode.UserRead | UnixFileMode.UserWrite;
         const string Unsafe = "Managed checkout blocked: private state is missing or unsafe; preserve this workspace and inspect it before retrying";
         await using (Open()) { }
-        Assert.Equal(Private, File.GetUnixFileMode(JournalPath));
+        if (!OperatingSystem.IsWindows()) Assert.Equal(Private, File.GetUnixFileMode(JournalPath));
 
         Directory.CreateDirectory(JournalPath + ".tmp");
         Assert.Equal("Incomplete refresh journal; preserve it for manual recovery", Assert.Throws<IOException>(() => Open()).Message);
         Directory.Delete(JournalPath + ".tmp");
 
-        File.SetUnixFileMode(JournalPath, Private | UnixFileMode.GroupRead);
-        Assert.Equal(Unsafe, Assert.Throws<IOException>(() => Open()).Message);
-        File.SetUnixFileMode(JournalPath, Private);
+        if (!OperatingSystem.IsWindows()) // Only Unix records who may read the journal.
+        {
+            File.SetUnixFileMode(JournalPath, Private | UnixFileMode.GroupRead);
+            Assert.Equal(Unsafe, Assert.Throws<IOException>(() => Open()).Message);
+            File.SetUnixFileMode(JournalPath, Private);
+        }
 
         File.Move(JournalPath, JournalPath + ".target");
         File.CreateSymbolicLink(JournalPath, JournalPath + ".target");
@@ -318,7 +321,7 @@ public sealed class RefreshJournalGoldenTests : IDisposable
     void Record(string journal)
     {
         File.WriteAllText(JournalPath, journal);
-        File.SetUnixFileMode(JournalPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(JournalPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
     CheckoutRefresh Open(bool priorSessions = false, bool pendingDiscussion = false, IRepositoryCheckout? checkout = null) => new(checkout ?? new UnusedCheckout(),
