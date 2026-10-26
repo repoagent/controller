@@ -27,13 +27,11 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
 
     Task Start(CheckoutRefresh opened, CancellationToken ct) => opened.Start(new AgentSessions(runtime, log, opened), Interval, ct);
 
-    /// <summary>A started refresh whose worker waits for the interval: it handled the start's own request signal, then waits again.</summary>
+    /// <summary>A started refresh, its worker running.</summary>
     async Task<CheckoutRefresh> Started()
     {
         var started = Open();
         await Start(started, Token);
-        await clock.Armed();
-        await clock.Armed();
         return started;
     }
 
@@ -278,15 +276,23 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         checkout.Then((_, _) => { requested.SetResult(); return Task.FromResult(false); });
         started.Request();
         await requested.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
-        await clock.Armed();
-        Assert.Equal((2, 2L, 2L), (checkout.Refreshes, Saved.Requested, Saved.Completed));
+        await journal.Reached(saved => saved.Completed == 2);
+        Assert.Equal((2, 2L), (checkout.Refreshes, Saved.Requested));
 
-        checkout.Then((_, _) => Task.FromException<bool>(new IOException("unsafe")));
-        clock.Advance(Interval - TimeSpan.FromTicks(1));
-        Assert.Equal(2, checkout.Refreshes);
-        clock.Advance(TimeSpan.FromTicks(1));
+        // Each wait the worker arms on the clock lasts the interval; the first to pass requests a refresh. However the worker
+        // arms its waits, it has one pending while it waits, and moving time past it wakes the worker.
+        var elapsed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        checkout.Then((_, _) => { elapsed.SetResult(); return Task.FromException<bool>(new IOException("unsafe")); });
+        for (var waits = 0; waits < 5; waits++)
+        {
+            await Task.WhenAny(clock.Waiting(), elapsed.Task);
+            if (elapsed.Task.IsCompleted) break;
+            clock.Advance(Interval);
+        }
+        await elapsed.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
         await log.Written(1);
 
+        Assert.All(clock.Delays, delay => Assert.Equal(Interval, delay));
         // A failure in the worker blocks the checkout and ends the worker.
         Assert.Equal(("refresh-blocked", "unsafe"), Assert.Single(log.Entries));
         Assert.Equal((3, 3L, 2L, true, "unsafe"), (checkout.Refreshes, Saved.Requested, Saved.Completed, Saved.Blocked, Saved.Reason));

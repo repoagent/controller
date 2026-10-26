@@ -528,6 +528,10 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 {
     readonly FakeTimeProvider time = new(start);
     readonly SemaphoreSlim armed = new(0);
+    readonly Lock sync = new();
+    readonly List<TimeSpan> delays = [];
+    readonly List<TaskCompletionSource> waiters = [];
+    int pending;
 
     public override DateTimeOffset GetUtcNow() => time.GetUtcNow();
     public override long GetTimestamp() => time.GetTimestamp();
@@ -536,7 +540,10 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
-        var timer = time.CreateTimer(callback, state, dueTime, period);
+        var timer = new Pending(this, period == Timeout.InfiniteTimeSpan);
+        lock (sync) delays.Add(dueTime);
+        timer.Arm(dueTime);
+        timer.Inner = time.CreateTimer(value => { timer.Fired(); callback(value); }, state, dueTime, period);
         armed.Release();
         return timer;
     }
@@ -546,6 +553,63 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 
     /// <summary>Whether a timer was armed since the last <see cref="Armed"/>, without waiting.</summary>
     public bool WasArmed() => armed.CurrentCount != 0;
+
+    /// <summary>The due time of each timer armed so far, in order.</summary>
+    public IReadOnlyList<TimeSpan> Delays { get { lock (sync) return [.. delays]; } }
+
+    /// <summary>Completes once a timer is pending: armed, and neither fired nor disposed. However a loop arms its timers, it has
+    /// one pending while it waits on this clock.</summary>
+    public Task Waiting()
+    {
+        lock (sync)
+        {
+            if (pending != 0) return Task.CompletedTask;
+            var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            waiters.Add(waiting);
+            return waiting.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        }
+    }
+
+    void Count(int change)
+    {
+        lock (sync)
+        {
+            pending += change;
+            if (pending == 0) return;
+            foreach (var waiter in waiters) waiter.TrySetResult();
+            waiters.Clear();
+        }
+    }
+
+    // A timer as the clock counts it: pending from when it is armed until a one-shot timer fires or any timer is disposed.
+    sealed class Pending(SteppedClock clock, bool once) : ITimer
+    {
+        bool counted;
+        public ITimer Inner { get; set; } = null!;
+
+        public void Arm(TimeSpan dueTime) => Set(dueTime != Timeout.InfiniteTimeSpan);
+        public void Fired() { if (once) Set(false); }
+
+        void Set(bool armed)
+        {
+            lock (clock.sync)
+            {
+                if (counted == armed) return;
+                counted = armed;
+            }
+            clock.Count(armed ? 1 : -1);
+        }
+
+        public bool Change(TimeSpan dueTime, TimeSpan period)
+        {
+            Arm(dueTime);
+            return Inner.Change(dueTime, period);
+        }
+
+        public void Dispose() { Set(false); Inner.Dispose(); }
+
+        public ValueTask DisposeAsync() { Set(false); return Inner.DisposeAsync(); }
+    }
 }
 
 /// <summary>
@@ -582,6 +646,7 @@ sealed class RecordingCheckoutAdmission : ICheckoutAdmission
 sealed class InMemoryRefreshJournal : IRefreshJournal
 {
     readonly Lock sync = new();
+    readonly List<(Func<RefreshJournal, bool> Condition, TaskCompletionSource Reached)> waiters = [];
     RefreshJournal? saved;
 
     public RefreshJournal? Saved { get { lock (sync) return saved is null ? null : Copy(saved); } set { lock (sync) saved = value is null ? null : Copy(value); } }
@@ -593,6 +658,25 @@ sealed class InMemoryRefreshJournal : IRefreshJournal
     {
         if (WriteFailure is { } failure) throw failure;
         Saved = journal;
+        lock (sync)
+            foreach (var waiter in waiters.Where(waiter => waiter.Condition(journal)).ToArray())
+            {
+                waiters.Remove(waiter);
+                waiter.Reached.TrySetResult();
+            }
+    }
+
+    /// <summary>Completes once a journal meeting <paramref name="condition"/> is saved, or at once if the saved one does: the end
+    /// of work a loop does on another thread.</summary>
+    public Task Reached(Func<RefreshJournal, bool> condition)
+    {
+        lock (sync)
+        {
+            if (saved is not null && condition(saved)) return Task.CompletedTask;
+            var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            waiters.Add((condition, reached));
+            return reached.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        }
     }
 
     static RefreshJournal Copy(RefreshJournal journal)
