@@ -82,6 +82,49 @@ public sealed class ActionsVariableMigrationTests
         Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.Device, old.Secret)).StatusCode);
     }
 
+    // StoryBeam's shape: a setup v2 webhook-clone owner keeps renewing exactly as before setup v4 existed, and blocks
+    // a v4 completion until it is revoked, its GitHub tokens settle and reclamation releases its ownership.
+    [Fact]
+    public async Task Agent_v2_clone_owner_keeps_renewing_unchanged_and_moves_to_v4_only_after_revocation_settlement_and_release()
+    {
+        var f = new InMemoryBroker();
+        var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
+        var old = await ActionsVariableEnrollmentTests.Active(f, github, 2, "webhook-clone");
+        var frozen = new Dictionary<string, string> { ["contents"] = "read", ["discussions"] = "write", ["repository_hooks"] = "write" };
+        void AssertV2Lease(Answer lease)
+        {
+            Assert.Equal(HttpStatusCode.OK, lease.StatusCode);
+            Assert.Equal((2, "webhook-clone", "repository-agent-clone-approval-v2"), (lease.Json.GetProperty("protocolVersion").GetInt32(),
+                lease.Json.GetProperty("profile").GetString(), lease.Json.GetProperty("policyVersion").GetString()));
+            Assert.Equal(frozen, lease.Json.GetProperty("permissions").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.GetString()!));
+            Assert.Equal(frozen, github.RuntimePermissions[^1]);
+            Assert.Equal("agent_variables", github.VerifierPermission);
+        }
+        AssertV2Lease(await f.Issue(old.Device, old.Secret, 2));
+
+        var (pending, marker) = await ActionsVariableEnrollmentTests.Start(f, 4, ActionsVariableEnrollmentTests.Request("webhook-clone-settings"));
+        github.Agent["REPOAGENT_APPROVAL"] = marker;
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var blocked = await f.Complete(pending, 4);
+        Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
+        Assert.DoesNotContain("deviceSecret", blocked.Text);
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        AssertV2Lease(await f.Issue(old.Device, old.Secret, 2));
+
+        github.Agent.Remove("APPROVAL");
+        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.Device, old.Secret, 2)).StatusCode);
+        await Retained.ReclaimEnrollment(f, old.Request.IdempotencyId);
+        await SettleOwnerCapabilities(f);
+        await Retained.ReclaimEnrollment(f, old.Request.IdempotencyId);
+
+        var replacement = await ActionsVariableEnrollmentTests.Active(f, github, 4, "webhook-clone-settings");
+        var lease = await f.Issue(replacement.Device, replacement.Secret, 3);
+        Assert.Equal(HttpStatusCode.OK, lease.StatusCode);
+        Assert.Equal("repository-agent-settings-approval-v4", lease.Json.GetProperty("policyVersion").GetString());
+        Assert.Equal(new Dictionary<string, string>(frozen) { ["agent_variables"] = "read" }, github.RuntimePermissions[^1]);
+        Assert.Equal(replacement.Device, f.Gate.OwnerEnrollmentId);
+    }
+
     // Past the owner's GitHub token expiry plus the five-minute margin, reclamation settles every issuance attempt.
     private static async Task SettleOwnerCapabilities(InMemoryBroker f)
     {
