@@ -56,7 +56,8 @@ resource environment 'Microsoft.App/managedEnvironments@2025-01-01' = {
   tags: union(ownership, { role: 'auth-environment' })
   properties: {
     appLogsConfiguration: {
-      destination: 'none'
+      destination: null
+      logAnalyticsConfiguration: null
     }
     workloadProfiles: [{ name: 'Consumption', workloadProfileType: 'Consumption' }]
   }
