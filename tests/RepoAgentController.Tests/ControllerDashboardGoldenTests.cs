@@ -4,18 +4,20 @@ using static RepoAgentController.Tests.BaselineReleaseCheckTests;
 namespace RepoAgentController.Tests;
 
 // The dashboard Discussion's title and body, byte for byte, as each publication hands them to the outbox: a running controller
-// with every section filled, then its graceful stop, then a later lifetime's stop after a failure. ControllerDashboardGolden.txt
-// holds what e03e391 produced.
-public sealed class ControllerDashboardGoldenTests : IDisposable
+// with every section filled, then its graceful stop, then a later lifetime's stop after a failure. The status reads the status
+// record, Discussion state, settings and checkout fakes. ControllerDashboardGolden.txt holds what e03e391 produced.
+public sealed class ControllerDashboardGoldenTests
 {
     const string Category = "Controller status", Repository = "owner/repository", Url = "https://github.com/owner/repository/discussions/";
     static readonly DateTimeOffset Start = new(2026, 10, 24, 10, 0, 0, TimeSpan.Zero);
-    readonly string directory = Path.Combine(Path.GetTempPath(), "dashboard-golden-" + Guid.NewGuid().ToString("N"));
     readonly SteppedClock clock = new(Start);
     readonly InMemoryDiscussions github = new();
+    // The settings and the outbox, as the controller's state files hold both.
     readonly InMemoryControllerState state = new();
+    readonly InMemoryDiscussionStore discussions = new();
+    readonly InMemoryStatusRecord record = new();
+    readonly InMemoryCheckoutWork checkout = new();
     readonly InMemoryBaselineReleases published = new();
-    string StatePath => Path.Combine(directory, "bridge.json");
 
     static Dictionary<string, string> Golden()
     {
@@ -34,9 +36,8 @@ public sealed class ControllerDashboardGoldenTests : IDisposable
         return waiting;
     }
 
-    void WriteFiles()
+    void Save()
     {
-        Directory.CreateDirectory(directory);
         var saved = new DiscussionState(Repository) { AgentLogin = "test-app[bot]" };
         saved.Discussions["D1"] = new(Url + 1) { SessionId = "S1", Running = new("T1", Start.AddMinutes(-30)), Waiting = Waiting(1) };
         saved.Discussions["D2"] = new(Url + 2) { SessionId = "S2", Pending = new("send", Start.AddMinutes(-1), ["DC_2"], 1), Waiting = Waiting(1) };
@@ -44,18 +45,19 @@ public sealed class ControllerDashboardGoldenTests : IDisposable
         saved.Discussions["D4"] = new(Url + 4) { SessionId = "S4", Waiting = Waiting(3) };
         saved.Discussions["D5"] = new(Url + 5) { SessionId = "S5" };
         saved.Discussions["D6"] = new("javascript:alert(1)") { Waiting = Waiting(1) };
-        var files = new ControllerStateFiles(StatePath);
-        files.WriteDiscussions(saved);
-        files.WriteSettings(new(new Dictionary<string, SettingValue>
+        discussions.WriteDiscussions(saved);
+        state.WriteSettings(new(new Dictionary<string, SettingValue>
         {
             [Bridge.ActiveSessionSetting] = new(SettingState.Configured, "1") { Since = Start },
             ["REPOAGENT_MODEL"] = new(SettingState.ReadFailed, "gpt-5.5", "HTTP 503") { Since = Start },
             ["REPOAGENT_REASONING"] = new(SettingState.Invalid, null, "must be one of low, medium, high"),
             ["REPOAGENT_ENROLLMENT_CATEGORIES"] = new(SettingState.Absent, null)
         }));
-        // As CheckoutRefresh saves its journal while it holds new turns for a refresh.
-        File.WriteAllText(StatePath + ".refresh.json", """{"version":1,"root":"/workspace/repository","owner":"owner","repositoryId":7,"requested":2,"completed":1,"active":{},"reason":"refresh pending","blocked":true,"running":0}""");
+        // The managed checkout holds new turns for a refresh; it records no agent turn.
+        checkout.Work = new(new HashSet<string>(), true);
     }
+
+    ControllerStatus Open(string mode) => new(Repository, mode, record, discussions, state, checkout, clock);
 
     ControllerDashboard Dashboard(ControllerStatus status, GitHubOutbox outbox) => new(Category, status, outbox,
         new BaselineReleases(published, _ => Task.FromResult<string?>(Inventory("running")), false, clock, new RecordingLog(), text => text), clock, new ControllerLog(), text => text);
@@ -76,7 +78,7 @@ public sealed class ControllerDashboardGoldenTests : IDisposable
     [Fact]
     public async Task The_dashboard_title_and_body_are_the_bytes_e03e391_published_while_running_and_at_each_kind_of_stop()
     {
-        WriteFiles();
+        Save();
         var current = Release(101, image: "running");
         var newest = Release(103, gh: "2.103.1", codex: "0.164.0");
         published.Publish(current);
@@ -84,7 +86,7 @@ public sealed class ControllerDashboardGoldenTests : IDisposable
         published.Publish(newest);
         var actual = new Dictionary<string, string>();
 
-        var status = StatusFiles.Open(StatePath, Repository, "polling", clock);
+        var status = Open("polling");
         Log(status, 0, "ready", "repository=owner/repository actor=test-app[bot] mode=polling");
         Log(status, 0, "app-token-refreshed", "installation=234");
         Log(status, 0, "codex-auth-supplied", "account credentials installed");
@@ -108,7 +110,7 @@ public sealed class ControllerDashboardGoldenTests : IDisposable
         status.Dispose();
 
         clock.Advance(TimeSpan.FromMinutes(1));
-        var later = StatusFiles.Open(StatePath, Repository, "webhook", clock);
+        var later = Open("webhook");
         Log(later, 75, "ready", "repository=owner/repository actor=test-app[bot] mode=webhook");
         Log(later, 75, "codex-auth-failed", "turn failed: unexpected status 401 Unauthorized");
         await using (var dashboard = Dashboard(later, Outbox()))
@@ -120,15 +122,8 @@ public sealed class ControllerDashboardGoldenTests : IDisposable
         actual["failed"] = github.Dashboards.Single().Title + "\n" + github.Dashboards.Single().Body;
         later.Dispose();
 
-        if (Environment.GetEnvironmentVariable("GOLDEN_OUT") is { } output)
-            File.WriteAllText(output, string.Concat(actual.Select(section => $"--- {section.Key} ---\n{section.Value}")));
         var golden = Golden();
         Assert.Equal(golden.Keys, actual.Keys);
         foreach (var (name, text) in golden) Assert.Equal(text, actual[name]);
-    }
-
-    public void Dispose()
-    {
-        if (Directory.Exists(directory)) Directory.Delete(directory, true);
     }
 }
