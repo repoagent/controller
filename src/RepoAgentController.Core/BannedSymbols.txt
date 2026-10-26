@@ -37,6 +37,14 @@ M:System.Threading.Tasks.Task.WaitAsync(System.TimeSpan);Use WaitAsync with a Ti
 M:System.Threading.Tasks.Task.WaitAsync(System.TimeSpan,System.Threading.CancellationToken);Use WaitAsync with a TimeProvider
 M:System.Threading.Tasks.Task`1.WaitAsync(System.TimeSpan);Use WaitAsync with a TimeProvider
 M:System.Threading.Tasks.Task`1.WaitAsync(System.TimeSpan,System.Threading.CancellationToken);Use WaitAsync with a TimeProvider
+M:System.Threading.SemaphoreSlim.Wait(System.Int32);Wait without a timeout and race it with Task.Delay on a TimeProvider
+M:System.Threading.SemaphoreSlim.Wait(System.Int32,System.Threading.CancellationToken);Wait without a timeout and race it with Task.Delay on a TimeProvider
+M:System.Threading.SemaphoreSlim.Wait(System.TimeSpan);Wait without a timeout and race it with Task.Delay on a TimeProvider
+M:System.Threading.SemaphoreSlim.Wait(System.TimeSpan,System.Threading.CancellationToken);Wait without a timeout and race it with Task.Delay on a TimeProvider
+M:System.Threading.SemaphoreSlim.WaitAsync(System.Int32);Wait without a timeout and race it with Task.Delay on a TimeProvider
+M:System.Threading.SemaphoreSlim.WaitAsync(System.Int32,System.Threading.CancellationToken);Wait without a timeout and race it with Task.Delay on a TimeProvider
+M:System.Threading.SemaphoreSlim.WaitAsync(System.TimeSpan);Wait without a timeout and race it with Task.Delay on a TimeProvider
+M:System.Threading.SemaphoreSlim.WaitAsync(System.TimeSpan,System.Threading.CancellationToken);Wait without a timeout and race it with Task.Delay on a TimeProvider
 M:System.Threading.CancellationTokenSource.#ctor(System.Int32);Use new CancellationTokenSource(TimeSpan, TimeProvider)
 M:System.Threading.CancellationTokenSource.#ctor(System.TimeSpan);Use new CancellationTokenSource(TimeSpan, TimeProvider)
 M:System.Threading.CancellationTokenSource.CancelAfter(System.Int32);Use new CancellationTokenSource(TimeSpan, TimeProvider)

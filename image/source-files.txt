@@ -15,7 +15,7 @@ src/RepoAgentController/GitHubAppCredentials.cs
 src/RepoAgentController/GitHubDiscussions.cs
 src/RepoAgentController/DiscussionJson.cs
 src/RepoAgentController/ManagedCheckout.cs
-src/RepoAgentController/CheckoutRefresh.cs
+src/RepoAgentController/RefreshJournalFile.cs
 src/RepoAgentController/CredentialHandoff.cs
 src/RepoAgentController/CodexCredentials.cs
 src/RepoAgentController/OperatorStatusJson.cs
@@ -69,6 +69,8 @@ src/RepoAgentController.Core/OperatorStatus.cs
 src/RepoAgentController.Core/ICheckoutWork.cs
 src/RepoAgentController.Core/LogEntry.cs
 src/RepoAgentController.Core/ControllerDashboard.cs
+src/RepoAgentController.Core/RefreshJournal.cs
+src/RepoAgentController.Core/CheckoutRefresh.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs
 tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj

@@ -528,15 +528,28 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 {
     readonly FakeTimeProvider time = new(start);
     readonly SemaphoreSlim armed = new(0);
+    readonly Lock sync = new();
+    // Held while a timer is armed and registered with the fake time, and while time moves: a loop seen waiting is waiting on a
+    // timer that moving time can fire.
+    readonly Lock arming = new();
+    readonly List<TimeSpan> delays = [];
+    readonly List<TaskCompletionSource> waiters = [];
+    int pending;
 
     public override DateTimeOffset GetUtcNow() => time.GetUtcNow();
     public override long GetTimestamp() => time.GetTimestamp();
     public override long TimestampFrequency => time.TimestampFrequency;
-    public void Advance(TimeSpan duration) => time.Advance(duration);
+    public void Advance(TimeSpan duration) { lock (arming) time.Advance(duration); }
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
-        var timer = time.CreateTimer(callback, state, dueTime, period);
+        var timer = new Pending(this, period == Timeout.InfiniteTimeSpan);
+        lock (arming)
+        {
+            if (dueTime != Timeout.InfiniteTimeSpan) lock (sync) delays.Add(dueTime);
+            timer.Arm(dueTime);
+            timer.Inner = time.CreateTimer(value => { timer.Fired(); callback(value); }, state, dueTime, period);
+        }
         armed.Release();
         return timer;
     }
@@ -546,6 +559,69 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 
     /// <summary>Whether a timer was armed since the last <see cref="Armed"/>, without waiting.</summary>
     public bool WasArmed() => armed.CurrentCount != 0;
+
+    /// <summary>The due time of each timer armed so far, in order: as it was created, and each time
+    /// <see cref="ITimer.Change"/> re-armed it. An infinite due time arms nothing and is not recorded.</summary>
+    public IReadOnlyList<TimeSpan> Delays { get { lock (sync) return [.. delays]; } }
+
+    /// <summary>Completes once a timer is pending: armed, and neither fired nor disposed. However a loop arms its timers, it has
+    /// one pending while it waits on this clock. A timer is armed and registered with the fake time under one lock, which this and
+    /// <see cref="Advance"/> also take, so moving time once this completes can fire it.</summary>
+    public Task Waiting()
+    {
+        lock (arming) lock (sync)
+        {
+            if (pending != 0) return Task.CompletedTask;
+            var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            waiters.Add(waiting);
+            return waiting.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        }
+    }
+
+    void Count(int change)
+    {
+        lock (sync)
+        {
+            pending += change;
+            if (pending == 0) return;
+            foreach (var waiter in waiters) waiter.TrySetResult();
+            waiters.Clear();
+        }
+    }
+
+    // A timer as the clock counts it: pending from when it is armed until a one-shot timer fires or any timer is disposed.
+    sealed class Pending(SteppedClock clock, bool once) : ITimer
+    {
+        bool counted;
+        public ITimer Inner { get; set; } = null!;
+
+        public void Arm(TimeSpan dueTime) => Set(dueTime != Timeout.InfiniteTimeSpan);
+        public void Fired() { if (once) Set(false); }
+
+        void Set(bool armed)
+        {
+            lock (clock.sync)
+            {
+                if (counted == armed) return;
+                counted = armed;
+            }
+            clock.Count(armed ? 1 : -1);
+        }
+
+        public bool Change(TimeSpan dueTime, TimeSpan period)
+        {
+            lock (clock.arming)
+            {
+                if (dueTime != Timeout.InfiniteTimeSpan) lock (clock.sync) clock.delays.Add(dueTime);
+                Arm(dueTime);
+                return Inner.Change(dueTime, period);
+            }
+        }
+
+        public void Dispose() { Set(false); Inner.Dispose(); }
+
+        public ValueTask DisposeAsync() { Set(false); return Inner.DisposeAsync(); }
+    }
 }
 
 /// <summary>
@@ -574,5 +650,86 @@ sealed class RecordingCheckoutAdmission : ICheckoutAdmission
         public void Unconfirmed() => owner.Add("unconfirmed");
         public void Confirm() => owner.Add("confirm");
         public void Dispose() => owner.Add("dispose");
+    }
+}
+
+/// <summary>The refresh journal in memory, saved as a copy so later changes reach it only through a write. A write fails on
+/// demand, before it saves anything.</summary>
+sealed class InMemoryRefreshJournal : IRefreshJournal
+{
+    readonly Lock sync = new();
+    readonly List<(Func<RefreshJournal, bool> Condition, TaskCompletionSource Reached)> waiters = [];
+    RefreshJournal? saved;
+
+    public RefreshJournal? Saved { get { lock (sync) return saved is null ? null : Copy(saved); } set { lock (sync) saved = value is null ? null : Copy(value); } }
+    public Exception? WriteFailure { get; set; }
+
+    public RefreshJournal? Read() => Saved;
+
+    public void Write(RefreshJournal journal)
+    {
+        if (WriteFailure is { } failure) throw failure;
+        Saved = journal;
+        lock (sync)
+            foreach (var waiter in waiters.Where(waiter => waiter.Condition(journal)).ToArray())
+            {
+                waiters.Remove(waiter);
+                waiter.Reached.TrySetResult();
+            }
+    }
+
+    /// <summary>Completes once a journal meeting <paramref name="condition"/> is saved, or at once if the saved one does: the end
+    /// of work a loop does on another thread.</summary>
+    public Task Reached(Func<RefreshJournal, bool> condition)
+    {
+        lock (sync)
+        {
+            if (saved is not null && condition(saved)) return Task.CompletedTask;
+            var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            waiters.Add((condition, reached));
+            return reached.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        }
+    }
+
+    static RefreshJournal Copy(RefreshJournal journal)
+    {
+        var copy = new RefreshJournal(journal.Root, journal.Owner, journal.RepositoryId)
+        {
+            Requested = journal.Requested, Completed = journal.Completed, Blocked = journal.Blocked, Running = journal.Running,
+            Reason = journal.Reason, Applying = journal.Applying, Unknown = journal.Unknown
+        };
+        copy.ReasonAsRead = journal.ReasonAsRead;
+        copy.RunningUnreadable = journal.RunningUnreadable;
+        foreach (var (id, admission) in journal.Active)
+            copy.Active[id] = new(admission.Since)
+            {
+                Thread = admission.Thread, Turn = admission.Turn, Confirmed = admission.Confirmed, Unconfirmed = admission.Unconfirmed,
+                Unknown = admission.Unknown, AsRead = admission.AsRead
+            };
+        return copy;
+    }
+}
+
+/// <summary>The managed checkout's refresh as each test scripts it, in order; unscripted refreshes find the checkout current.</summary>
+sealed class ScriptedCheckout : IRepositoryCheckout
+{
+    readonly Queue<Func<Action<string, string>, CancellationToken, Task<bool>>> outcomes = new();
+    int refreshes;
+
+    public int Refreshes => Volatile.Read(ref refreshes);
+
+    public void Then(Func<Action<string, string>, CancellationToken, Task<bool>> outcome) => outcomes.Enqueue(outcome);
+
+    /// <summary>The next refresh applies <paramref name="target"/> over <paramref name="previous"/>.</summary>
+    public void Applies(string previous = "C1", string target = "C2") => Then((beforeApply, _) => { beforeApply(previous, target); return Task.FromResult(true); });
+
+    /// <summary>The next refresh refuses safely with <paramref name="reason"/>.</summary>
+    public void Defers(string reason) => Then((_, _) => Task.FromException<bool>(new CheckoutDeferred(reason)));
+
+    public Task<bool> Refresh(Action<string, string> beforeApply, CancellationToken ct)
+    {
+        var outcome = outcomes.TryDequeue(out var scripted) ? scripted : (_, _) => Task.FromResult(false);
+        Interlocked.Increment(ref refreshes);
+        return outcome(beforeApply, ct);
     }
 }

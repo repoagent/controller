@@ -436,6 +436,32 @@ public sealed class BridgeAdmissionTests
         Assert.Single(world.Logged("delivery-retry"));
     }
 
+    // The reader can deliver a turn's completion before the response that acknowledges it. The checkout stays excluded until
+    // the delivery is acknowledged, saved and confirmed; test_checkout_refresh.py guards the same order out of process.
+    [Fact]
+    public async Task A_turn_that_completes_before_its_acknowledgement_keeps_the_checkout_excluded_until_the_delivery_is_confirmed()
+    {
+        await using var world = Mentioned(1);
+        var journal = new InMemoryRefreshJournal();
+        await using var refresh = new CheckoutRefresh(new ScriptedCheckout(),
+            new("/workspace/repository", "0123456789abcdef0123456789abcdef", 345, "refs/heads/main"), journal, false, false, world.Clock, new RecordingLog());
+        world.CheckoutRefresh = refresh;
+        RefreshJournal? early = null;
+        world.Answer(_ =>
+        {
+            world.Runtime.Completed("S1", "T1");
+            early = journal.Saved;
+            return new("T1", false);
+        });
+        await world.Begin();
+        Assert.True(await world.Poll());
+
+        var admitted = Assert.Single(early!.Active).Value;
+        Assert.Equal(("S1", "", false, false), (admitted.Thread, admitted.Turn, admitted.Confirmed, early.Blocked));
+        Assert.Equal((0, 0, false), (journal.Saved!.Active.Count, journal.Saved.Running, journal.Saved.Blocked));
+        Assert.True(await refresh.CommitAtIdle(_ => Task.CompletedTask, world.Token));
+    }
+
     [Fact]
     public async Task A_delivery_that_offers_no_input_is_abandoned()
     {
