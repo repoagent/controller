@@ -47,7 +47,7 @@ src/RepoAgentController.Core/IBaselineReleases.cs
 src/RepoAgentController.Core/BaselineReleases.cs
 src/RepoAgentController.Core/CategoryEnrollmentStarts.cs
 src/RepoAgentController.Core/GitHubRequestException.cs
-src/RepoAgentController.Core/GitHubReply.cs
+src/RepoAgentController.Core/GitHubResponse.cs
 src/RepoAgentController.Core/AppIdentity.cs
 src/RepoAgentController.Core/MentionUser.cs
 src/RepoAgentController.Core/WakeLoop.cs

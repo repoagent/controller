@@ -40,8 +40,8 @@ sealed class GitHubDiscussions(GitHub github) : IDiscussions
     /// output throws its classified failure.</summary>
     internal static JsonNode? Discussion(string response)
     {
-        var (reply, body) = GitHub.Read(response, Lookup);
-        return GitHubReplies.Found(reply, Lookup, "Discussion") ? body!["data"]!["repository"]!["discussion"] : null;
+        var (read, body) = GitHub.Read(response, Lookup);
+        return GitHubResponses.Found(read, Lookup, "Discussion") ? body!["data"]!["repository"]!["discussion"] : null;
     }
 
     public async Task<DiscussionConversation> Read(Discussion discussion, CancellationToken ct)

@@ -136,27 +136,27 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     /// <summary>
     /// gh --include output as the facts the core decides from, and its JSON body: the status, the rate-limit and retry headers,
     /// each GraphQL error's type and path, GitHub's message, whether data came back, and what the data holds at
-    /// <paramref name="lookup"/>. The reply is null for output that is no HTTP response.
+    /// <paramref name="lookup"/>. The response is null for output that is no HTTP response.
     /// </summary>
-    internal static (GitHubReply? Reply, JsonNode? Body) Read(string response, params string[] lookup)
+    internal static (GitHubResponse? Response, JsonNode? Body) Read(string response, params string[] lookup)
     {
         if (Included(response) is not { } included) return (null, null);
         var (status, headers, text) = included;
         JsonNode? body = null;
         try { body = JsonNode.Parse(text); } catch (System.Text.Json.JsonException) { }
         var errors = body?["errors"] as JsonArray ?? [];
-        var read = errors.Select(error => new GitHubReplyError(error?["type"].OptionalText() ?? "",
+        var read = errors.Select(error => new GitHubResponseError(error?["type"].OptionalText() ?? "",
             error?["path"] is JsonArray path ? [.. path.Select(segment => segment.OptionalText())] : [])).ToArray();
         var message = (errors.FirstOrDefault()?["message"] ?? body?["message"]).OptionalText() ?? "";
         var data = body?["data"];
-        var field = ReplyField.Missing;
+        var field = ResponseField.Missing;
         if (lookup.Length != 0)
         {
             var parent = data;
             foreach (var name in lookup[..^1]) parent = (parent as JsonObject)?[name];
-            if (parent is JsonObject resolved && resolved.TryGetPropertyValue(lookup[^1], out var value)) field = value is null ? ReplyField.Null : ReplyField.Value;
+            if (parent is JsonObject resolved && resolved.TryGetPropertyValue(lookup[^1], out var value)) field = value is null ? ResponseField.Null : ResponseField.Value;
         }
-        return (new GitHubReply(status, read, message, data is not null)
+        return (new GitHubResponse(status, read, message, data is not null)
         {
             RateLimitRemaining = headers.GetValueOrDefault("X-RateLimit-Remaining"), RateLimitReset = headers.GetValueOrDefault("X-RateLimit-Reset"),
             RetryAfter = headers.GetValueOrDefault("Retry-After"), Field = field
@@ -166,8 +166,8 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     /// <summary>Returns GraphQL data from gh --include output, or throws the classified failure.</summary>
     internal static JsonNode Classify(string response)
     {
-        var (reply, body) = Read(response);
-        GitHubReplies.Check(reply);
+        var (read, body) = Read(response);
+        GitHubResponses.Check(read);
         return body!["data"]!;
     }
 }
