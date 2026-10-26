@@ -32,7 +32,7 @@ public abstract record SessionActivity(string State)
     /// <summary>A failed or unacknowledged delivery waiting for its next attempt: the attempts so far and when it is due.</summary>
     public sealed record Retrying(int? Attempts, string? RetryAt) : SessionActivity("retrying");
 
-    /// <summary>A running turn, since when when the saved record holds it.</summary>
+    /// <summary>A running turn, with its start time when the saved record holds one.</summary>
     public sealed record Running(string? Since) : SessionActivity("running");
 }
 
