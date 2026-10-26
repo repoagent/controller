@@ -363,6 +363,20 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Before_the_lifetime_is_ready_its_state_and_mode_are_published_and_a_turn_without_waiting_input_is_listed()
+    {
+        Store(("D1", new(Url(1)) { SessionId = "s1", Running = new("t1", Start.AddMinutes(-30)) }));
+        using var starting = new ControllerStatus("owner/repository", "webhook", new InMemoryStatusRecord(), discussions, state, new InMemoryCheckoutWork(), clock);
+        await using var dashboard = new ControllerDashboard(Category, starting, outbox, new BaselineReleases(new InMemoryBaselineReleases(),
+            async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text), clock, log);
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+
+        Assert.Contains("\n- **Controller:** starting (webhook) since 2026-10-24T10:00:00Z\n", Published().Body);
+        Assert.Equal($"- [Discussion #1]({Url(1)}): running a turn since 2026-10-24T09:30:00Z", Listed());
+    }
+
+    [Fact]
     public async Task Idle_sessions_are_not_listed_and_at_most_20_busy_ones_are_with_only_GitHub_Discussion_links()
     {
         Store(("D0", new(Url(1)) { SessionId = "s0" }));

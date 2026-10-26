@@ -54,9 +54,10 @@ public sealed class LogLineTests : IDisposable
     }
 
     [Fact]
-    public void A_line_written_outside_a_clocked_flow_carries_the_system_time()
+    public void A_line_written_outside_a_clocked_scope_carries_the_system_time()
     {
         using var log = new LogCapture();
+        using (Log.Clock(clock)) { } // A flow's clock ends with its scope.
         Log.Write("log-line-system", "outside");
 
         var line = Assert.Single(log.Lines, line => line.Contains(" log-line-system ", StringComparison.Ordinal));
