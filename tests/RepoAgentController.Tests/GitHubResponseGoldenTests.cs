@@ -37,6 +37,12 @@ public sealed class GitHubResponseGoldenTests
         { "remaining 00", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 00", "X-RateLimit-Reset: 1793020800"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
         { "exhausted without reset", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 0"), false, "RateLimited uncertain=False notBefore=-: HTTP 403: x" },
         { "reset without exhaustion", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 5", "X-RateLimit-Reset: 1793020800"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
+        { "remaining +0", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: +0", "X-RateLimit-Reset: 1793020800"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
+        { "remaining not a number", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: none", "X-RateLimit-Reset: 1793020800"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
+        { "reset not a number", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 0", "X-RateLimit-Reset: soon"), false, "RateLimited uncertain=False notBefore=-: HTTP 403: x" },
+        { "reset out of range", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 0", "X-RateLimit-Reset: 99999999999999"), false, "ArgumentOutOfRangeException" },
+        { "reset out of range without exhaustion", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 5", "X-RateLimit-Reset: 99999999999999"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
+        { "Retry-After past int", Response(403, """{"message":"x"}""", "Retry-After: 99999999999"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
         { "secondary rate limit with Retry-After", Response(403, """{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}""", "Retry-After: 60"), false,
             "RateLimited uncertain=False notBefore=2026-10-26T12:01:00.0000000+00:00: HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again." },
         { "secondary rate limit by message", Response(403, """{"message":"You have exceeded a secondary rate limit."}"""), false,
@@ -76,6 +82,9 @@ public sealed class GitHubResponseGoldenTests
         { "error not an object", Response(200, """{"errors":[5]}"""), false, "InvalidOperationException" },
         { "null error", Response(200, """{"errors":[null]}"""), false, "Transient uncertain=True notBefore=-: HTTP 200" },
         { "error 403 body a list", Response(403, "[]"), false, "InvalidOperationException" },
+        { "error 429 body a list", Response(429, "[]"), false, "InvalidOperationException" },
+        { "error 500 body a number", Response(500, "5"), false, "InvalidOperationException" },
+        { "error 401 body a list", Response(401, "[]"), false, "InvalidOperationException" },
 
         // A Discussion lookup: only the typed NOT_FOUND for that field inside the resolved repository confirms deletion.
         { "lookup found", Response(200, """{"data":{"repository":{"discussion":{"id":"D1"}}}}"""), true, """discussion {"id":"D1"}""" },
