@@ -168,9 +168,6 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         // f742e2b wrote the keys in the order read.
         { "unknown key among them", Journal($"{Bound},\"later\":1,{Settled},\"blocked\":false,\"running\":0"), false,
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":false,\"running\":0,\"later\":1} | \"Unmatched native lifecycle event\"" },
-        // f742e2b wrote the keys in the order read.
-        { "no journal after sessions", null, true,
-            "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":0,\"completed\":0,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Unmatched native lifecycle event\"" },
         { "reason not text", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":0,\"reason\":5"), false,
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":false,\"running\":0,\"reason\":5} | \"Unmatched native lifecycle event\"" },
         // f742e2b kept "applying": null.
@@ -217,6 +214,82 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         Assert.Equal(expected, outcome);
     }
 
+    // Journals the controller's own writers leave, whose bytes differ from what f742e2b wrote for the same path: the fixed key
+    // order moves the reason, after "blocked" and "running" and before "applying". Each is the same JSON as f742e2b wrote. The
+    // f742e2b bytes are what f742e2b's writers left on the same path. The last two rows start over a journal f742e2b left; f742e2b's
+    // own next start kept its order.
+    // What f742e2b's writers left after an unsafe failure once applying began, and at a first start after earlier sessions.
+    const string LeftByFault = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"boom"}""";
+    const string LeftByBlockedStart = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":0}""";
+
+    public static TheoryData<string, string, string> Written() => new()
+    {
+        { "a first start after earlier sessions",
+            LeftByBlockedStart,
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""" },
+        { "a first start with a Discussion delivery pending",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":0}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""" },
+        { "an unsafe failure after applying began",
+            LeftByFault,
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"boom","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "a deferral after applying began",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"fetch refused: changed"}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"fetch refused: changed","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "a stop while applying",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Refresh interrupted while applying"}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Refresh interrupted while applying","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "a lost transport while applying",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Native refresh became uncertain"}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native refresh became uncertain","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "the next start after f742e2b's unsafe failure after applying",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
+        { "the next start after f742e2b's first start after earlier sessions",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":0}""",
+            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""" },
+    };
+
+    [Theory]
+    [MemberData(nameof(Written))]
+    public async Task A_journal_a_writer_leaves_holds_what_f742e2b_wrote_in_the_fixed_key_order(string path, string f742e2b, string written)
+    {
+        Assert.Equal(written, await Write(path));
+        Assert.Equal(Canonical(JsonNode.Parse(f742e2b)), Canonical(JsonNode.Parse(written)));
+    }
+
+    // The journal the writer path leaves: a start, or a refresh that began applying and then failed, deferred, stopped or lost its
+    // agent transport, at the idle boundary an admission takes. A next start begins over the journal f742e2b left.
+    async Task<string> Write(string path)
+    {
+        using var stopping = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        CheckoutRefresh? refresh = null;
+        Task<bool> Applying(Action<string, string> beforeApply, Exception? then)
+        {
+            beforeApply("1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222");
+            return then is null ? Task.FromResult(false) : Task.FromException<bool>(then);
+        }
+        IRepositoryCheckout? checkout = path switch
+        {
+            "an unsafe failure after applying began" => new Refreshing((apply, _) => Applying(apply, new IOException("boom"))),
+            "a deferral after applying began" => new Refreshing((apply, _) => Applying(apply, new CheckoutDeferred("fetch refused: changed"))),
+            "a stop while applying" => new Refreshing((apply, ct) => { _ = Applying(apply, null); stopping.Cancel(); return Task.FromCanceled<bool>(ct); }),
+            "a lost transport while applying" => new Refreshing((apply, _) => { var applied = Applying(apply, null); refresh!.Observe(new AgentRuntimeDisconnected(1)); return applied; }),
+            _ => null
+        };
+        var next = path.StartsWith("the next start", StringComparison.Ordinal);
+        if (next) Record(path.EndsWith("unsafe failure after applying", StringComparison.Ordinal) ? LeftByFault : LeftByBlockedStart);
+        await using (refresh = Open(priorSessions: next || path == "a first start after earlier sessions", path == "a first start with a Discussion delivery pending", checkout))
+        {
+            if (checkout is not null)
+            {
+                refresh.Request();
+                await Assert.ThrowsAnyAsync<Exception>(async () => (await refresh.Admit(stopping.Token)).Dispose());
+            }
+        }
+        return File.ReadAllText(JournalPath);
+    }
+
     [Fact]
     public async Task A_start_writes_the_journal_private_and_refuses_one_left_mid_replacement_open_to_others_or_through_a_link()
     {
@@ -246,8 +319,15 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         File.SetUnixFileMode(JournalPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
-    CheckoutRefresh Open(bool priorSessions = false) => new(new UnusedCheckout(), new(Root, Owner, 345, "refs/heads/main"), new RefreshJournalFile(statePath),
-        priorSessions, false, new SteppedClock(DateTimeOffset.UnixEpoch), new RecordingLog());
+    CheckoutRefresh Open(bool priorSessions = false, bool pendingDiscussion = false, IRepositoryCheckout? checkout = null) => new(checkout ?? new UnusedCheckout(),
+        new(Root, Owner, 345, "refs/heads/main"), new RefreshJournalFile(statePath), priorSessions, pendingDiscussion, new SteppedClock(DateTimeOffset.UnixEpoch),
+        new RecordingLog());
+
+    // A checkout whose refresh is scripted.
+    sealed class Refreshing(Func<Action<string, string>, CancellationToken, Task<bool>> refresh) : IRepositoryCheckout
+    {
+        public Task<bool> Refresh(Action<string, string> beforeApply, CancellationToken ct) => refresh(beforeApply, ct);
+    }
 
     // A checkout bound to the journal's root, owner and repository, without a workspace: these tests never refresh it.
     sealed class UnusedCheckout : IRepositoryCheckout
