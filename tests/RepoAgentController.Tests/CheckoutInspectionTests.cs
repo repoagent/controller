@@ -433,6 +433,16 @@ public sealed class CheckoutInspectionTests
     }
 
     [Theory]
+    [InlineData("owner/..")]
+    [InlineData("./repository")]
+    [InlineData("owner/repo sitory")]
+    [InlineData("owner/repository\n")]
+    [InlineData("owner/repository/extra")]
+    [InlineData("owner/")]
+    public void Repository_metadata_with_an_unsafe_name_is_refused_even_as_the_approved_name(string name) =>
+        Assert.Throws<CheckoutIdentityException>(() => RepositoryCheckout.Approved(name, 345, name, "https://github.com/" + name + ".git", "trunk"));
+
+    [Theory]
     [InlineData(0L, "owner/repository")]
     [InlineData(-1L, "owner/repository")]
     public void Repository_metadata_without_a_positive_ID_is_refused(long id, string name) =>

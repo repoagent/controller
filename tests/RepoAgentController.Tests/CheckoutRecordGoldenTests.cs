@@ -131,6 +131,31 @@ public sealed class CheckoutRecordGoldenTests
         Assert.Equal(before, fixture.Snapshot());
     }
 
+    // Records no writer leaves that a restart accepted before the record was typed, and still does, leaving them as read.
+    [Theory]
+    [InlineData("commit missing")]
+    [InlineData("commit null")]
+    [InlineData("commit other")]
+    public async Task A_restart_accepts_a_record_without_its_commit_and_leaves_it_as_read(string form)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (fixture, owner) = await Cloned();
+        using var _ = fixture;
+        var written = Written(fixture, owner, fixture.Commit);
+        var recorded = form switch
+        {
+            "commit missing" => written[..written.IndexOf(",\"commit\"", StringComparison.Ordinal)] + "}",
+            "commit null" => written.Replace("\"" + fixture.Commit + "\"", "null", StringComparison.Ordinal),
+            _ => Written(fixture, owner, "elsewhere"),
+        };
+        File.WriteAllText(fixture.Record, recorded);
+        var before = fixture.Snapshot();
+
+        using (var checkout = await fixture.Open()) Assert.Equal(fixture.Root, checkout.Root);
+
+        Assert.Equal(before, fixture.Snapshot());
+    }
+
     [Fact]
     public async Task A_refresh_over_a_record_rewritten_in_another_order_with_the_same_values_applies()
     {
