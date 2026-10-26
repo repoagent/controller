@@ -85,6 +85,13 @@ public sealed class GitHubResponseGoldenTests
         Assert.Equal(expected, Facts(response, lookup));
     }
 
+    [Fact]
+    public void A_request_answers_the_responses_data_or_throws_what_the_core_decides()
+    {
+        Assert.Equal("""{"data":{"id":"D1"}}""", GitHub.Classify(Response(200, """{"data":{"data":{"id":"D1"}}}""")).ToJsonString());
+        Assert.Equal(GitHubFailure.Transient, Assert.Throws<GitHubRequestException>(() => GitHub.Classify(Response(502, "<html></html>"))).Kind);
+    }
+
     static string Facts(string response, bool lookup)
     {
         var (read, value) = lookup ? GitHub.Read(response, GitHubDiscussions.Lookup) : GitHub.Read(response);
