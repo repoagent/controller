@@ -88,7 +88,8 @@ sealed class CheckoutFixture : IDisposable
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
-    /// <summary>Every entry under the workspace: a link's target, a directory, or a file's SHA-256.</summary>
+    /// <summary>Every entry under the workspace: a link's target, a directory, or a file's SHA-256. The lock is listed unread,
+    /// since an open checkout holds it.</summary>
     public SortedDictionary<string, string> Snapshot()
     {
         var result = new SortedDictionary<string, string>(StringComparer.Ordinal);
@@ -100,6 +101,7 @@ sealed class CheckoutFixture : IDisposable
                 var attributes = File.GetAttributes(entry);
                 if ((attributes & FileAttributes.ReparsePoint) != 0) result[relative] = "link:" + new FileInfo(entry).LinkTarget;
                 else if ((attributes & FileAttributes.Directory) != 0) { result[relative] = "directory"; Visit(entry); }
+                else if (entry == Lock) result[relative] = "lock";
                 else result[relative] = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(entry)));
             }
         }

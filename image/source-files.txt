@@ -71,6 +71,7 @@ src/RepoAgentController.Core/LogEntry.cs
 src/RepoAgentController.Core/ControllerDashboard.cs
 src/RepoAgentController.Core/RefreshJournal.cs
 src/RepoAgentController.Core/CheckoutRefresh.cs
+src/RepoAgentController.Core/CheckoutInspection.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs
 tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj
