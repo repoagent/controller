@@ -554,7 +554,8 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
     /// <summary>Whether a timer was armed since the last <see cref="Armed"/>, without waiting.</summary>
     public bool WasArmed() => armed.CurrentCount != 0;
 
-    /// <summary>The due time of each timer armed so far, in order.</summary>
+    /// <summary>The due time of each timer armed so far, in order: as it was created, and each time
+    /// <see cref="ITimer.Change"/> re-armed it.</summary>
     public IReadOnlyList<TimeSpan> Delays { get { lock (sync) return [.. delays]; } }
 
     /// <summary>Completes once a timer is pending: armed, and neither fired nor disposed. However a loop arms its timers, it has
@@ -602,6 +603,7 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 
         public bool Change(TimeSpan dueTime, TimeSpan period)
         {
+            if (dueTime != Timeout.InfiniteTimeSpan) lock (clock.sync) clock.delays.Add(dueTime);
             Arm(dueTime);
             return Inner.Change(dueTime, period);
         }
