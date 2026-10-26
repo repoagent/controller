@@ -88,6 +88,7 @@ sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
     // Conversations by Discussion number, in the order they were opened; comments in the order they were written.
     readonly SortedList<int, Held> conversations = [];
     readonly Dictionary<string, Exception> readFailures = [];
+    bool dashboardWritesHeld;
     DateTimeOffset Now => (clock ?? throw new InvalidOperationException("Writing a conversation needs the test's clock")).GetUtcNow();
 
     /// <summary>A Discussion in a category, as GitHub holds it now.</summary>
@@ -104,6 +105,9 @@ sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
     {
         lock (sync) return Add(Category(category), author, title, body);
     }
+
+    /// <summary>Later dashboard writes wait, unrequested, until their caller cancels them, as a GitHub that never answers.</summary>
+    public void HoldDashboardWrites() { lock (sync) dashboardWritesHeld = true; }
 
     /// <summary>The next write fails with <paramref name="error"/>, after taking effect when <paramref name="applied"/>.</summary>
     public void Fail(GitHubRequestException error, bool applied = false) { lock (sync) failures.Enqueue((error, applied)); }
@@ -261,16 +265,27 @@ sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
 
     public async Task<DashboardDiscussion> CreateDashboard(DashboardLocation at, string title, string body, CancellationToken ct)
     {
+        await HeldWrite(ct);
         Posted? created = null;
         await Write("createDiscussion " + at.CategoryId, () => created = Add(at.CategoryId, AppAccount, title, body));
         return new(created!.Id, created.Url);
     }
 
-    public Task UpdateDashboard(string id, string title, string body, CancellationToken ct) => Write("updateDiscussion " + id, () =>
+    public async Task UpdateDashboard(string id, string title, string body, CancellationToken ct)
     {
-        var index = posted.FindIndex(post => post.Id == id);
-        posted[index] = posted[index] with { Title = title, Body = body };
-    });
+        await HeldWrite(ct);
+        await Write("updateDiscussion " + id, () =>
+        {
+            var index = posted.FindIndex(post => post.Id == id);
+            posted[index] = posted[index] with { Title = title, Body = body };
+        });
+    }
+
+    // A held write is never requested: it records nothing and ends only when cancelled.
+    Task HeldWrite(CancellationToken ct)
+    {
+        lock (sync) return dashboardWritesHeld ? Task.Delay(Timeout.InfiniteTimeSpan, ct) : Task.CompletedTask;
+    }
 
     Posted Add(string category, Actor? author, string title, string body)
     {
