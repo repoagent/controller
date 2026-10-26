@@ -68,6 +68,28 @@ public sealed class AgentVariableV4EnrollmentTests
         Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(device, secret)).StatusCode);
     }
 
+    // Setup v2 predates the settings catalogue's reserved prefix. Its accepted variable names and idempotent retries
+    // remain unchanged; only fresh v4 approval shares the settings store under the reserved-name rule.
+    [Fact]
+    public async Task Legacy_v2_approval_keeps_its_variable_name_and_retry_contract()
+    {
+        var f = new InMemoryBroker();
+        var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
+        var request = ActionsVariableEnrollmentTests.Request() with { Variable = "REPOAGENT_MODEL" };
+        var start = await f.Start(request, 2);
+        Assert.Equal(HttpStatusCode.OK, start.StatusCode);
+        Assert.Equal(start.Text, (await f.Start(request, 2)).Text);
+        github.Agent[request.Variable] = start.Json.GetProperty("marker").GetString()!;
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
+        var completion = await f.Complete(start.Json.GetProperty("pendingId").GetString()!, 2);
+        Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
+
+        var fresh = new InMemoryBroker();
+        ActionsVariableEnrollmentTests.Repository.Configure(fresh.GitHub);
+        Assert.Equal(HttpStatusCode.BadRequest, (await fresh.Start(request, 4)).StatusCode);
+        Assert.Empty(fresh.GitHub.Requests);
+    }
+
     // The setup version is part of the durable contract: a pending setup is only ever resumed through its own routes,
     // and one idempotency ID never replays a request across setup versions.
     [Theory]

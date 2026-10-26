@@ -54,4 +54,6 @@ Keep the controller and its host running to receive activity. Preserve its state
 
 When repository settings are enabled, the controller and its agent can read **all direct repository Actions variables**. Keep secrets in GitHub Secrets or private runtime storage. See the [settings permission details](docs/repository-settings.md#broker-enrollments).
 
+The broker supports [setup v4](service/auth/README.md#repository-agent-variable-enrollment-v4) with `REPOAGENT_APPROVAL` in Agent variables, including repository-settings profiles. Guided installer support follows in the next #240 slice; existing v2 and v3 grants retain their original contracts.
+
 For implementation and design, see the [architecture decisions](docs/adr/), [domain glossary](GLOSSARY.md), [credential broker documentation](service/auth/README.md) and [image release process](docs/ci-cd.md).

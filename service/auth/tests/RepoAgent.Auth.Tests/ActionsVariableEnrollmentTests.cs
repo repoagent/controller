@@ -103,7 +103,7 @@ public sealed class ActionsVariableEnrollmentTests
     [InlineData(3, "repoagent_approval", HttpStatusCode.OK)]
     [InlineData(4, "REPOAGENT_MODEL", HttpStatusCode.BadRequest)]
     [InlineData(4, "repoagent_approval", HttpStatusCode.OK)]
-    [InlineData(2, "REPOAGENT_MODEL", HttpStatusCode.BadRequest)]
+    [InlineData(2, "REPOAGENT_MODEL", HttpStatusCode.OK)]
     [InlineData(2, "APPROVAL", HttpStatusCode.OK)]
     public async Task Repository_variable_approval_cannot_take_a_repository_settings_name(int setupVersion, string variable, HttpStatusCode expected)
     {

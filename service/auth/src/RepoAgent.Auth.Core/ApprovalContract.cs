@@ -33,8 +33,8 @@ public sealed record ApprovalContract(string Kind, long SetupVersion, string Pol
         : IsClone ? profile is "polling-clone" or "webhook-clone" : profile is "polling" or "webhook";
     // Repository-settings tooling writes REPOAGENT_ repository variables. A repository-variable approval may use that
     // prefix only under the name the settings catalogue (src/RepoAgentController/repository-settings.json) reserves
-    // for approval, so settings changes never overwrite a marker.
-    public bool AcceptsVariable(string variable) => !IsRepositoryVariable || !variable.StartsWith("REPOAGENT_", StringComparison.OrdinalIgnoreCase)
+    // for approval, so settings changes never overwrite a marker. Legacy setup v2 keeps its variable grammar.
+    public bool AcceptsVariable(string variable) => !(IsActions || SetupVersion == 4) || !variable.StartsWith("REPOAGENT_", StringComparison.OrdinalIgnoreCase)
         || string.Equals(variable, "REPOAGENT_APPROVAL", StringComparison.OrdinalIgnoreCase);
 
     // The contract a stored record names. Historical v1 rows predate the kind and setup version; their complete legacy
