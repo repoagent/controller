@@ -143,9 +143,10 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     {
         if (Included(response) is not { } included) return (null, null);
         var (status, headers, text) = included;
-        JsonNode? body = null;
-        try { body = JsonNode.Parse(text); } catch (System.Text.Json.JsonException) { }
-        var errors = body?["errors"] as JsonArray ?? [];
+        // A body or error that is no JSON object carries no fields.
+        JsonObject? body = null;
+        try { body = JsonNode.Parse(text) as JsonObject; } catch (System.Text.Json.JsonException) { }
+        var errors = (body?["errors"] as JsonArray ?? []).Select(error => error as JsonObject).ToArray();
         var read = errors.Select(error => new GitHubResponseError(error?["type"].OptionalText() ?? "",
             error?["path"] is JsonArray path ? [.. path.Select(segment => segment.OptionalText())] : [])).ToArray();
         var message = (errors.FirstOrDefault()?["message"] ?? body?["message"]).OptionalText() ?? "";

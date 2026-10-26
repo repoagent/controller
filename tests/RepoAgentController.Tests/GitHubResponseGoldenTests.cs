@@ -80,14 +80,15 @@ public sealed class GitHubResponseGoldenTests
         { "errors not a list", Response(200, """{"data":{"x":1},"errors":{"type":"FORBIDDEN"}}"""), false, """data {"x":1}""" },
         { "error type not text", Response(200, """{"errors":[{"type":5,"message":"a"}]}"""), false, "Transient uncertain=True notBefore=-: HTTP 200: a" },
         { "data null", Response(200, """{"data":null}"""), false, "Transient uncertain=True notBefore=-: HTTP 200: no data" },
-        { "body a list", Response(200, "[]"), false, "InvalidOperationException" },
-        { "body a number", Response(200, "5"), false, "InvalidOperationException" },
-        { "error not an object", Response(200, """{"errors":[5]}"""), false, "InvalidOperationException" },
+        // bcfd719 threw InvalidOperationException reading fields from a body or error that is no object.
+        { "body a list", Response(200, "[]"), false, "Transient uncertain=True notBefore=-: HTTP 200: no data" },
+        { "body a number", Response(200, "5"), false, "Transient uncertain=True notBefore=-: HTTP 200: no data" },
+        { "error not an object", Response(200, """{"errors":[5]}"""), false, "Transient uncertain=True notBefore=-: HTTP 200" },
         { "null error", Response(200, """{"errors":[null]}"""), false, "Transient uncertain=True notBefore=-: HTTP 200" },
-        { "error 403 body a list", Response(403, "[]"), false, "InvalidOperationException" },
-        { "error 429 body a list", Response(429, "[]"), false, "InvalidOperationException" },
-        { "error 500 body a number", Response(500, "5"), false, "InvalidOperationException" },
-        { "error 401 body a list", Response(401, "[]"), false, "InvalidOperationException" },
+        { "error 403 body a list", Response(403, "[]"), false, "Permanent uncertain=False notBefore=-: HTTP 403" },
+        { "error 429 body a list", Response(429, "[]"), false, "RateLimited uncertain=False notBefore=-: HTTP 429" },
+        { "error 500 body a number", Response(500, "5"), false, "Transient uncertain=True notBefore=-: HTTP 500" },
+        { "error 401 body a list", Response(401, "[]"), false, "Transient uncertain=False notBefore=-: HTTP 401" },
 
         // A Discussion lookup: only the typed NOT_FOUND for that field inside the resolved repository confirms deletion.
         { "lookup found", Response(200, """{"data":{"repository":{"discussion":{"id":"D1"}}}}"""), true, """discussion {"id":"D1"}""" },
@@ -132,7 +133,8 @@ public sealed class GitHubResponseGoldenTests
         { "lookup repository null without error", Response(200, """{"data":{"repository":null}}"""), true, "Transient uncertain=False notBefore=-: incomplete Discussion response" },
         // bcfd719 threw InvalidOperationException reading the field through a repository that is no object.
         { "lookup repository not an object", Response(200, """{"data":{"repository":5}}"""), true, "Transient uncertain=False notBefore=-: incomplete Discussion response" },
-        { "lookup body a list", Response(200, "[]"), true, "InvalidOperationException" },
+        // bcfd719 threw InvalidOperationException here too.
+        { "lookup body a list", Response(200, "[]"), true, "Transient uncertain=True notBefore=-: HTTP 200: no data" },
         { "lookup unrecognized", "gh: x", true, "Transient uncertain=True notBefore=-: unrecognized gh response" },
     };
 
