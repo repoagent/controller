@@ -6,3 +6,4 @@ tests/RepoAgentController.Tests/ControllerDashboardGolden.txt text eol=lf
 tests/RepoAgentController.Tests/ControllerStatusGolden.txt text eol=lf
 tests/RepoAgentController.Tests/DiscussionJsonGolden.json text eol=lf
 tests/RepoAgentController.Tests/StateFileWritten.json text eol=lf
+tests/RepoAgentController.Tests/RefreshJournalWritten.txt text eol=lf
