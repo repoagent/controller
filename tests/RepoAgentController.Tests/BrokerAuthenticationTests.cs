@@ -439,7 +439,6 @@ public sealed class BrokerAuthenticationTests
 
     [Theory]
     [InlineData("repository-agent-clone-approval-v2")]
-    [InlineData("repository-actions-clone-approval-v3")]
     [InlineData("repository-agent-clone-approval-v4")]
     public async Task Clone_lease_must_preserve_the_enrolled_approval_policy(string policy)
     {
@@ -516,7 +515,22 @@ public sealed class BrokerAuthenticationTests
         Assert.Equal(1, await fixture.Start());
 
         Assert.Empty(fixture.Transport.Requests);
-        Assert.Contains("v3 repository-settings enrollment is retired", fixture.RetainedLog);
+        Assert.Contains("setup v3 (Actions-variable) enrollment is retired", fixture.RetainedLog);
+        Assert.Contains("enroll afresh", fixture.RetainedLog);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_retired_v3_clone_enrollment_is_refused_before_broker_contact_and_names_re_enrollment(bool webhooks)
+    {
+        // Setup v3 Actions-variable approval is retired (ADR 0012), its clone policy included.
+        using var fixture = new Fixture(webhooks, clone: true, clonePolicy: "repository-actions-clone-approval-v3");
+
+        Assert.Equal(1, await fixture.Start());
+
+        Assert.Empty(fixture.Transport.Requests);
+        Assert.Contains("setup v3 (Actions-variable) enrollment is retired", fixture.RetainedLog);
         Assert.Contains("enroll afresh", fixture.RetainedLog);
     }
 
@@ -724,7 +738,7 @@ public sealed class BrokerAuthenticationTests
                 case "policyVersion": result[Defect] = "repository-agent-approval-v2"; break;
                 case "other-clone-policy":
                     result["policyVersion"] = result["policyVersion"]!.GetValue<string>() == "repository-agent-clone-approval-v2"
-                        ? "repository-actions-clone-approval-v3" : "repository-agent-clone-approval-v2";
+                        ? "repository-agent-clone-approval-v4" : "repository-agent-clone-approval-v2";
                     break;
                 case "appSlug": result[Defect] = "other-app"; break;
                 case "repository": result[Defect] = "owner/other"; break;
