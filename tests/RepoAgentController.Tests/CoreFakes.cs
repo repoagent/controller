@@ -529,6 +529,9 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
     readonly FakeTimeProvider time = new(start);
     readonly SemaphoreSlim armed = new(0);
     readonly Lock sync = new();
+    // Held while a timer is armed and registered with the fake time, and while time moves: a loop seen waiting is waiting on a
+    // timer that moving time can fire.
+    readonly Lock arming = new();
     readonly List<TimeSpan> delays = [];
     readonly List<TaskCompletionSource> waiters = [];
     int pending;
@@ -536,14 +539,17 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
     public override DateTimeOffset GetUtcNow() => time.GetUtcNow();
     public override long GetTimestamp() => time.GetTimestamp();
     public override long TimestampFrequency => time.TimestampFrequency;
-    public void Advance(TimeSpan duration) => time.Advance(duration);
+    public void Advance(TimeSpan duration) { lock (arming) time.Advance(duration); }
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
         var timer = new Pending(this, period == Timeout.InfiniteTimeSpan);
-        if (dueTime != Timeout.InfiniteTimeSpan) lock (sync) delays.Add(dueTime);
-        timer.Arm(dueTime);
-        timer.Inner = time.CreateTimer(value => { timer.Fired(); callback(value); }, state, dueTime, period);
+        lock (arming)
+        {
+            if (dueTime != Timeout.InfiniteTimeSpan) lock (sync) delays.Add(dueTime);
+            timer.Arm(dueTime);
+            timer.Inner = time.CreateTimer(value => { timer.Fired(); callback(value); }, state, dueTime, period);
+        }
         armed.Release();
         return timer;
     }
@@ -559,10 +565,11 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
     public IReadOnlyList<TimeSpan> Delays { get { lock (sync) return [.. delays]; } }
 
     /// <summary>Completes once a timer is pending: armed, and neither fired nor disposed. However a loop arms its timers, it has
-    /// one pending while it waits on this clock.</summary>
+    /// one pending while it waits on this clock. A timer is armed and registered with the fake time under one lock, which this and
+    /// <see cref="Advance"/> also take, so moving time once this completes can fire it.</summary>
     public Task Waiting()
     {
-        lock (sync)
+        lock (arming) lock (sync)
         {
             if (pending != 0) return Task.CompletedTask;
             var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -603,9 +610,12 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 
         public bool Change(TimeSpan dueTime, TimeSpan period)
         {
-            if (dueTime != Timeout.InfiniteTimeSpan) lock (clock.sync) clock.delays.Add(dueTime);
-            Arm(dueTime);
-            return Inner.Change(dueTime, period);
+            lock (clock.arming)
+            {
+                if (dueTime != Timeout.InfiniteTimeSpan) lock (clock.sync) clock.delays.Add(dueTime);
+                Arm(dueTime);
+                return Inner.Change(dueTime, period);
+            }
         }
 
         public void Dispose() { Set(false); Inner.Dispose(); }
