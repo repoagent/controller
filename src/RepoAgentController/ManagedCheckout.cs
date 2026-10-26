@@ -109,11 +109,12 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
     }
 
     /// <summary>The checkout's Git directory, and Git run on it with the managed environment. Git is found on first use.</summary>
-    sealed class CheckoutFacts(string root) : ICheckoutFacts
+    internal sealed class CheckoutFacts(string root) : ICheckoutFacts
     {
         readonly string dotGit = Path.Combine(root, ".git");
         string? git;
-        public string Git => git ??= AppGitHubCommand.FindExecutable("git");
+
+        Task<string> Git(CancellationToken ct, params string[] arguments) => Local(git ??= AppGitHubCommand.FindExecutable("git"), root, ct, arguments);
 
         public bool OwnGitDirectory()
         {
@@ -125,14 +126,44 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
         }
 
         public bool Holds(string path) => Path.Exists(Path.Combine(dotGit, path));
-        public Task<string> LocalConfiguration(CancellationToken ct) => Local(Git, root, ct, "config", "--no-includes", "--local", "--null", "--list");
-        public Task<string> TopLevel(CancellationToken ct) => Local(Git, root, ct, "rev-parse", "--show-toplevel");
-        public Task<string> Bare(CancellationToken ct) => Local(Git, root, ct, "rev-parse", "--is-bare-repository");
-        public Task<string> OriginUrls(CancellationToken ct) => Local(Git, root, ct, "config", "--get-all", "remote.origin.url");
-        public Task<string> HeadRef(CancellationToken ct) => Local(Git, root, ct, "symbolic-ref", "--quiet", "HEAD");
-        public Task<string> TrackedChanges(CancellationToken ct) => Local(Git, root, ct, "status", "--porcelain=v1", "--untracked-files=no");
-        public Task<string> IndexFlags(CancellationToken ct) => Local(Git, root, ct, "ls-files", "-v", "-z");
-        public Task<string> Commit(string revision, CancellationToken ct) => Local(Git, root, ct, "rev-parse", "--verify", revision);
+        public async Task<IReadOnlyList<string>> ConfigurationKeys(CancellationToken ct) =>
+            Keys(await Git(ct, "config", "--no-includes", "--local", "--null", "--list"));
+        public async Task<string> TopLevel(CancellationToken ct) => (await Git(ct, "rev-parse", "--show-toplevel")).TrimEnd();
+        public async Task<bool> IsBare(CancellationToken ct) => (await Git(ct, "rev-parse", "--is-bare-repository")).Trim() != "false";
+        public async Task<IReadOnlyList<string>> OriginUrls(CancellationToken ct) =>
+            Lines(await Git(ct, "config", "--get-all", "remote.origin.url"));
+        public async Task<string> HeadBranch(CancellationToken ct) => (await Git(ct, "symbolic-ref", "--quiet", "HEAD")).Trim();
+        public async Task<string> HeadName(CancellationToken ct) => (await Git(ct, "rev-parse", "--symbolic-full-name", "HEAD")).Trim();
+        public async Task<bool> Changed(bool untracked, CancellationToken ct) =>
+            await Git(ct, "status", "--porcelain=v1", untracked ? "--untracked-files=all" : "--untracked-files=no") != "";
+        public async Task<IReadOnlyList<IndexEntry>> Index(CancellationToken ct) => Entries(await Git(ct, "ls-files", "-v", "-z"));
+        public async Task<string> Commit(string revision, CancellationToken ct) => (await Git(ct, "rev-parse", "--verify", revision)).Trim();
+
+        /// <summary>Forces the checkout onto <paramref name="target"/> as <paramref name="branch"/>: clears the hidden index
+        /// entries' flags, checks it out over local changes, and removes untracked files that are not ignored.</summary>
+        public async Task Force(string branch, string target, IReadOnlyList<string> hidden, CancellationToken ct)
+        {
+            if (hidden.Count != 0)
+                foreach (var flag in new[] { "--no-assume-unchanged", "--no-skip-worktree" }) // Git applies one flag change per call.
+                    await Git(ct, ["update-index", flag, "--", .. hidden]);
+            await Git(ct, "-c", "submodule.recurse=false", "checkout", "--quiet", "--force", "--no-recurse-submodules", "-B", branch, target, "--");
+            await Git(ct, "clean", "--quiet", "--force", "-d");
+        }
+
+        /// <summary>The keys in <c>git config --null --list</c> output: entries ended by NUL, each its key, a newline and its value.</summary>
+        internal static IReadOnlyList<string> Keys(string listed) =>
+            [.. listed.Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(entry => entry.Split('\n', 2)[0])];
+
+        /// <summary>The values in <c>git config --get-all</c> output, one per line.</summary>
+        internal static IReadOnlyList<string> Lines(string listed) => listed.TrimEnd().Split('\n');
+
+        /// <summary>
+        /// The entries in <c>git ls-files -v -z</c> output: each ended by NUL, as its tag, a space and its path. <c>S</c> or
+        /// <c>s</c> tags skip-worktree, and a lower-case tag assume-unchanged.
+        /// </summary>
+        internal static IReadOnlyList<IndexEntry> Entries(string listed) =>
+            [.. listed.Split('\0', StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => new IndexEntry(line.Length > 2 ? line[2..] : "", char.ToUpperInvariant(line[0]) == 'S', char.IsLower(line[0])))];
     }
 
     static readonly string[] RecordKeys = ["version", "state", "root", "owner", "repositoryId", "repository", "remote", "branch", "commit"];
@@ -209,7 +240,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
             if (new FileInfo(fetched).Length > 65536) throw Deferred("ambiguous fetched default branch");
             var lines = File.ReadAllLines(fetched);
             if (lines.Length != 1 || lines[0].Split('\t')[0] != target ||
-                (await Local(facts.Git, Root, ct, "rev-parse", "--verify", "FETCH_HEAD^{commit}")).Trim() != target ||
+                await facts.Commit("FETCH_HEAD^{commit}", ct) != target ||
                 await github.CheckoutCommit(repository.Branch, ct) != target)
                 throw Deferred("default branch changed during fetch; retry pending");
         }
@@ -222,7 +253,9 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
         if (current.Branch != repository.Branch) throw Deferred("default branch changed during fetch");
         await VerifyOwnership(ct);
         beforeApply(previous, target);
-        await Force(target, ct);
+        // Origin is authoritative inside the owned checkout: local edits, commits, branch switches, hidden index flags and
+        // merge-like state are discarded. Ignored files and nested repositories stay; other branches and worktrees are untouched.
+        await facts.Force(repository.Branch, target, [.. CheckoutInspection.Hidden(await facts.Index(ct))], ct);
         if (await CheckoutInspection.Inspect(facts, Root, repository, ct) != target) throw Blocked("applied commit differs");
         metadata.Commit = target;
         workspace.Rewrite(metadata);
@@ -233,24 +266,11 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
     // The owned checkout is on its default branch at the commit, with no tracked, untracked, hidden or merge-like local state.
     // Ignored files do not count.
     async Task<bool> Matches(string commit, CancellationToken ct) =>
-        (await Local(facts.Git, Root, ct, "rev-parse", "--symbolic-full-name", "HEAD")).Trim() == "refs/heads/" + repository.Branch &&
-        (await Local(facts.Git, Root, ct, "rev-parse", "--verify", "HEAD^{commit}")).Trim() == commit &&
-        await Local(facts.Git, Root, ct, "status", "--porcelain=v1", "--untracked-files=all") == "" &&
-        !CheckoutInspection.Hidden(await Local(facts.Git, Root, ct, "ls-files", "-v", "-z")).Any() &&
-        !new[] { "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD" }.Any(name => Path.Exists(Path.Combine(Root, ".git", name)));
-
-    // Origin is authoritative inside the owned checkout: local edits, commits, branch switches, hidden index flags and
-    // merge-like state are discarded. Ignored files and nested repositories stay; other branches and worktrees are untouched.
-    async Task Force(string target, CancellationToken ct)
-    {
-        var hidden = CheckoutInspection.Hidden(await Local(facts.Git, Root, ct, "ls-files", "-v", "-z")).ToArray();
-        if (hidden.Length != 0)
-            foreach (var flag in new[] { "--no-assume-unchanged", "--no-skip-worktree" }) // Git applies one flag change per call.
-                await Local(facts.Git, Root, ct, ["update-index", flag, "--", .. hidden]);
-        await Local(facts.Git, Root, ct, "-c", "submodule.recurse=false", "checkout", "--quiet", "--force", "--no-recurse-submodules",
-            "-B", repository.Branch, target, "--");
-        await Local(facts.Git, Root, ct, "clean", "--quiet", "--force", "-d");
-    }
+        await facts.HeadName(ct) == "refs/heads/" + repository.Branch &&
+        await facts.Commit("HEAD^{commit}", ct) == commit &&
+        !await facts.Changed(true, ct) &&
+        !CheckoutInspection.Hidden(await facts.Index(ct)).Any() &&
+        !new[] { "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD" }.Any(facts.Holds);
 
     internal static void SavePrivate(string path, string value) => SaveFile(path, value, PrivateFileMode);
 
