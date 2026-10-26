@@ -140,8 +140,9 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         // f742e2b stopped with InvalidOperationException.
         { "running 1.5", Journal($"{Bound},{Settled},\"running\":1.5"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
+        // f742e2b stopped with ArgumentException.
         { "a key repeated", Journal($"{Bound},{Settled},\"blocked\":false,\"blocked\":true"),
-            "ArgumentException: An item with the same key has already been added. Key: blocked (Parameter 'key')" },
+            "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b wrote the keys in the order read.
         { "blocked missing", Journal($"{Bound},{Settled},\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":false,\"running\":0} | \"Unmatched native lifecycle event\"" },

@@ -15,7 +15,10 @@ sealed class RefreshJournalFile(string statePath) : IRefreshJournal
     {
         ManagedCheckout.CheckPath(path);
         if (Path.Exists(path + ".tmp")) throw new IOException("Incomplete refresh journal; preserve it for manual recovery");
-        return File.Exists(path) ? Parse(ManagedCheckout.ReadPrivate(path)) : null;
+        if (!File.Exists(path)) return null;
+        var text = ManagedCheckout.ReadPrivate(path);
+        try { return Parse(text); }
+        catch (ArgumentException) { throw new IOException(RefreshJournal.Unusable); } // A key repeated in the journal or among its admissions.
     }
 
     public void Write(RefreshJournal journal) => ManagedCheckout.SavePrivate(path, Serialize(journal));
