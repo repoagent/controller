@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -133,51 +134,48 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         }
     }
 
-    static readonly string[] Rejections = ["NOT_FOUND", "FORBIDDEN", "UNPROCESSABLE"];
-
     /// <summary>
-    /// True only when gh --include output is GitHub's typed NOT_FOUND for exactly the field at <paramref name="path"/>, inside
-    /// a parent that resolved: that object is confirmed absent. Every other response is left to <see cref="Classify"/>.
+    /// gh --include output as the facts the core decides from: the status, the rate-limit and retry headers as numbers and
+    /// times (null when missing or unusable), each GraphQL error's type and path, GitHub's message, whether data came back,
+    /// and what the data holds at <paramref name="lookup"/>. Value is the node found there, or the data itself without a
+    /// lookup. The response is null for output that is no HTTP response.
     /// </summary>
-    internal static bool ConfirmsAbsent(string response, params string[] path)
+    internal static (GitHubResponse? Response, JsonNode? Value) Read(string response, params string[] lookup)
     {
-        if (Included(response) is not (200, _, var text)) return false;
-        JsonNode? body;
-        try { body = JsonNode.Parse(text); } catch (System.Text.Json.JsonException) { return false; }
-        if (body?["errors"] is not JsonArray { Count: 1 } errors || errors[0] is not JsonObject error || error["type"].OptionalText() != "NOT_FOUND" ||
-            error["path"] is not JsonArray located || !located.Select(segment => segment.OptionalText()).SequenceEqual(path)) return false;
-        var parent = body["data"];
-        foreach (var field in path[..^1]) parent = parent?[field];
-        return parent is JsonObject resolved && resolved.TryGetPropertyValue(path[^1], out var value) && value is null;
+        if (Included(response) is not { } included) return (null, null);
+        var (status, headers, text) = included;
+        // A body or error that is no JSON object carries no fields.
+        JsonObject? body = null;
+        try { body = JsonNode.Parse(text) as JsonObject; } catch (System.Text.Json.JsonException) { }
+        var errors = (body?["errors"] as JsonArray ?? []).Select(error => error as JsonObject).ToArray();
+        var read = errors.Select(error => new GitHubResponseError(error?["type"].OptionalText() ?? "",
+            error?["path"] is JsonArray path ? [.. path.Select(segment => segment.OptionalText())] : [])).ToArray();
+        var message = (errors.FirstOrDefault()?["message"] ?? body?["message"]).OptionalText() ?? "";
+        var data = body?["data"];
+        var (field, value) = (ResponseField.Missing, data);
+        if (lookup.Length != 0)
+        {
+            var parent = data;
+            value = null;
+            foreach (var name in lookup[..^1]) parent = (parent as JsonObject)?[name];
+            if (parent is JsonObject resolved && resolved.TryGetPropertyValue(lookup[^1], out value)) field = value is null ? ResponseField.Null : ResponseField.Value;
+        }
+        return (new GitHubResponse(status, read, message, data is not null)
+        {
+            RateLimitRemaining = int.TryParse(headers.GetValueOrDefault("X-RateLimit-Remaining"), NumberStyles.None, CultureInfo.InvariantCulture, out var remaining) ? remaining : null,
+            RateLimitReset = long.TryParse(headers.GetValueOrDefault("X-RateLimit-Reset"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var epoch)
+                && epoch >= DateTimeOffset.MinValue.ToUnixTimeSeconds() && epoch <= DateTimeOffset.MaxValue.ToUnixTimeSeconds() ? DateTimeOffset.FromUnixTimeSeconds(epoch) : null,
+            RetryAfter = int.TryParse(headers.GetValueOrDefault("Retry-After"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds) && seconds >= 0
+                ? TimeSpan.FromSeconds(seconds) : null,
+            Field = field
+        }, value);
     }
 
     /// <summary>Returns GraphQL data from gh --include output, or throws the classified failure.</summary>
     internal static JsonNode Classify(string response)
     {
-        if (Included(response) is not { } included)
-            throw new GitHubRequestException(GitHubFailure.Transient, "unrecognized gh response", uncertain: true);
-        var (status, headers, text) = included;
-        JsonNode? body = null;
-        try { body = JsonNode.Parse(text); } catch (System.Text.Json.JsonException) { }
-        var errors = body?["errors"] as JsonArray ?? [];
-        var types = errors.Select(error => error?["type"].OptionalText() ?? "").ToArray();
-        var detail = (errors.FirstOrDefault()?["message"] ?? body?["message"]).OptionalText() ?? "";
-        var description = $"HTTP {status}{(types.FirstOrDefault(t => t.Length != 0) is { } first ? " " + first : "")}{(detail.Length != 0 ? ": " + detail : "")}";
-        var exhausted = headers.GetValueOrDefault("X-RateLimit-Remaining") == "0";
-        TimeSpan? retryAfter = int.TryParse(headers.GetValueOrDefault("Retry-After"), out var seconds) && seconds >= 0 ? TimeSpan.FromSeconds(seconds) : null;
-        DateTimeOffset? reset = exhausted && long.TryParse(headers.GetValueOrDefault("X-RateLimit-Reset"), out var epoch) ? DateTimeOffset.FromUnixTimeSeconds(epoch) : null;
-        if (status == 429 || types.Contains("RATE_LIMITED") || (status == 403 && (retryAfter is not null || exhausted ||
-            detail.Contains("rate limit", StringComparison.OrdinalIgnoreCase) || detail.Contains("abuse", StringComparison.OrdinalIgnoreCase))))
-            throw new GitHubRequestException(GitHubFailure.RateLimited, description, retryAfter: retryAfter, resetAt: reset);
-        if (status is >= 200 and < 300)
-        {
-            if (errors.Count == 0) return body?["data"] ?? throw new GitHubRequestException(GitHubFailure.Transient, description + ": no data", uncertain: true);
-            if (types.All(Rejections.Contains)) throw new GitHubRequestException(GitHubFailure.Permanent, description);
-            throw new GitHubRequestException(GitHubFailure.Transient, description, uncertain: true);
-        }
-        // 401: renewal may recover the credential. 408, 409 and 5xx may have been applied before failing.
-        if (status == 401) throw new GitHubRequestException(GitHubFailure.Transient, description);
-        if (status is 400 or 403 or 404 or 410 or 422) throw new GitHubRequestException(GitHubFailure.Permanent, description);
-        throw new GitHubRequestException(GitHubFailure.Transient, description, uncertain: true);
+        var (read, data) = Read(response);
+        GitHubResponses.Check(read);
+        return data!;
     }
 }

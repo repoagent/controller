@@ -31,11 +31,17 @@ sealed class GitHubDiscussions(GitHub github) : IDiscussions
         var parts = github.Repository.Split('/');
         var response = await github.Post("query($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { discussion(number:$number) { " + DiscussionFields + " } } }",
             Json.Object(("owner", parts[0]), ("name", parts[1]), ("number", number)), ct);
-        // Only the typed NOT_FOUND for this field inside the resolved repository confirms deletion. Message text,
-        // repository access loss, other error types and incomplete data stay classified failures.
-        if (GitHub.ConfirmsAbsent(response, "repository", "discussion")) return null;
-        return DiscussionJson.ReadDiscussion(GitHub.Classify(response)["repository"]?["discussion"]
-            ?? throw new GitHubRequestException(GitHubFailure.Transient, "incomplete Discussion response"), github.MentionUser);
+        return Discussion(response) is { } discussion ? DiscussionJson.ReadDiscussion(discussion, github.MentionUser) : null;
+    }
+
+    internal static readonly string[] Lookup = ["repository", "discussion"];
+
+    /// <summary>The Discussion a lookup's gh --include output returned; null only when GitHub confirmed it absent. Any other
+    /// output throws its classified failure.</summary>
+    internal static JsonNode? Discussion(string response)
+    {
+        var (read, discussion) = GitHub.Read(response, Lookup);
+        return GitHubResponses.Found(read, Lookup, "Discussion") ? discussion : null;
     }
 
     public async Task<DiscussionConversation> Read(Discussion discussion, CancellationToken ct)
