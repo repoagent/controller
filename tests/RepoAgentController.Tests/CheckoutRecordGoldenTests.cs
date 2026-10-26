@@ -135,7 +135,6 @@ public sealed class CheckoutRecordGoldenTests
     [Theory]
     [InlineData("commit missing")]
     [InlineData("commit null")]
-    [InlineData("commit other")]
     public async Task A_restart_accepts_a_record_without_its_commit_and_leaves_it_as_read(string form)
     {
         if (OperatingSystem.IsWindows()) return;
@@ -145,8 +144,7 @@ public sealed class CheckoutRecordGoldenTests
         var recorded = form switch
         {
             "commit missing" => written[..written.IndexOf(",\"commit\"", StringComparison.Ordinal)] + "}",
-            "commit null" => written.Replace("\"" + fixture.Commit + "\"", "null", StringComparison.Ordinal),
-            _ => Written(fixture, owner, "elsewhere"),
+            _ => written.Replace("\"" + fixture.Commit + "\"", "null", StringComparison.Ordinal),
         };
         File.WriteAllText(fixture.Record, recorded);
         var before = fixture.Snapshot();
@@ -156,40 +154,98 @@ public sealed class CheckoutRecordGoldenTests
         Assert.Equal(before, fixture.Snapshot());
     }
 
+    // A record changed after the checkout opened, compared as JSON with the record as read or last written, as on 3a52528.
+    static string Changed(CheckoutFixture fixture, string owner, string atOpen, string form)
+    {
+        var written = Written(fixture, owner, fixture.Commit);
+        return form switch
+        {
+            "keys reversed" => Reordered(fixture, owner, fixture.Commit).Replace(",\"later\":{\"kept\":[1,\"two\"]}", ""),
+            "unknown keys swapped" => written[..^1] + ",\"b\":2,\"a\":1}",
+            "version 1.0" => written.Replace("\"version\":1", "\"version\":1.0", StringComparison.Ordinal),
+            "repositoryId 345.0" => written.Replace("\"repositoryId\":345", "\"repositoryId\":345.0", StringComparison.Ordinal),
+            "unknown 1 to 1.0" => written[..^1] + ",\"later\":1.0}",
+            "commit other" => Written(fixture, owner, new string('2', 40)),
+            "commit missing then null" => atOpen.Replace("}", ",\"commit\":null}", StringComparison.Ordinal),
+            "not JSON" => "{",
+            _ => written[..^1] + ",\"version\":1}", // a key repeated
+        };
+    }
+
+    static string AtOpen(CheckoutFixture fixture, string owner, string form)
+    {
+        var written = Written(fixture, owner, fixture.Commit);
+        return form switch
+        {
+            "unknown keys swapped" => written[..^1] + ",\"a\":1,\"b\":2}",
+            "unknown 1 to 1.0" => written[..^1] + ",\"later\":1}",
+            "commit missing then null" => written[..written.IndexOf(",\"commit\"", StringComparison.Ordinal)] + "}",
+            _ => written,
+        };
+    }
+
+    // A record no writer leaves: the commit is missing and an unknown key follows the branch. 3a52528 appended the applied
+    // commit after the unknown key; the typed record writes it in the writers' order, before the unknown key.
     [Fact]
-    public async Task A_refresh_over_a_record_rewritten_in_another_order_with_the_same_values_applies()
+    public async Task A_refresh_over_a_record_without_its_commit_writes_the_commit_before_its_unknown_keys()
     {
         if (OperatingSystem.IsWindows()) return;
         var (fixture, owner) = await Cloned();
         using var _ = fixture;
+        var written = Written(fixture, owner, fixture.Commit);
+        File.WriteAllText(fixture.Record, written[..written.IndexOf(",\"commit\"", StringComparison.Ordinal)] + ",\"later\":1}");
+        var target = await fixture.Advance("advanced");
+
+        using (var checkout = await fixture.Open()) Assert.True(await checkout.Refresh((_, _) => { }, Token));
+
+        Assert.Equal(Written(fixture, owner, target)[..^1] + ",\"later\":1}", File.ReadAllText(fixture.Record));
+    }
+
+    [Theory]
+    [InlineData("keys reversed")]
+    [InlineData("unknown keys swapped")]
+    [InlineData("version 1.0")]
+    [InlineData("repositoryId 345.0")]
+    [InlineData("unknown 1 to 1.0")]
+    public async Task A_refresh_over_a_record_rewritten_with_the_same_JSON_applies(string form)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (fixture, owner) = await Cloned();
+        using var _ = fixture;
+        var atOpen = AtOpen(fixture, owner, form);
+        File.WriteAllText(fixture.Record, atOpen);
         var target = await fixture.Advance("advanced");
 
         using (var checkout = await fixture.Open())
         {
-            File.WriteAllText(fixture.Record, Reordered(fixture, owner, fixture.Commit).Replace(",\"later\":{\"kept\":[1,\"two\"]}", ""));
+            File.WriteAllText(fixture.Record, Changed(fixture, owner, atOpen, form));
             Assert.True(await checkout.Refresh((_, _) => { }, Token));
         }
 
-        Assert.Equal(Written(fixture, owner, target), File.ReadAllText(fixture.Record));
+        Assert.Equal(await CheckoutFixture.Git("-C", fixture.Root, "rev-parse", "HEAD"), target);
     }
 
-    // A record that is no longer JSON failed the refresh with an unhandled JSON exception before the record was typed.
     [Theory]
-    [InlineData("not JSON")]
-    [InlineData("commit other")]
-    public async Task A_refresh_refuses_a_record_changed_since_the_checkout_opened_and_changes_nothing(string form)
+    [InlineData("commit other", "IOException", "Managed checkout blocked: ownership record changed; preserve this workspace and inspect it before retrying")]
+    [InlineData("commit missing then null", "IOException", "Managed checkout blocked: ownership record changed; preserve this workspace and inspect it before retrying")]
+    [InlineData("not JSON", "JsonReaderException", null)]
+    [InlineData("key repeated", "ArgumentException", null)]
+    public async Task A_refresh_refuses_a_record_whose_JSON_changed_since_the_checkout_opened_and_changes_nothing(string form, string type, string? message)
     {
         if (OperatingSystem.IsWindows()) return;
         var (fixture, owner) = await Cloned();
         using var _ = fixture;
+        var atOpen = AtOpen(fixture, owner, form);
+        File.WriteAllText(fixture.Record, atOpen);
         await fixture.Advance("advanced");
 
         using var checkout = await fixture.Open();
-        File.WriteAllText(fixture.Record, form == "not JSON" ? "{" : Written(fixture, owner, new string('2', 40)));
+        File.WriteAllText(fixture.Record, Changed(fixture, owner, atOpen, form));
         var before = fixture.Snapshot();
 
-        Assert.Equal("Managed checkout blocked: ownership record changed; preserve this workspace and inspect it before retrying",
-            (await Assert.ThrowsAsync<IOException>(() => checkout.Refresh((_, _) => { }, Token))).Message);
+        var refused = await Assert.ThrowsAnyAsync<Exception>(() => checkout.Refresh((_, _) => { }, Token));
+        Assert.Equal(type, refused.GetType().Name);
+        if (message is not null) Assert.Equal(message, refused.Message);
 
         Assert.Equal(before, fixture.Snapshot());
     }

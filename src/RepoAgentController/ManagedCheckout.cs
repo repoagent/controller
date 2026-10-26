@@ -14,7 +14,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
     const UnixFileMode CheckoutMetadataMode = PrivateFileMode | UnixFileMode.UserExecute;
     readonly FileStream lease;
     public string Root { get; }
-    readonly string record;
+    readonly Workspace workspace;
     readonly CheckoutRecord metadata;
     readonly RepositoryCheckout repository;
     readonly CheckoutFacts facts;
@@ -23,10 +23,10 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
     public string Owner => metadata.Owner!;
     public long RepositoryId => repository.Id;
     public string DefaultRef => "refs/heads/" + repository.Branch;
-    ManagedCheckout(string root, FileStream lease, string record, CheckoutRecord metadata,
+    ManagedCheckout(string root, FileStream lease, Workspace workspace, CheckoutRecord metadata,
         RepositoryCheckout repository, CheckoutFacts facts, GitHub github, GitHubAppCredentials credentials)
     {
-        Root = root; this.lease = lease; this.record = record; this.metadata = metadata;
+        Root = root; this.lease = lease; this.workspace = workspace; this.metadata = metadata;
         this.repository = repository; this.facts = facts; this.github = github; this.credentials = credentials;
     }
 
@@ -47,21 +47,43 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
             CheckoutInspection.Workspace(Directory.EnumerateFileSystemEntries(workspace).Select(entry => Path.GetFileName(entry)));
             CheckPath(root); CheckPath(record);
             var facts = new CheckoutFacts(root);
-            var opened = await CheckoutInspection.Open(new Workspace(root, record, github, credentials, gh), facts, state, root, credentials.RepositoryId, ct);
+            var files = new Workspace(root, record, github, credentials, gh);
+            var opened = await CheckoutInspection.Open(files, facts, state, root, credentials.RepositoryId, ct);
             Log.Write("checkout-ready", $"repository={opened.Repository.Name} root={root} commit={opened.Record.Commit}");
-            return new(root, lease, record, opened.Record, opened.Repository, facts, github, credentials);
+            return new(root, lease, files, opened.Record, opened.Repository, facts, github, credentials);
         }
         catch { lease.Dispose(); throw; }
     }
 
-    /// <summary>The workspace's files, its clone and the authoritative repository lookup.</summary>
+    /// <summary>
+    /// The workspace's files, its clone and the authoritative repository lookup. It keeps the record's text as last read or
+    /// written, which a refresh compares with the file as JSON before it changes the checkout.
+    /// </summary>
     sealed class Workspace(string root, string record, GitHub github, GitHubAppCredentials credentials, string gh) : ICheckoutWorkspace
     {
         readonly string ownerFile = Path.Combine(root, ".git", "repoagent-owner");
+        string recorded = "";
 
         public Task<RepositoryCheckout> AuthoritativeRepository(CancellationToken ct) => github.CheckoutRepository(ct);
 
-        public CheckoutRecord? Record() => File.Exists(record) ? ParseRecord(ReadFile(record, CheckoutMetadataMode)) : null;
+        public CheckoutRecord? Record()
+        {
+            if (!File.Exists(record)) return null;
+            recorded = ReadFile(record, CheckoutMetadataMode);
+            return ParseRecord(recorded);
+        }
+
+        /// <summary>Whether the record holds the same JSON as when it was last read or written; throws when it is missing or
+        /// unsafe, is not JSON, or repeats a key.</summary>
+        public bool Unchanged() => JsonNode.DeepEquals(JsonNode.Parse(recorded), JsonNode.Parse(ReadFile(record, CheckoutMetadataMode)));
+
+        /// <summary>Replaces the record with <paramref name="value"/>.</summary>
+        public void Rewrite(CheckoutRecord value)
+        {
+            var text = SerializeRecord(value);
+            SaveFile(record, text, CheckoutMetadataMode);
+            recorded = text;
+        }
 
         public CheckoutRoot Root() => Directory.Exists(root) ? CheckoutRoot.Directory : Path.Exists(root) ? CheckoutRoot.Other : CheckoutRoot.Missing;
 
@@ -79,8 +101,10 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
 
         public void WriteRecord(CheckoutRecord value)
         {
-            WriteNew(record + ".tmp", SerializeRecord(value));
+            var text = SerializeRecord(value);
+            WriteNew(record + ".tmp", text);
             File.Move(record + ".tmp", record);
+            recorded = text;
         }
     }
 
@@ -153,8 +177,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
 
     async Task VerifyOwnership(CancellationToken ct)
     {
-        if (ParseRecord(ReadFile(record, CheckoutMetadataMode)) is not { Unreadable: false } read || SerializeRecord(read) != SerializeRecord(metadata) ||
-            ReadFile(Path.Combine(Root, ".git", "repoagent-owner"), CheckoutMetadataMode) != Owner)
+        if (!workspace.Unchanged() || (workspace.Owner() ?? throw Blocked("private state is missing or unsafe")) != Owner)
             throw Blocked("ownership record changed");
         await CheckoutInspection.Verify(facts, Root, repository, ct);
     }
@@ -202,7 +225,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
         await Force(target, ct);
         if (await CheckoutInspection.Inspect(facts, Root, repository, ct) != target) throw Blocked("applied commit differs");
         metadata.Commit = target;
-        SaveFile(record, SerializeRecord(metadata), CheckoutMetadataMode);
+        workspace.Rewrite(metadata);
         Log.Write("checkout-refreshed", $"root={Root} commit={target}" + (target == previous ? " restored=local-changes" : ""));
         return true;
     }
