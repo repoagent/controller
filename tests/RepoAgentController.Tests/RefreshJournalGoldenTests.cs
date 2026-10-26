@@ -149,6 +149,12 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         // f742e2b wrote the keys in the order read.
         { "applying empty", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":0,\"applying\":{{}}"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\",\"applying\":{}} | \"Unmatched native lifecycle event\"" },
+        // f742e2b stopped with ArgumentException.
+        { "active repeated", Journal($"{Bound},{Settled},\"active\":{{}},\"blocked\":false,\"running\":0"),
+            "IOException: Refresh journal binding or format differs; manual recovery required" },
+        // f742e2b wrote the keys in the order read.
+        { "applying with a key repeated", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":0,\"applying\":{{\"generation\":1,\"generation\":2}}"),
+            "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\",\"applying\":{\"generation\":1,\"generation\":2}} | \"Unmatched native lifecycle event\"" },
         { "blocked and running missing", Journal($"{Bound},{Settled}"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":false,\"running\":0} | \"Unmatched native lifecycle event\"" },
         // f742e2b wrote the keys in the order read.
