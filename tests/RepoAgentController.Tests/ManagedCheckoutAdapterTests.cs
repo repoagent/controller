@@ -129,10 +129,51 @@ public sealed class ManagedCheckoutAdapterTests
         Assert.Equal(["https://github.com/a.git", "https://github.com/b.git"], ManagedCheckout.CheckoutFacts.Lines("https://github.com/a.git\nhttps://github.com/b.git\n"));
         Assert.Equal(["https://github.com/a.git"], ManagedCheckout.CheckoutFacts.Lines("https://github.com/a.git \n\n"));
         Assert.Equal([""], ManagedCheckout.CheckoutFacts.Lines(""));
+        Assert.False(ManagedCheckout.CheckoutFacts.Bare("false\n"));
+        Assert.True(ManagedCheckout.CheckoutFacts.Bare("true\n"));
+        Assert.True(ManagedCheckout.CheckoutFacts.Bare(""));
         Assert.Equal(
             [new("tracked", false, false), new("assumed", false, true), new("skipped", true, false), new("both", true, true),
                 new("merged", false, false), new("assumed other", false, true), new("changed", false, false)],
             ManagedCheckout.CheckoutFacts.Entries("H tracked\0h assumed\0S skipped\0s both\0M merged\0c assumed other\0C changed\0"));
+    }
+
+    // What the refresh reads through the facts port while origin has not moved: local state it restores, and then rests.
+    [Theory]
+    [InlineData("untracked")]
+    [InlineData("merge")]
+    [InlineData("skip-worktree")]
+    public async Task A_refresh_while_origin_is_unmoved_restores_local_state_then_finds_the_checkout_settled(string scenario)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await Cloned();
+        using var checkout = await fixture.Open();
+        var tracked = Path.Combine(fixture.Root, "tracked-sentinel");
+        if (scenario == "untracked") File.WriteAllText(Path.Combine(fixture.Root, "local-only"), "user bytes");
+        if (scenario == "merge") File.WriteAllText(Path.Combine(fixture.Root, ".git", "MERGE_HEAD"), fixture.Commit + "\n");
+        if (scenario == "skip-worktree")
+        {
+            await CheckoutFixture.Git("-C", fixture.Root, "update-index", "--skip-worktree", "tracked-sentinel");
+            File.AppendAllText(tracked, "hidden local edit");
+        }
+
+        Assert.True(await checkout.Refresh((_, _) => { }, TestContext.Current.CancellationToken));
+        Assert.False(await checkout.Refresh((_, _) => { }, TestContext.Current.CancellationToken));
+
+        Assert.Equal("approved repository\n", File.ReadAllText(tracked));
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "local-only")));
+    }
+
+    [Fact]
+    public async Task A_refresh_refuses_a_checkout_whose_owner_marker_was_removed()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await Cloned();
+        await fixture.Advance("advanced");
+        using var checkout = await fixture.Open();
+        File.Delete(fixture.Marker);
+
+        Assert.Equal(Unsafe, (await Assert.ThrowsAsync<IOException>(() => checkout.Refresh((_, _) => { }, TestContext.Current.CancellationToken))).Message);
     }
 
     public static TheoryData<string> Links() => ["root-symlink", "index-symlink"];

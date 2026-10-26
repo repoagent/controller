@@ -57,6 +57,23 @@ public sealed class CheckoutRecordGoldenTests
     }
 
     [Fact]
+    public async Task A_second_refresh_compares_the_record_with_the_one_the_first_wrote()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (fixture, owner) = await Cloned();
+        using var _ = fixture;
+
+        using (var checkout = await fixture.Open())
+        {
+            await fixture.Advance("first");
+            Assert.True(await checkout.Refresh((_, _) => { }, Token));
+            var target = await fixture.Advance("second");
+            Assert.True(await checkout.Refresh((_, _) => { }, Token));
+            Assert.Equal(Written(fixture, owner, target), File.ReadAllText(fixture.Record));
+        }
+    }
+
+    [Fact]
     public async Task A_restart_accepts_a_record_with_its_keys_in_another_order_and_an_unknown_key_and_leaves_it_as_read()
     {
         if (OperatingSystem.IsWindows()) return;
