@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace RepoAgentController.Tests;
@@ -69,8 +70,9 @@ public sealed class CheckoutRecordGoldenTests
         Assert.Equal(recorded, File.ReadAllText(fixture.Record));
     }
 
+    // A record no writer leaves: the typed record writes its keys in the writers' order, then the unknown key as read.
     [Fact]
-    public async Task A_refresh_over_a_record_with_an_unknown_key_keeps_the_key()
+    public async Task A_refresh_over_a_record_in_another_order_writes_the_writers_order_and_keeps_the_unknown_key()
     {
         if (OperatingSystem.IsWindows()) return;
         var (fixture, owner) = await Cloned();
@@ -80,6 +82,90 @@ public sealed class CheckoutRecordGoldenTests
 
         using (var checkout = await fixture.Open()) Assert.True(await checkout.Refresh((_, _) => { }, Token));
 
-        Assert.Equal(Reordered(fixture, owner, target), File.ReadAllText(fixture.Record));
+        Assert.Equal(Written(fixture, owner, target)[..^1] + ",\"later\":{\"kept\":[1,\"two\"]}}", File.ReadAllText(fixture.Record));
+    }
+
+    // Records no writer leaves, which a restart failed on with an unhandled JSON exception before the record was typed. A
+    // restart now refuses each with a managed checkout refusal and changes nothing.
+    [Theory]
+    [InlineData("not JSON", "invalid ownership record")]
+    [InlineData("a list", "invalid ownership record")]
+    [InlineData("a number", "invalid ownership record")]
+    [InlineData("text", "invalid ownership record")]
+    [InlineData("key repeated", "invalid ownership record")]
+    [InlineData("key repeated differently", "invalid ownership record")]
+    [InlineData("unknown key repeated", "invalid ownership record")]
+    [InlineData("commit number", "invalid ownership record")]
+    [InlineData("version text", "ownership or repository binding differs")]
+    [InlineData("version 1.0", "ownership or repository binding differs")]
+    [InlineData("state number", "ownership or repository binding differs")]
+    [InlineData("root number", "ownership or repository binding differs")]
+    [InlineData("owner number", "ownership or repository binding differs")]
+    [InlineData("repositoryId text", "ownership or repository binding differs")]
+    [InlineData("repositoryId 345.0", "ownership or repository binding differs")]
+    [InlineData("repository number", "ownership or repository binding differs")]
+    [InlineData("branch number", "ownership or repository binding differs")]
+    public async Task A_restart_refuses_a_record_of_a_type_no_writer_leaves_and_changes_nothing(string form, string reason)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (fixture, owner) = await Cloned();
+        using var _ = fixture;
+        var written = Written(fixture, owner, fixture.Commit);
+        string Replaced(string key, string json) { var record = JsonNode.Parse(written)!.AsObject(); record[key] = JsonNode.Parse(json); return record.ToJsonString(); }
+        File.WriteAllText(fixture.Record, form switch
+        {
+            "not JSON" => "{", "a list" => "[]", "a number" => "5", "text" => "\"x\"",
+            "key repeated" => written[..^1] + ",\"version\":1}",
+            "key repeated differently" => written[..^1] + ",\"branch\":\"main\"}",
+            "unknown key repeated" => written[..^1] + ",\"later\":1,\"later\":2}",
+            "commit number" => Replaced("commit", "5"), "version text" => Replaced("version", "\"1\""), "version 1.0" => Replaced("version", "1.0"),
+            "state number" => Replaced("state", "5"), "root number" => Replaced("root", "5"), "owner number" => Replaced("owner", "5"),
+            "repositoryId text" => Replaced("repositoryId", "\"345\""), "repositoryId 345.0" => Replaced("repositoryId", "345.0"),
+            "repository number" => Replaced("repository", "5"), _ => Replaced("branch", "5"),
+        });
+        var before = fixture.Snapshot();
+
+        Assert.Equal("Managed checkout blocked: " + reason + "; preserve this workspace and inspect it before retrying",
+            (await Assert.ThrowsAsync<IOException>(() => fixture.Open())).Message);
+
+        Assert.Equal(before, fixture.Snapshot());
+    }
+
+    [Fact]
+    public async Task A_refresh_over_a_record_rewritten_in_another_order_with_the_same_values_applies()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (fixture, owner) = await Cloned();
+        using var _ = fixture;
+        var target = await fixture.Advance("advanced");
+
+        using (var checkout = await fixture.Open())
+        {
+            File.WriteAllText(fixture.Record, Reordered(fixture, owner, fixture.Commit).Replace(",\"later\":{\"kept\":[1,\"two\"]}", ""));
+            Assert.True(await checkout.Refresh((_, _) => { }, Token));
+        }
+
+        Assert.Equal(Written(fixture, owner, target), File.ReadAllText(fixture.Record));
+    }
+
+    // A record that is no longer JSON failed the refresh with an unhandled JSON exception before the record was typed.
+    [Theory]
+    [InlineData("not JSON")]
+    [InlineData("commit other")]
+    public async Task A_refresh_refuses_a_record_changed_since_the_checkout_opened_and_changes_nothing(string form)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var (fixture, owner) = await Cloned();
+        using var _ = fixture;
+        await fixture.Advance("advanced");
+
+        using var checkout = await fixture.Open();
+        File.WriteAllText(fixture.Record, form == "not JSON" ? "{" : Written(fixture, owner, new string('2', 40)));
+        var before = fixture.Snapshot();
+
+        Assert.Equal("Managed checkout blocked: ownership record changed; preserve this workspace and inspect it before retrying",
+            (await Assert.ThrowsAsync<IOException>(() => checkout.Refresh((_, _) => { }, Token))).Message);
+
+        Assert.Equal(before, fixture.Snapshot());
     }
 }

@@ -733,3 +733,88 @@ sealed class ScriptedCheckout : IRepositoryCheckout
         return outcome(beforeApply, ct);
     }
 }
+
+/// <summary>
+/// A managed workspace and its checkout as their files and Git would report them, in memory. It starts as a settled clone of
+/// the approved repository at <see cref="Head"/>, owned by <see cref="Owner"/> and recorded; a test changes what it needs.
+/// Reads are recorded by name; a clone or write the workspace would refuse throws before it is recorded.
+/// </summary>
+sealed class InMemoryCheckout : ICheckoutWorkspace, ICheckoutFacts
+{
+    public const string State = "/srv/repoagent/state.json", RootPath = "/srv/repoagent/workspace/repository";
+    public const string Head = "1111111111111111111111111111111111111111", Owner = "0123456789abcdef0123456789abcdef";
+    public const string Remote = "https://github.com/owner/repository.git";
+
+    public RepositoryCheckout Repository { get; set; } = new(345, "owner/repository", Remote, "trunk");
+    public CheckoutRecord? Saved { get; set; } = Recorded();
+    public CheckoutRoot RootEntry { get; set; } = CheckoutRoot.Directory;
+    public string? Marker { get; set; } = Owner;
+    public bool GitDirectory { get; set; } = true;
+    public HashSet<string> Held { get; } = [];
+    public List<string> Configuration { get; } =
+    [
+        "core.repositoryformatversion\n0", "core.filemode\ntrue", "core.bare\nfalse", "core.logallrefupdates\ntrue",
+        "remote.origin.url\n" + Remote, "remote.origin.fetch\n+refs/heads/*:refs/remotes/origin/*",
+        "branch.trunk.remote\norigin", "branch.trunk.merge\nrefs/heads/trunk"
+    ];
+    public string TopLevelPath { get; set; } = RootPath;
+    public string IsBare { get; set; } = "false";
+    public List<string> Urls { get; } = [Remote];
+    public string HeadName { get; set; } = "refs/heads/trunk";
+    public string Changes { get; set; } = "";
+    public string Flags { get; set; } = "H .gitignore\0H tracked-sentinel\0";
+    public Dictionary<string, string> Commits { get; } = new() { ["HEAD^{commit}"] = Head, ["refs/remotes/origin/trunk^{commit}"] = Head };
+
+    public List<string> Reads { get; } = [];
+    public List<string> Writes { get; } = [];
+    public int Clones { get; private set; }
+
+    /// <summary>The ownership record a clone of the approved repository at <see cref="Head"/> leaves.</summary>
+    public static CheckoutRecord Recorded() => new()
+    {
+        Version = 1, State = State, Root = RootPath, Owner = Owner, RepositoryId = 345, Repository = "owner/repository", Remote = Remote,
+        Branch = "trunk", Commit = Head
+    };
+
+    T Read<T>(string name, T value) { Reads.Add(name); return value; }
+    Task<string> Git(string name, string output) => Task.FromResult(Read(name, output));
+
+    public Task<RepositoryCheckout> AuthoritativeRepository(CancellationToken ct) => Task.FromResult(Read("repository", Repository));
+    public CheckoutRecord? Record() => Read("record", Saved);
+    public CheckoutRoot Root() => Read("root", RootEntry);
+
+    public Task Clone(RepositoryCheckout repository, CancellationToken ct)
+    {
+        if (RootEntry != CheckoutRoot.Missing) throw new IOException("The clone target exists");
+        RootEntry = CheckoutRoot.Directory;
+        Clones++;
+        Writes.Add("clone " + repository.Remote);
+        return Task.CompletedTask;
+    }
+
+    string? ICheckoutWorkspace.Owner() => Read("owner", Marker);
+
+    public void WriteOwner(string owner)
+    {
+        if (Marker is not null) throw new IOException("The owner marker exists");
+        Marker = owner;
+        Writes.Add("owner " + owner);
+    }
+
+    public void WriteRecord(CheckoutRecord record)
+    {
+        Saved = record;
+        Writes.Add("record " + record.Owner);
+    }
+
+    public bool OwnGitDirectory() => Read("git-directory", GitDirectory);
+    public bool Holds(string path) => Read("holds " + path, Held.Contains(path));
+    public Task<string> LocalConfiguration(CancellationToken ct) => Git("configuration", string.Concat(Configuration.Select(entry => entry + "\0")));
+    public Task<string> TopLevel(CancellationToken ct) => Git("top-level", TopLevelPath + "\n");
+    public Task<string> Bare(CancellationToken ct) => Git("bare", IsBare + "\n");
+    public Task<string> OriginUrls(CancellationToken ct) => Git("origin-urls", string.Concat(Urls.Select(url => url + "\n")));
+    public Task<string> HeadRef(CancellationToken ct) => Git("head-ref", HeadName.Length == 0 ? "" : HeadName + "\n");
+    public Task<string> TrackedChanges(CancellationToken ct) => Git("tracked-changes", Changes);
+    public Task<string> IndexFlags(CancellationToken ct) => Git("index-flags", Flags);
+    public Task<string> Commit(string revision, CancellationToken ct) => Git("commit " + revision, Commits[revision] + "\n");
+}
