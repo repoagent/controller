@@ -284,7 +284,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
 
     /// <summary>The native thread and turn a turn lifecycle event names, and whether it completed the turn; null for any other
     /// event. A missing turn ID maps to "", which no valid identity is.</summary>
-    public static (string Thread, string Turn, bool Completed)? Lifecycle(AgentRuntimeEvent change)
+    static (string Thread, string Turn, bool Completed)? Lifecycle(AgentRuntimeEvent change)
     {
         (string Thread, string Turn, bool Completed)? identity = change switch
         {

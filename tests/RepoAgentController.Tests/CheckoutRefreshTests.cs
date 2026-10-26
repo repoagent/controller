@@ -481,6 +481,9 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         { "a lost transport", "Native transport disconnected; completion unknown" },
         { "a completed turn restarted", "Native restarted a completed turn identity" },
         { "a turn without an identity", "Malformed native lifecycle identity" },
+        { "a completion without an identity", "Malformed native lifecycle identity" },
+        { "a turn without a session", "Malformed native lifecycle identity" },
+        { "a completion with an identity over 256 characters", "Malformed native lifecycle identity" },
     };
 
     [Theory]
@@ -498,7 +501,10 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
             "a turn no admission can hold" => new AgentTurnStarted(1, "S9", "T9"),
             "a lost transport" => new AgentRuntimeDisconnected(1),
             "a completed turn restarted" => new AgentTurnStarted(1, "S1", "T1"),
-            _ => new AgentTurnStarted(1, "S1", null)
+            "a turn without an identity" => new AgentTurnStarted(1, "S1", null),
+            "a completion without an identity" => new AgentTurnCompleted(1, "S1", null, AgentTurnStatus.Completed, "completed", null),
+            "a turn without a session" => new AgentTurnStarted(1, "", "T1"),
+            _ => Completed("S1", new string('T', 257))
         });
 
         Assert.Equal((true, reason), (Saved.Blocked, Saved.Reason));
