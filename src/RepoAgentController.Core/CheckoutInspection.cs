@@ -81,8 +81,11 @@ public interface ICheckoutWorkspace
     void WriteRecord(CheckoutRecord record);
 }
 
+/// <summary>An index entry, and whether Git hides its working-tree changes as skip-worktree or assume-unchanged.</summary>
+public sealed record IndexEntry(string Path, bool SkipWorktree, bool AssumeUnchanged);
+
 /// <summary>
-/// The checkout's Git directory and Git's answers about the checkout, as text. Git runs without hooks, a file system monitor,
+/// The checkout's Git directory and what Git reports about the checkout. Git runs without hooks, a file system monitor,
 /// system or global configuration, or optional locks. A Git command that fails throws.
 /// </summary>
 public interface ICheckoutFacts
@@ -93,26 +96,30 @@ public interface ICheckoutFacts
     /// <summary>Whether the Git directory holds an entry at <paramref name="path"/>, relative to it.</summary>
     bool Holds(string path);
 
-    /// <summary>The checkout's own configuration, without includes: entries ended by NUL, each its key, a newline and its value.</summary>
-    Task<string> LocalConfiguration(CancellationToken ct);
+    /// <summary>The key of each entry in the checkout's own configuration, read without includes, as Git lists it.</summary>
+    Task<IReadOnlyList<string>> ConfigurationKeys(CancellationToken ct);
 
     /// <summary>The checkout's top-level directory.</summary>
     Task<string> TopLevel(CancellationToken ct);
 
-    /// <summary>Whether Git reads the checkout as bare: <c>true</c> or <c>false</c>.</summary>
-    Task<string> Bare(CancellationToken ct);
+    /// <summary>Whether Git reads the checkout as anything but a non-bare repository.</summary>
+    Task<bool> IsBare(CancellationToken ct);
 
-    /// <summary>Every URL configured for origin, one per line.</summary>
-    Task<string> OriginUrls(CancellationToken ct);
+    /// <summary>Every URL configured for origin, in order.</summary>
+    Task<IReadOnlyList<string>> OriginUrls(CancellationToken ct);
 
-    /// <summary>The ref HEAD names, empty when HEAD is detached.</summary>
-    Task<string> HeadRef(CancellationToken ct);
+    /// <summary>The branch ref HEAD points at. Throws when HEAD is detached.</summary>
+    Task<string> HeadBranch(CancellationToken ct);
 
-    /// <summary>Tracked changes in the index and working tree, one per line; untracked and ignored files are not listed.</summary>
-    Task<string> TrackedChanges(CancellationToken ct);
+    /// <summary>The full ref name HEAD resolves to: <c>HEAD</c> when it is detached.</summary>
+    Task<string> HeadName(CancellationToken ct);
 
-    /// <summary>Each index entry ended by NUL, as its flag tag, a space and its path.</summary>
-    Task<string> IndexFlags(CancellationToken ct);
+    /// <summary>Whether the index or working tree differs from HEAD in a tracked file, or, with
+    /// <paramref name="untracked"/>, holds an untracked file that is not ignored.</summary>
+    Task<bool> Changed(bool untracked, CancellationToken ct);
+
+    /// <summary>Every index entry, in index order.</summary>
+    Task<IReadOnlyList<IndexEntry>> Index(CancellationToken ct);
 
     /// <summary>The commit <paramref name="revision"/> names.</summary>
     Task<string> Commit(string revision, CancellationToken ct);
@@ -169,7 +176,7 @@ public static class CheckoutInspection
         if (workspace.Root() != CheckoutRoot.Missing) throw Blocked("checkout has no ownership record");
         await workspace.Clone(repository, ct);
         var commit = await Inspect(checkout, root, repository, ct);
-        if ((await checkout.Commit("refs/remotes/origin/" + repository.Branch + "^{commit}", ct)).Trim() != commit)
+        if (await checkout.Commit("refs/remotes/origin/" + repository.Branch + "^{commit}", ct) != commit)
             throw Blocked("cloned default branch changed during bootstrap");
         var created = Guid.NewGuid().ToString("N");
         var record = new CheckoutRecord
@@ -193,10 +200,10 @@ public static class CheckoutInspection
         if (LinkedStorage.Any(checkout.Holds)) throw Blocked("linked Git storage");
         if (Operations.Any(checkout.Holds)) throw new CheckoutDeferred("in-progress Git operation");
         // Only the local configuration, before any command that could invoke a filter.
-        foreach (var entry in (await checkout.LocalConfiguration(ct)).Split('\0', StringSplitOptions.RemoveEmptyEntries))
-            if (!Allowed(entry.Split('\n', 2)[0].ToLowerInvariant())) throw Blocked("unsupported local Git configuration");
-        if ((await checkout.TopLevel(ct)).TrimEnd() != root || (await checkout.Bare(ct)).Trim() != "false" ||
-            (await checkout.OriginUrls(ct)).TrimEnd() != repository.Remote)
+        foreach (var key in await checkout.ConfigurationKeys(ct))
+            if (!Allowed(key.ToLowerInvariant())) throw Blocked("unsupported local Git configuration");
+        if (await checkout.TopLevel(ct) != root || await checkout.IsBare(ct) ||
+            await checkout.OriginUrls(ct) is not [var origin] || origin != repository.Remote)
             throw Blocked("Git root or remote differs");
     }
 
@@ -212,13 +219,13 @@ public static class CheckoutInspection
     public static async Task<string> Inspect(ICheckoutFacts checkout, string root, RepositoryCheckout repository, CancellationToken ct)
     {
         await Verify(checkout, root, repository, ct);
-        if ((await checkout.HeadRef(ct)).Trim() != "refs/heads/" + repository.Branch || await checkout.TrackedChanges(ct) != "" ||
-            Hidden(await checkout.IndexFlags(ct)).Any())
+        if (await checkout.HeadBranch(ct) != "refs/heads/" + repository.Branch || await checkout.Changed(false, ct) ||
+            Hidden(await checkout.Index(ct)).Any())
             throw Blocked("checkout does not match its default-branch commit");
-        return (await checkout.Commit("HEAD^{commit}", ct)).Trim();
+        return await checkout.Commit("HEAD^{commit}", ct);
     }
 
     /// <summary>Index entries whose working-tree changes Git hides: skip-worktree or assume-unchanged.</summary>
-    public static IEnumerable<string> Hidden(string flags) => flags.Split('\0', StringSplitOptions.RemoveEmptyEntries)
-        .Where(line => line[0] == 'S' || char.IsLower(line[0])).Select(line => line[2..]);
+    public static IEnumerable<string> Hidden(IEnumerable<IndexEntry> index) =>
+        index.Where(entry => entry.SkipWorktree || entry.AssumeUnchanged).Select(entry => entry.Path);
 }

@@ -753,16 +753,18 @@ sealed class InMemoryCheckout : ICheckoutWorkspace, ICheckoutFacts
     public HashSet<string> Held { get; } = [];
     public List<string> Configuration { get; } =
     [
-        "core.repositoryformatversion\n0", "core.filemode\ntrue", "core.bare\nfalse", "core.logallrefupdates\ntrue",
-        "remote.origin.url\n" + Remote, "remote.origin.fetch\n+refs/heads/*:refs/remotes/origin/*",
-        "branch.trunk.remote\norigin", "branch.trunk.merge\nrefs/heads/trunk"
+        "core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates", "remote.origin.url",
+        "remote.origin.fetch", "branch.trunk.remote", "branch.trunk.merge"
     ];
     public string TopLevelPath { get; set; } = RootPath;
-    public string IsBare { get; set; } = "false";
+    public bool Bare { get; set; }
     public List<string> Urls { get; } = [Remote];
-    public string HeadName { get; set; } = "refs/heads/trunk";
-    public string Changes { get; set; } = "";
-    public string Flags { get; set; } = "H .gitignore\0H tracked-sentinel\0";
+
+    /// <summary>The branch HEAD points at, or null when it is detached.</summary>
+    public string? Branch { get; set; } = "refs/heads/trunk";
+    public bool TrackedChanges { get; set; }
+    public bool UntrackedFiles { get; set; }
+    public List<IndexEntry> Entries { get; } = [new(".gitignore", false, false), new("tracked-sentinel", false, false)];
     public Dictionary<string, string> Commits { get; } = new() { ["HEAD^{commit}"] = Head, ["refs/remotes/origin/trunk^{commit}"] = Head };
 
     public List<string> Reads { get; } = [];
@@ -777,7 +779,7 @@ sealed class InMemoryCheckout : ICheckoutWorkspace, ICheckoutFacts
     };
 
     T Read<T>(string name, T value) { Reads.Add(name); return value; }
-    Task<string> Git(string name, string output) => Task.FromResult(Read(name, output));
+    Task<T> Git<T>(string name, T value) => Task.FromResult(Read(name, value));
 
     public Task<RepositoryCheckout> AuthoritativeRepository(CancellationToken ct) => Task.FromResult(Read("repository", Repository));
     public CheckoutRecord? Record() => Read("record", Saved);
@@ -809,12 +811,19 @@ sealed class InMemoryCheckout : ICheckoutWorkspace, ICheckoutFacts
 
     public bool OwnGitDirectory() => Read("git-directory", GitDirectory);
     public bool Holds(string path) => Read("holds " + path, Held.Contains(path));
-    public Task<string> LocalConfiguration(CancellationToken ct) => Git("configuration", string.Concat(Configuration.Select(entry => entry + "\0")));
-    public Task<string> TopLevel(CancellationToken ct) => Git("top-level", TopLevelPath + "\n");
-    public Task<string> Bare(CancellationToken ct) => Git("bare", IsBare + "\n");
-    public Task<string> OriginUrls(CancellationToken ct) => Git("origin-urls", string.Concat(Urls.Select(url => url + "\n")));
-    public Task<string> HeadRef(CancellationToken ct) => Git("head-ref", HeadName.Length == 0 ? "" : HeadName + "\n");
-    public Task<string> TrackedChanges(CancellationToken ct) => Git("tracked-changes", Changes);
-    public Task<string> IndexFlags(CancellationToken ct) => Git("index-flags", Flags);
-    public Task<string> Commit(string revision, CancellationToken ct) => Git("commit " + revision, Commits[revision] + "\n");
+    public Task<IReadOnlyList<string>> ConfigurationKeys(CancellationToken ct) => Git<IReadOnlyList<string>>("configuration", [.. Configuration]);
+    public Task<string> TopLevel(CancellationToken ct) => Git("top-level", TopLevelPath);
+    public Task<bool> IsBare(CancellationToken ct) => Git("bare", Bare);
+    public Task<IReadOnlyList<string>> OriginUrls(CancellationToken ct) => Git<IReadOnlyList<string>>("origin-urls", [.. Urls]);
+
+    public Task<string> HeadBranch(CancellationToken ct)
+    {
+        Reads.Add("head-branch");
+        return Branch is { } branch ? Task.FromResult(branch) : Task.FromException<string>(new IOException("HEAD is detached"));
+    }
+
+    public Task<string> HeadName(CancellationToken ct) => Git("head-name", Branch ?? "HEAD");
+    public Task<bool> Changed(bool untracked, CancellationToken ct) => Git(untracked ? "changes" : "tracked-changes", TrackedChanges || untracked && UntrackedFiles);
+    public Task<IReadOnlyList<IndexEntry>> Index(CancellationToken ct) => Git<IReadOnlyList<IndexEntry>>("index", [.. Entries]);
+    public Task<string> Commit(string revision, CancellationToken ct) => Git("commit " + revision, Commits[revision]);
 }

@@ -21,12 +21,11 @@ public sealed class CheckoutInspectionTests
         Assert.Empty(checkout.Writes);
     }
 
+    // dirty also stands for staged, and untracked for ignored: Git reports each pair as the same fact.
     [Theory]
     [InlineData("reuse")]
     [InlineData("dirty")]
-    [InlineData("staged")]
     [InlineData("untracked")]
-    [InlineData("ignored")]
     [InlineData("branch")]
     [InlineData("detached")]
     [InlineData("commit")]
@@ -39,13 +38,13 @@ public sealed class CheckoutInspectionTests
         switch (scenario)
         {
             case "reuse": checkout.Commits["refs/remotes/origin/trunk^{commit}"] = Other; break;
-            case "dirty": checkout.Changes = " M tracked-sentinel\n"; break;
-            case "staged": checkout.Changes = "M  tracked-sentinel\n"; break;
-            case "branch": checkout.HeadName = "refs/heads/local-branch"; break;
-            case "detached": checkout.HeadName = ""; break;
+            case "dirty": checkout.TrackedChanges = true; break;
+            case "untracked": checkout.UntrackedFiles = true; break;
+            case "branch": checkout.Branch = "refs/heads/local-branch"; break;
+            case "detached": checkout.Branch = null; break;
             case "commit": checkout.Commits["HEAD^{commit}"] = Other; break;
-            case "assume-unchanged": checkout.Flags = "H .gitignore\0h tracked-sentinel\0"; break;
-            case "skip-worktree": checkout.Flags = "H .gitignore\0S tracked-sentinel\0"; break;
+            case "assume-unchanged": checkout.Entries[1] = new("tracked-sentinel", false, true); break;
+            case "skip-worktree": checkout.Entries[1] = new("tracked-sentinel", true, false); break;
             case "operation/MERGE_HEAD": checkout.Held.Add("MERGE_HEAD"); break;
         }
 
@@ -55,7 +54,7 @@ public sealed class CheckoutInspectionTests
         Assert.Same(checkout.Saved, opened.Record);
         Assert.Equal(checkout.Repository, opened.Repository);
         Assert.Empty(checkout.Writes);
-        Assert.DoesNotContain(checkout.Reads, read => read is "head-ref" or "tracked-changes" or "index-flags" || read.StartsWith("commit ", StringComparison.Ordinal));
+        Assert.DoesNotContain(checkout.Reads, read => read is "head-branch" or "head-name" or "tracked-changes" or "changes" or "index" || read.StartsWith("commit ", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -172,37 +171,32 @@ public sealed class CheckoutInspectionTests
         Assert.Equal(0, checkout.Clones);
     }
 
+    // "owner" also stands for executable-owner-mismatch: an executable marker is the adapter's to allow; its owner still decides.
     [Theory]
     [InlineData("owner")]
-    [InlineData("executable-owner-mismatch")]
     [InlineData("owner upper case")]
     public async Task A_checkout_whose_marker_names_another_owner_was_replaced(string scenario)
     {
-        // An executable marker is the adapter's to allow; its owner still decides.
         var checkout = new InMemoryCheckout { Marker = scenario == "owner upper case" ? InMemoryCheckout.Owner.ToUpperInvariant() : "fedcba9876543210fedcba9876543210" };
 
         await Refuses(checkout, "checkout was replaced");
     }
 
-    [Theory]
-    [InlineData("marker-missing")]
-    [InlineData("root-replaced")]
-    public async Task A_checkout_without_its_owner_marker_is_refused(string scenario)
+    // marker-missing, and root-replaced: another clone in the root has a Git directory of its own but no marker.
+    [Fact]
+    public async Task A_checkout_without_its_owner_marker_is_refused()
     {
-        // root-replaced: another clone in the root has a Git directory of its own but no marker.
-        _ = scenario;
         var checkout = new InMemoryCheckout { Marker = null };
 
         await Refuses(checkout, "private state is missing or unsafe");
     }
 
+    // A directory is partial, and record-missing: a clone whose record was removed.
     [Theory]
-    [InlineData("partial", CheckoutRoot.Directory)]
-    [InlineData("record-missing", CheckoutRoot.Directory)]
-    [InlineData("root a file", CheckoutRoot.Other)]
-    public async Task A_root_without_an_ownership_record_is_refused_and_not_cloned_over(string scenario, CheckoutRoot root)
+    [InlineData(CheckoutRoot.Directory)]
+    [InlineData(CheckoutRoot.Other)]
+    public async Task A_root_without_an_ownership_record_is_refused_and_not_cloned_over(CheckoutRoot root)
     {
-        _ = scenario;
         var checkout = new InMemoryCheckout { Saved = null, RootEntry = root };
 
         await Refuses(checkout, "checkout has no ownership record");
@@ -265,23 +259,23 @@ public sealed class CheckoutInspectionTests
     }
 
     [Theory]
-    [InlineData("core.fsmonitor\n/must-not-run")]
-    [InlineData("core.hookspath\n/x")]
-    [InlineData("core.sshcommand\n/x")]
-    [InlineData("core.worktree\n/tmp")]
-    [InlineData("include.path\n/x")]
-    [InlineData("filter.x.clean\ncat")]
-    [InlineData("remote.origin.pushurl\nhttps://github.com/owner/other.git")]
-    [InlineData("remote.other.url\nhttps://github.com/owner/other.git")]
-    [InlineData("branch.trunk.rebase\ntrue")]
-    [InlineData("branch.x\ny")]
-    [InlineData("user.name\nx")]
-    [InlineData("core.bare.x\ny")]
-    public async Task A_checkout_with_local_Git_configuration_beyond_the_allowed_keys_is_refused(string entry)
+    [InlineData("core.fsmonitor")]
+    [InlineData("core.hookspath")]
+    [InlineData("core.sshcommand")]
+    [InlineData("core.worktree")]
+    [InlineData("include.path")]
+    [InlineData("filter.x.clean")]
+    [InlineData("remote.origin.pushurl")]
+    [InlineData("remote.other.url")]
+    [InlineData("branch.trunk.rebase")]
+    [InlineData("branch.x")]
+    [InlineData("user.name")]
+    [InlineData("core.bare.x")]
+    public async Task A_checkout_with_local_Git_configuration_beyond_the_allowed_keys_is_refused(string key)
     {
         // unsafe-config
         var checkout = new InMemoryCheckout();
-        checkout.Configuration.Add(entry);
+        checkout.Configuration.Add(key);
 
         await Refuses(checkout, "unsupported local Git configuration");
 
@@ -289,18 +283,16 @@ public sealed class CheckoutInspectionTests
     }
 
     [Theory]
-    [InlineData("core.ignorecase\ntrue")]
-    [InlineData("core.precomposeunicode\ntrue")]
-    [InlineData("Core.FileMode\nfalse")]
-    [InlineData("remote.origin.gh-resolved\nbase")]
-    [InlineData("branch.other.merge\nrefs/heads/other")]
-    [InlineData("branch..remote\nx")]
-    [InlineData("branch.trunk.merge\nrefs/heads/trunk\nuser.name=x")]
-    [InlineData("")]
-    public async Task A_checkout_with_only_allowed_local_Git_configuration_is_accepted(string entry)
+    [InlineData("core.ignorecase")]
+    [InlineData("core.precomposeunicode")]
+    [InlineData("Core.FileMode")]
+    [InlineData("remote.origin.gh-resolved")]
+    [InlineData("branch.other.merge")]
+    [InlineData("branch..remote")]
+    public async Task A_checkout_with_only_allowed_local_Git_configuration_is_accepted(string key)
     {
         var checkout = new InMemoryCheckout();
-        checkout.Configuration.Add(entry);
+        checkout.Configuration.Add(key);
 
         await Open(checkout);
     }
@@ -314,7 +306,7 @@ public sealed class CheckoutInspectionTests
     {
         var checkout = new InMemoryCheckout();
         if (scenario == "top level") checkout.TopLevelPath = "/srv/repoagent/workspace";
-        if (scenario == "bare") checkout.IsBare = "true";
+        if (scenario == "bare") checkout.Bare = true;
         if (scenario == "second origin url") checkout.Urls.Add(InMemoryCheckout.Remote);
         if (scenario == "origin url other") checkout.Urls[0] = "https://github.com/owner/other.git";
 
@@ -347,7 +339,7 @@ public sealed class CheckoutInspectionTests
             Version = 1, State = InMemoryCheckout.State, Root = InMemoryCheckout.RootPath, Owner = owner, RepositoryId = 345,
             Repository = "owner/repository", Remote = InMemoryCheckout.Remote, Branch = "trunk", Commit = InMemoryCheckout.Head
         }, opened.Record, strict: true);
-        Assert.Equal(["head-ref", "tracked-changes", "index-flags", "commit HEAD^{commit}", "commit refs/remotes/origin/trunk^{commit}"],
+        Assert.Equal(["head-branch", "tracked-changes", "index", "commit HEAD^{commit}", "commit refs/remotes/origin/trunk^{commit}"],
             checkout.Reads.SkipWhile(read => read != "origin-urls").Skip(1));
     }
 
@@ -365,7 +357,6 @@ public sealed class CheckoutInspectionTests
 
     [Theory]
     [InlineData("branch", "checkout does not match its default-branch commit")]
-    [InlineData("detached", "checkout does not match its default-branch commit")]
     [InlineData("dirty", "checkout does not match its default-branch commit")]
     [InlineData("assume-unchanged", "checkout does not match its default-branch commit")]
     [InlineData("skip-worktree", "checkout does not match its default-branch commit")]
@@ -376,13 +367,12 @@ public sealed class CheckoutInspectionTests
         var checkout = new InMemoryCheckout { Saved = null, RootEntry = CheckoutRoot.Missing, Marker = null };
         switch (scenario)
         {
-            case "branch": checkout.HeadName = "refs/heads/trunk-other"; break;
-            case "detached": checkout.HeadName = ""; break;
-            case "dirty": checkout.Changes = " M tracked-sentinel\n"; break;
-            case "assume-unchanged": checkout.Flags = "H .gitignore\0h tracked-sentinel\0"; break;
-            case "skip-worktree": checkout.Flags = "s tracked-sentinel\0"; break;
+            case "branch": checkout.Branch = "refs/heads/trunk-other"; break;
+            case "dirty": checkout.TrackedChanges = true; break;
+            case "assume-unchanged": checkout.Entries[1] = new("tracked-sentinel", false, true); break;
+            case "skip-worktree": checkout.Entries[1] = new("tracked-sentinel", true, true); break;
             case "origin moved": checkout.Commits["refs/remotes/origin/trunk^{commit}"] = Other; break;
-            case "unsafe-config": checkout.Configuration.Add("core.fsmonitor\n/must-not-run"); break;
+            case "unsafe-config": checkout.Configuration.Add("core.fsmonitor"); break;
         }
 
         Assert.Equal(Blocked(reason), (await Assert.ThrowsAsync<IOException>(() => Open(checkout))).Message);
@@ -394,9 +384,9 @@ public sealed class CheckoutInspectionTests
     [Fact]
     public void Hidden_index_entries_are_those_flagged_skip_worktree_or_assume_unchanged()
     {
-        Assert.Equal(["assumed", "skipped", "both", "assumed other"],
-            CheckoutInspection.Hidden("H tracked\0h assumed\0S skipped\0s both\0M merged\0c assumed other\0C changed\0"));
-        Assert.Empty(CheckoutInspection.Hidden(""));
+        Assert.Equal(["assumed", "skipped", "both"], CheckoutInspection.Hidden(
+            [new("tracked", false, false), new("assumed", false, true), new("skipped", true, false), new("both", true, true)]));
+        Assert.Empty(CheckoutInspection.Hidden([]));
     }
 
     [Theory]

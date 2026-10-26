@@ -72,6 +72,21 @@ public sealed class ManagedCheckoutAdapterTests
         Assert.Equal(before, fixture.Snapshot());
     }
 
+    [Fact]
+    public void Git_output_is_read_as_Git_writes_it()
+    {
+        Assert.Equal(["core.bare", "branch.trunk.merge", "Remote.origin.url"],
+            ManagedCheckout.CheckoutFacts.Keys("core.bare\nfalse\0branch.trunk.merge\nrefs/heads/trunk\nuser.name=x\0\0Remote.origin.url\nhttps://x\0"));
+        Assert.Empty(ManagedCheckout.CheckoutFacts.Keys(""));
+        Assert.Equal(["https://github.com/a.git", "https://github.com/b.git"], ManagedCheckout.CheckoutFacts.Lines("https://github.com/a.git\nhttps://github.com/b.git\n"));
+        Assert.Equal(["https://github.com/a.git"], ManagedCheckout.CheckoutFacts.Lines("https://github.com/a.git \n\n"));
+        Assert.Equal([""], ManagedCheckout.CheckoutFacts.Lines(""));
+        Assert.Equal(
+            [new("tracked", false, false), new("assumed", false, true), new("skipped", true, false), new("both", true, true),
+                new("merged", false, false), new("assumed other", false, true), new("changed", false, false)],
+            ManagedCheckout.CheckoutFacts.Entries("H tracked\0h assumed\0S skipped\0s both\0M merged\0c assumed other\0C changed\0"));
+    }
+
     public static TheoryData<string> Links() => ["root-symlink", "index-symlink"];
 
     [Theory]
