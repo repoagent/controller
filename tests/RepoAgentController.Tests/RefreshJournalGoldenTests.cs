@@ -207,9 +207,9 @@ public sealed class RefreshJournalGoldenTests : IDisposable
     };
 
     // A running count no writer leaves, beside a record that blocks the start before it: a recorded block, an admission, a refresh
-    // applying, or all three. f742e2b read the count only when nothing
-    // before it blocked, so each of these started blocked and wrote the count of running turns, 0; the same JSON as below. With
-    // nothing before it, the count stops the start (the "running text" and "running 1.5" rows).
+    // applying, or all three. f742e2b read the count only when nothing before it blocked, so each of these started blocked and
+    // wrote the count of running turns, 0; the same JSON as below. With nothing before it, the count stops the start (the
+    // "running text" and "running 1.5" rows).
     public static TheoryData<string, string?, string> RunningNoWriterLeavesBehindABlock()
     {
         var rows = new TheoryData<string, string?, string>();
