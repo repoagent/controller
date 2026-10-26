@@ -156,7 +156,7 @@ public static class BridgeCommand
                     await using var dashboard = result.GetValue(dashboardCategory) is { } category
                         ? new ControllerDashboard(category, status, outbox,
                             new BaselineReleases(new GitHubBaselineReleases(github), ImageInventory.Sha256(result.GetValue(imageInventory)?.FullName), result.GetValue(startupToolUpdates), time, new ControllerLog(), Log.Redact),
-                            time, new ControllerLog()) : null;
+                            time, new ControllerLog(), Log.Redact) : null;
                     using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, credentials.BrokerCredentialLost);
                     var runtimeToken = refreshCancellation.Token;
                     var refresh = credentials.RefreshUntilCancelled(runtimeToken);
@@ -229,7 +229,7 @@ public static class BridgeCommand
                     }
                     catch (Exception error) when (dashboard is not null && !cancellationToken.IsCancellationRequested)
                     {
-                        Failed(dashboard, error);
+                        dashboard.Failed(error.Message);
                         throw;
                     }
                     finally
@@ -250,7 +250,4 @@ public static class BridgeCommand
         });
         return await root.Parse(args).InvokeAsync(cancellationToken: shutdownToken);
     }
-
-    /// <summary>Publishes a failure that ends this lifetime as the dashboard's stop, redacted as every log entry is.</summary>
-    internal static void Failed(ControllerDashboard dashboard, Exception error) => dashboard.Failed(Log.Redact(error.Message));
 }

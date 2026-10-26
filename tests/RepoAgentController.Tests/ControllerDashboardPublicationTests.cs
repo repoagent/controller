@@ -42,7 +42,10 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
 
     ControllerDashboard Dashboard(BaselineReleases? releases = null, IControllerLog? reported = null) => new(Category, status, outbox,
         releases ?? new BaselineReleases(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text),
-        clock, reported ?? log);
+        clock, reported ?? log, Redact);
+
+    // As the controller's redaction removes the secrets it knows.
+    static string Redact(string text) => text.Replace("ghs_secret", "<redacted>", StringComparison.Ordinal);
 
     // The published body once the dashboard has republished it naming the release at this URL; each publication arms the next heartbeat.
     async Task<string> Naming(BaselineRelease release)
@@ -144,7 +147,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     }
 
     [Fact]
-    public async Task A_failure_that_ends_the_lifetime_is_published_as_the_stop_and_a_dashboard_that_never_started_publishes_nothing()
+    public async Task A_failure_that_ends_the_lifetime_is_published_redacted_as_the_stop_and_a_dashboard_that_never_started_publishes_nothing()
     {
         await using (Dashboard()) { }
         Assert.Null(state.Outbox);
@@ -153,25 +156,12 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
         {
             dashboard.Start(TestContext.Current.CancellationToken);
             await clock.Armed();
-            dashboard.Failed("Repository webhook registration failed for <redacted>:\n `hooks` returned HTTP 422");
+            dashboard.Failed("Repository webhook registration failed for ghs_secret:\n `hooks` returned HTTP 422");
         }
+        var stopped = Assert.Single(github.Dashboards).Body;
         Assert.Contains("\n- **Controller:** stopped at 2026-10-24T10:00:00Z after a failure: `Repository webhook registration failed for <redacted>: 'hooks' returned HTTP 422`\n",
-            Assert.Single(github.Dashboards).Body);
-    }
-
-    [Fact]
-    public async Task The_composition_redacts_the_failure_it_publishes_as_the_stop()
-    {
-        var secret = "ghs_" + Guid.NewGuid().ToString("N");
-        Log.Protect(secret);
-        await using (var dashboard = Dashboard())
-        {
-            dashboard.Start(TestContext.Current.CancellationToken);
-            await clock.Armed();
-            BridgeCommand.Failed(dashboard, new InvalidOperationException($"Repository webhook registration failed for {secret}"));
-        }
-        Assert.Contains("\n- **Controller:** stopped at 2026-10-24T10:00:00Z after a failure: `Repository webhook registration failed for <redacted>`\n",
-            Assert.Single(github.Dashboards).Body);
+            stopped);
+        Assert.DoesNotContain("ghs_secret", stopped);
     }
 
     [Fact]
@@ -368,7 +358,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
         Store(("D1", new(Url(1)) { SessionId = "s1", Running = new("t1", Start.AddMinutes(-30)) }));
         using var starting = new ControllerStatus("owner/repository", "webhook", new InMemoryStatusRecord(), discussions, state, new InMemoryCheckoutWork(), clock);
         await using var dashboard = new ControllerDashboard(Category, starting, outbox, new BaselineReleases(new InMemoryBaselineReleases(),
-            async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text), clock, log);
+            async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text), clock, log, Redact);
         dashboard.Start(TestContext.Current.CancellationToken);
         await clock.Armed();
 
@@ -424,7 +414,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
         using var restarted = new ControllerStatus("owner/repository", "polling", new InMemoryStatusRecord { Recorded = OperatorStatusJson.ReadRecord(json) },
             discussions, state, new InMemoryCheckoutWork(), clock);
         await using (var dashboard = new ControllerDashboard(Category, restarted, outbox, new BaselineReleases(new InMemoryBaselineReleases(),
-            async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text), clock, log))
+            async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text), clock, log, Redact))
         {
             dashboard.Start(TestContext.Current.CancellationToken);
             await clock.Armed();

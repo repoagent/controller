@@ -22,13 +22,16 @@ public sealed class ControllerDashboard : IAsyncDisposable
     readonly BaselineReleases releases;
     readonly TimeProvider clock;
     readonly IControllerLog log;
+    readonly Func<string, string> redact;
     readonly CancellationTokenSource stop = new();
     readonly WakeLoop loop;
     Task running = Task.CompletedTask;
     bool started;
     string? failure;
 
-    public ControllerDashboard(string category, ControllerStatus status, GitHubOutbox outbox, BaselineReleases releases, TimeProvider clock, IControllerLog log)
+    /// <param name="redact">Removes the secrets the controller knows from the failure that ends a lifetime, before it is published.</param>
+    public ControllerDashboard(string category, ControllerStatus status, GitHubOutbox outbox, BaselineReleases releases, TimeProvider clock, IControllerLog log,
+        Func<string, string> redact)
     {
         this.category = category;
         this.status = status;
@@ -36,6 +39,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
         this.releases = releases;
         this.clock = clock;
         this.log = log;
+        this.redact = redact;
         loop = new(clock);
         status.Changed += Wake;
         releases.Changed += Wake;
@@ -52,9 +56,9 @@ public sealed class ControllerDashboard : IAsyncDisposable
         releases.Start(ct);
     }
 
-    /// <summary>Records that this lifetime is ending on an error rather than an operator stop. The caller redacts
-    /// <paramref name="message"/>: it is published as given.</summary>
-    public void Failed(string message) => failure = message;
+    /// <summary>Records that this lifetime is ending on an error rather than an operator stop; its stop publishes
+    /// <paramref name="message"/> redacted.</summary>
+    public void Failed(string message) => failure = redact(message);
 
     bool Publish((DateTimeOffset At, string? Failure)? stopped)
     {
