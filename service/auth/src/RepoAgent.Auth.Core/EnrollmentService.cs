@@ -57,7 +57,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
             try
             {
                 known = await minter.MintAsync(app, installation, new RepositoryIdentity(Id(s.RepositoryId), Text(s.Pending.RequestedRepository)),
-                    RuntimeAuthority.For(s.Approval.VerifierProfile), work.Cancellation);
+                    RuntimeAuthority.Verifier(s.Approval), work.Cancellation);
                 attempt.Value.ProtectedToken = store.ProtectToken(s, attempt.Value, known.Token.Value);
                 attempt.Value.ExpiresAt = known.Token.ExpiresAt;
                 attempt.Value.ScopeValid = known.ScopeValid;
@@ -136,7 +136,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
                 ["protocolVersion"] = approval.RuntimeVersion, ["brokerOrigin"] = brokerOrigin!.GetLeftPart(UriPartial.Authority), ["githubHost"] = "github.com",
                 ["deviceId"] = s.EnrollmentId, ["deviceSecret"] = controllerSecret, ["appId"] = AppId, ["appSlug"] = AppSlug,
                 ["installationId"] = Number(p.InstallationId), ["repositoryId"] = Id(s.RepositoryId),
-                ["repository"] = Text(p.Repository), ["permissions"] = RuntimeAuthority.For(Text(p.Profile)).Permissions
+                ["repository"] = Text(p.Repository), ["permissions"] = RuntimeAuthority.For(approval, Text(p.Profile)).Permissions
             };
             if (approval.NamesProfile)
             {

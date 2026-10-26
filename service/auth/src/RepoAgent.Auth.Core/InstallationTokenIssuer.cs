@@ -41,7 +41,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
             runtime = await store.ClaimSendAsync(grant, runtime, work.Cancellation);
             // From the durable send claim onward only the bounded server-owned lifetime controls
             // completion. Client disconnect cannot cancel accounting or cause a replay.
-            known = await minter.MintAsync(app, grant.InstallationId, grant.BoundRepository, RuntimeAuthority.For(grant.Profile), work.Cancellation);
+            known = await minter.MintAsync(app, grant.InstallationId, grant.BoundRepository, RuntimeAuthority.For(grant.Approval, grant.Profile), work.Cancellation);
             runtime = await store.RecordKnownAsync(grant, runtime, known, work.Cancellation);
             if (!known.ScopeValid) throw new IssuanceDenied();
             grant = await store.SnapshotAsync(grant.PartitionRepositoryId, grant.EnrollmentId, work.Cancellation);
@@ -89,7 +89,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
         {
             ["protocolVersion"] = grant.Approval.RuntimeVersion, ["appId"] = AppId, ["appSlug"] = AppSlug,
             ["installationId"] = grant.InstallationId, ["repositoryId"] = Id(grant.RepositoryId), ["repository"] = grant.Repository,
-            ["permissions"] = RuntimeAuthority.For(grant.Profile).Permissions, ["token"] = token.Value, ["expiresAt"] = token.ExpiresAt
+            ["permissions"] = RuntimeAuthority.For(grant.Approval, grant.Profile).Permissions, ["token"] = token.Value, ["expiresAt"] = token.ExpiresAt
         };
         if (grant.Approval.NamesProfile)
         {
@@ -110,7 +110,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
             work.Check();
             attempt = await store.ClaimSendAsync(grant, attempt, work.Cancellation);
             token = await minter.MintAsync(app, grant.InstallationId, grant.BoundRepository,
-                RuntimeAuthority.For(grant.Approval.VerifierProfile), work.Cancellation);
+                RuntimeAuthority.Verifier(grant.Approval), work.Cancellation);
             attempt = await store.RecordKnownAsync(grant, attempt, token, work.Cancellation);
             if (!token.ScopeValid) throw new IssuanceDenied();
             return attempt;

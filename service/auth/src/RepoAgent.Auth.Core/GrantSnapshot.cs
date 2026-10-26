@@ -90,7 +90,7 @@ public static class ApprovalMarker
         var text = Text(challenge);
         if (text.Length != 43 || !text.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))
             throw new IssuanceDenied();
-        // Agent (v2) and Actions (v3) markers share one field order; version and kind differ.
+        // Agent (v2, v4) and Actions (v3) markers share one field order; version and kind differ.
         if (approval.IsRepositoryVariable)
             return JsonSerializer.Serialize(new
             {
