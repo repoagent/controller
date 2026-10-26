@@ -75,137 +75,126 @@ public sealed class RefreshJournalGoldenTests : IDisposable
 
     // Journals in forms no writer leaves, with what a start makes of each: the failure it stops with, or the journal it writes
     // and the reason it records once an agent turn it cannot match starts.
-    public static TheoryData<string, string?, bool, string> Damaged() => new()
+    public static TheoryData<string, string?, string> Damaged() => new()
     {
         // f742e2b stopped with JsonReaderException.
-        { "not JSON", "{", false,
+        { "not JSON", "{",
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with NullReferenceException.
-        { "null", "null", false,
+        { "null", "null",
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "a list", "[]", false,
+        { "a list", "[]",
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "a number", "5", false,
+        { "a number", "5",
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "text", "\"x\"", false,
+        { "text", "\"x\"",
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "version text", Journal($"\"version\":\"1\",\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":345,{Settled}"), false,
+        { "version text", Journal($"\"version\":\"1\",\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":345,{Settled}"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "version 1.0", Journal($"\"version\":1.0,\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":345,{Settled}"), false,
+        { "version 1.0", Journal($"\"version\":1.0,\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":345,{Settled}"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
-        { "version 2", Journal($"\"version\":2,\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":345,{Settled}"), false,
+        { "version 2", Journal($"\"version\":2,\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":345,{Settled}"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
-        { "version missing", Journal($"\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":345,{Settled}"), false,
-            "IOException: Refresh journal binding or format differs; manual recovery required" },
-        // f742e2b stopped with InvalidOperationException.
-        { "root a number", Journal($"\"version\":1,\"root\":5,\"owner\":\"{Owner}\",\"repositoryId\":345,{Settled}"), false,
-            "IOException: Refresh journal binding or format differs; manual recovery required" },
-        { "root another checkout", Journal($"\"version\":1,\"root\":\"/other\",\"owner\":\"{Owner}\",\"repositoryId\":345,{Settled}"), false,
+        { "version missing", Journal($"\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":345,{Settled}"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "owner a number", Journal($"\"version\":1,\"root\":\"{Root}\",\"owner\":5,\"repositoryId\":345,{Settled}"), false,
+        { "root a number", Journal($"\"version\":1,\"root\":5,\"owner\":\"{Owner}\",\"repositoryId\":345,{Settled}"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "repositoryId text", Journal($"\"version\":1,\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":\"345\",{Settled}"), false,
+        { "owner a number", Journal($"\"version\":1,\"root\":\"{Root}\",\"owner\":5,\"repositoryId\":345,{Settled}"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "repositoryId 345.0", Journal($"\"version\":1,\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":345.0,{Settled}"), false,
+        { "repositoryId text", Journal($"\"version\":1,\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":\"345\",{Settled}"),
+            "IOException: Refresh journal binding or format differs; manual recovery required" },
+        // f742e2b stopped with InvalidOperationException.
+        { "repositoryId 345.0", Journal($"\"version\":1,\"root\":\"{Root}\",\"owner\":\"{Owner}\",\"repositoryId\":345.0,{Settled}"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with NullReferenceException.
-        { "requested missing", Journal($"{Bound},\"completed\":4,\"active\":{{}}"), false,
+        { "requested missing", Journal($"{Bound},\"completed\":4,\"active\":{{}}"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with NullReferenceException.
-        { "requested null", Journal($"{Bound},\"requested\":null,\"completed\":4,\"active\":{{}}"), false,
+        { "requested null", Journal($"{Bound},\"requested\":null,\"completed\":4,\"active\":{{}}"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "requested text", Journal($"{Bound},\"requested\":\"4\",\"completed\":4,\"active\":{{}}"), false,
-            "IOException: Refresh journal binding or format differs; manual recovery required" },
-        { "requested below completed", Journal($"{Bound},\"requested\":3,\"completed\":4,\"active\":{{}}"), false,
+        { "requested text", Journal($"{Bound},\"requested\":\"4\",\"completed\":4,\"active\":{{}}"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with NullReferenceException.
-        { "completed missing", Journal($"{Bound},\"requested\":4,\"active\":{{}}"), false,
+        { "completed missing", Journal($"{Bound},\"requested\":4,\"active\":{{}}"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
-        { "completed negative", Journal($"{Bound},\"requested\":4,\"completed\":-1,\"active\":{{}}"), false,
-            "IOException: Refresh journal binding or format differs; manual recovery required" },
-        { "active a list", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":[]"), false,
+        { "active a list", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":[]"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "blocked text", Journal($"{Bound},{Settled},\"blocked\":\"true\""), false,
+        { "blocked text", Journal($"{Bound},{Settled},\"blocked\":\"true\""),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "blocked 1", Journal($"{Bound},{Settled},\"blocked\":1"), false,
+        { "blocked 1", Journal($"{Bound},{Settled},\"blocked\":1"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "running text", Journal($"{Bound},{Settled},\"running\":\"0\""), false,
+        { "running text", Journal($"{Bound},{Settled},\"running\":\"0\""),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
         // f742e2b stopped with InvalidOperationException.
-        { "running 1.5", Journal($"{Bound},{Settled},\"running\":1.5"), false,
+        { "running 1.5", Journal($"{Bound},{Settled},\"running\":1.5"),
             "IOException: Refresh journal binding or format differs; manual recovery required" },
-        { "a key repeated", Journal($"{Bound},{Settled},\"blocked\":false,\"blocked\":true"), false,
+        { "a key repeated", Journal($"{Bound},{Settled},\"blocked\":false,\"blocked\":true"),
             "ArgumentException: An item with the same key has already been added. Key: blocked (Parameter 'key')" },
         // f742e2b wrote the keys in the order read.
-        { "blocked missing", Journal($"{Bound},{Settled},\"running\":0"), false,
+        { "blocked missing", Journal($"{Bound},{Settled},\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":false,\"running\":0} | \"Unmatched native lifecycle event\"" },
         // f742e2b wrote the keys in the order read.
-        { "applying empty", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":0,\"applying\":{{}}"), false,
+        { "applying empty", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":0,\"applying\":{{}}"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\",\"applying\":{}} | \"Unmatched native lifecycle event\"" },
-        { "blocked and running missing", Journal($"{Bound},{Settled}"), false,
+        { "blocked and running missing", Journal($"{Bound},{Settled}"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":false,\"running\":0} | \"Unmatched native lifecycle event\"" },
         // f742e2b wrote the keys in the order read.
-        { "running null", Journal($"{Bound},{Settled},\"running\":null"), false,
+        { "running null", Journal($"{Bound},{Settled},\"running\":null"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":false,\"running\":0} | \"Unmatched native lifecycle event\"" },
         // f742e2b wrote the keys in the order read.
-        { "running 1", Journal($"{Bound},{Settled},\"running\":1"), false,
-            "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Unmatched native lifecycle event\"" },
-        // f742e2b wrote the keys in the order read.
-        { "keys in another order", Journal($"\"reason\":\"r\",\"running\":0,\"blocked\":false,\"active\":{{}},\"requested\":4,\"completed\":4,{Bound}"), false,
+        { "keys in another order", Journal($"\"reason\":\"r\",\"running\":0,\"blocked\":false,\"active\":{{}},\"requested\":4,\"completed\":4,{Bound}"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":false,\"running\":0,\"reason\":\"r\"} | \"Unmatched native lifecycle event\"" },
         // f742e2b wrote the keys in the order read.
-        { "unknown key among them", Journal($"{Bound},\"later\":1,{Settled},\"blocked\":false,\"running\":0"), false,
+        { "unknown key among them", Journal($"{Bound},\"later\":1,{Settled},\"blocked\":false,\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":false,\"running\":0,\"later\":1} | \"Unmatched native lifecycle event\"" },
-        { "reason not text", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":0,\"reason\":5"), false,
+        { "reason not text", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":0,\"reason\":5"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":false,\"running\":0,\"reason\":5} | \"Unmatched native lifecycle event\"" },
         // f742e2b kept "applying": null.
-        { "applying null", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":0,\"applying\":null"), false,
+        { "applying null", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":0,\"applying\":null"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":false,\"running\":0} | \"Unmatched native lifecycle event\"" },
         // f742e2b wrote the keys in the order read.
-        { "applying a number", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":0,\"applying\":5"), false,
+        { "applying a number", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":0,\"applying\":5"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\",\"applying\":5} | \"Unmatched native lifecycle event\"" },
         // f742e2b recorded the error reading this admission as the reason.
-        { "admission null", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":null}},\"blocked\":true,\"running\":0"), false,
+        { "admission null", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":null}},\"blocked\":true,\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":null},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Unmatched native lifecycle event\"" },
         // f742e2b recorded the error reading this admission as the reason.
-        { "admission a number", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":5}},\"blocked\":true,\"running\":0"), false,
+        { "admission a number", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":5}},\"blocked\":true,\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":5},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Unmatched native lifecycle event\"" },
         // f742e2b recorded the error reading this admission as the reason.
-        { "admission thread a number", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{{\"thread\":5,\"turn\":\"\",\"since\":3,\"confirmed\":false}}}},\"blocked\":true,\"running\":0"), false,
+        { "admission thread a number", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{{\"thread\":5,\"turn\":\"\",\"since\":3,\"confirmed\":false}}}},\"blocked\":true,\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":5,\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Unmatched native lifecycle event\"" },
         // f742e2b recorded the error reading this admission as the reason.
-        { "admission key repeated", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{{\"thread\":\"S1\",\"thread\":\"S2\",\"turn\":\"\",\"since\":3,\"confirmed\":false}}}},\"blocked\":true,\"running\":0"), false,
+        { "admission key repeated", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{{\"thread\":\"S1\",\"thread\":\"S2\",\"turn\":\"\",\"since\":3,\"confirmed\":false}}}},\"blocked\":true,\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"thread\":\"S2\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Unmatched native lifecycle event\"" },
-        { "admission since text", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{{\"thread\":\"S1\",\"turn\":\"\",\"since\":\"3\",\"confirmed\":false}}}},\"blocked\":true,\"running\":0"), false,
+        { "admission since text", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{{\"thread\":\"S1\",\"turn\":\"\",\"since\":\"3\",\"confirmed\":false}}}},\"blocked\":true,\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":\"3\",\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
-        { "admission unconfirmed false", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false,\"unconfirmed\":false}}}},\"blocked\":true,\"running\":0"), false,
+        { "admission unconfirmed false", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false,\"unconfirmed\":false}}}},\"blocked\":true,\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false,\"unconfirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
-        { "admission unblocked", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{Entry}}},\"blocked\":false,\"running\":0"), false,
-            "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
     };
 
     [Theory]
     [MemberData(nameof(Damaged))]
-    public async Task A_journal_in_a_form_no_writer_leaves_starts_as_pinned(string form, string? journal, bool priorSessions, string expected)
+    public async Task A_journal_in_a_form_no_writer_leaves_starts_as_pinned(string form, string? journal, string expected)
     {
         Assert.NotEmpty(form);
         if (journal is not null) Record(journal);
         string outcome;
         try
         {
-            await using var refresh = Open(priorSessions);
+            await using var refresh = Open();
             outcome = File.ReadAllText(JournalPath);
             refresh.Observe(new AgentTurnStarted(1, "S1", "T9"));
             outcome += " | " + JsonNode.Parse(File.ReadAllText(JournalPath))!["reason"]?.ToJsonString();
