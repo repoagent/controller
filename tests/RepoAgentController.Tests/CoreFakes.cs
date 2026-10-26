@@ -576,3 +576,63 @@ sealed class RecordingCheckoutAdmission : ICheckoutAdmission
         public void Dispose() => owner.Add("dispose");
     }
 }
+
+/// <summary>The refresh journal in memory, saved as a copy so later changes reach it only through a write. A write fails on
+/// demand, before it saves anything.</summary>
+sealed class InMemoryRefreshJournal : IRefreshJournal
+{
+    readonly Lock sync = new();
+    RefreshJournal? saved;
+
+    public RefreshJournal? Saved { get { lock (sync) return saved is null ? null : Copy(saved); } set { lock (sync) saved = value is null ? null : Copy(value); } }
+    public Exception? WriteFailure { get; set; }
+
+    public RefreshJournal? Read() => Saved;
+
+    public void Write(RefreshJournal journal)
+    {
+        if (WriteFailure is { } failure) throw failure;
+        Saved = journal;
+    }
+
+    static RefreshJournal Copy(RefreshJournal journal)
+    {
+        var copy = new RefreshJournal(journal.Root, journal.Owner, journal.RepositoryId)
+        {
+            Requested = journal.Requested, Completed = journal.Completed, Blocked = journal.Blocked, Running = journal.Running,
+            Reason = journal.Reason, Applying = journal.Applying, Unknown = journal.Unknown
+        };
+        copy.ReasonAsRead = journal.ReasonAsRead;
+        foreach (var (id, admission) in journal.Active)
+            copy.Active[id] = new(admission.Since)
+            {
+                Thread = admission.Thread, Turn = admission.Turn, Confirmed = admission.Confirmed, Unconfirmed = admission.Unconfirmed,
+                Unknown = admission.Unknown, AsRead = admission.AsRead
+            };
+        return copy;
+    }
+}
+
+/// <summary>The managed checkout's refresh as each test scripts it, in order; unscripted refreshes find the checkout current.</summary>
+sealed class ScriptedCheckout : IRepositoryCheckout
+{
+    readonly Queue<Func<Action<string, string>, CancellationToken, Task<bool>>> outcomes = new();
+    int refreshes;
+
+    public int Refreshes => Volatile.Read(ref refreshes);
+
+    public void Then(Func<Action<string, string>, CancellationToken, Task<bool>> outcome) => outcomes.Enqueue(outcome);
+
+    /// <summary>The next refresh applies <paramref name="target"/> over <paramref name="previous"/>.</summary>
+    public void Applies(string previous = "C1", string target = "C2") => Then((beforeApply, _) => { beforeApply(previous, target); return Task.FromResult(true); });
+
+    /// <summary>The next refresh refuses safely with <paramref name="reason"/>.</summary>
+    public void Defers(string reason) => Then((_, _) => Task.FromException<bool>(new CheckoutDeferred(reason)));
+
+    public Task<bool> Refresh(Action<string, string> beforeApply, CancellationToken ct)
+    {
+        var outcome = outcomes.TryDequeue(out var scripted) ? scripted : (_, _) => Task.FromResult(false);
+        Interlocked.Increment(ref refreshes);
+        return outcome(beforeApply, ct);
+    }
+}
