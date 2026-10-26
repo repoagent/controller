@@ -7,7 +7,7 @@ namespace RepoAgentController;
 internal sealed record RepositoryCheckout(long Id, string Name, string Remote, string Branch);
 
 /// <summary>Owns one persistent, disposable checkout of the bound origin mainline, refusing foreign or unsafe state.</summary>
-internal sealed class ManagedCheckout : IDisposable
+internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
 {
     const UnixFileMode PrivateFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
     // These ownership records contain no credentials. An executable SMB view
@@ -139,8 +139,7 @@ internal sealed class ManagedCheckout : IDisposable
         .Where(line => line[0] == 'S' || char.IsLower(line[0])).Select(line => line[2..]);
 
     // Safe refusals retain the recorded baseline while existing assistance may continue.
-    internal sealed class DeferredRefresh(string reason) : IOException(reason);
-    static DeferredRefresh Deferred(string reason) => new(reason);
+    static CheckoutDeferred Deferred(string reason) => new(reason);
 
     async Task VerifyOwnership(CancellationToken ct)
     {

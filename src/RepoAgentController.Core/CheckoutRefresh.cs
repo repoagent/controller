@@ -1,75 +1,72 @@
-using System.Diagnostics;
-using System.Text.Json.Nodes;
-
 namespace RepoAgentController;
 
 /// <summary>Excludes checkout updates from all admitted native work, including uncertain work.</summary>
-sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisposable
+public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisposable
 {
-    readonly ManagedCheckout checkout;
-    readonly string path;
+    static readonly TimeSpan DeferredRetry = TimeSpan.FromSeconds(5);
+    readonly IRepositoryCheckout checkout;
+    readonly CheckoutBinding binding;
+    readonly IRefreshJournal store;
+    readonly TimeProvider clock;
+    readonly IControllerLog log;
     readonly object journalLock = new();
     readonly SemaphoreSlim exclusion = new(1), wake = new(0, 1);
     readonly CancellationTokenSource stop = new();
-    readonly JsonObject journal, active;
+    readonly RefreshJournal journal;
+    readonly OrderedDictionary<string, RefreshAdmission> active;
     readonly Dictionary<(string Thread, string Turn), (bool Done, long Sequence)> turns = [];
     Task worker = Task.CompletedTask;
     AgentSessions? sessions;
     bool blocked, eligible;
     long sequence;
-    long retryStarted;
+    long? retryStarted;
     int epoch = 1;
 
-    public CheckoutRefresh(ManagedCheckout checkout, string statePath, bool priorSessions, bool pendingDiscussion)
+    public CheckoutRefresh(IRepositoryCheckout checkout, CheckoutBinding binding, IRefreshJournal store, bool priorSessions, bool pendingDiscussion,
+        TimeProvider clock, IControllerLog log)
     {
-        this.checkout = checkout; path = statePath + ".refresh.json";
-        ManagedCheckout.CheckPath(path);
-        if (Path.Exists(path + ".tmp")) throw new IOException("Incomplete refresh journal; preserve it for manual recovery");
-        var existed = File.Exists(path);
-        journal = existed ? JsonNode.Parse(ManagedCheckout.ReadPrivate(path))!.AsObject() : Json.Object(
-            ("version", 1), ("root", checkout.Root), ("owner", checkout.Owner), ("repositoryId", checkout.RepositoryId),
-            ("requested", 0L), ("completed", 0L), ("active", new JsonObject()));
-        if (journal["version"]?.GetValue<int>() != 1 || journal.Text("root") != checkout.Root ||
-            journal.Text("owner") != checkout.Owner || journal["repositoryId"]?.GetValue<long>() != checkout.RepositoryId ||
-            journal["active"] is not JsonObject entries || Generation("completed") < 0 || Generation("requested") < Generation("completed"))
-            throw new IOException("Refresh journal binding or format differs; manual recovery required");
-        active = entries;
-        blocked = journal["blocked"]?.GetValue<bool>() == true || active.Count != 0 || journal["applying"] is not null ||
-            (journal["running"]?.GetValue<int>() ?? 0) != 0 || pendingDiscussion || (!existed && priorSessions);
-        if (blocked) journal["reason"] = "Native activity or checkout update is uncertain; inspect state before recovery";
+        this.checkout = checkout; this.binding = binding; this.store = store; this.clock = clock; this.log = log;
+        var recorded = store.Read();
+        journal = recorded ?? new RefreshJournal(binding.Root, binding.Owner, binding.RepositoryId);
+        if (journal.Root != binding.Root || journal.Owner != binding.Owner || journal.RepositoryId != binding.RepositoryId ||
+            journal.Completed < 0 || journal.Requested < journal.Completed)
+            throw new IOException(RefreshJournal.Unusable);
+        active = journal.Active;
+        blocked = journal.Blocked || active.Count != 0 || journal.Applying is not null || journal.Running != 0 || pendingDiscussion ||
+            (recorded is null && priorSessions);
+        if (blocked) journal.Reason = "Native activity or checkout update is uncertain; inspect state before recovery";
         Save();
     }
 
-    long Generation(string key) => journal[key]!.GetValue<long>();
     bool Busy => active.Count != 0 || turns.Values.Any(turn => !turn.Done);
     void Save()
     {
-        journal["blocked"] = blocked;
-        journal["running"] = turns.Values.Count(turn => !turn.Done);
-        try { ManagedCheckout.SavePrivate(path, journal.ToJsonString()); }
+        journal.Blocked = blocked;
+        journal.Running = turns.Values.Count(turn => !turn.Done);
+        try { store.Write(journal); }
         catch { blocked = true; throw; }
     }
     void CheckAdmission()
     {
-        if (blocked || journal["applying"] is not null) throw new IOException("Checkout/native state uncertain; manual recovery required");
+        if (blocked || journal.Applying is not null) throw new IOException("Checkout/native state uncertain; manual recovery required");
     }
     void Fault(string reason)
     {
-        blocked = true; journal["reason"] = reason;
+        blocked = true; journal.Reason = reason;
         Save();
     }
     void Signal() { if (wake.CurrentCount == 0) try { wake.Release(); } catch (SemaphoreFullException) { } }
 
-    public long RepositoryId => checkout.RepositoryId;
-    public string DefaultRef => checkout.DefaultRef;
+    public long RepositoryId => binding.RepositoryId;
+    public string DefaultRef => binding.DefaultRef;
 
     public void Request()
     {
         lock (journalLock)
         {
-            journal["requested"] = checked(Generation("requested") + 1);
+            journal.Requested = checked(journal.Requested + 1);
             eligible = true; Save();
-            retryStarted = 0;
+            retryStarted = null;
         }
         Signal();
     }
@@ -91,7 +88,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
         {
             while (!linked.IsCancellationRequested)
             {
-                if (!await wake.WaitAsync(interval, linked.Token)) Request();
+                if (!await Woken(interval, linked.Token)) Request();
                 await exclusion.WaitAsync(linked.Token);
                 try { await Reconcile(linked.Token); }
                 finally { exclusion.Release(); }
@@ -101,8 +98,19 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
         catch (Exception error)
         {
             lock (journalLock) { blocked = true; try { Fault(error.Message); } catch { } }
-            Log.Write("refresh-blocked", error.Message);
+            log.Write("refresh-blocked", error.Message);
         }
+    }
+
+    /// <summary>True once signalled; false when <paramref name="interval"/> passes on the clock first.</summary>
+    async Task<bool> Woken(TimeSpan interval, CancellationToken ct)
+    {
+        using var waiting = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var signalled = wake.WaitAsync(waiting.Token);
+        await Task.WhenAny(signalled, Task.Delay(interval, clock, waiting.Token));
+        await waiting.CancelAsync();
+        try { await signalled; return true; }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return false; }
     }
 
     // Caller holds exclusion. Native callbacks only take journalLock; no RPC awaits under that lock.
@@ -112,9 +120,9 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
         lock (journalLock)
         {
             CheckAdmission();
-            if (!eligible || Busy || Generation("requested") == Generation("completed") ||
-                (retryStarted != 0 && Stopwatch.GetElapsedTime(retryStarted) < TimeSpan.FromSeconds(5))) return;
-            generation = Generation("requested"); eligible = false;
+            if (!eligible || Busy || journal.Requested == journal.Completed ||
+                (retryStarted is { } started && clock.GetElapsedTime(started) < DeferredRetry)) return;
+            generation = journal.Requested; eligible = false;
         }
         try
         {
@@ -124,7 +132,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
                 {
                     CheckAdmission();
                     if (Busy) throw new IOException("Native work appeared while checkout was excluded");
-                    journal["applying"] = Json.Object(("previous", previous), ("target", target), ("generation", generation));
+                    journal.Applying = new(previous, target, generation);
                     Save();
                 }
             }, ct);
@@ -132,23 +140,23 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
             lock (journalLock)
             {
                 if (blocked) throw new IOException("Native refresh became uncertain");
-                journal.Remove("applying"); journal.Remove("reason");
-                journal["completed"] = generation; Save();
+                journal.Applying = null; journal.Reason = null;
+                journal.Completed = generation; Save();
             }
         }
-        catch (ManagedCheckout.DeferredRefresh error)
+        catch (CheckoutDeferred error)
         {
             lock (journalLock)
             {
-                if (journal["applying"] is not null) Fault(error.Message);
-                else { eligible = true; retryStarted = Stopwatch.GetTimestamp(); journal["reason"] = error.Message; Save(); }
+                if (journal.Applying is not null) Fault(error.Message);
+                else { eligible = true; retryStarted = clock.GetTimestamp(); journal.Reason = error.Message; Save(); }
             }
-            Log.Write("refresh-pending", error.Message);
+            log.Write("refresh-pending", error.Message);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // Shutdown before applying leaves the checkout unchanged and the generation requested for the next lifetime.
-            lock (journalLock) if (journal["applying"] is not null) { blocked = true; try { Fault("Refresh interrupted while applying"); } catch { } }
+            lock (journalLock) if (journal.Applying is not null) { blocked = true; try { Fault("Refresh interrupted while applying"); } catch { } }
             throw;
         }
         catch (Exception error)
@@ -168,7 +176,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
             {
                 CheckAdmission();
                 if (active.Count >= 64) throw new IOException("Too many unresolved native admissions");
-                var record = Json.Object(("thread", ""), ("turn", ""), ("since", ++sequence), ("confirmed", false));
+                var record = new RefreshAdmission(++sequence);
                 var id = Guid.NewGuid().ToString("N"); active[id] = record; Save();
                 return new Admission(this, id, record);
             }
@@ -185,7 +193,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
             lock (journalLock)
             {
                 CheckAdmission();
-                if (Busy || Generation("requested") != Generation("completed")) return false;
+                if (Busy || journal.Requested != journal.Completed) return false;
             }
             await commit(ct);
             lock (journalLock) { CheckAdmission(); if (Busy) throw new IOException("Native activity changed during idle commit"); }
@@ -194,7 +202,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
         finally { exclusion.Release(); }
     }
 
-    sealed class Admission(CheckoutRefresh owner, string id, JsonObject record) : ICheckoutTurn
+    sealed class Admission(CheckoutRefresh owner, string id, RefreshAdmission record) : ICheckoutTurn
     {
         bool confirmed;
         public void Bind(string thread)
@@ -203,7 +211,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
             {
                 owner.CheckAdmission();
                 if (!Valid(thread)) throw new IOException("Malformed native thread identity");
-                record["thread"] = thread; owner.Save();
+                record.Thread = thread; owner.Save();
             }
         }
         public void Accepted(string thread, string turn)
@@ -211,12 +219,12 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
             lock (owner.journalLock)
             {
                 owner.CheckAdmission();
-                if (record.Text("thread") != thread || !Valid(turn)) throw new IOException("Native acknowledgement identity differs");
+                if (record.Thread != thread || !Valid(turn)) throw new IOException("Native acknowledgement identity differs");
                 var key = (thread, turn);
-                if (owner.turns.TryGetValue(key, out var seen) && seen.Done && seen.Sequence <= record["since"]!.GetValue<long>())
+                if (owner.turns.TryGetValue(key, out var seen) && seen.Done && seen.Sequence <= record.Since)
                     throw new IOException("Native reused a completed turn identity");
                 owner.Track(key, seen.Done, seen.Sequence);
-                record["turn"] = turn; owner.Save();
+                record.Turn = turn; owner.Save();
             }
         }
         /// <summary>Releases an admission that loaded or created a session but sent it no input.</summary>
@@ -225,7 +233,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
             lock (owner.journalLock)
             {
                 owner.CheckAdmission();
-                if (record.Text("turn").Length != 0) throw new IOException("Accepted native admission cannot be abandoned");
+                if (record.Turn.Length != 0) throw new IOException("Accepted native admission cannot be abandoned");
                 owner.active.Remove(id); owner.Save(); confirmed = true;
             }
             owner.Signal();
@@ -240,13 +248,13 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
             lock (owner.journalLock)
             {
                 owner.CheckAdmission();
-                var thread = record.Text("thread");
+                var thread = record.Thread;
                 if (thread.Length == 0) owner.active.Remove(id); // No session, so no native turn can hold the input.
                 else
                 {
-                    foreach (var older in owner.active.Where(operation => operation.Key != id && Unsettled(operation.Value!, thread)).ToArray())
+                    foreach (var older in owner.active.Where(operation => operation.Key != id && Unsettled(operation.Value, thread)).ToArray())
                         owner.active.Remove(older.Key);
-                    record["unconfirmed"] = true;
+                    record.Unconfirmed = true;
                 }
                 owner.Save(); confirmed = true;
             }
@@ -257,8 +265,8 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
             lock (owner.journalLock)
             {
                 owner.CheckAdmission();
-                if (record.Text("turn").Length == 0) throw new IOException("Native admission has no acknowledgement");
-                record["confirmed"] = true; owner.Complete(); owner.Save(); confirmed = true;
+                if (record.Turn.Length == 0) throw new IOException("Native admission has no acknowledgement");
+                record.Confirmed = true; owner.Complete(); owner.Save(); confirmed = true;
             }
             owner.Signal();
         }
@@ -276,7 +284,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
 
     /// <summary>The native thread and turn a turn lifecycle event names, and whether it completed the turn; null for any other
     /// event. A missing turn ID maps to "", which no valid identity is.</summary>
-    internal static (string Thread, string Turn, bool Completed)? Lifecycle(AgentRuntimeEvent change)
+    public static (string Thread, string Turn, bool Completed)? Lifecycle(AgentRuntimeEvent change)
     {
         (string Thread, string Turn, bool Completed)? identity = change switch
         {
@@ -293,7 +301,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
         if (!turns.ContainsKey(key) && turns.Count >= 256)
         {
             var old = turns.FirstOrDefault(pair => pair.Value.Done && !active.Any(operation =>
-                operation.Value!.Text("thread") == pair.Key.Thread && (operation.Value!.Text("turn") == pair.Key.Turn || operation.Value!.Text("turn") == "")));
+                operation.Value.Thread == pair.Key.Thread && (operation.Value.Turn == pair.Key.Turn || operation.Value.Turn == "")));
             if (old.Key == default) throw new IOException("Native correlation capacity exhausted; manual recovery required");
             turns.Remove(old.Key);
         }
@@ -302,18 +310,16 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
     void Complete()
     {
         foreach (var operation in active.ToArray())
-            if (operation.Value!["confirmed"]?.GetValue<bool>() == true &&
-                turns.TryGetValue((operation.Value!.Text("thread"), operation.Value!.Text("turn")), out var turn) && turn.Done)
+            if (operation.Value.Confirmed && turns.TryGetValue((operation.Value.Thread, operation.Value.Turn), out var turn) && turn.Done)
             {
                 active.Remove(operation.Key);
                 // A thread runs one turn at a time, so an earlier unacknowledged input to it cannot outlast this completion.
-                var since = operation.Value!["since"]!.GetValue<long>();
-                foreach (var earlier in active.Where(item => Unsettled(item.Value!, operation.Value!.Text("thread")) && item.Value!["since"]!.GetValue<long>() < since).ToArray())
+                var since = operation.Value.Since;
+                foreach (var earlier in active.Where(item => Unsettled(item.Value, operation.Value.Thread) && item.Value.Since < since).ToArray())
                     active.Remove(earlier.Key);
             }
     }
-    static bool Unsettled(JsonNode operation, string thread) =>
-        operation["unconfirmed"]?.GetValue<bool>() == true && operation.Text("thread") == thread;
+    static bool Unsettled(RefreshAdmission operation, string thread) => operation.Unconfirmed && operation.Thread == thread;
     public void NewEpoch(int value)
     {
         lock (journalLock)
@@ -333,7 +339,7 @@ sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisp
                 if (Lifecycle(change) is not (var thread, var turn, var completed)) return;
                 var key = (thread, turn);
                 var known = turns.TryGetValue(key, out var previous);
-                var awaiting = active.Any(item => item.Value!.Text("thread") == thread && item.Value!.Text("turn") == "");
+                var awaiting = active.Any(item => item.Value.Thread == thread && item.Value.Turn == "");
                 if (!known && !awaiting) throw new IOException("Unmatched native lifecycle event");
                 if (completed && known && previous.Done) return;
                 if (!completed && known && previous.Done) throw new IOException("Native restarted a completed turn identity");
