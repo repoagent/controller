@@ -541,7 +541,7 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
         var timer = new Pending(this, period == Timeout.InfiniteTimeSpan);
-        lock (sync) delays.Add(dueTime);
+        if (dueTime != Timeout.InfiniteTimeSpan) lock (sync) delays.Add(dueTime);
         timer.Arm(dueTime);
         timer.Inner = time.CreateTimer(value => { timer.Fired(); callback(value); }, state, dueTime, period);
         armed.Release();
@@ -555,7 +555,7 @@ sealed class SteppedClock(DateTimeOffset start) : TimeProvider
     public bool WasArmed() => armed.CurrentCount != 0;
 
     /// <summary>The due time of each timer armed so far, in order: as it was created, and each time
-    /// <see cref="ITimer.Change"/> re-armed it.</summary>
+    /// <see cref="ITimer.Change"/> re-armed it. An infinite due time arms nothing and is not recorded.</summary>
     public IReadOnlyList<TimeSpan> Delays { get { lock (sync) return [.. delays]; } }
 
     /// <summary>Completes once a timer is pending: armed, and neither fired nor disposed. However a loop arms its timers, it has
