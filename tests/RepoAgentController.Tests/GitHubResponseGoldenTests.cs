@@ -90,11 +90,14 @@ public sealed class GitHubResponseGoldenTests
             "Transient uncertain=True notBefore=-: HTTP 200: " + Missing },
         { "lookup null without error", Response(200, """{"data":{"repository":{"discussion":null}}}"""), true, "Transient uncertain=False notBefore=-: incomplete Discussion response" },
         { "lookup HTTP 502", Response(502, """{"message":"Server Error"}"""), true, "Transient uncertain=True notBefore=-: HTTP 502: Server Error" },
-        { "lookup data not an object", Response(200, """{"data":5}"""), true, "InvalidOperationException" },
-        { "lookup data a list", Response(200, """{"data":[]}"""), true, "InvalidOperationException" },
-        { "lookup data not an object typed NOT_FOUND", Response(200, """{"data":5,"errors":[{"type":"NOT_FOUND","path":["repository","discussion"],"message":"a"}]}"""), true, "InvalidOperationException" },
-        { "lookup data a list typed NOT_FOUND", Response(200, """{"data":[],"errors":[{"type":"NOT_FOUND","path":["repository","discussion"],"message":"a"}]}"""), true, "InvalidOperationException" },
-        { "lookup repository a list", Response(200, """{"data":{"repository":[]}}"""), true, "InvalidOperationException" },
+        // bcfd719 threw InvalidOperationException reading the field through data or a repository that is no object.
+        { "lookup data not an object", Response(200, """{"data":5}"""), true, "Transient uncertain=False notBefore=-: incomplete Discussion response" },
+        { "lookup data a list", Response(200, """{"data":[]}"""), true, "Transient uncertain=False notBefore=-: incomplete Discussion response" },
+        { "lookup data not an object typed NOT_FOUND", Response(200, """{"data":5,"errors":[{"type":"NOT_FOUND","path":["repository","discussion"],"message":"a"}]}"""), true,
+            "Permanent uncertain=False notBefore=-: HTTP 200 NOT_FOUND: a" },
+        { "lookup data a list typed NOT_FOUND", Response(200, """{"data":[],"errors":[{"type":"NOT_FOUND","path":["repository","discussion"],"message":"a"}]}"""), true,
+            "Permanent uncertain=False notBefore=-: HTTP 200 NOT_FOUND: a" },
+        { "lookup repository a list", Response(200, """{"data":{"repository":[]}}"""), true, "Transient uncertain=False notBefore=-: incomplete Discussion response" },
         { "lookup repository a list typed NOT_FOUND", Response(200, """{"data":{"repository":[]},"errors":[{"type":"NOT_FOUND","path":["repository","discussion"],"message":"a"}]}"""), true,
             "Permanent uncertain=False notBefore=-: HTTP 200 NOT_FOUND: a" },
         { "lookup NOT_FOUND with a second error", Response(200, """{"data":{"repository":{"discussion":null}},"errors":[{"type":"NOT_FOUND","path":["repository","discussion"],"message":"a"},{"type":"NOT_FOUND","path":["repository","discussion"],"message":"b"}]}"""), true,
@@ -115,7 +118,8 @@ public sealed class GitHubResponseGoldenTests
             "Permanent uncertain=False notBefore=-: HTTP 200 NOT_FOUND: a" },
         { "lookup NOT_FOUND not JSON", Response(200, "Not Found"), true, "Transient uncertain=True notBefore=-: HTTP 200: no data" },
         { "lookup repository null without error", Response(200, """{"data":{"repository":null}}"""), true, "Transient uncertain=False notBefore=-: incomplete Discussion response" },
-        { "lookup repository not an object", Response(200, """{"data":{"repository":5}}"""), true, "InvalidOperationException" },
+        // bcfd719 threw InvalidOperationException reading the field through a repository that is no object.
+        { "lookup repository not an object", Response(200, """{"data":{"repository":5}}"""), true, "Transient uncertain=False notBefore=-: incomplete Discussion response" },
         { "lookup body a list", Response(200, "[]"), true, "InvalidOperationException" },
         { "lookup unrecognized", "gh: x", true, "Transient uncertain=True notBefore=-: unrecognized gh response" },
     };
@@ -134,9 +138,7 @@ public sealed class GitHubResponseGoldenTests
         try
         {
             if (!lookup) return "data " + GitHub.Classify(response).ToJsonString();
-            if (GitHub.ConfirmsAbsent(response, "repository", "discussion")) return "absent";
-            var discussion = GitHub.Classify(response)["repository"]?["discussion"] ?? throw new GitHubRequestException(GitHubFailure.Transient, "incomplete Discussion response");
-            return "discussion " + discussion.ToJsonString();
+            return GitHubDiscussions.Discussion(response) is { } discussion ? "discussion " + discussion.ToJsonString() : "absent";
         }
         catch (GitHubRequestException error) { return $"{error.Kind} uncertain={error.Uncertain} notBefore={error.NotBefore(Now)?.ToString("O") ?? "-"}: {error.Message}"; }
         catch (Exception error) { return error.GetType().Name; }

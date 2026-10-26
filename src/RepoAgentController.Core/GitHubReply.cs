@@ -1,0 +1,78 @@
+namespace RepoAgentController;
+
+/// <summary>
+/// What GitHub answered one controller-owned request, as the adapter read it: the HTTP status, the GraphQL errors, GitHub's
+/// message, whether data came back, the rate-limit and retry headers as sent, and for a lookup what its field held.
+/// </summary>
+public sealed record GitHubReply(int Status, IReadOnlyList<GitHubReplyError> Errors, string Message, bool HasData)
+{
+    public string? RateLimitRemaining { get; init; }
+    public string? RateLimitReset { get; init; }
+    public string? RetryAfter { get; init; }
+
+    /// <summary>What the data held at the field the request looked up.</summary>
+    public ReplyField Field { get; init; }
+}
+
+/// <summary>One GraphQL error: its type and the path it names, each empty when it has none.</summary>
+public sealed record GitHubReplyError(string Type, IReadOnlyList<string?> Path);
+
+/// <summary>A looked-up field: missing, or inside a parent that did not resolve; null inside a resolved parent; or a value.</summary>
+public enum ReplyField { Missing, Null, Value }
+
+/// <summary>The controller's decisions over what GitHub answered: success, a confirmed absence, or a classified failure.</summary>
+public static class GitHubReplies
+{
+    static readonly string[] Rejections = ["NOT_FOUND", "FORBIDDEN", "UNPROCESSABLE"];
+
+    /// <summary>Returns when GitHub answered with data and no errors; otherwise throws the classified failure. A null reply is
+    /// output that is no HTTP response.</summary>
+    public static void Check(GitHubReply? reply)
+    {
+        if (reply is null) throw new GitHubRequestException(GitHubFailure.Transient, "unrecognized gh response", uncertain: true);
+        var status = reply.Status;
+        var types = reply.Errors.Select(error => error.Type).ToArray();
+        var detail = reply.Message;
+        var description = $"HTTP {status}{(types.FirstOrDefault(t => t.Length != 0) is { } first ? " " + first : "")}{(detail.Length != 0 ? ": " + detail : "")}";
+        var exhausted = reply.RateLimitRemaining == "0";
+        TimeSpan? retryAfter = int.TryParse(reply.RetryAfter, out var seconds) && seconds >= 0 ? TimeSpan.FromSeconds(seconds) : null;
+        DateTimeOffset? reset = exhausted && long.TryParse(reply.RateLimitReset, out var epoch) ? DateTimeOffset.FromUnixTimeSeconds(epoch) : null;
+        if (status == 429 || types.Contains("RATE_LIMITED") || (status == 403 && (retryAfter is not null || exhausted ||
+            detail.Contains("rate limit", StringComparison.OrdinalIgnoreCase) || detail.Contains("abuse", StringComparison.OrdinalIgnoreCase))))
+            throw new GitHubRequestException(GitHubFailure.RateLimited, description, retryAfter: retryAfter, resetAt: reset);
+        if (status is >= 200 and < 300)
+        {
+            if (types.Length == 0)
+            {
+                if (reply.HasData) return;
+                throw new GitHubRequestException(GitHubFailure.Transient, description + ": no data", uncertain: true);
+            }
+            if (types.All(Rejections.Contains)) throw new GitHubRequestException(GitHubFailure.Permanent, description);
+            throw new GitHubRequestException(GitHubFailure.Transient, description, uncertain: true);
+        }
+        // 401: renewal may recover the credential. 408, 409 and 5xx may have been applied before failing.
+        if (status == 401) throw new GitHubRequestException(GitHubFailure.Transient, description);
+        if (status is 400 or 403 or 404 or 410 or 422) throw new GitHubRequestException(GitHubFailure.Permanent, description);
+        throw new GitHubRequestException(GitHubFailure.Transient, description, uncertain: true);
+    }
+
+    /// <summary>
+    /// True only when GitHub's reply is its typed NOT_FOUND for exactly the field at <paramref name="path"/>, inside a parent
+    /// that resolved: that object is confirmed absent. Message text, other error types and incomplete data confirm nothing.
+    /// </summary>
+    public static bool ConfirmsAbsent(GitHubReply? reply, IReadOnlyList<string> path) =>
+        reply is { Status: 200, Errors: [{ Type: "NOT_FOUND", Path: var located }], Field: ReplyField.Null } && located.SequenceEqual(path);
+
+    /// <summary>
+    /// A lookup of the field at <paramref name="path"/>, whose value the reply's <see cref="GitHubReply.Field"/> describes: true
+    /// when GitHub returned it, false when GitHub confirmed it absent; any other reply throws its classified failure, and data
+    /// without the field is an incomplete <paramref name="subject"/> response.
+    /// </summary>
+    public static bool Found(GitHubReply? reply, IReadOnlyList<string> path, string subject)
+    {
+        if (ConfirmsAbsent(reply, path)) return false;
+        Check(reply);
+        if (reply!.Field != ReplyField.Value) throw new GitHubRequestException(GitHubFailure.Transient, $"incomplete {subject} response");
+        return true;
+    }
+}
