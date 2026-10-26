@@ -5,12 +5,6 @@ return await BridgeCommand.Run(args);
 
 namespace RepoAgentController
 {
-    /// <summary>One redacted controller event, written to stdout and to any observer of this controller lifetime.</summary>
-    readonly record struct LogEntry(DateTimeOffset At, string Kind, string Message)
-    {
-        public string Line => $"{At:O} {Kind} {Message}";
-    }
-
     static class Log
     {
         static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> secrets = new();

@@ -26,7 +26,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     {
         Directory.CreateDirectory(directory);
         statePath = Path.Combine(directory, "bridge.json");
-        status = new(statePath, "owner/repository", "polling", clock);
+        status = StatusFiles.Open(statePath, "owner/repository", "polling", clock);
         outbox = new("owner/repository", github, InMemoryDiscussions.App, state, clock, new ControllerLog());
         github.Category(Category);
     }
@@ -47,7 +47,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     // What the dashboard last handed the outbox; delivery is the outbox's.
     DashboardOperation Published() => state.Outbox!.Operations.OfType<DashboardOperation>().Single();
 
-    string Started => Time(DateTimeOffset.Parse(status.Snapshot()["controller"]!["startedAt"]!.GetValue<string>(), CultureInfo.InvariantCulture));
+    string Started => Time(DateTimeOffset.Parse(status.Snapshot().Controller.StartedAt!, CultureInfo.InvariantCulture));
 
     static string Time(DateTimeOffset at) => at.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
 

@@ -324,7 +324,7 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
 
     /// <summary>The settings the controller whose state file is <paramref name="statePath"/> last recorded, as recorded, or null
     /// when there are none.</summary>
-    public static JsonObject? SettingsJson(string statePath)
+    static JsonObject? SettingsJson(string statePath)
     {
         var file = SettingsPath(statePath);
         try { return File.Exists(file) && JsonNode.Parse(File.ReadAllText(file))?["settings"] is JsonObject settings ? settings.Copy().AsObject() : null; }
@@ -350,7 +350,8 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
         return new RecordedSettings(recorded);
     }
 
-    public void WriteSettings(RecordedSettings recorded)
+    /// <summary>The recorded settings as the settings record holds them, by name: each one's state, value, since when and reason.</summary>
+    public static JsonObject Settings(RecordedSettings recorded)
     {
         var settings = new JsonObject();
         foreach (var (name, value) in recorded.Settings)
@@ -360,6 +361,12 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
             if (value.Reason is not null) item["reason"] = value.Reason;
             settings[name] = item;
         }
+        return settings;
+    }
+
+    public void WriteSettings(RecordedSettings recorded)
+    {
+        var settings = Settings(recorded);
         var path = SettingsPath(statePath);
         var temporary = path + ".tmp";
         var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write };

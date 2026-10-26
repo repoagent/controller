@@ -75,10 +75,9 @@ public sealed class CodexCredentialsTests : IDisposable
         finally { Environment.SetEnvironmentVariable("CODEX_HOME", previous); }
 
         Assert.Empty(fixture.Transport.Requests);
-        var status = await OperatorStatusTests.Status(fixture.State);
-        Assert.Equal("failed", status["controller"]!["state"]!.GetValue<string>());
-        Assert.Contains(status["failures"]!.AsArray(), item => item!["kind"]!.GetValue<string>() == "fatal" &&
-            item["message"]!.GetValue<string>().Contains("--codex-auth file " + supplied + " does not exist"));
+        var status = StatusFiles.Read(fixture.State, fixture.Clock)!; // As the status command reads it.
+        Assert.Equal("failed", status.Controller.State);
+        Assert.Contains(status.Failures, item => item.Kind == "fatal" && item.Message.Contains("--codex-auth file " + supplied + " does not exist"));
     }
 
     public void Dispose() => Directory.Delete(directory, true);

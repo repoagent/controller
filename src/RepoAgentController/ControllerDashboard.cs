@@ -58,7 +58,7 @@ sealed class ControllerDashboard : IAsyncDisposable
     {
         try
         {
-            var snapshot = status.Snapshot();
+            var snapshot = OperatorStatusJson.Render(status.Snapshot());
             // Either credential failing needs the operator: the App's stops GitHub work, the Codex account's holds every turn.
             var attention = snapshot["authentication"]?.Text("state") == "failed" || snapshot["codexAuthentication"]?.Text("state") == "failed";
             outbox.Dashboard(category, attention ? AttentionTitle : Title, Render(snapshot, clock.GetUtcNow(), stopped, releases.Current));

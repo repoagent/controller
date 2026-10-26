@@ -21,6 +21,6 @@ public sealed class ControllerStatusTests
         world.Clock.Advance(TimeSpan.FromSeconds(30));
         await world.End();
         world.Clock.Advance(TimeSpan.FromSeconds(30));
-        Assert.Equal((At(0), At(60), At(60), At(90)), Times(world.Status())); // Read from the stopped controller's files.
+        Assert.Equal((At(0), At(60), At(60), At(90)), Times(world.Status())); // As the stopped controller recorded it.
     }
 }

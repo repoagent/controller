@@ -331,6 +331,26 @@ sealed class InMemoryControllerState : IControllerState
     }
 }
 
+/// <summary>The status record as its file holds it: only the last written status survives into another lifetime. A status is
+/// immutable, so the one written is the one kept.</summary>
+sealed class InMemoryStatusRecord : IStatusRecord
+{
+    /// <summary>The status as last written, or as an earlier lifetime left it.</summary>
+    public LifetimeStatus? Recorded { get; set; }
+
+    public LifetimeStatus? Read() => Recorded;
+
+    public void Write(LifetimeStatus status) => Recorded = status;
+}
+
+/// <summary>The managed checkout's recorded agent turns and admission, as a test sets them; none by default.</summary>
+sealed class InMemoryCheckoutWork : ICheckoutWork
+{
+    public CheckoutWork? Work { get; set; }
+
+    public CheckoutWork? Read() => Work;
+}
+
 /// <summary>
 /// The Discussion state as the state file holds it: only what was written survives into another lifetime, so a change that was
 /// never saved is lost on restart. A write can fail on demand, as a full or read-only disk does.
@@ -345,7 +365,10 @@ sealed class InMemoryDiscussionStore : IDiscussionStore
     /// <summary>The Discussion state as last written, or null when none was ever written.</summary>
     public DiscussionState? Saved => saved is null ? null : Copy(saved);
 
-    public DiscussionState? ReadDiscussions() => Saved;
+    /// <summary>Thrown by later reads, as a state file that cannot be read throws.</summary>
+    public Exception? ReadFailure { get; set; }
+
+    public DiscussionState? ReadDiscussions() => ReadFailure is { } failure ? throw failure : Saved;
 
     public void WriteDiscussions(DiscussionState state)
     {
