@@ -54,6 +54,24 @@ public sealed class ManagedCheckoutAdapterTests
         Assert.Equal(before, fixture.Snapshot());
     }
 
+    [Theory]
+    [InlineData(true, "owned checkout is missing")]
+    [InlineData(false, "checkout has no ownership record")]
+    public async Task A_restart_refuses_a_file_in_place_of_the_checkout_root_and_changes_nothing(bool recorded, string reason)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await Cloned();
+        Directory.Move(fixture.Root, Path.Combine(fixture.Broker.Directory, "saved-root"));
+        File.WriteAllText(fixture.Root, "not a checkout");
+        if (!recorded) File.Delete(fixture.Record);
+        var before = fixture.Snapshot();
+
+        Assert.Equal("Managed checkout blocked: " + reason + "; preserve this workspace and inspect it before retrying",
+            (await Assert.ThrowsAsync<IOException>(() => fixture.Open())).Message);
+
+        Assert.Equal(before, fixture.Snapshot());
+    }
+
     public static TheoryData<string> Links() => ["root-symlink", "index-symlink"];
 
     [Theory]
