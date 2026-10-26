@@ -15,6 +15,7 @@ sealed partial class RetainedLog : IDisposable
     readonly string directory;
     readonly long fileBytes;
     readonly int files;
+    readonly TimeProvider clock;
     readonly Lock gate = new();
     FileStream? current;
 
@@ -26,10 +27,11 @@ sealed partial class RetainedLog : IDisposable
         if (files is < 1 or > MaximumFiles) throw new ArgumentException($"--log-files must be between 1 and {MaximumFiles}");
     }
 
-    public RetainedLog(string directory, long fileBytes, int files)
+    /// <summary>Opens the retained log in <paramref name="directory"/>; its own error line carries <paramref name="clock"/>'s time.</summary>
+    public RetainedLog(string directory, long fileBytes, int files, TimeProvider clock)
     {
         Validate(fileBytes, files);
-        this.directory = directory; this.fileBytes = fileBytes; this.files = files;
+        this.directory = directory; this.fileBytes = fileBytes; this.files = files; this.clock = clock;
         GitHubAppCredentials.SecureDirectory(directory);
         // A lowered retention setting also bounds files left by an earlier, larger setting: surplus and oversized archives
         // are deleted, and an oversized active file keeps its newest whole lines.
@@ -57,7 +59,7 @@ sealed partial class RetainedLog : IDisposable
                 // Stdout remains the operational record; never recurse into Log from its own sink. A failed rotation has
                 // already closed the active file.
                 current?.Dispose(); current = null;
-                Console.WriteLine($"{DateTimeOffset.UtcNow:O} retained-log-error retention stopped for this lifetime: {error.Message}");
+                Console.WriteLine($"{clock.GetUtcNow().ToUniversalTime():O} retained-log-error retention stopped for this lifetime: {error.Message}");
             }
         }
     }
