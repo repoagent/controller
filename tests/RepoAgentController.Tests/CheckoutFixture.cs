@@ -45,6 +45,8 @@ sealed class CheckoutFixture : IDisposable
              with open({{{Quote(CloneLog)}}},'a') as log:log.write(a[3]+'\n')
              subprocess.run([git,'clone','--quiet',origin,a[3]],env=dict(os.environ,GIT_ALLOW_PROTOCOL='file'),check=True)
              subprocess.run([git,'-C',a[3],'remote','set-url','origin',a[2]],check=True)
+             # As gh does after a clone, through git on PATH, so a managed clone must reach its own Git first.
+             subprocess.run(['git','-C',a[3],'config','--add','remote.origin.gh-resolved','base'],check=True)
             elif a[:2]==['api','graphql']:
              json.load(sys.stdin);print(json.dumps({'data':{'viewer':{'login':'test-app[bot]'} } }))
             elif a[:2]==['api','repos/owner/repository']:
@@ -119,5 +121,9 @@ sealed class CheckoutFixture : IDisposable
         return (await output).Trim();
     }
 
-    public void Dispose() => Broker.Dispose();
+    public void Dispose()
+    {
+        credentials?.Dispose();
+        Broker.Dispose();
+    }
 }
