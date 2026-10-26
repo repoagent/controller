@@ -33,7 +33,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
 
     ControllerDashboard Dashboard(BaselineReleases? releases = null) => new(Category, status, outbox,
         releases ?? new BaselineReleases(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text),
-        clock);
+        clock, new ControllerLog());
 
     // The published body once the dashboard has republished it naming the release at this URL; each publication arms the next heartbeat.
     async Task<string> Naming(BaselineRelease release)
@@ -146,7 +146,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
         {
             dashboard.Start(TestContext.Current.CancellationToken);
             await clock.Armed();
-            dashboard.Failed($"Repository webhook registration failed for {secret}:\n `hooks` returned HTTP 422");
+            BridgeCommand.Failed(dashboard, new InvalidOperationException($"Repository webhook registration failed for {secret}:\n `hooks` returned HTTP 422"));
         }
         Assert.Contains($"\n- **Controller:** stopped at 2026-10-24T10:00:00Z after a failure: `Repository webhook registration failed for <redacted>: 'hooks' returned HTTP 422`\n",
             Assert.Single(github.Dashboards).Body);
