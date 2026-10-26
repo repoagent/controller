@@ -155,8 +155,8 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         { "", "discussions.D4.running", """{"turn":"T4","since":"soon"}""", true, "sessions.3.since", """ null """ },
         // Waiting input that cannot be read, such as a retry with no time, holds no retry and no inputs.
         { "", "discussions.D3.waiting.retry", """{"attempts":1,"after":"soon"}""", false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
-        { "", "discussions.D3.waiting.inputs", "5", false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
-        { "", "discussions.D3.waiting.inputs", null, false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
+        { "", "discussions.D3.waiting.inputs", "5", false, "work.retrying sessions.2.state", """ 0 "idle" """ },
+        { "", "discussions.D3.waiting.inputs", null, false, "work.retrying sessions.2.state", """ 0 "idle" """ },
         { "", "discussions.D3.waiting.inputs.0", "5", false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
         { "", "discussions.D3.waiting.inputs.0.change", null, false, "work.retrying work.waiting sessions.2.state", """ 0 3 "idle" """ },
         // A delivery time in another form is reported in the form a writer leaves.
@@ -178,7 +178,7 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS", "5", false, "settings.REPOAGENT_MAX_ACTIVE_SESSIONS work.limit", """ null 4 """ },
         { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.since", null, false, "settings.REPOAGENT_MAX_ACTIVE_SESSIONS work.limit", """ null 4 """ },
         { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.state", "\"weird\"", false, "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.state", """ "pending" """ },
-        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.value", "3", false, "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.value", """ null """ },
+        { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.value", "3", false, "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.value settings.REPOAGENT_MAX_ACTIVE_SESSIONS.since", """ null null """ },
         { ".settings.json", "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.extra", "1", false, "settings.REPOAGENT_MAX_ACTIVE_SESSIONS.extra", """ null """ },
         { ".settings.json", "settings.REPOAGENT_MODEL.reason", "5", false, "settings.REPOAGENT_MODEL.reason", """ null """ },
         // A journal entry that cannot be read records no turn; admission that is not true or false is not reported.
