@@ -13,6 +13,8 @@ internal interface IInstallationTokenSource : IDisposable
     long? RepositoryId => null;
     string? GitRepository => null;
     string? GitProfile => null;
+    /// <summary>Why the runtime token cannot read repository settings, or null when it can.</summary>
+    string? SettingsUnreadable => null;
     Task Initialize(long? expectedInstallation, CancellationToken ct);
     Task<InstallationLease> Acquire(CancellationToken ct);
 }
@@ -24,8 +26,9 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
     readonly RSA key;
     readonly string repository;
     readonly TimeProvider clock;
-    readonly RuntimeProfile profile;
+    RuntimeProfile profile;
     bool clone => profile.ManagedClone;
+    public string? SettingsUnreadable { get; private set; }
     long repositoryId;
     string canonicalRepository = "";
     public long? RepositoryId => clone ? repositoryId : null;
@@ -67,8 +70,14 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
             throw new InvalidOperationException("Clone mode requires Contents read permission");
         if (profile.Webhooks && installation["permissions"]?.Text("repository_hooks") != "write")
             throw new InvalidOperationException("Webhook mode requires Webhooks: read and write; approve the updated App installation permissions");
-        if (profile.Settings && installation["permissions"]?.Text("actions_variables") is not ("read" or "write"))
-            throw new InvalidOperationException("Repository settings require Variables: read; approve the updated App installation permissions");
+        // Settings need Agent variables: read. Without it the controller still starts: the token requests no more than the
+        // installation grants, and the settings keep their last values until the installation accepts the permission.
+        if (profile.Settings && installation["permissions"]?.Text("agent_variables") is not ("read" or "write"))
+        {
+            profile = profile with { Settings = false };
+            SettingsUnreadable = "the App installation does not grant Agent variables: read";
+            Log.Write("repository-settings", $"state=unreadable reason=\"{SettingsUnreadable}; approve the updated App installation permissions\"");
+        }
 
         Log.Write("app-installation", $"app={slug} installation={installationId} repository={repository} actor={appSlug}[bot]");
     }

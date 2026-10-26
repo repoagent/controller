@@ -21,7 +21,7 @@ public readonly record struct RuntimeProfile(bool Webhooks = false, bool Managed
         var permissions = Json.Object(("discussions", "write"));
         if (Webhooks) permissions["repository_hooks"] = "write";
         if (ManagedClone) permissions["contents"] = "read";
-        if (Settings) permissions["actions_variables"] = "read";
+        if (Settings) permissions["agent_variables"] = "read";
         return permissions;
     }
 }

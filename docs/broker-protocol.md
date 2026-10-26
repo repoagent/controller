@@ -94,18 +94,18 @@ Supported native wrappers remain Linux/macOS, including the Linux container/AOT 
 
 ## Explicit repository-settings consumer v3
 
-The repository-settings profiles are a third explicit kind of runtime authority, after the frozen and clone profiles ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md)). They exist only under Actions-variable approval (setup and marker version 3); Agent-variable and Environment setup refuse them with `400`. Select one of these profiles in controller enrollment, or `-RepositorySettings` in the guided installer:
+The repository-settings profiles are a third explicit kind of runtime authority, after the frozen and clone profiles ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md)). Since [ADR 0012](adr/0012-use-repository-agent-variables-for-settings-and-approval.md) they read direct repository Agent variables and exist only under Agent-variable approval setup v4, which the broker gains in a later [#240](https://github.com/repoagent/controller/issues/240) slice. Select one of these profiles in controller enrollment, or `-RepositorySettings` in the guided installer:
 
 | Profile | Exact runtime grants |
 | --- | --- |
-| `polling-settings` | Discussions write, Actions variables read |
-| `webhook-settings` | Discussions write, repository hooks write, Actions variables read |
-| `polling-clone-settings` | Discussions write, Contents read, Actions variables read |
-| `webhook-clone-settings` | Discussions write, Contents read, repository hooks write, Actions variables read |
+| `polling-settings` | Discussions write, Agent variables read |
+| `webhook-settings` | Discussions write, repository hooks write, Agent variables read |
+| `polling-clone-settings` | Discussions write, Contents read, Agent variables read |
+| `webhook-clone-settings` | Discussions write, Contents read, repository hooks write, Agent variables read |
 
-Only implicit Metadata read may additionally appear. All four use the single immutable policy `repository-actions-settings-approval-v3`, and the approval marker names the profile. The frozen `polling`, `webhook`, `polling-clone` and `webhook-clone` profiles keep their exact grants: the broker never requests `actions_variables` for them and treats a GitHub response that adds it as an invalid scope. Existing owners, markers and enrollment files are never upgraded; moving to or from a repository-settings profile needs revocation, settlement and a fresh enrollment (see [repository settings](repository-settings.md#broker-enrollments)).
+Only implicit Metadata read may additionally appear. All four use the single immutable policy `repository-agent-settings-approval-v4`, and the approval marker names the profile. The frozen `polling`, `webhook`, `polling-clone` and `webhook-clone` profiles keep their exact grants: the broker never requests variables access for them and treats a GitHub response that adds it as an invalid scope. Existing owners, markers and enrollment files are never upgraded; moving to or from a repository-settings profile needs revocation, settlement and a fresh enrollment (see [repository settings](repository-settings.md#broker-enrollments)).
 
-The v3 private file and lease contain precisely the v1 fields plus required string fields `profile` and `policyVersion`. `protocolVersion` is 3. The profile must be one of the four repository-settings profiles and the policy must be `repository-actions-settings-approval-v3`. Permissions must be exactly the profile's grants with `actions_variables` equal to `read`. Every lease must repeat the enrolled file's profile, policy and exact grants. All original size, strict-field, identity, expiry, origin and private-file rules apply.
+The v3 private file and lease contain precisely the v1 fields plus required string fields `profile` and `policyVersion`. `protocolVersion` is 3. The profile must be one of the four repository-settings profiles and the policy must be `repository-agent-settings-approval-v4`. Permissions must be exactly the profile's grants with `agent_variables` equal to `read`. A file with the retired Actions-variable policy `repository-actions-settings-approval-v3` is refused at startup, before any broker request, with a message to revoke it and enroll afresh. Every lease must repeat the enrolled file's profile, policy and exact grants. All original size, strict-field, identity, expiry, origin and private-file rules apply.
 
 Selection is explicit on both sides. Start the controller with `--repository-settings` (plus `--clone` for the clone variants) to consume a v3 file; a v3 file without the flag, or the flag with a v1 or v2 file, is refused before any broker request. Container configuration stores the choice for the instance: changing it later requires a fresh instance and enrollment. Externally supplied enrollments select it with `REPOAGENT_REPOSITORY_SETTINGS=true`.
 

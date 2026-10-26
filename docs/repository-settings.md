@@ -1,9 +1,9 @@
 # Repository settings
 
-Nonsecret controller settings live in direct repository **Actions variables** named `REPOAGENT_*`. Operators change them after installation, without reinstalling. The operator's admin authority writes them; the controller's GitHub token can only read them.
+Nonsecret controller settings live in direct repository **Agent variables** named `REPOAGENT_*` (**Settings > Secrets and variables > Agents**, [ADR 0012](adr/0012-use-repository-agent-variables-for-settings-and-approval.md)). Operators change them after installation, without reinstalling. The operator's admin authority writes them; the controller's GitHub token can only read them. Organization Agent variables never apply.
 
 > [!WARNING]
-> Repository Actions variables must never hold secrets. A controller that reads repository settings, and so the agent it runs, can read every direct repository Actions variable, not only `REPOAGENT_*` settings: the agent's `gh` uses the controller's runtime token ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md)).
+> Repository Agent variables must never hold secrets. A controller that reads repository settings, and so the agent it runs, can read every direct repository Agent variable, not only `REPOAGENT_*` settings: the agent's `gh` uses the controller's runtime token. GitHub also exposes every Agent variable to [Copilot cloud agent](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/configure-secrets-and-variables) sessions as environment variables.
 
 The supported names and validation rules are in [`src/RepoAgentController/repository-settings.json`](../src/RepoAgentController/repository-settings.json). The controller and the operator script use this same catalogue.
 
@@ -27,17 +27,36 @@ Run this from a checkout with PowerShell 7.4+ and an authenticated host `gh`:
 ./install.ps1 -Action Settings -Repository owner/repo -ClearSetting REPOAGENT_MAX_ACTIVE_SESSIONS -Apply
 ```
 
-Inspection needs repository Variables read access, and changes need write access. The script needs no Docker or instance state, and it never reads or prints other variables. It rejects unsupported names and invalid values before contacting GitHub, and it writes the value in the controller's normalized form. Before each write it reads the current value, and afterwards it reads the variable again to confirm the write. If a read fails, the current value is unknown, so the script writes nothing. GitHub has no compare-and-set for variables, so the last writer wins. The final stdout line is a JSON summary.
+Inspection needs repository Agent variables read access, and changes need write access. The script needs no Docker or instance state, and it never reads or prints other variables. It rejects unsupported names and invalid values before contacting GitHub, and it writes the value in the controller's normalized form. Before each write it reads the current value, and afterwards it reads the variable again to confirm the write. If a read fails, the current value is unknown, so the script writes nothing. GitHub has no compare-and-set for variables, so the last writer wins. The final stdout line is a JSON summary.
+
+### Move settings from Actions variables
+
+Settings lived in direct repository Actions variables before ADR 0012. Move them once:
+
+```powershell
+./install.ps1 -Action Settings -Repository owner/repo -MoveSettings          # preview
+./install.ps1 -Action Settings -Repository owner/repo -MoveSettings -Apply
+```
+
+For each catalogue setting that has an Actions variable, the move writes the normalized value to the Agent variable, reads it back, then deletes the Actions variable and confirms it is gone. If the Agent variable already holds the same value, only the Actions variable is deleted. The move plans every setting before it writes anything, and it writes nothing when an Actions value is invalid or unreadable, or when the Agent variable holds a different value. It reads only catalogue names, so it never touches other variables or the reserved `REPOAGENT_APPROVAL`. It also needs Actions variables (**Variables**) read and write access.
+
+The controller never falls back to Actions variables, so a controller that runs during the move sees its settings as absent and applies the defaults. Upgrade a direct-App controller in this order:
+
+1. Stop the controller.
+2. Move the settings.
+3. Start the new version.
 
 ## Controller behavior
 
-Enable reading with `--repository-settings`. For the container runtime, run `repoagent configure ... --repository-settings`. The GitHub App installation must grant **Variables: read**. In direct-App mode, the flag makes the runtime token request `actions_variables: read` in addition to its existing permissions. It never requests write, even when the installation grants write. In broker mode, the flag requires a controller enrollment with a repository-settings profile (below). Without the flag, the controller requests no new permission and logs `repository-settings state=disabled`.
+Enable reading with `--repository-settings`. For the container runtime, run `repoagent configure ... --repository-settings`. The GitHub App installation must grant **Agent variables: read**. In direct-App mode, the flag makes the runtime token request `agent_variables: read` in addition to its existing permissions. It never requests write, even when the installation grants write. If the installation does not grant it, the controller still starts: it requests no variables permission, logs `repository-settings state=unreadable`, reports every setting as `read-failed` with the reason, and keeps the last effective values until the installation accepts the permission. **Variables: read** (Actions variables) does not count. In broker mode, the flag requires a controller enrollment with a repository-settings profile (below). Without the flag, the controller requests no new permission and logs `repository-settings state=disabled`.
 
 ### Broker enrollments
 
-The existing broker profiles (`polling`, `webhook`, `polling-clone`, `webhook-clone`) are frozen and grant no Variables access. The controller does not widen them: with a v1 or v2 enrollment file it refuses `--repository-settings` before contacting the broker, and the broker refuses `actions_variables` for those profiles.
+The existing broker profiles (`polling`, `webhook`, `polling-clone`, `webhook-clone`) are frozen and grant no variables access. The controller does not widen them: with a v1 or v2 enrollment file it refuses `--repository-settings` before contacting the broker, and the broker never adds variables access to those profiles.
 
-To read settings through the broker, choose a repository-settings profile at enrollment ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md)). These profiles are `polling-settings`, `webhook-settings`, `polling-clone-settings` and `webhook-clone-settings`. Each grants exactly its frozen counterpart's permissions plus `actions_variables: read`, under the policy `repository-actions-settings-approval-v3`. They require Actions-variable approval (setup v3); legacy Agent-variable approval is refused before any work. The enrollment file, leases and runtime routes are protocol v3, and the controller consumes a v3 file only with `--repository-settings`. See [the consumer contract](broker-protocol.md#explicit-repository-settings-consumer-v3).
+To read settings through the broker, choose a repository-settings profile at enrollment ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md), [ADR 0012](adr/0012-use-repository-agent-variables-for-settings-and-approval.md)). These profiles are `polling-settings`, `webhook-settings`, `polling-clone-settings` and `webhook-clone-settings`. Each grants exactly its frozen counterpart's permissions plus `agent_variables: read`, under the policy `repository-agent-settings-approval-v4` of Agent-variable approval setup v4. The enrollment file, leases and runtime routes are protocol v3, and the controller consumes such a file only with `--repository-settings`. See [the consumer contract](broker-protocol.md#explicit-repository-settings-consumer-v3). The broker side of setup v4 and its installer support are later [#240](https://github.com/repoagent/controller/issues/240) slices; until they ship, broker-enrolled controllers cannot read settings.
+
+The controller refuses an enrollment file from the retired Actions-variable settings setup (policy `repository-actions-settings-approval-v3`) at startup, before contacting the broker, and names re-enrollment: that token cannot read Agent variables. Revoke it and enroll afresh as below.
 
 - **Guided installer.** Add `-RepositorySettings` to `./install.ps1` for a fresh instance. The installer selects the matching `*-settings` profile for the chosen mode and clone choice, and it configures the runtime with `--repository-settings`.
 - **Controller enrollment.** Pass `-EnrollmentProfile polling-settings` (or another settings profile) to `scripts/enroll-controller.ps1`, then start the controller or `repoagent configure` with `--repository-settings`. A container instance keeps this choice for its lifetime (`REPOAGENT_REPOSITORY_SETTINGS=true` for externally supplied enrollments).
@@ -46,11 +65,12 @@ An existing broker-enrolled controller is never upgraded in place. To move it to
 
 1. Revoke its current approval (`./install.ps1 -Action Revoke` with the saved instance, or `scripts/revoke-approval.ps1`).
 2. Wait until the broker has closed the grant and its outstanding tokens have settled. One owner gate serves each repository, so a new enrollment is refused (`409`) until then.
-3. Enroll afresh in a new state directory with a settings profile (`-RepositorySettings` for a new installer instance). The new controller gets a new ID and a new approval marker that names the settings profile.
+3. If settings are still in Actions variables, [move them](#move-settings-from-actions-variables).
+4. Enroll afresh in a new state directory with a settings profile (`-RepositorySettings` for a new installer instance). The new controller gets a new ID and a new approval marker that names the settings profile.
 
 Rollback is the same procedure in reverse: revoke the settings grant, wait for settlement, and enroll a frozen profile in a new state directory (omit `-RepositorySettings`). A broker build without runtime v3 refuses settings profiles at setup (`400`) and answers the v3 runtime routes with `404`, so the controller fails closed rather than receiving a narrower or wider token.
 
-A repository-settings profile token is read-only for variables, so the controller still cannot write or restore its own approval. It can read every direct repository Actions variable, however, including the nonsecret approval marker. Keep secrets out of repository variables.
+A repository-settings profile token is read-only for variables, so the controller still cannot write or restore its own approval. It can read every direct repository Agent variable, however, including the nonsecret approval marker. Keep secrets out of repository variables.
 
 The controller reads each supported variable at startup, including under `--check-auth`. It reads them again a minute after the agent runtime starts, then a minute after each refresh finishes, with one `GET` per catalogue entry. A refresh that changed a setting finishes only after a running observation or dispatch does, so the next refresh can start later. A change in a setting's state, value or reason is logged once:
 
@@ -96,7 +116,7 @@ At the limit, newly observed input waits in the controller, as it does for a bus
 
 **Never enrolled by category.** Discussions authored by the controller's own App, such as its status dashboard, never enroll by category. This prevents a controller-written Discussion from starting agent work.
 
-Category enrollment needs no permission beyond Discussions read and the Variables read that settings already require. Broker-enrolled controllers with a frozen profile cannot read settings, so their Discussions enroll only by mention or URL; a controller with a [repository-settings profile](#broker-enrollments) can use categories.
+Category enrollment needs no permission beyond Discussions read and the Agent variables read that settings already require. Broker-enrolled controllers with a frozen profile cannot read settings, so their Discussions enroll only by mention or URL; a controller with a [repository-settings profile](#broker-enrollments) can use categories.
 
 ## Model and reasoning selection
 

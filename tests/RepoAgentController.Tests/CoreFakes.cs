@@ -4,7 +4,7 @@ using Xunit;
 
 namespace RepoAgentController.Tests;
 
-/// <summary>The repository's REPOAGENT_ Actions variables as GitHub holds them. A queued failure answers a read instead.</summary>
+/// <summary>The repository's REPOAGENT_ Agent variables as GitHub holds them. A queued failure answers a read instead.</summary>
 sealed class InMemoryRepositorySettings : IRepositorySettings
 {
     readonly Lock sync = new();

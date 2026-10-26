@@ -145,7 +145,7 @@ Usage: ./repoagent COMMAND
   setup                           Guided App configuration and Codex browser sign-in
   configure --repository OWNER/REPO --app-id ID --key-path /absolute/key.pem
             [--installation-id ID] [--mention-user LOGIN] [--model MODEL] [--tool-updates latest|pinned]
-            [--repository-settings]   Read REPOAGENT_ repository variables (App needs Variables: read;
+            [--repository-settings]   Read REPOAGENT_ Agent variables (App needs Agent variables: read;
                                       broker mode needs a repository-settings profile)
             [--mode polling|fixed-url|quick-tunnel] [--public-url https://HOST] [--listen-port 8080] [--reconcile-interval 300]
             [--dashboard-category "EXISTING CATEGORY"]  (empty value removes the status dashboard)

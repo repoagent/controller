@@ -10,6 +10,9 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
 {
     const int MaximumBytes = 64 * 1024;
     const string VariableName = @"\A[A-Za-z_][A-Za-z0-9_]{0,127}\z";
+    // Setup v4 Agent-variable approval; its settings profiles read Agent variables (ADR 0012).
+    const string SettingsPolicy = "repository-agent-settings-approval-v4";
+    const string RetiredSettingsPolicy = "repository-actions-settings-approval-v3";
     static readonly string[] BindingFields = ["protocolVersion", "appId", "appSlug", "installationId", "repositoryId", "repository", "permissions"];
     readonly HttpClient http;
     readonly Uri origin;
@@ -44,6 +47,10 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         {
             var root = enrollment.RootElement;
             version = checked((int)Id(root, "protocolVersion"));
+            // Setup v3 kept settings in Actions variables, which ADR 0012 retires: its token cannot read Agent variables.
+            if (version == 3 && root.TryGetProperty("policyVersion", out var policy) && policy.ValueKind == JsonValueKind.String &&
+                policy.GetString() == RetiredSettingsPolicy)
+                throw Invalid("this v3 repository-settings enrollment is retired because settings moved to Agent variables; revoke it and enroll afresh with a repository-settings profile (docs/repository-settings.md#broker-enrollments)");
             // A repository-settings profile is explicit on both sides: frozen profiles are never widened, and a
             // repository-settings profile is never consumed as a frozen one.
             if (settings && version != 3) throw Invalid("--repository-settings requires a controller enrollment with a repository-settings profile (runtime v3); frozen profiles are not widened");
@@ -188,10 +195,10 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         var parts = Text(value, "repository").Split('/');
         if (parts.Length != 2 || !parts.All(Name)) throw Invalid("invalid repository name");
         if (settings && (Text(value, "profile") != profile.Name ||
-            Text(value, "policyVersion") != "repository-actions-settings-approval-v3"))
+            Text(value, "policyVersion") != SettingsPolicy))
             throw Invalid("repository-settings policy differs");
         if (clone && !settings && (Text(value, "profile") != profile.Name ||
-            Text(value, "policyVersion") is not ("repository-actions-clone-approval-v3" or "repository-agent-clone-approval-v2")))
+            Text(value, "policyVersion") is not ("repository-agent-clone-approval-v4" or "repository-actions-clone-approval-v3" or "repository-agent-clone-approval-v2")))
             throw Invalid("clone policy differs");
         var permissions = value.GetProperty("permissions");
         var required = profile.Permissions();

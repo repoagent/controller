@@ -440,6 +440,7 @@ public sealed class BrokerAuthenticationTests
     [Theory]
     [InlineData("repository-agent-clone-approval-v2")]
     [InlineData("repository-actions-clone-approval-v3")]
+    [InlineData("repository-agent-clone-approval-v4")]
     public async Task Clone_lease_must_preserve_the_enrolled_approval_policy(string policy)
     {
         using var fixture = new Fixture(clone: true, clonePolicy: policy);
@@ -501,18 +502,40 @@ public sealed class BrokerAuthenticationTests
     }
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task A_retired_v3_settings_enrollment_is_refused_before_broker_contact_and_names_re_enrollment(bool clone, bool repositorySettings)
+    {
+        // Setup v3 kept settings in Actions variables (ADR 0007, 0008). ADR 0012 retires it: its token cannot read Agent variables.
+        using var fixture = new Fixture(clone: clone, settings: true) { RepositorySettings = repositorySettings };
+        fixture.Enrollment["policyVersion"] = "repository-actions-settings-approval-v3";
+        fixture.Enrollment["permissions"]!.AsObject().Remove("agent_variables");
+        fixture.Enrollment["permissions"]!["actions_variables"] = "read";
+        fixture.SaveEnrollment();
+
+        Assert.Equal(1, await fixture.Start());
+
+        Assert.Empty(fixture.Transport.Requests);
+        Assert.Contains("v3 repository-settings enrollment is retired", fixture.RetainedLog);
+        Assert.Contains("enroll afresh", fixture.RetainedLog);
+    }
+
+    [Theory]
     [InlineData("profile", "polling-clone")]
     [InlineData("policyVersion", "repository-actions-clone-approval-v3")]
     [InlineData("protocolVersion", "2")]
     [InlineData("without-variables", "")]
     [InlineData("variables-write", "write")]
+    [InlineData("actions-variables", "read")]
+    [InlineData("policyVersion", "repository-agent-clone-approval-v4")]
     public void Settings_file_must_name_its_exact_family_and_grants_before_contact(string field, string value)
     {
         using var fixture = new Fixture(clone: true, settings: true);
         switch (field)
         {
-            case "without-variables": fixture.Enrollment["permissions"]!.AsObject().Remove("actions_variables"); break;
-            case "variables-write": fixture.Enrollment["permissions"]!["actions_variables"] = value; break;
+            case "without-variables": fixture.Enrollment["permissions"]!.AsObject().Remove("agent_variables"); break;
+            case "variables-write": fixture.Enrollment["permissions"]!["agent_variables"] = value; break;
+            case "actions-variables": fixture.Enrollment["permissions"]!["actions_variables"] = value; break;
             case "protocolVersion": fixture.Enrollment[field] = int.Parse(value); break;
             default: fixture.Enrollment[field] = value; break;
         }
@@ -528,6 +551,7 @@ public sealed class BrokerAuthenticationTests
     [InlineData("protocolVersion")]
     [InlineData("without-variables")]
     [InlineData("variables-write")]
+    [InlineData("actions-variables")]
     [InlineData("permissions")]
     public async Task Settings_lease_must_repeat_the_enrolled_family_and_exact_grants_on_renewal(string defect)
     {
@@ -579,9 +603,9 @@ public sealed class BrokerAuthenticationTests
             {
                 Enrollment["protocolVersion"] = 3;
                 Enrollment["profile"] = (webhooks ? "webhook" : "polling") + (clone ? "-clone" : "") + "-settings";
-                Enrollment["policyVersion"] = "repository-actions-settings-approval-v3";
+                Enrollment["policyVersion"] = "repository-agent-settings-approval-v4";
                 if (clone) Enrollment["permissions"]!["contents"] = "read";
-                Enrollment["permissions"]!["actions_variables"] = "read";
+                Enrollment["permissions"]!["agent_variables"] = "read";
             }
             else if (clone)
             {
@@ -706,8 +730,9 @@ public sealed class BrokerAuthenticationTests
                 case "repository": result[Defect] = "owner/other"; break;
                 case "permissions": result["permissions"]!["contents"] = "write"; break;
                 case "frozen-policy": result["policyVersion"] = "repository-actions-clone-approval-v3"; break;
-                case "without-variables": result["permissions"]!.AsObject().Remove("actions_variables"); break;
-                case "variables-write": result["permissions"]!["actions_variables"] = "write"; break;
+                case "without-variables": result["permissions"]!.AsObject().Remove("agent_variables"); break;
+                case "variables-write": result["permissions"]!["agent_variables"] = "write"; break;
+                case "actions-variables": result["permissions"]!["actions_variables"] = "read"; break;
                 case "permission-level": result["permissions"]!["discussions"] = "read"; break;
                 case "token": result["token"] = ""; break;
                 case "whitespace-token": result["token"] = "token with space"; break;

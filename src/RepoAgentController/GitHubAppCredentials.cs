@@ -18,6 +18,8 @@ public sealed class GitHubAppCredentials : IDisposable
     public string CredentialDirectory { get; }
     public CancellationToken BrokerCredentialLost => source is BrokerTokenSource ? brokerCredentialLost.Token : CancellationToken.None;
     internal long? RepositoryId => source.RepositoryId;
+    /// <summary>Why the runtime token cannot read repository settings, or null when it can.</summary>
+    internal string? SettingsUnreadable => source.SettingsUnreadable;
 
     public GitHubAppCredentials(HttpClient http, string appId, string privateKeyPath, string repository,
         string credentialDirectory, TimeProvider? clock = null, RuntimeProfile profile = default)
