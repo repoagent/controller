@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -134,9 +135,9 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
     }
 
     /// <summary>
-    /// gh --include output as the facts the core decides from, and its JSON body: the status, the rate-limit and retry headers,
-    /// each GraphQL error's type and path, GitHub's message, whether data came back, and what the data holds at
-    /// <paramref name="lookup"/>. The response is null for output that is no HTTP response.
+    /// gh --include output as the facts the core decides from, and its JSON body: the status, the rate-limit and retry headers
+    /// as numbers and times (null when missing or unusable), each GraphQL error's type and path, GitHub's message, whether data
+    /// came back, and what the data holds at <paramref name="lookup"/>. The response is null for output that is no HTTP response.
     /// </summary>
     internal static (GitHubResponse? Response, JsonNode? Body) Read(string response, params string[] lookup)
     {
@@ -158,8 +159,12 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
         }
         return (new GitHubResponse(status, read, message, data is not null)
         {
-            RateLimitRemaining = headers.GetValueOrDefault("X-RateLimit-Remaining"), RateLimitReset = headers.GetValueOrDefault("X-RateLimit-Reset"),
-            RetryAfter = headers.GetValueOrDefault("Retry-After"), Field = field
+            RateLimitRemaining = int.TryParse(headers.GetValueOrDefault("X-RateLimit-Remaining"), NumberStyles.None, CultureInfo.InvariantCulture, out var remaining) ? remaining : null,
+            RateLimitReset = long.TryParse(headers.GetValueOrDefault("X-RateLimit-Reset"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var epoch)
+                && epoch >= DateTimeOffset.MinValue.ToUnixTimeSeconds() && epoch <= DateTimeOffset.MaxValue.ToUnixTimeSeconds() ? DateTimeOffset.FromUnixTimeSeconds(epoch) : null,
+            RetryAfter = int.TryParse(headers.GetValueOrDefault("Retry-After"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds) && seconds >= 0
+                ? TimeSpan.FromSeconds(seconds) : null,
+            Field = field
         }, body);
     }
 

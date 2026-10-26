@@ -34,17 +34,17 @@ public sealed class GitHubResponsesTests
     public void An_exhausted_primary_rate_limit_waits_for_its_reset()
     {
         var reset = Now.AddMinutes(80);
-        var limited = Response(403, "API rate limit exceeded for installation ID 234.") with { RateLimitRemaining = "0", RateLimitReset = reset.ToUnixTimeSeconds().ToString() };
+        var limited = Response(403, "API rate limit exceeded for installation ID 234.") with { RateLimitRemaining = 0, RateLimitReset = reset };
         Classified(Failure(limited), GitHubFailure.RateLimited, false, "HTTP 403: API rate limit exceeded for installation ID 234.", reset);
 
         // An exhausted limit alone marks a 403 as a rate limit, whatever GitHub's message.
-        Classified(Failure(Response(403, "x") with { RateLimitRemaining = "0", RateLimitReset = reset.ToUnixTimeSeconds().ToString() }), GitHubFailure.RateLimited, false, "HTTP 403: x", reset);
+        Classified(Failure(Response(403, "x") with { RateLimitRemaining = 0, RateLimitReset = reset }), GitHubFailure.RateLimited, false, "HTTP 403: x", reset);
         // Only an exhausted limit sets its reset; a reset alone is no limit and no retry time.
         Classified(Failure(limited with { RateLimitReset = null }), GitHubFailure.RateLimited, false, "HTTP 403: API rate limit exceeded for installation ID 234.");
-        Classified(Failure(limited with { RateLimitRemaining = "1" }), GitHubFailure.RateLimited, false, "HTTP 403: API rate limit exceeded for installation ID 234.");
-        Classified(Failure(Response(403, "x") with { RateLimitRemaining = "00", RateLimitReset = "1793020800" }), GitHubFailure.Permanent, false, "HTTP 403: x");
+        Classified(Failure(limited with { RateLimitRemaining = 1 }), GitHubFailure.RateLimited, false, "HTTP 403: API rate limit exceeded for installation ID 234.");
+        Classified(Failure(Response(403, "x") with { RateLimitRemaining = 1, RateLimitReset = reset }), GitHubFailure.Permanent, false, "HTTP 403: x");
         // A success is never rate limited, even when its request used the last of the limit.
-        GitHubResponses.Check(Response(200, data: true) with { RateLimitRemaining = "0", RateLimitReset = "1793020800" });
+        GitHubResponses.Check(Response(200, data: true) with { RateLimitRemaining = 0, RateLimitReset = Now.AddMinutes(80) });
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public sealed class GitHubResponsesTests
     [Fact]
     public void HTTP_429_is_rate_limited_until_its_Retry_After()
     {
-        Classified(Failure(Response(429, "Too many requests") with { RetryAfter = "30" }), GitHubFailure.RateLimited, false, "HTTP 429: Too many requests", Now.AddSeconds(30));
+        Classified(Failure(Response(429, "Too many requests") with { RetryAfter = TimeSpan.FromSeconds(30) }), GitHubFailure.RateLimited, false, "HTTP 429: Too many requests", Now.AddSeconds(30));
         Classified(Failure(Response(429)), GitHubFailure.RateLimited, false, "HTTP 429");
     }
 
@@ -66,16 +66,14 @@ public sealed class GitHubResponsesTests
     public void A_403_secondary_rate_limit_is_rate_limited_by_its_Retry_After_or_its_message()
     {
         var secondary = Response(403, "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.");
-        Classified(Failure(secondary with { RetryAfter = "60" }), GitHubFailure.RateLimited, false, "HTTP 403: " + secondary.Message, Now.AddMinutes(1));
+        Classified(Failure(secondary with { RetryAfter = TimeSpan.FromMinutes(1) }), GitHubFailure.RateLimited, false, "HTTP 403: " + secondary.Message, Now.AddMinutes(1));
         Classified(Failure(secondary), GitHubFailure.RateLimited, false, "HTTP 403: " + secondary.Message);
         Classified(Failure(Response(403, "You have triggered an Abuse detection mechanism.")), GitHubFailure.RateLimited, false, "HTTP 403: You have triggered an Abuse detection mechanism.");
         // A Retry-After alone marks a 403 as a rate limit; the later of it and an exhausted limit's reset applies.
-        Classified(Failure(Response(403, "x") with { RetryAfter = "0" }), GitHubFailure.RateLimited, false, "HTTP 403: x", Now);
-        Classified(Failure(Response(403, "x") with { RetryAfter = "7200", RateLimitRemaining = "0", RateLimitReset = Now.AddMinutes(80).ToUnixTimeSeconds().ToString() }),
+        Classified(Failure(Response(403, "x") with { RetryAfter = TimeSpan.Zero }), GitHubFailure.RateLimited, false, "HTTP 403: x", Now);
+        Classified(Failure(Response(403, "x") with { RetryAfter = TimeSpan.FromHours(2), RateLimitRemaining = 0, RateLimitReset = Now.AddMinutes(80) }),
             GitHubFailure.RateLimited, false, "HTTP 403: x", Now.AddHours(2));
-        // An unusable Retry-After is no signal, so an ordinary 403 is a permanent refusal.
-        Classified(Failure(Response(403, "x") with { RetryAfter = "-1" }), GitHubFailure.Permanent, false, "HTTP 403: x");
-        Classified(Failure(Response(403, "x") with { RetryAfter = "Wed, 21 Oct 2026 07:28:00 GMT" }), GitHubFailure.Permanent, false, "HTTP 403: x");
+        // Without any rate-limit signal a 403 is a permanent refusal.
         Classified(Failure(Response(403, "Resource not accessible by integration")), GitHubFailure.Permanent, false, "HTTP 403: Resource not accessible by integration");
     }
 

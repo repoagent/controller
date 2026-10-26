@@ -34,13 +34,16 @@ public sealed class GitHubResponseGoldenTests
             """data {"x":1}""" },
         { "remaining header lower case", Response(403, """{"message":"x"}""", "x-ratelimit-remaining: 0", "x-ratelimit-reset: 1793020800"), false,
             "RateLimited uncertain=False notBefore=2026-10-26T13:20:00.0000000+00:00: HTTP 403: x" },
-        { "remaining 00", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 00", "X-RateLimit-Reset: 1793020800"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
+        // bcfd719 compared the header's text with "0", so 00 was not exhausted.
+        { "remaining 00", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 00", "X-RateLimit-Reset: 1793020800"), false,
+            "RateLimited uncertain=False notBefore=2026-10-26T13:20:00.0000000+00:00: HTTP 403: x" },
         { "exhausted without reset", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 0"), false, "RateLimited uncertain=False notBefore=-: HTTP 403: x" },
         { "reset without exhaustion", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 5", "X-RateLimit-Reset: 1793020800"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
         { "remaining +0", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: +0", "X-RateLimit-Reset: 1793020800"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
         { "remaining not a number", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: none", "X-RateLimit-Reset: 1793020800"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
         { "reset not a number", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 0", "X-RateLimit-Reset: soon"), false, "RateLimited uncertain=False notBefore=-: HTTP 403: x" },
-        { "reset out of range", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 0", "X-RateLimit-Reset: 99999999999999"), false, "ArgumentOutOfRangeException" },
+        // bcfd719 threw ArgumentOutOfRangeException converting the reset to a time.
+        { "reset out of range", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 0", "X-RateLimit-Reset: 99999999999999"), false, "RateLimited uncertain=False notBefore=-: HTTP 403: x" },
         { "reset out of range without exhaustion", Response(403, """{"message":"x"}""", "X-RateLimit-Remaining: 5", "X-RateLimit-Reset: 99999999999999"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
         { "Retry-After past int", Response(403, """{"message":"x"}""", "Retry-After: 99999999999"), false, "Permanent uncertain=False notBefore=-: HTTP 403: x" },
         { "secondary rate limit with Retry-After", Response(403, """{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}""", "Retry-After: 60"), false,

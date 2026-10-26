@@ -2,13 +2,19 @@ namespace RepoAgentController;
 
 /// <summary>
 /// What GitHub answered one controller-owned request, as the adapter read it: the HTTP status, the GraphQL errors, GitHub's
-/// message, whether data came back, the rate-limit and retry headers as sent, and for a lookup what its field held.
+/// message, whether data came back, the rate-limit and retry headers, and for a lookup what its field held. A header that is
+/// missing or unusable is null.
 /// </summary>
 public sealed record GitHubResponse(int Status, IReadOnlyList<GitHubResponseError> Errors, string Message, bool HasData)
 {
-    public string? RateLimitRemaining { get; init; }
-    public string? RateLimitReset { get; init; }
-    public string? RetryAfter { get; init; }
+    /// <summary>The requests left in the rate limit's window.</summary>
+    public int? RateLimitRemaining { get; init; }
+
+    /// <summary>When the rate limit's window resets.</summary>
+    public DateTimeOffset? RateLimitReset { get; init; }
+
+    /// <summary>How long GitHub asked the controller to wait.</summary>
+    public TimeSpan? RetryAfter { get; init; }
 
     /// <summary>What the data held at the field the request looked up.</summary>
     public ResponseField Field { get; init; }
@@ -34,9 +40,9 @@ public static class GitHubResponses
         var types = response.Errors.Select(error => error.Type).ToArray();
         var detail = response.Message;
         var description = $"HTTP {status}{(types.FirstOrDefault(t => t.Length != 0) is { } first ? " " + first : "")}{(detail.Length != 0 ? ": " + detail : "")}";
-        var exhausted = response.RateLimitRemaining == "0";
-        TimeSpan? retryAfter = int.TryParse(response.RetryAfter, out var seconds) && seconds >= 0 ? TimeSpan.FromSeconds(seconds) : null;
-        DateTimeOffset? reset = exhausted && long.TryParse(response.RateLimitReset, out var epoch) ? DateTimeOffset.FromUnixTimeSeconds(epoch) : null;
+        var exhausted = response.RateLimitRemaining == 0;
+        var retryAfter = response.RetryAfter;
+        var reset = exhausted ? response.RateLimitReset : null;
         if (status == 429 || types.Contains("RATE_LIMITED") || (status == 403 && (retryAfter is not null || exhausted ||
             detail.Contains("rate limit", StringComparison.OrdinalIgnoreCase) || detail.Contains("abuse", StringComparison.OrdinalIgnoreCase))))
             throw new GitHubRequestException(GitHubFailure.RateLimited, description, retryAfter: retryAfter, resetAt: reset);
