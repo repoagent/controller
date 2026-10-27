@@ -29,7 +29,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     {
         this.checkout = checkout; this.binding = binding; this.store = store; this.clock = clock; this.log = log;
         var recorded = store.Read();
-        originalJournalMissing = recorded is null && priorSessions;
+        originalJournalMissing = recorded is null && (priorSessions || pendingDiscussion);
         journal = recorded ?? new RefreshJournal(binding.Root, binding.Owner, binding.RepositoryId);
         if (journal.Root != binding.Root || journal.Owner != binding.Owner || journal.RepositoryId != binding.RepositoryId ||
             journal.Completed < 0 || journal.Requested < journal.Completed)
