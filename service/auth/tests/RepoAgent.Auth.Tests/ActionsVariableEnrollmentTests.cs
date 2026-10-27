@@ -95,15 +95,17 @@ public sealed class ActionsVariableEnrollmentTests
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
 
-    // Repository-settings tooling writes REPOAGENT_ Actions variables; only the catalogue's reserved
+    // Repository-settings tooling writes REPOAGENT_ repository variables; only the catalogue's reserved
     // approval name may share that prefix, so settings changes can never overwrite an approval marker.
-    // Legacy Agent variables are a separate store and keep their name rules.
     [Theory]
     [InlineData(3, "repoagent_model", HttpStatusCode.BadRequest)]
     [InlineData(3, "REPOAGENT_FUTURE_SETTING", HttpStatusCode.BadRequest)]
     [InlineData(3, "repoagent_approval", HttpStatusCode.OK)]
+    [InlineData(4, "REPOAGENT_MODEL", HttpStatusCode.BadRequest)]
+    [InlineData(4, "repoagent_approval", HttpStatusCode.OK)]
     [InlineData(2, "REPOAGENT_MODEL", HttpStatusCode.OK)]
-    public async Task Actions_variable_approval_cannot_take_a_repository_settings_name(int setupVersion, string variable, HttpStatusCode expected)
+    [InlineData(2, "APPROVAL", HttpStatusCode.OK)]
+    public async Task Repository_variable_approval_cannot_take_a_repository_settings_name(int setupVersion, string variable, HttpStatusCode expected)
     {
         var f = new InMemoryBroker();
         Repository.Configure(f.GitHub);
@@ -229,16 +231,18 @@ public sealed class ActionsVariableEnrollmentTests
     }
 
     [Theory]
-    [InlineData("polling-clone")]
-    [InlineData("webhook-clone")]
-    public async Task Clone_profiles_issue_the_explicit_v3_clone_family_without_widening_runtime_permissions(string profile)
+    [InlineData(3, "polling-clone", "repository-actions-clone-approval-v3")]
+    [InlineData(3, "webhook-clone", "repository-actions-clone-approval-v3")]
+    [InlineData(4, "polling-clone", "repository-agent-clone-approval-v4")]
+    [InlineData(4, "webhook-clone", "repository-agent-clone-approval-v4")]
+    public async Task Clone_profiles_issue_their_setups_clone_family_without_widening_runtime_permissions(int setupVersion, string profile, string policy)
     {
         var f = new InMemoryBroker();
         var github = Repository.Configure(f.GitHub);
-        var active = await Active(f, github, profile: profile);
+        var active = await Active(f, github, setupVersion, profile);
         Assert.Equal(2, active.Enrollment.GetProperty("protocolVersion").GetInt32());
         Assert.Equal(profile, active.Enrollment.GetProperty("profile").GetString());
-        Assert.Equal("repository-actions-clone-approval-v3", active.Enrollment.GetProperty("policyVersion").GetString());
+        Assert.Equal(policy, active.Enrollment.GetProperty("policyVersion").GetString());
         var expected = profile == "webhook-clone" ? new[] { "contents", "discussions", "repository_hooks" } : ["contents", "discussions"];
         Assert.Equal(expected, active.Enrollment.GetProperty("permissions").EnumerateObject().Select(p => p.Name).Order());
 
@@ -248,13 +252,13 @@ public sealed class ActionsVariableEnrollmentTests
         var lease = await f.Issue(active.Device, active.Secret, 2);
         Assert.Equal(HttpStatusCode.OK, lease.StatusCode);
         var body = lease.Json;
-        Assert.Equal("repository-actions-clone-approval-v3", body.GetProperty("policyVersion").GetString());
+        Assert.Equal(policy, body.GetProperty("policyVersion").GetString());
         Assert.Equal(expected, body.GetProperty("permissions").EnumerateObject().Select(p => p.Name).Order());
     }
 
     internal static RepositoryVariableEnrollmentRequest Request(string profile = "polling") =>
         new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "repoagent_approval", profile);
-    private static async Task<(string Id, string Marker)> Start(InMemoryBroker f, int setupVersion, RepositoryVariableEnrollmentRequest request)
+    internal static async Task<(string Id, string Marker)> Start(InMemoryBroker f, int setupVersion, RepositoryVariableEnrollmentRequest request)
     {
         var start = await f.Start(request, setupVersion);
         Assert.Equal(HttpStatusCode.OK, start.StatusCode);
@@ -270,11 +274,11 @@ public sealed class ActionsVariableEnrollmentTests
 
     internal sealed record ActiveGrant(RepositoryVariableEnrollmentRequest Request, string Pending, string Marker, string Device, string Secret, string Completion, JsonElement Enrollment);
 
-    // Setup v2 uses the legacy Agent location; setup v3 the Actions location. The request
-    // variable is preserved so a legacy grant can be compared with copied v3 coordinates.
+    // Setup v2 and v4 use the Agent location; setup v3 the Actions location. A v2 grant keeps its
+    // legacy APPROVAL variable, so it can be compared with copied v3 and v4 coordinates.
     internal static async Task<ActiveGrant> Active(InMemoryBroker f, Repository github, int version = 3, string profile = "polling")
     {
-        var request = version == 3 ? Request(profile) : Request(profile) with { Variable = "APPROVAL" };
+        var request = version == 2 ? Request(profile) with { Variable = "APPROVAL" } : Request(profile);
         var (pending, marker) = await Start(f, version, request);
         (version == 3 ? github.Actions : github.Agent)[request.Variable.ToUpperInvariant()] = marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
@@ -314,10 +318,11 @@ public sealed class ActionsVariableEnrollmentTests
                     repository.VerifierMints++;
                     return Task.CompletedTask;
                 }
-                // Runtime credentials never write variables or read other approval locations; only
-                // the explicit repository-settings profiles may add Actions variables read (asserted per test).
-                Assert.DoesNotContain(permissions.Keys, name => name is "actions" or "environments" or "variables" or "secrets" or "agent_variables");
-                if (permissions.TryGetValue("actions_variables", out var variables)) Assert.Equal("read", variables);
+                // Runtime credentials never write variables or read other approval locations; only the explicit
+                // repository-settings profiles may add one variables store's read (asserted per test).
+                Assert.DoesNotContain(permissions.Keys, name => name is "actions" or "environments" or "variables" or "secrets");
+                Assert.All(permissions.Where(p => p.Key.EndsWith("variables", StringComparison.Ordinal)), p => Assert.Equal("read", p.Value));
+                Assert.True(permissions.Keys.Count(name => name.EndsWith("variables", StringComparison.Ordinal)) <= 1);
                 Assert.Equal("write", permissions["discussions"]);
                 repository.RuntimePermissions.Add(permissions.ToDictionary(p => p.Key, p => p.Value));
                 return Task.CompletedTask;

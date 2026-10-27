@@ -23,6 +23,9 @@ public sealed class SecretProtectionTests
         { "Actions", "runtime", ["repoagent.issuer.v2", "repository-actions-variable", "repository-actions-approval-v3", "123456", "epoch-7", Operation, "runtime"] },
         { "ActionsClone", "verification", ["repoagent.issuer.v2", "repository-actions-variable", "repository-actions-clone-approval-v3", "123456", "epoch-7", Operation, "verification"] },
         { "ActionsSettings", "runtime", ["repoagent.issuer.v2", "repository-actions-variable", "repository-actions-settings-approval-v3", "123456", "epoch-7", Operation, "runtime"] },
+        { "AgentV4", "verification", ["repoagent.issuer.v2", "repository-agent-variable", "repository-agent-approval-v4", "123456", "epoch-7", Operation, "verification"] },
+        { "AgentCloneV4", "runtime", ["repoagent.issuer.v2", "repository-agent-variable", "repository-agent-clone-approval-v4", "123456", "epoch-7", Operation, "runtime"] },
+        { "AgentSettingsV4", "runtime", ["repoagent.issuer.v2", "repository-agent-variable", "repository-agent-settings-approval-v4", "123456", "epoch-7", Operation, "runtime"] },
     };
 
     public static TheoryData<string, string[]> CompletionPurposes => new()
@@ -33,6 +36,7 @@ public sealed class SecretProtectionTests
         { "Actions", ["repoagent.enrollment.v2", "repository-actions-variable", "repository-actions-approval-v3", "123456", "epoch-7", "pending-id"] },
         { "ActionsClone", ["repoagent.enrollment.v2", "repository-actions-variable", "repository-actions-clone-approval-v3", "123456", "epoch-7", "pending-id"] },
         { "ActionsSettings", ["repoagent.enrollment.v2", "repository-actions-variable", "repository-actions-settings-approval-v3", "123456", "epoch-7", "pending-id"] },
+        { "AgentSettingsV4", ["repoagent.enrollment.v2", "repository-agent-variable", "repository-agent-settings-approval-v4", "123456", "epoch-7", "pending-id"] },
     };
 
     [Theory]
@@ -97,6 +101,9 @@ public sealed class SecretProtectionTests
         "Actions" => ApprovalContract.Actions,
         "ActionsClone" => ApprovalContract.ActionsClone,
         "ActionsSettings" => ApprovalContract.ActionsSettings,
+        "AgentV4" => ApprovalContract.AgentV4,
+        "AgentCloneV4" => ApprovalContract.AgentCloneV4,
+        "AgentSettingsV4" => ApprovalContract.AgentSettingsV4,
         _ => throw new ArgumentOutOfRangeException(nameof(name))
     };
 

@@ -9,7 +9,6 @@ internal static class BrokerEndpoints
     public static void Map(WebApplication app)
     {
         // Runtime v1: frozen non-clone, v2: frozen clone, v3: repository-settings profiles.
-        // Setup v1: approval environment, v2: repository Agent variable, v3: repository Actions variable.
         foreach (var version in new[] { 1, 2, 3 })
         {
             app.MapDelete($"/v{version}/devices/{{deviceId}}", (string deviceId, HttpContext context, DeviceRevocation revocation) =>
@@ -17,6 +16,11 @@ internal static class BrokerEndpoints
             app.MapPost($"/v{version}/devices/{{deviceId}}/installation-token", (string deviceId, HttpContext context) =>
                 AnswerAsync(context, request => BrokerRoutes.IssueAsync(request, deviceId, () =>
                     context.RequestServices.GetService<InstallationTokenIssuer>() is { } issuer ? issuer.IssueAsync : null, version)));
+        }
+        // Setup v1: approval environment, v2: repository Agent variable, v3: repository Actions variable,
+        // v4: repository Agent variable for every profile. Its policies reuse the runtime versions above.
+        foreach (var version in new[] { 1, 2, 3, 4 })
+        {
             // The explicit return type keeps this handler off the RequestDelegate overload, which would discard the answer.
             app.MapPost($"/v{version}/enrollments", Task<IResult> (HttpContext context) =>
                 AnswerAsync(context, request => BrokerRoutes.StartAsync(request, Service<EnrollmentService>(context), version)));

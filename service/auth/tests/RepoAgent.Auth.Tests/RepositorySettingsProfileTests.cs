@@ -6,33 +6,39 @@ namespace RepoAgent.Auth.Tests;
 
 // The broker's enrollment, issuance and revocation over the in-memory broker state; GitHub is the in-memory
 // Actions/Agent-variable fake. The repository-settings profiles are a separate, explicitly versioned runtime
-// authority: each grants its frozen profile's permissions plus Variables read.
+// authority: each grants its frozen profile's permissions plus read of the variables store its approval names,
+// Actions variables under setup v3 and Agent variables under setup v4.
 public sealed class RepositorySettingsProfileTests
 {
-    private const string Policy = "repository-actions-settings-approval-v3";
-
-    public static TheoryData<string, string[]> SettingsProfiles => new()
+    public static TheoryData<int, string, string[]> SettingsProfiles => new()
     {
-        { "polling-settings", ["discussions:write", "actions_variables:read"] },
-        { "webhook-settings", ["discussions:write", "repository_hooks:write", "actions_variables:read"] },
-        { "polling-clone-settings", ["discussions:write", "contents:read", "actions_variables:read"] },
-        { "webhook-clone-settings", ["discussions:write", "contents:read", "repository_hooks:write", "actions_variables:read"] },
+        { 3, "polling-settings", ["discussions:write", "actions_variables:read"] },
+        { 3, "webhook-settings", ["discussions:write", "repository_hooks:write", "actions_variables:read"] },
+        { 3, "polling-clone-settings", ["discussions:write", "contents:read", "actions_variables:read"] },
+        { 3, "webhook-clone-settings", ["discussions:write", "contents:read", "repository_hooks:write", "actions_variables:read"] },
+        { 4, "polling-settings", ["discussions:write", "agent_variables:read"] },
+        { 4, "webhook-settings", ["discussions:write", "repository_hooks:write", "agent_variables:read"] },
+        { 4, "polling-clone-settings", ["discussions:write", "contents:read", "agent_variables:read"] },
+        { 4, "webhook-clone-settings", ["discussions:write", "contents:read", "repository_hooks:write", "agent_variables:read"] },
     };
 
     [Theory]
     [MemberData(nameof(SettingsProfiles))]
-    public async Task Settings_profile_enrolled_under_v3_Actions_approval_issues_exactly_the_frozen_grants_plus_Variables_read(string profile, string[] grants)
+    public async Task Settings_profile_issues_exactly_the_frozen_grants_plus_its_approval_stores_variables_read(int setupVersion, string profile, string[] grants)
     {
         var f = new InMemoryBroker();
         var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
-        var active = await ActionsVariableEnrollmentTests.Active(f, github, profile: profile);
+        var active = await ActionsVariableEnrollmentTests.Active(f, github, setupVersion, profile);
         var expected = grants.Select(g => g.Split(':')).ToDictionary(g => g[0], g => g[1]);
+        var (kind, policy, store, approvals) = setupVersion == 3
+            ? ("repository-actions-variable", "repository-actions-settings-approval-v3", "actions_variables", github.Actions)
+            : ("repository-agent-variable", "repository-agent-settings-approval-v4", "agent_variables", github.Agent);
 
         var marker = JsonSerializer.Deserialize<JsonElement>(active.Marker);
-        Assert.Equal((3, "repository-actions-variable", profile, Policy),
+        Assert.Equal((setupVersion, kind, profile, policy),
             (marker.GetProperty("version").GetInt32(), marker.GetProperty("approvalKind").GetString(),
              marker.GetProperty("profile").GetString(), marker.GetProperty("policyVersion").GetString()));
-        Assert.Equal((3, profile, Policy), (active.Enrollment.GetProperty("protocolVersion").GetInt32(),
+        Assert.Equal((3, profile, policy), (active.Enrollment.GetProperty("protocolVersion").GetInt32(),
             active.Enrollment.GetProperty("profile").GetString(), active.Enrollment.GetProperty("policyVersion").GetString()));
         Assert.Equal(expected, Map(active.Enrollment.GetProperty("permissions")));
 
@@ -48,15 +54,15 @@ public sealed class RepositorySettingsProfileTests
         var runtime = await f.Issue(active.Device, active.Secret, 3);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
         var lease = runtime.Json;
-        Assert.Equal((3, profile, Policy), (lease.GetProperty("protocolVersion").GetInt32(),
+        Assert.Equal((3, profile, policy), (lease.GetProperty("protocolVersion").GetInt32(),
             lease.GetProperty("profile").GetString(), lease.GetProperty("policyVersion").GetString()));
         Assert.Equal(expected, Map(lease.GetProperty("permissions")));
         Assert.Equal(expected, Assert.Single(github.RuntimePermissions));
         // Approval verification stays a separate broker-internal capability.
-        Assert.Equal((1, "actions_variables"), (github.VerifierMints, github.VerifierPermission));
+        Assert.Equal((1, store), (github.VerifierMints, github.VerifierPermission));
 
         // Observed approval withdrawal closes a repository-settings profile like any other grant.
-        github.Actions.Remove("REPOAGENT_APPROVAL");
+        approvals.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var removed = await f.Issue(active.Device, active.Secret, 3);
         Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
@@ -66,7 +72,7 @@ public sealed class RepositorySettingsProfileTests
     [InlineData(1, "polling-settings")]
     [InlineData(2, "polling-settings")]
     [InlineData(2, "webhook-clone-settings")]
-    public async Task Settings_profiles_are_refused_without_a_v3_Actions_approval(int setupVersion, string profile)
+    public async Task Settings_profiles_are_refused_without_a_v3_or_v4_approval(int setupVersion, string profile)
     {
         var f = new InMemoryBroker();
         ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
@@ -85,6 +91,8 @@ public sealed class RepositorySettingsProfileTests
     [InlineData(3, "webhook-clone", 2)]
     [InlineData(2, "polling", 1)]
     [InlineData(2, "webhook-clone", 2)]
+    [InlineData(4, "webhook", 1)]
+    [InlineData(4, "polling-clone", 2)]
     public async Task Frozen_profiles_keep_their_exact_grants_and_never_reach_Variables_through_the_settings_route(int setupVersion, string profile, int runtimeVersion)
     {
         var f = new InMemoryBroker();
@@ -110,15 +118,21 @@ public sealed class RepositorySettingsProfileTests
     }
 
     [Theory]
-    [InlineData("Profile", "polling")]
-    [InlineData("Profile", "webhook-settings")]
-    [InlineData("PolicyVersion", "repository-actions-approval-v3")]
-    [InlineData("PolicyVersion", "repository-actions-clone-approval-v3")]
-    public async Task Durable_repository_settings_profile_is_never_reinterpreted_and_denies_before_reservation_or_provider(string field, string value)
+    [InlineData(3, "Profile", "polling")]
+    [InlineData(3, "Profile", "webhook-settings")]
+    [InlineData(3, "PolicyVersion", "repository-actions-approval-v3")]
+    [InlineData(3, "PolicyVersion", "repository-actions-clone-approval-v3")]
+    [InlineData(3, "PolicyVersion", "repository-agent-settings-approval-v4")]
+    [InlineData(4, "Profile", "polling")]
+    [InlineData(4, "PolicyVersion", "repository-agent-approval-v4")]
+    [InlineData(4, "PolicyVersion", "repository-agent-approval-v2")]
+    [InlineData(4, "PolicyVersion", "repository-actions-settings-approval-v3")]
+    [InlineData(4, "ApprovalKind", "repository-actions-variable")]
+    public async Task Durable_repository_settings_profile_is_never_reinterpreted_and_denies_before_reservation_or_provider(int setupVersion, string field, string value)
     {
         var f = new InMemoryBroker();
         var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
-        var active = await ActionsVariableEnrollmentTests.Active(f, github, profile: "polling-settings");
+        var active = await ActionsVariableEnrollmentTests.Active(f, github, setupVersion, "polling-settings");
         f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, active.Device), row => row[field] = value);
         var requests = f.GitHub.Requests.Count;
 
@@ -132,12 +146,14 @@ public sealed class RepositorySettingsProfileTests
         Assert.Empty(github.RuntimePermissions);
     }
 
-    [Fact]
-    public async Task Settings_device_self_revokes_only_through_its_own_runtime_route()
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task Settings_device_self_revokes_only_through_its_own_runtime_route(int setupVersion)
     {
         var f = new InMemoryBroker();
         var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
-        var active = await ActionsVariableEnrollmentTests.Active(f, github, profile: "webhook-settings");
+        var active = await ActionsVariableEnrollmentTests.Active(f, github, setupVersion, "webhook-settings");
 
         foreach (var frozen in new[] { 1, 2 })
         {
