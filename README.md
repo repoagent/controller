@@ -57,3 +57,5 @@ When repository settings are enabled, the controller and its agent can read **al
 The broker and guided PowerShell installer support [setup v4](service/auth/README.md#repository-agent-variable-enrollment-v4) with `REPOAGENT_APPROVAL` in Agent variables, including repository-settings profiles. Existing grants keep their original contracts: migration requires revocation, broker closure, token settlement and a fresh enrollment. [Installation acceptance and the settlement-preflight limitation](docs/host-enrollment.md#verification-boundary) remain explicit; a device DELETE acknowledgment alone does not make replacement safe.
 
 For implementation and design, see the [architecture decisions](docs/adr/), [domain glossary](GLOSSARY.md), [credential broker documentation](service/auth/README.md) and [Controller and Broker delivery workflows](docs/ci-cd.md).
+
+For native broker development, the [local Aspire AppHost](service/auth/local-development.md) runs local storage and key-ring wrapping. Real GitHub authentication can use the shared App signing key through an authorized developer's Azure CLI sign-in without copying its private key.

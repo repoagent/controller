@@ -15,29 +15,34 @@ public static class IssuanceServices
         if (BrokerSettings.Issuance(name => builder.Configuration[name], builder.Environment.EnvironmentName) is not { } settings) return null;
         var identity = settings.Options.ManagedIdentityClientId is { } clientId
             ? ManagedIdentityId.FromUserAssignedClientId(clientId) : ManagedIdentityId.SystemAssigned;
-        TokenCredential credential = new ManagedIdentityCredential(identity);
+        TokenCredential wrappingCredential = new ManagedIdentityCredential(identity);
         if (settings.DevelopmentVault is { } developmentVault)
-            credential = new EnvironmentCredential(new EnvironmentCredentialOptions
+            wrappingCredential = new EnvironmentCredential(new EnvironmentCredentialOptions
             { AuthorityHost = developmentVault, DisableInstanceDiscovery = true });
+        // Azure CLI uses the developer's sign-in, not the emulator's EnvironmentCredential.
+        TokenCredential signingCredential = settings.UsesDeveloperSigning
+            ? new AzureCliCredential(new AzureCliCredentialOptions { ProcessTimeout = TimeSpan.FromSeconds(3) })
+            : wrappingCredential;
         var blobOptions = new BlobClientOptions
         {
             Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(3) },
             Diagnostics = { IsLoggingContentEnabled = false }
         };
-        var keyRing = settings.DevelopmentStorage is not { } developmentStorage ? new BlobClient(settings.KeyRing, credential, blobOptions)
+        var keyRing = settings.DevelopmentStorage is not { } developmentStorage ? new BlobClient(settings.KeyRing, wrappingCredential, blobOptions)
             : new BlobClient(developmentStorage, "data-protection", "keyring.xml", blobOptions);
         settings.RequireEmulatedKeyRing(keyRing.Uri);
-        CryptographyClientOptions CryptoOptions() => new()
+        CryptographyClientOptions CryptoOptions(bool emulated) => new()
         {
-            DisableChallengeResourceVerification = settings.DevelopmentVault is not null,
+            DisableChallengeResourceVerification = emulated,
             Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(3) },
             Diagnostics = { IsLoggingContentEnabled = false }
         };
         builder.Services.AddDataProtection().SetApplicationName(settings.ApplicationName)
             .PersistKeysToAzureBlobStorage(keyRing)
-            .ProtectKeysWithAzureKeyVault(settings.WrappingKey, new KeyResolver(credential, CryptoOptions()));
+            .ProtectKeysWithAzureKeyVault(settings.WrappingKey, new KeyResolver(wrappingCredential, CryptoOptions(settings.DevelopmentVault is not null)));
         builder.Services.AddSingleton<ISecretProtection, DataProtectionSecretProtection>();
-        builder.Services.AddSingleton(new CryptographyClient(settings.SigningKey, credential, CryptoOptions()));
+        builder.Services.AddSingleton(new CryptographyClient(settings.SigningKey, signingCredential,
+            CryptoOptions(settings.DevelopmentVault is not null && !settings.UsesDeveloperSigning)));
         builder.Services.AddSingleton(_ => new HttpClient(new SocketsHttpHandler
         {
             AllowAutoRedirect = false,

@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using Azure;
 using Azure.Data.Tables;
@@ -48,9 +47,11 @@ foreach (var partition in new[] { "global:enrollment-v1", "global:issuance-v1" }
 await container.CreateIfNotExistsAsync(cancellationToken: ct);
 var keys = new KeyClient(vault, new EmulatedTokenCredential(vault.AbsoluteUri),
     new KeyClientOptions { DisableChallengeResourceVerification = true });
-var pemPath = configuration["SigningKeyPemPath"];
-var signing = await GetOrCreateKey(string.IsNullOrEmpty(pemPath) ? "development-signing" : "app-signing", pemPath);
-var wrapping = await GetOrCreateKey("wrapping", null);
+var sharedSigning = configuration["SharedSigningKeyUri"];
+var developerSigning = !string.IsNullOrEmpty(sharedSigning);
+// The shared URI is configuration only: this client can initialize keys only in the loopback emulator.
+var signing = developerSigning ? sharedSigning! : (await GetOrCreateKey("development-signing")).Id.AbsoluteUri;
+var wrapping = await GetOrCreateKey("wrapping");
 var settings = new
 {
     Broker = new
@@ -64,7 +65,8 @@ var settings = new
     Auth = new
     {
         DevelopmentVaultUri = vault.AbsoluteUri,
-        SigningKeyUri = signing.Id.AbsoluteUri,
+        SigningKeyUri = signing,
+        DevelopmentSigningCredential = developerSigning ? "AzureCli" : null,
         DevelopmentBlobConnectionString = configuration.GetConnectionString("blobs"),
         DataProtectionKeyUri = wrapping.Id.AbsoluteUri,
         DataProtectionBlobUri = container.GetBlobClient("keyring.xml").Uri.AbsoluteUri,
@@ -79,18 +81,12 @@ if (!OperatingSystem.IsWindows()) writeOptions.UnixCreateMode = UnixFileMode.Use
 await using (var stream = new FileStream(file, writeOptions))
     await JsonSerializer.SerializeAsync(stream, settings, new JsonSerializerOptions { WriteIndented = true }, ct);
 Console.WriteLine("Local broker storage and pinned emulator keys are ready.");
-Console.WriteLine(string.IsNullOrEmpty(pemPath)
-    ? "Using a generated development signing key; real GitHub App authentication requires an explicitly supplied App key."
-    : "Using the explicitly supplied GitHub App signing key in the local vault.");
+Console.WriteLine(developerSigning
+    ? "Shared signing is configured for the broker's Azure CLI credential; wrapping remains local."
+    : "Using a generated development signing key; real GitHub App authentication requires SharedSigningKeyUri.");
 
-async Task<KeyVaultKey> GetOrCreateKey(string name, string? pemPath)
+async Task<KeyVaultKey> GetOrCreateKey(string name)
 {
-    if (!string.IsNullOrEmpty(pemPath))
-    {
-        using var rsa = RSA.Create();
-        rsa.ImportFromPem(await File.ReadAllTextAsync(pemPath, ct));
-        return (await keys.ImportKeyAsync(name, new JsonWebKey(rsa, includePrivateParameters: true), cancellationToken: ct)).Value;
-    }
     try { return (await keys.GetKeyAsync(name, cancellationToken: ct)).Value; }
     catch (RequestFailedException exception) when (exception.Status == 404)
     { return (await keys.CreateRsaKeyAsync(new CreateRsaKeyOptions(name) { KeySize = 2048 }, ct)).Value; }

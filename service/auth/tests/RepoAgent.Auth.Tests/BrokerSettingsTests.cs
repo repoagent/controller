@@ -58,6 +58,77 @@ public sealed class BrokerSettingsTests
         else UseStorage(options);
     }
 
+    [Fact]
+    public void Development_can_sign_in_the_shared_vault_while_wrapping_locally()
+    {
+        var (settings, environment) = Scenario("shared-signing-development");
+
+        var issuance = BrokerSettings.Issuance(settings.GetValueOrDefault, environment)!;
+
+        Assert.Equal(new Uri("https://readiness.vault.azure.net/keys/signing/version"), issuance.SigningKey);
+        Assert.Equal(new Uri("https://localhost:4997/keys/wrapping/version"), issuance.WrappingKey);
+        Assert.True(issuance.UsesDeveloperSigning);
+        issuance.RequireEmulatedKeyRing(new(Emulated));
+        Assert.True(BrokerSettings.Ready(issuance));
+    }
+
+    // Illegal developer credentials must be rejected even in the supported revoke-only composition.
+    [Theory]
+    [InlineData("Production", "AzureCli")]
+    [InlineData("Staging", "AzureCli")]
+    [InlineData(null, "AzureCli")]
+    [InlineData("Development", "DefaultAzureCredential")]
+    [InlineData("Development", "ManagedIdentity")]
+    [InlineData("Development", "azurecli")]
+    [InlineData("Development", "")]
+    public void Developer_signing_is_an_explicit_Development_only_Azure_CLI_choice(string? environment, string credential)
+    {
+        var (settings, _) = Scenario(null);
+        settings["Auth:DevelopmentSigningCredential"] = credential;
+        Assert.Throws<InvalidOperationException>(() => BrokerSettings.Issuance(settings.GetValueOrDefault, environment));
+        settings.Remove("Auth:SigningKeyUri");
+        Assert.Throws<InvalidOperationException>(() => BrokerSettings.Issuance(settings.GetValueOrDefault, environment));
+    }
+
+    [Theory]
+    [InlineData("Auth:SigningKeyUri", null)]
+    [InlineData("Auth:SigningKeyUri", "http://readiness.vault.azure.net/keys/signing/version")]
+    [InlineData("Auth:SigningKeyUri", "https://readiness.vault.azure.net/keys/signing")]
+    [InlineData("Auth:SigningKeyUri", "https://readiness.vault.azure.net/secrets/signing/version")]
+    [InlineData("Auth:SigningKeyUri", "https://user:secret@readiness.vault.azure.net/keys/signing/version")]
+    [InlineData("Auth:SigningKeyUri", "https://readiness.vault.azure.net/keys/signing/version?query")]
+    [InlineData("Auth:SigningKeyUri", "https://readiness.vault.azure.net/keys/signing/version#fragment")]
+    [InlineData("Auth:SigningKeyUri", "https://localhost:4997/keys/signing/version")]
+    [InlineData("Auth:SigningKeyUri", "https://203.0.113.7/keys/signing/version")]
+    [InlineData("Auth:SigningKeyUri", "https://readiness.vault.azure.net:4997/keys/signing/version")]
+    [InlineData("Auth:DevelopmentSigningCredential", null)]
+    [InlineData("Auth:DevelopmentVaultUri", null)]
+    [InlineData("Auth:DevelopmentVaultUri", "https://readiness.vault.azure.net")]
+    [InlineData("Auth:DataProtectionKeyUri", "https://readiness.vault.azure.net/keys/wrapping/version")]
+    [InlineData("AZURE_AUTHORITY_HOST", null)]
+    [InlineData("AZURE_AUTHORITY_HOST", "https://localhost:4998")]
+    [InlineData("Broker:DevelopmentConnectionString", null)]
+    [InlineData("Broker:TableEndpoint", "https://readiness.table.core.windows.net")]
+    [InlineData("Auth:DataProtectionBlobUri", "https://readiness.blob.core.windows.net/data-protection/keyring.xml")]
+    [InlineData("Auth:DataProtectionBlobUri", Emulated + "?query")]
+    [InlineData("Auth:DataProtectionBlobUri", Emulated + "#fragment")]
+    public void Shared_signing_requires_a_pinned_shared_key_and_local_wrapping_and_storage(string name, string? value)
+    {
+        var (settings, environment) = Scenario("shared-signing-development");
+        Assert.NotNull(BrokerSettings.Issuance(settings.GetValueOrDefault, environment));
+        settings[name] = value;
+        Assert.Throws<InvalidOperationException>(() => BrokerSettings.Issuance(settings.GetValueOrDefault, environment));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("local-vault-development")]
+    public void Existing_production_and_emulator_compositions_do_not_select_developer_signing(string? scenario)
+    {
+        var (settings, environment) = Scenario(scenario);
+        Assert.False(BrokerSettings.Issuance(settings.GetValueOrDefault, environment)!.UsesDeveloperSigning);
+    }
+
     // Uri equality ignores user information and fragments, so the emulator's table is also checked for them.
     [Theory]
     [InlineData(EmulatedTable, true)]
@@ -299,13 +370,21 @@ public sealed class BrokerSettingsTests
                 ? "UseDevelopmentStorage=true" : "DefaultEndpointsProtocol=https;AccountName=readiness;AccountKey=cmVhZGluZXNz";
             if (scenario == "local-development-storage") settings["Auth:DataProtectionBlobUri"] = Emulated;
         }
-        if (scenario == "local-vault-development")
+        if (scenario is "local-vault-development" or "shared-signing-development")
         {
             environment = "Development";
             settings["Auth:DevelopmentVaultUri"] = "https://localhost:4997";
             settings["Auth:SigningKeyUri"] = "https://localhost:4997/keys/signing/version";
             settings["Auth:DataProtectionKeyUri"] = "https://localhost:4997/keys/wrapping/version";
             settings["AZURE_AUTHORITY_HOST"] = "https://localhost:4997/";
+        }
+        if (scenario == "shared-signing-development")
+        {
+            settings["Auth:DevelopmentSigningCredential"] = "AzureCli";
+            settings["Auth:SigningKeyUri"] = "https://readiness.vault.azure.net/keys/signing/version";
+            settings["Broker:TableEndpoint"] = "http://127.0.0.1:10002/devstoreaccount1";
+            settings["Broker:DevelopmentConnectionString"] = "UseDevelopmentStorage=true";
+            settings["Auth:DataProtectionBlobUri"] = Emulated;
         }
         return (settings, environment);
     }

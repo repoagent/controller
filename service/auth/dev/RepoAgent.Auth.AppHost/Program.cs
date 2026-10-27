@@ -3,6 +3,8 @@ using AzureKeyVaultEmulator.Aspire.Hosting;
 var builder = DistributedApplication.CreateBuilder(args);
 if (builder.ExecutionContext.IsPublishMode)
     throw new InvalidOperationException("This AppHost is for local development. Deploy Azure resources with Bicep.");
+if (builder.Configuration["SigningKeyPemPath"] is not null)
+    throw new InvalidOperationException("PEM import is no longer supported. Set SharedSigningKeyUri to the pinned shared Key Vault key URI.");
 var localDirectory = Path.Combine(builder.AppHostDirectory, ".local");
 if (OperatingSystem.IsWindows()) Directory.CreateDirectory(localDirectory);
 else Directory.CreateDirectory(localDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -22,7 +24,7 @@ var settingsFile = Path.Combine(localDirectory, "broker.json");
 var initialize = builder.AddProject<Projects.RepoAgent_Auth_DevInit>("initialize")
     .WithReference(tables).WithReference(blobs).WithReference(vault)
     .WithEnvironment("DevelopmentSettingsFile", settingsFile)
-    .WithEnvironment("SigningKeyPemPath", builder.Configuration["SigningKeyPemPath"] ?? "")
+    .WithEnvironment("SharedSigningKeyUri", builder.Configuration["SharedSigningKeyUri"] ?? "")
     .WaitFor(storage).WaitFor(vault);
 
 builder.AddProject<Projects.RepoAgent_Auth>("auth", launchProfileName: "https")
