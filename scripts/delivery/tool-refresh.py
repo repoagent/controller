@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Select a supported upstream gh or Codex release and pin it for a verified baseline image.
+"""Select a supported upstream gh, Codex or cloudflared release and pin it for a verified baseline image.
 
 Each tool is selected, verified and pinned on its own, so an unusable or incompatible release of
-one tool never holds back a verified update of the other.
+one tool never holds back a verified update of another.
 
-select TOOL DIRECTORY  Compare TOOL's (gh or codex) latest stable upstream release with this
+select TOOL DIRECTORY  Compare TOOL's (gh, codex or cloudflared) latest stable upstream release with this
                        checkout's catalog. Writes DIRECTORY/selection.json, changed=true and the
                        checked-out base commit only for a newer supported version; never changes
                        the checkout. A newer but unusable release fails.
@@ -24,19 +24,20 @@ import sys
 
 CATALOG = Path('scripts/compose-image.py')
 MANIFEST = Path('image/default.json')
-SCHEMA = 'repoagent.tool-selection/v2'
+SCHEMA = 'repoagent.tool-selection/v3'
 # Catalog artifact -> the upstream product that releases it.
-PRODUCTS = {'codex': 'codex', 'codex-code-mode-host': 'codex', 'gh': 'gh'}
+PRODUCTS = {'codex': 'codex', 'codex-code-mode-host': 'codex', 'gh': 'gh', 'cloudflared': 'cloudflared'}
 # Product -> (upstream repository, stable release tag prefix, catalog artifact -> release asset name).
 UPSTREAM = {
+    'cloudflared': ('cloudflare/cloudflared', '', lambda version: {'cloudflared': 'cloudflared-linux-amd64'}),
     'gh': ('cli/cli', 'v', lambda version: {'gh': f'gh_{version}_linux_amd64.tar.gz'}),
     'codex': ('openai/codex', 'rust-v', lambda version: {
         'codex': 'codex-x86_64-unknown-linux-musl.tar.gz',
         'codex-code-mode-host': 'codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz'}),
 }
-LABELS = {'gh': 'gh', 'codex': 'Codex'}
-# Product -> its section in the default manifest.
-SECTIONS = {'gh': 'githubCli', 'codex': 'agent'}
+LABELS = {'gh': 'gh', 'codex': 'Codex', 'cloudflared': 'cloudflared'}
+# Product -> its section and version field in the default manifest.
+FIELDS = {'gh': ('githubCli', 'version'), 'codex': ('agent', 'version'), 'cloudflared': ('tools', 'cloudflared')}
 COMMIT = 'mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }'
 
 
@@ -52,7 +53,7 @@ def download(product, version, name):
 def pinned():
     """Product versions of this checkout's default manifest, which must match its catalog."""
     manifest = json.loads(MANIFEST.read_text())
-    versions = {product: manifest[section]['version'] for product, section in SECTIONS.items()}
+    versions = {product: manifest[section][field] for product, (section, field) in FIELDS.items()}
     catalog = runpy.run_path(str(CATALOG))['ARTIFACTS']
     if any(catalog[tool][0] != versions[product] for tool, product in PRODUCTS.items()):
         raise ValueError('The default manifest differs from the reviewed catalog')
@@ -149,7 +150,8 @@ def pin(value):
             raise ValueError('The reviewed catalog layout changed; update this script with it')
     CATALOG.write_text(text)
     manifest = json.loads(MANIFEST.read_text())
-    manifest[SECTIONS[product]]['version'] = value['artifacts'][product]['version']
+    section, field = FIELDS[product]
+    manifest[section][field] = value['artifacts'][product]['version']
     MANIFEST.write_text(json.dumps(manifest, indent=2) + '\n')
     # Only this tool's artifacts change; every other pin stays exactly as reviewed.
     if pinned()[1] != before | value['artifacts']:
