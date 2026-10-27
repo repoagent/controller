@@ -6,8 +6,8 @@ param(
     [string]$ApprovalVariable,
     [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone', 'polling-settings', 'webhook-settings', 'polling-clone-settings', 'webhook-clone-settings')][string]$Profile,
     [string]$StateDirectory,
-    # Fresh setup v3 approves through a direct repository Actions variable. AgentVariable
-    # explicitly selects legacy setup v2. Saved state always keeps its own location.
+    # Fresh setup v4 uses a direct repository Agent variable. ActionsVariable is accepted
+    # only when resuming matching saved v3 state. Saved state keeps its setup version.
     [ValidateSet('ActionsVariable', 'AgentVariable')][string]$ApprovalLocation,
     [switch]$Apply,
     [switch]$NonInteractive
@@ -17,7 +17,7 @@ Import-Module "$PSScriptRoot/host-enrollment.psm1" -Force -DisableNameChecking
 $script:Diagnostic = 'Enrollment could not be verified. Inspect host authentication, selected coordinates and private state before retrying.'
 $script:Calls = 0
 $script:Clock = [Diagnostics.Stopwatch]::StartNew()
-$script:LocationName = 'Actions'
+$script:LocationName = 'Agent'
 function Stop-Enrollment([string]$Message) { $script:Diagnostic = $Message; throw 'Enrollment stopped.' }
 function GitHub([string]$Method, [string]$Endpoint, $Body = $null) {
     $script:Calls++
@@ -35,7 +35,7 @@ function Read-Repository {
 }
 function Read-VariableAccess {
     # One listing page proves that host gh can read the selected location. The number of variables
-    # never limits enrollment: CI workflows and repository settings share these variables.
+    # never limits enrollment; unrelated variables may share the selected store.
     $r = GitHub GET ($variablesPath + '?per_page=1&page=1')
     if ($r.Status -ne 200) { Stop-Enrollment "Direct repository $($script:LocationName) variables are unavailable; absence and write access are unconfirmed." }
     $v = Read-HostJson $r.Body
@@ -141,10 +141,11 @@ function Check-Enrollment($Enrollment, $Marker) {
     Assert-Text $Enrollment.deviceSecret '\A[A-Za-z0-9_-]{43,128}\z'
     $fields = @('discussions'); if ($Profile.StartsWith('webhook', [StringComparison]::Ordinal)) { $fields += 'repository_hooks' }
     if ($clone) { $fields += 'contents' }
-    if ($settings) { $fields += 'actions_variables' }
+    $variablesPermission = if ($setupVersion -eq 3) { 'actions_variables' } else { 'agent_variables' }
+    if ($settings) { $fields += $variablesPermission }
     if ($runtimeVersion -gt 1 -and $Enrollment.permissions.Contains('metadata')) { $fields += 'metadata' }
     Assert-Fields $Enrollment.permissions $fields
-    foreach ($key in $fields) { if ($Enrollment.permissions[$key] -cne $(if ($key -in @('contents','metadata','actions_variables')) { 'read' } else { 'write' })) { Stop-Enrollment 'Completion permission profile differs.' } }
+    foreach ($key in $fields) { if ($Enrollment.permissions[$key] -cne $(if ($key -in @('contents','metadata','actions_variables','agent_variables')) { 'read' } else { 'write' })) { Stop-Enrollment 'Completion permission profile differs.' } }
 }
 function Wait-Work([switch]$AcknowledgmentRecovery) {
     if (-not $AcknowledgmentRecovery -and $config.deadline -and [DateTimeOffset]::Parse($config.deadline) -le [DateTimeOffset]::UtcNow.AddSeconds(5)) { Stop-Enrollment 'Original enrollment deadline reached; private recovery state retained.' }
@@ -166,12 +167,13 @@ try {
     if ($BrokerOrigin) { $BrokerOrigin = Get-BrokerOrigin $BrokerOrigin }
     if ($ApprovalLocation) { $ApprovalLocation = (Get-ApprovalLocation -Location $ApprovalLocation).Location }
     $config = $null
-    if (Test-Path -LiteralPath $configPath) {
+    $savedConfig = Test-Path -LiteralPath $configPath
+    if ($savedConfig) {
         $config = Read-PrivateJson $configPath
         $savedKind = Get-ApprovalStateKind $config
         if ($savedKind -ceq 'environment-variable') { Stop-Enrollment 'Legacy Environment enrollment cannot resume through repository-variable setup. Retain its files, revoke/settle old authority separately and use a new state directory for fresh enrollment.' }
         # Saved approvals keep their recorded location; migration is a separate, deliberate fresh enrollment.
-        $savedLocation = (Get-ApprovalLocation -Kind $savedKind).Location
+        $savedLocation = (Get-ApprovalLocation -Kind $savedKind -SetupVersion $config.setupVersion).Location
         if ($ApprovalLocation -and $ApprovalLocation -cne $savedLocation) { Stop-Enrollment "Saved $savedKind enrollment cannot be reinterpreted as $ApprovalLocation approval. Revoke and settle it, then enroll afresh in a new state directory." }
         $ApprovalLocation = $savedLocation
         foreach ($pair in @(@('Repository','repository'),@('BrokerOrigin','brokerOrigin'),@('ApprovalVariable','approvalVariable'),@('Profile','profile'))) {
@@ -180,7 +182,8 @@ try {
             Set-Variable -Name $pair[0] -Value $config[$pair[1]]
         }
     }
-    $location = Get-ApprovalLocation -Location $ApprovalLocation
+    $location = if ($config) { Get-ApprovalLocation -Kind $savedKind -SetupVersion $config.setupVersion } else { Get-ApprovalLocation -Location $ApprovalLocation }
+    if (-not $config -and $location.SetupVersion -ne 4) { Stop-Enrollment 'Fresh enrollment requires setup v4 in repository Agent variables. Saved legacy state may only resume its original request; revoke and settle old authority before enrolling afresh.' }
     $actions = $location.Location -ceq 'ActionsVariable'
     $setupVersion = $location.SetupVersion
     $approvalKind = $location.Kind
@@ -192,36 +195,33 @@ try {
     if (-not $Profile) { $Profile = 'polling' }
     Assert-Text $Profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?\z'
     $clone = $Profile.Contains('-clone', [StringComparison]::Ordinal)
-    # Repository-settings profiles (runtime v3) add exactly Actions variables read to a frozen
-    # profile. They exist only under Actions-variable approval; frozen profiles are never widened.
+    # Runtime versions do not select the approval store. The saved setup contract fixes it.
     $settings = $Profile.EndsWith('-settings', [StringComparison]::Ordinal)
-    if ($settings -and -not $actions) { Stop-Enrollment 'Repository-settings profiles require Actions-variable approval (setup v3); Agent-variable approval serves only the frozen profiles.' }
+    if ($settings -and $setupVersion -eq 2) { Stop-Enrollment 'Legacy setup v2 serves only frozen profiles; a settings profile requires fresh setup v4 enrollment.' }
     $runtimeVersion = if ($settings) { 3 } elseif ($clone) { 2 } else { 1 }
-    $policy = if ($settings) { 'repository-actions-settings-approval-v3' }
-        elseif ($actions) { if ($clone) { 'repository-actions-clone-approval-v3' } else { 'repository-actions-approval-v3' } }
-        elseif ($clone) { 'repository-agent-clone-approval-v2' } else { 'repository-agent-approval-v2' }
+    $policy = Get-ApprovalPolicy -SetupVersion $setupVersion -Profile $Profile
     $permissionPreview = 'discussions:write'
     if ($clone) { $permissionPreview += ', contents:read' }
     if ($Profile.StartsWith('webhook', [StringComparison]::Ordinal)) { $permissionPreview += ', repository_hooks:write' }
-    if ($settings) { $permissionPreview += ', actions_variables:read' }
+    if ($settings) { $permissionPreview += $(if ($actions) { ', actions_variables:read' } else { ', agent_variables:read' }) }
     $script:Diagnostic = "Supply OWNER/REPO, a trusted HTTPS broker origin, and a valid $($script:LocationName) approval variable of at most 100 characters."
     Assert-Text $Repository '\A[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\z'
     if (@($Repository.Split('/') | Where-Object { $_ -in @('.', '..') }).Count) { Stop-Enrollment 'Invalid repository.' }
     Assert-Text $ApprovalVariable '\A[A-Za-z_][A-Za-z0-9_]{0,99}\z'
     $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
     if ($ApprovalVariable.StartsWith('GITHUB_', [StringComparison]::Ordinal)) { Stop-Enrollment 'Approval variable cannot start with GITHUB_.' }
-    if ($actions -and -not (Test-ActionsApprovalName $ApprovalVariable)) { Stop-Enrollment "Approval variable $ApprovalVariable is in the REPOAGENT_ repository-settings namespace, which repository-settings.ps1 writes. Use REPOAGENT_APPROVAL or a name without the REPOAGENT_ prefix." }
+    if ($setupVersion -in @(3,4) -and -not (Test-RepositoryApprovalName $ApprovalVariable)) { Stop-Enrollment "Approval variable $ApprovalVariable is in the REPOAGENT_ repository-settings namespace, which repository-settings.ps1 writes. Use REPOAGENT_APPROVAL or a name without the REPOAGENT_ prefix." }
     $BrokerOrigin = Get-BrokerOrigin $BrokerOrigin
     if ($null -eq $config) { $config = [ordered]@{ version=$setupVersion; setupVersion=$setupVersion; approvalKind=$approvalKind; repository=$Repository; repositoryId=$null; brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; profile=$Profile; pendingId=$null; deadline=$null; marker=$null; expectedValueSha256=$null; approvalWriteAttempted=$false; approvalObserved=$false } }
     $recovery = $null
     if (Test-Path -LiteralPath $recoveryPath) {
         $recovery = Read-PrivateJson $recoveryPath
         Check-Recovery
-    } elseif ($config.pendingId -or (Test-Path -LiteralPath $enrollmentPath)) { Stop-Enrollment 'Recovery journal is missing; do not create a replacement enrollment.' }
+    } elseif ($savedConfig -or $config.pendingId -or (Test-Path -LiteralPath $enrollmentPath)) { Stop-Enrollment 'Recovery journal is missing; do not create a replacement enrollment.' }
     Write-Host "Repository: $Repository; broker: $BrokerOrigin; App: 5387625 / repo-agent-connector; profile: $Profile"
     Write-Host "Setup/marker: $setupVersion; controller/runtime: $runtimeVersion; policy: $policy; permissions: $permissionPreview"
     Write-Host "Repository $($script:LocationName)-variable approval: $ApprovalVariable; state: $StateDirectory"
-    if (-not $actions) { Write-Host 'Legacy location: this enrollment stays on repository Agent variables until it is revoked and replaced by a fresh Actions-variable enrollment.' }
+    if ($location.Legacy) { Write-Host 'Saved legacy setup retains its original approval and authority. Moving to setup v4 requires revocation, settlement and a fresh enrollment in a new state directory.' }
     Write-Host "Apply may start one pending $($script:LocationName)-variable enrollment, write its validated public marker, save a private device credential and acknowledge it. Existing matching approval is reused; conflicts stop."
     if (-not $Apply) { Write-Host 'Read-only plan. Use -Apply to execute. The fresh marker is available only after start.'; exit 0 }
     $script:Diagnostic = 'Private enrollment state could not be verified. Use an owned local directory with mode 0700/0600 on Linux or a current-user-only protected DACL on Windows; do not discard recovery state.'

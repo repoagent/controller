@@ -76,19 +76,31 @@ function Assert-Id($Value) {
 }
 # Repository-variable approval locations: operator-facing -ApprovalLocation, durable approval kind,
 # setup (and marker) version, default variable name and direct GitHub API path. Fresh approval uses
-# Actions variables (ADR 0007); Agent variables are the explicitly selected legacy v2 location.
+# Agent variables under setup v4 (ADR 0012). Saved v2/v3 state keeps its original contract.
 $script:ApprovalLocations = @(
-    [pscustomobject]@{ Location='ActionsVariable'; Kind='repository-actions-variable'; SetupVersion=3; Name='Actions'; Legacy=$false; DefaultVariable='REPOAGENT_APPROVAL'; Path='actions/variables' }
+    [pscustomobject]@{ Location='AgentVariable'; Kind='repository-agent-variable'; SetupVersion=4; Name='Agent'; Legacy=$false; DefaultVariable='REPOAGENT_APPROVAL'; Path='agents/variables' }
+    [pscustomobject]@{ Location='ActionsVariable'; Kind='repository-actions-variable'; SetupVersion=3; Name='Actions'; Legacy=$true; DefaultVariable='REPOAGENT_APPROVAL'; Path='actions/variables' }
     [pscustomobject]@{ Location='AgentVariable'; Kind='repository-agent-variable'; SetupVersion=2; Name='Agent'; Legacy=$true; DefaultVariable='APPROVED_CONTROLLER'; Path='agents/variables' }
 )
-# Selects by -ApprovalLocation (case-insensitive, like its ValidateSet) or by saved approval kind
-# (exact); with neither, returns the fresh-approval default.
-function Get-ApprovalLocation([string]$Location, [string]$Kind) {
+# Location/kind select the store; only the saved setup version distinguishes v2 from v4.
+# Without a version, use the current contract for that store (v4 for Agent variables).
+function Get-ApprovalLocation([string]$Location, [string]$Kind, [int]$SetupVersion) {
     if ($Location -and $Kind) { throw 'Select an approval location by location or by kind.' }
-    if (-not $Location -and -not $Kind) { return $script:ApprovalLocations[0] }
-    $match = @($script:ApprovalLocations | Where-Object { ($Location -and $_.Location -ieq $Location) -or ($Kind -and $_.Kind -ceq $Kind) })
-    if ($match.Count -ne 1) { throw 'Unsupported repository-variable approval location.' }
+    $match = @($script:ApprovalLocations | Where-Object {
+        (-not $SetupVersion -or $_.SetupVersion -eq $SetupVersion) -and
+        ((-not $Location -and -not $Kind) -or ($Location -and $_.Location -ieq $Location) -or ($Kind -and $_.Kind -ceq $Kind))
+    })
+    if ($match.Count -eq 0) { throw 'Unsupported repository-variable approval contract.' }
     return $match[0]
+}
+function Get-ApprovalPolicy([int]$SetupVersion, [string]$Profile) {
+    Assert-Text $Profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?\z'
+    $settings = $Profile.EndsWith('-settings', [StringComparison]::Ordinal)
+    $clone = $Profile.Contains('-clone', [StringComparison]::Ordinal)
+    if ($SetupVersion -eq 2 -and -not $settings) { return $(if ($clone) { 'repository-agent-clone-approval-v2' } else { 'repository-agent-approval-v2' }) }
+    if ($SetupVersion -eq 3) { return $(if ($settings) { 'repository-actions-settings-approval-v3' } elseif ($clone) { 'repository-actions-clone-approval-v3' } else { 'repository-actions-approval-v3' }) }
+    if ($SetupVersion -eq 4) { return $(if ($settings) { 'repository-agent-settings-approval-v4' } elseif ($clone) { 'repository-agent-clone-approval-v4' } else { 'repository-agent-approval-v4' }) }
+    throw 'Unsupported approval profile contract.'
 }
 function Get-ApprovalStateKind($State) {
     Assert-Id $State.version
@@ -98,9 +110,8 @@ function Get-ApprovalStateKind($State) {
         Assert-Text $State.repoEnvironment '\A[^\p{Cc}]{1,255}\z'
         Assert-Text $State.profile '\A(?:polling|webhook)\z'
         $kind = 'environment-variable'
-    } elseif ($State.version -in @(2, 3)) {
-        # Version 2 is legacy repository Agent-variable setup; version 3 is the current
-        # repository Actions-variable setup. Each binds exactly one approval location.
+    } elseif ($State.version -in @(2, 3, 4)) {
+        # Kind names the location; version distinguishes legacy Agent v2 from Agent v4.
         Assert-Fields $State @('version','setupVersion','approvalKind','repository','repositoryId','brokerOrigin','approvalVariable','profile','pendingId','deadline','marker','expectedValueSha256','approvalWriteAttempted','approvalObserved')
         Assert-Id $State.setupVersion
         $kind = if ($State.version -eq 3) { 'repository-actions-variable' } else { 'repository-agent-variable' }
@@ -109,8 +120,7 @@ function Get-ApprovalStateKind($State) {
     Assert-Id $State.repositoryId
     Assert-Text $State.repository '\A[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\z'
     Assert-Text $State.profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?\z'
-    # Repository-settings profiles exist only under Actions-variable (v3) approval.
-    if ($State.profile.EndsWith('-settings', [StringComparison]::Ordinal) -and $kind -cne 'repository-actions-variable') { throw 'Unsupported approval state profile.' }
+    if ($State.version -ne 1) { $null = Get-ApprovalPolicy -SetupVersion $State.setupVersion -Profile $State.profile }
     Assert-Text $State.approvalVariable '\A[A-Z_][A-Z0-9_]{0,99}\z'
     $null = Get-BrokerOrigin $State.brokerOrigin
     if ($State.approvalWriteAttempted -isnot [bool] -or $State.approvalObserved -isnot [bool]) { throw 'Invalid approval progress flags.' }
@@ -126,7 +136,7 @@ function Get-ApprovalStateKind($State) {
 # scripts/repository-settings.ps1 writes REPOAGENT_ direct repository Agent variables. A variable-held
 # approval may use that prefix only under a name the shared settings catalogue reserves for approval, so
 # settings changes can never overwrite or delete an approval marker.
-function Test-ActionsApprovalName([string]$Name) {
+function Test-RepositoryApprovalName([string]$Name) {
     if (-not $Name.StartsWith('REPOAGENT_', [StringComparison]::OrdinalIgnoreCase)) { return $true }
     $catalogue = Read-HostJson ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/RepoAgentController/repository-settings.json')))
     if ($catalogue.reserved -isnot [array]) { throw 'Unsupported repository settings catalogue.' }
@@ -269,11 +279,10 @@ function Invoke-HostGitHub([string]$Method, [string]$Endpoint, $Body = $null) {
 function Invoke-EnrollmentBroker([string]$Origin, [string]$Method, [string]$Path, [string]$Secret, $Body = $null) {
     $origin = Get-BrokerOrigin $Origin
     Assert-Text $Secret '\A[A-Za-z0-9_-]{43,128}\z'
-    # Setup v2 (legacy Agent variable) and v3 (Actions variable); runtime revoke is v1/v2 for frozen
-    # profiles and v3 for repository-settings profiles.
-    if ($Path -cnotmatch '\A(?:/v[23]/enrollments(?:/[A-Za-z0-9_-]+(?:/completion)?)?|/v[23]/devices/[A-Za-z0-9_-]+/acknowledgment|/v[123]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker route.' }
+    # Setup versions are separate from runtime revoke (v1/v2 frozen, v3 settings).
+    if ($Path -cnotmatch '\A(?:/v[234]/enrollments(?:/[A-Za-z0-9_-]+(?:/completion)?)?|/v[234]/devices/[A-Za-z0-9_-]+/acknowledgment|/v[123]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker route.' }
     $operation = $Method + ' ' + $Path
-    if ($operation -cnotmatch '\A(?:POST /v[23]/enrollments|GET /v[23]/enrollments/[A-Za-z0-9_-]+|POST /v[23]/enrollments/[A-Za-z0-9_-]+/completion|POST /v[23]/devices/[A-Za-z0-9_-]+/acknowledgment|DELETE /v[123]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker operation.' }
+    if ($operation -cnotmatch '\A(?:POST /v[234]/enrollments|GET /v[234]/enrollments/[A-Za-z0-9_-]+|POST /v[234]/enrollments/[A-Za-z0-9_-]+/completion|POST /v[234]/devices/[A-Za-z0-9_-]+/acknowledgment|DELETE /v[123]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker operation.' }
     $handler = [Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect = $false; $handler.UseCookies = $false
     $client = [Net.Http.HttpClient]::new($handler)
     $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), $origin + $Path)

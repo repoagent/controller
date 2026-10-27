@@ -4,8 +4,8 @@
 .SYNOPSIS
 Preview or explicitly apply one local RepoAgent installation.
 .DESCRIPTION
-PowerShell 7.4+ composes host repository Actions-variable enrollment and private Docker startup.
--ApprovalLocation AgentVariable explicitly selects the legacy repository Agent variable.
+PowerShell 7.4+ composes setup-v4 repository Agent-variable enrollment and private Docker startup.
+Saved enrollment state retains its original setup version and approval location.
 Inputs override saved launch choices; missing required inputs prompt unless
 -NonInteractive. Without -Apply there are no image builds, containers or writes.
 Existing own-App options remain available with -Authentication OwnApp.
@@ -29,7 +29,7 @@ param(
     [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone', 'polling-settings', 'webhook-settings', 'polling-clone-settings', 'webhook-clone-settings')][string]$EnrollmentProfile,
     [switch]$Clone,
     # Read REPOAGENT_ repository settings: selects the explicit repository-settings profile
-    # (runtime v3, Actions variables read) for Broker, or the direct-App flag for OwnApp.
+    # (runtime v3, Agent variables read) for Broker, or the direct-App flag for OwnApp.
     [switch]$RepositorySettings,
     [string]$ApprovalStatePath,
     [string]$EnrollmentFile,
@@ -232,7 +232,7 @@ try {
     $Mode = Setting Mode 'polling'
     $resolvedProfile = ''
     $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin
-    # Saved names are reused; fresh Actions-variable approval uses a REPOAGENT_ name.
+    # Saved names are reused; fresh setup v4 uses REPOAGENT_APPROVAL in Agent variables.
     $ApprovalVariable = Setting ApprovalVariable $(if ($ApprovalVariable) { $ApprovalVariable } else { (Get-ApprovalLocation -Location $ApprovalLocation).DefaultVariable })
     $AppId = Setting AppId
     $KeyPath = Setting KeyPath
@@ -349,7 +349,7 @@ try {
         Write-Host 'Persistent checkout: /workspace/repository. Trust this exact repository root for native instructions, project configuration and local skills.'
     }
     if ($resolvedSettings) {
-        if ($Authentication -eq 'Broker') { Write-Host "Repository settings: $resolvedProfile adds Actions variables read for REPOAGENT_ settings (runtime v3). Fresh instance and approval required." }
+        if ($Authentication -eq 'Broker') { Write-Host "Repository settings: $resolvedProfile uses the enrollment's exact variables-read policy (fresh setup v4: Agent variables, runtime v3). Fresh instance and approval required." }
         else { Write-Host 'Repository settings: the runtime token adds Agent variables read for REPOAGENT_ settings; the App installation must grant Agent variables: read.' }
     }
     Write-Host "Host launch/recovery state: $StateDirectory"
