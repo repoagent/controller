@@ -413,7 +413,8 @@ function Read-LocalLaunchState([bool]$SafeStop = $false) {
 }
 function Get-LaunchChoices($Record) {
     $choices = [ordered]@{}
-    foreach ($key in $Record.currentLaunch.settings.Keys | Where-Object { $_ -notin @('keyPath','enroll') }) {
+    # Legacy toolUpdates stays in authoritative snapshots but is no longer an active host choice.
+    foreach ($key in $Record.currentLaunch.settings.Keys | Where-Object { $_ -notin @('keyPath','enroll','toolUpdates') }) {
         $field = if ($key -eq 'brokerUrl') { 'brokerOrigin' } else { $key }
         $choices[$field] = if ($key -in @('clone','repositorySettings')) { ([string]$Record.currentLaunch.settings[$key]).ToLowerInvariant() } else { [string]$Record.currentLaunch.settings[$key] }
     }

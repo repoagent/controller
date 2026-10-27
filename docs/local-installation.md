@@ -26,7 +26,7 @@ Explicit arguments override saved launch choices, then defaults apply. Changing 
 
 Apply delegates creation/recovery to the [controller enrollment client](host-enrollment.md), then uses the [private runtime commands](local-runtime.md) to configure, import, check and start. A pending/failed enrollment stops before runtime setup. A later build/import/login/check/start failure retains the same enrollment and instance data. Retry the original command, or use the printed instance/state resume command; do not delete recovery files to force a new identity. Matching retries reuse the saved approval and immutable image, without new approval writes. Expired, withdrawn, conflicting or unverifiable authority requires inspection; the installer does not restore it.
 
-Stop a running instance before applying configuration. The installer never stops/removes it automatically. Config, credentials, workspace, history, state and updated tools persist in selected named volumes; broker enrollment is a seventh volume, mounted read-only for runtime authorization. No host home or Docker socket is mounted. Runtime tokens never receive the host's approval authority.
+Stop a running instance before applying configuration. The installer never stops/removes it automatically. Config, credentials, workspace, history, state and retained tools storage persist in selected named volumes; broker enrollment is a seventh volume, mounted read-only for runtime authorization. No host home or Docker socket is mounted. Runtime tokens never receive the host's approval authority.
 
 ## Codex sign-in and image choices
 

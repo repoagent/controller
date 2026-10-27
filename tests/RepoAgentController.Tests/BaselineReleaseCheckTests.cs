@@ -14,8 +14,8 @@ public sealed class BaselineReleaseCheckTests
     readonly InMemoryBaselineReleases published = new();
     readonly RecordingLog log = new();
 
-    BaselineReleases Check(string? inventory, bool startupToolUpdates = false, TimeProvider? time = null, Func<string, string>? redact = null) =>
-        new(published, _ => Task.FromResult(inventory), startupToolUpdates, time ?? clock, log, redact ?? (text => text));
+    BaselineReleases Check(string? inventory, TimeProvider? time = null, Func<string, string>? redact = null) =>
+        new(published, _ => Task.FromResult(inventory), time ?? clock, log, redact ?? (text => text));
 
     /// <summary>A baseline release as the release publisher describes it; its image inventory digest is derived from <paramref name="image"/>.</summary>
     internal static BaselineRelease Release(long run, int attempt = 1, string? image = null, string gh = "2.102.0", string codex = "0.163.0") =>
@@ -121,7 +121,7 @@ public sealed class BaselineReleaseCheckTests
     {
         published.Publish(Release(101));
         var releases = new BaselineReleases(published, _ => throw new FileNotFoundException("Could not find file '/opt/repoagent/image-inventory.json'."),
-            false, clock, log, text => text);
+            clock, log, text => text);
 
         await releases.Check(TestContext.Current.CancellationToken);
 
@@ -132,7 +132,6 @@ public sealed class BaselineReleaseCheckTests
     [Theory]
     [InlineData("derived image", "its image inventory matches none of the newest published baseline releases, so it is a derived, local, unreleased or much older image")]
     [InlineData("native run", "this controller was not started with a baseline image inventory, for example in a native or development run")]
-    [InlineData("startup tool updates", "startup tool updates replace the image's gh and Codex, possibly with versions that no release records")]
     public async Task Uncertain_image_identity_is_reported_instead_of_a_replacement(string image, string reason)
     {
         var baseline = Release(101, image: "baseline");
@@ -143,16 +142,13 @@ public sealed class BaselineReleaseCheckTests
         {
             // Composed with a derived Dockerfile, for example: its inventory differs from every published one.
             "derived image" => Check(Inventory("derived")),
-            // The image is baseline-101.1, but the runtime replaced its gh and Codex with versions no release records.
-            "startup tool updates" => Check(Inventory("baseline"), startupToolUpdates: true),
             _ => Check(null)
         };
 
         await releases.Check(TestContext.Current.CancellationToken);
 
-        var matched = image == "startup tool updates";
-        Assert.Equal(new ReleaseNotice(Start, matched ? baseline : null, newer, matched ? 1 : 0, reason), releases.Current);
-        Assert.Equal([("release-check", $"running={(matched ? "baseline-101.1" : "unidentified")} newest=baseline-102.1 newer={(matched ? 1 : 0)} identity=uncertain")],
+        Assert.Equal(new ReleaseNotice(Start, null, newer, 0, reason), releases.Current);
+        Assert.Equal([("release-check", "running=unidentified newest=baseline-102.1 newer=0 identity=uncertain")],
             log.Entries);
     }
 

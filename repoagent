@@ -45,7 +45,7 @@ start() {
     # An external HTTPS proxy forwards to this loopback-only development mapping.
     network_args=(--publish "127.0.0.1:$port:$port")
   fi
-  # Runtime start updates tools, then verifies Codex/App identity before native work.
+  # Runtime start verifies Codex/App identity before native work.
   docker run -d --init --name "$name" "${network_args[@]}" "${runtime_volumes[@]}" "${key_args[@]}" "$image" start
   local deadline=$((SECONDS + 600))
   while (( SECONDS < deadline )); do
@@ -144,7 +144,7 @@ Usage: ./repoagent COMMAND
   build                           Build pinned bridge, .NET, gh and Codex image
   setup                           Guided App configuration and Codex browser sign-in
   configure --repository OWNER/REPO --app-id ID --key-path /absolute/key.pem
-            [--installation-id ID] [--mention-user LOGIN] [--model MODEL] [--tool-updates latest|pinned]
+            [--installation-id ID] [--mention-user LOGIN] [--model MODEL]
             [--repository-settings]   Read REPOAGENT_ Agent variables (App needs Agent variables: read;
                                       broker mode needs a repository-settings profile)
             [--mode polling|fixed-url|quick-tunnel] [--public-url https://HOST] [--listen-port 8080] [--reconcile-interval 300]

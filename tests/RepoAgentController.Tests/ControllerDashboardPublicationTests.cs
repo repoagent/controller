@@ -41,7 +41,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     }
 
     ControllerDashboard Dashboard(BaselineReleases? releases = null, IControllerLog? reported = null) => new(Category, status, outbox,
-        releases ?? new BaselineReleases(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text),
+        releases ?? new BaselineReleases(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, new RecordingLog(), text => text),
         clock, reported ?? log, Redact);
 
     // As the controller's redaction removes the secrets it knows.
@@ -123,27 +123,22 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     }
 
     // The controller's options reaching the check is the composition's; BaselineReleaseCheckTests owns the check's decisions.
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Newer_baseline_release_reaches_the_dashboard_after_a_later_hourly_check(bool startupToolUpdates)
+    [Fact]
+    public async Task Newer_baseline_release_reaches_the_dashboard_after_a_later_hourly_check()
     {
         var published = new InMemoryBaselineReleases();
         var current = Release(101, image: "running");
         published.Publish(current);
-        var releases = new BaselineReleases(published, _ => Task.FromResult<string?>(Inventory("running")), startupToolUpdates, clock, new RecordingLog(), text => text);
+        var releases = new BaselineReleases(published, _ => Task.FromResult<string?>(Inventory("running")), clock, new RecordingLog(), text => text);
         await using var dashboard = Dashboard(releases);
 
         dashboard.Start(TestContext.Current.CancellationToken);
-        Assert.Matches(startupToolUpdates ? @"### Updates\n\*\*Release identity uncertain\*\*[^\n]*startup tool updates"
-            : @"### Updates\nThis controller's image matches \[" + Regex.Escape(current.Tag) + @"\][^\n]*newest", await Naming(current));
+        Assert.Matches(@"### Updates\nThis controller's image matches \[" + Regex.Escape(current.Tag) + @"\][^\n]*newest", await Naming(current));
 
         var newest = Release(102, image: "newest", gh: "2.103.1");
         published.Publish(newest);
         clock.Advance(TimeSpan.FromHours(1));
-        Assert.Matches(startupToolUpdates
-            ? @"### Updates\n\*\*Release identity uncertain\*\*[^\n]*startup tool updates[^\n]*matches \[" + Regex.Escape(current.Tag) + @"\][^\n]*\n- Newest published baseline release: \[" + Regex.Escape(newest.Tag) + @"\]"
-            : @"### Updates\n\*\*Update available:\*\* baseline release \[" + Regex.Escape(newest.Tag) + @"\][^\n]*\[" + Regex.Escape(current.Tag) + @"\]\([^)\n]*\) \(1 newer release;", await Naming(newest));
+        Assert.Matches(@"### Updates\n\*\*Update available:\*\* baseline release \[" + Regex.Escape(newest.Tag) + @"\][^\n]*\[" + Regex.Escape(current.Tag) + @"\]\([^)\n]*\) \(1 newer release;", await Naming(newest));
     }
 
     [Fact]
@@ -358,7 +353,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
         Store(("D1", new(Url(1)) { SessionId = "s1", Running = new("t1", Start.AddMinutes(-30)) }));
         using var starting = new ControllerStatus("owner/repository", "webhook", new InMemoryStatusRecord(), discussions, state, new InMemoryCheckoutWork(), clock);
         await using var dashboard = new ControllerDashboard(Category, starting, outbox, new BaselineReleases(new InMemoryBaselineReleases(),
-            async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text), clock, log, Redact);
+            async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, new RecordingLog(), text => text), clock, log, Redact);
         dashboard.Start(TestContext.Current.CancellationToken);
         await clock.Armed();
 
@@ -414,7 +409,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
         using var restarted = new ControllerStatus("owner/repository", "polling", new InMemoryStatusRecord { Recorded = OperatorStatusJson.ReadRecord(json) },
             discussions, state, new InMemoryCheckoutWork(), clock);
         await using (var dashboard = new ControllerDashboard(Category, restarted, outbox, new BaselineReleases(new InMemoryBaselineReleases(),
-            async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, false, clock, new RecordingLog(), text => text), clock, log, Redact))
+            async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, new RecordingLog(), text => text), clock, log, Redact))
         {
             dashboard.Start(TestContext.Current.CancellationToken);
             await clock.Armed();

@@ -4,7 +4,7 @@ Quick Tunnel mode gives a local container a temporary public HTTPS origin withou
 
 ## Setup
 
-The normal image includes checksum-pinned `cloudflared` 2026.10.1 for Linux amd64/arm64. Rebuild with a reviewed version/checksum change to update it; its self-updater is disabled. Normal gh/Codex startup updates remain configurable as before. The image remains non-root and the bridge is Native AOT, with no required .NET runtime or project language.
+The normal image includes checksum-pinned `cloudflared` 2026.10.1 for Linux amd64/arm64. Rebuild with a reviewed version/checksum change to update it; its self-updater is disabled. gh and Codex also run the image's pinned versions, including with older saved settings; startup never updates tools. The image remains non-root and the bridge is Native AOT, with no required .NET runtime or project language.
 
 Install the GitHub App with Discussions and Webhooks read/write, with the installation owner's approval. Then select Quick Tunnel in `./repoagent setup`, or configure it explicitly:
 

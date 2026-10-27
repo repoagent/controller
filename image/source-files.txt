@@ -80,7 +80,6 @@ container/Containerfile
 container/runtime.py
 container/control.py
 container/quick_tunnel.py
-container/update_tools.py
 container/install-tools.sh
 container/install-cloudflared.sh
 container/prepare-runtime.sh

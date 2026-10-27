@@ -13,7 +13,6 @@ import tempfile
 import urllib.error
 import urllib.request
 import urllib.parse
-import update_tools
 import quick_tunnel
 import yaml
 
@@ -32,7 +31,7 @@ INVENTORY = '/opt/repoagent/image-inventory.json'
 ENROLLMENT_VARIABLE = 'REPOAGENT_ENROLLMENT'
 # Nonsecret configuration supplied with it, one REPOAGENT_<OPTION> per configure option.
 EXTERNAL_OPTIONS = ('repository', 'app-id', 'broker-url', 'clone', 'repository-settings', 'installation-id', 'repository-id',
-                    'mention-user', 'model', 'web-search', 'tool-updates', 'mode', 'public-url', 'listen-port',
+                    'mention-user', 'model', 'web-search', 'mode', 'public-url', 'listen-port',
                     'reconcile-interval', 'dashboard-category')
 FLAG_OPTIONS = ('clone', 'repository-settings')
 
@@ -57,13 +56,6 @@ def save(value):
     temporary.write_text(json.dumps(value, indent=2) + '\n')
     temporary.chmod(0o600)
     temporary.replace(CONFIG)
-
-
-def tool_updates(config):
-    """The startup tool-update choice. New configurations record it, by default pinned (the image's
-    tools); a configuration saved before the choice existed always updated tools at startup and keeps
-    doing so until its operator chooses."""
-    return config.get('toolUpdates', 'latest' if config else 'pinned')
 
 
 def bridge_args(config, *, check_auth=False, injected=False):
@@ -93,10 +85,7 @@ def bridge_args(config, *, check_auth=False, injected=False):
     # The controller refuses a status port equal to its listener, so a listener configured on 8081 keeps starting.
     args += ['--status-port', '8082' if listen_port == 8081 else '8081']
     if config.get('dashboardCategory') and not check_auth:
-        # The dashboard compares this image with published baseline releases; startup tool updates make that uncertain.
         args += ['--dashboard-category', config['dashboardCategory'], '--image-inventory', INVENTORY]
-        if tool_updates(config) == 'latest':
-            args += ['--startup-tool-updates']
     for url in config.get('enroll', []):
         args += ['--enroll', url]
     if CODEX_SUPPLY.is_file():
@@ -123,10 +112,9 @@ def supply_codex_auth(source):
         raise
 
 
-def select_tools(config):
+def select_tools():
+    # Retained volumes may contain old startup updates; only image tools can identify a baseline release.
     paths = [p for p in os.environ['PATH'].split(os.pathsep) if p != '/data/tools/bin']
-    if tool_updates(config) == 'latest':
-        paths.insert(0, '/data/tools/bin')
     os.environ['PATH'] = os.pathsep.join(paths)
 
 
@@ -147,8 +135,8 @@ def prepare_codex_home():
 
 def configure(args, *, persist=True):
     config = settings() if CONFIG.exists() else {}
-    # Without an explicit choice an instance keeps its saved one; every written configuration records it.
-    startup_updates = getattr(args, 'tool_updates', None) or tool_updates(config)
+    # Legacy saved choices no longer affect startup; rewritten settings omit the obsolete field.
+    config.pop('toolUpdates', None)
     if not re.fullmatch(r'[\w.-]+/[\w.-]+', args.repository):
         raise ValueError('Repository must be OWNER/REPO.')
     if not re.fullmatch(r'(?:[0-9]+|Iv[A-Za-z0-9.]+)', args.app_id):
@@ -216,7 +204,7 @@ def configure(args, *, persist=True):
     config.update(clone=clone, repository=args.repository, appId=args.app_id, keyPath=args.key_path,
                   brokerUrl=broker_url,
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
-                  toolUpdates=startup_updates, mode=args.mode, publicUrl=args.public_url,
+                  mode=args.mode, publicUrl=args.public_url,
                   listenPort=args.listen_port, reconcileInterval=args.reconcile_interval)
     prepare_codex_home()
     if persist:
@@ -376,8 +364,6 @@ def configure_arguments(configure_parser):
     configure_parser.add_argument('--mention-user', default='repoagent')
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
     configure_parser.add_argument('--web-search', choices=['live', 'cached', 'disabled'], default='live')
-    # Default: the instance's saved choice, or pinned for a new configuration (see tool_updates).
-    configure_parser.add_argument('--tool-updates', choices=['latest', 'pinned'])
     configure_parser.add_argument('--mode', choices=['polling', 'fixed-url', 'quick-tunnel'], default='polling')
     configure_parser.add_argument('--public-url', default='')
     configure_parser.add_argument('--listen-port', type=int, default=8080)
@@ -388,7 +374,7 @@ def configure_arguments(configure_parser):
 
 def main():
     os.umask(0o077)
-    # Tool updates, sign-in checks and tunnels never inherit an injected controller credential.
+    # Sign-in checks and tunnels never inherit an injected controller credential.
     injected = os.environ.pop(ENROLLMENT_VARIABLE, None)
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
@@ -401,7 +387,7 @@ def main():
     skills = sub.add_parser('install-skills'); skills.add_argument('selection'); skills.add_argument('--token-file')
     enroll = sub.add_parser('enroll'); enroll.add_argument('urls', nargs='+')
     args = parser.parse_args()
-    select_tools(settings() if CONFIG.exists() else {})
+    select_tools()
     if args.command == 'import-enrollment': import_enrollment()
     elif args.command == 'configure': configure(args)
     elif args.command == 'get': print(settings().get(args.key) or '')
@@ -438,12 +424,9 @@ def main():
         os.execv(CONTROLLER[0], CONTROLLER + [args.command, '--state', STATE])
     elif args.command in ('check', 'start'):
         config = runtime_settings(injected)
-        select_tools(config)
         external = injected is not None
         # Only the controller receives the injected credential; it removes it before starting children.
         controller = os.environ | ({ENROLLMENT_VARIABLE: injected} if external else {})
-        if args.command == 'start' and tool_updates(config) == 'latest':
-            update_tools.update()
         if not CODEX_SUPPLY.is_file():  # Otherwise the controller validates and installs the supply before native use.
             run(['codex', 'login', 'status'])
         if args.command == 'check':
