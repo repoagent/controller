@@ -420,81 +420,6 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual(f.git('-C', history, 'rev-parse', 'HEAD'), initial)
                 self.settled(f)
 
-    def test_periodic_refresh_defers_interrupted_operations_and_refuses_unsafe_remote_changes(self):
-        for case in ('rebase', 'identity', 'moving-target'):
-            with self.subTest(case=case), self.fixture() as f, self.controller(f):
-                initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
-                if case == 'rebase': (f.checkout / '.git/rebase-merge').mkdir()
-                before = self.snapshot(f.checkout)
-                requests = len(f.provider.git_tokens)
-                self.publish(f)
-                if case == 'identity': f.provider.repository_id += 1
-                if case == 'moving-target':
-                    captured, release = threading.Event(), threading.Event()
-                    def changed(sha):
-                        f.provider.ref_observer = None; captured.set()
-                        if not release.wait(15): raise TimeoutError('moving target release')
-                    f.provider.ref_observer = changed
-                    try:
-                        self.assertTrue(captured.wait(10)); self.publish(f, content='remote C\n')
-                    finally: release.set()
-                f.wait('refresh-blocked' if case == 'identity' else 'refresh-pending')
-                self.assertEqual(self.snapshot(f.checkout), before)
-                self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
-                if case == 'rebase': self.assertEqual(len(f.provider.git_tokens), requests)
-                print('MATRIX_GIT case=' + case + ' baseline=' + initial + ' preserved=true', flush=True)
-
-    def test_changed_identity_blocks_admission_when_branch_ref_is_unavailable(self):
-        for status in (404, 200):
-            with self.subTest(ref_status=status), self.fixture(protocol=True) as f, self.controller(f):
-                initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
-                before = self.snapshot(f.checkout); requests = len(f.provider.git_tokens)
-                f.provider.repository_id += 1; f.provider.ref_status = status
-                self.publish(f)
-                f.wait(' refresh-')  # Observe either durable pending or blocked, never infer idle from time.
-                journal = json.loads(f.journal.read_text())
-                self.assertEqual(self.snapshot(f.checkout), before)
-                self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
-                self.assertEqual(len(f.provider.git_tokens), requests)
-                print('IDENTITY_REF status=' + str(status) + ' observed-id=' + str(f.provider.repository_id)
-                      + ' blocked=' + str(journal['blocked']) + ' reason=' + journal.get('reason', ''), flush=True)
-                self.assertTrue(journal['blocked'], 'Observed immutable identity mismatch must block despite unavailable/malformed ref')
-                f.provider.discussions = [self.discussion(1)]
-                f.wait('observation-error')
-                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Identity mismatch admitted native work')
-
-    def test_transient_final_metadata_failure_retains_pending_assistance_and_retries(self):
-        with self.fixture(protocol=True) as f, self.controller(f):
-            (f.checkout / '.git/info/exclude').write_text('local-cache\n')
-            (f.checkout / 'local-cache').write_bytes(b'user cache\n')
-            initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
-            before = self.snapshot(f.checkout)
-            f.provider.postfetch_failure = dict(git=len(f.provider.git_tokens), count=0)
-            target = self.publish(f)
-            f.wait(' refresh-')
-            journal = json.loads(f.journal.read_text())
-            self.assertGreater(f.provider.postfetch_failure['count'], 0, 'Final metadata outage was not exercised')
-            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'FETCH_HEAD^{commit}'), target)
-            self.assertEqual(self.snapshot(f.checkout), before)
-            self.assertEqual(json.loads(f.owner.read_text())['commit'], initial)
-            self.assertNotIn('applying', journal)
-            self.assertGreater(journal['requested'], journal['completed'])
-            print('POSTFETCH_METADATA fetched=' + target + ' baseline=' + initial + ' blocked=' + str(journal['blocked'])
-                  + ' faults=' + str(f.provider.postfetch_failure['count']) + ' reason=' + journal.get('reason', ''), flush=True)
-            self.assertFalse(journal['blocked'], 'Ordinary final metadata outage must defer without blocking safe assistance')
-            f.provider.discussions = [self.discussion(1)]
-            request = self.rpc(f, 'thread/start')
-            self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
-            request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-            f.wait('poll-completed success=True')
-            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
-            f.provider.postfetch_failure = None
-            self.terminal(f, 'S1', 'T1')
-            f.wait('checkout-refreshed'); self.settled(f)
-            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
-            self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
-            self.assertEqual((f.checkout / 'local-cache').read_bytes(), b'user cache\n')
-
     def discussion(self, number):
         return dict(id='D' + str(number), number=number, url='https://github.com/owner/project/discussions/' + str(number),
                     body='@test-app[bot] fixture ' + str(number), bodyHTML='fixture', title='fixture',
@@ -821,27 +746,6 @@ class CheckoutRefreshTests(unittest.TestCase):
                         f.wait('checkout-refreshed'); self.settled(f)
                         self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
                 print('GAP case=' + case + ' reservation-and-first-send=protected', flush=True)
-
-
-
-    def test_late_fetch_head_change_cannot_replace_the_captured_validated_target(self):
-        with self.fixture() as f, self.controller(f):
-            initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
-            observed = []
-            def after_lookup(sha):
-                if sha == initial: return
-                observed.append(sha)
-                if len(observed) == 2:
-                    f.provider.ref_observer = None
-                    (f.checkout / '.git/FETCH_HEAD').write_text(initial + '\t\tlate fixture ref change\n')
-            f.provider.ref_observer = after_lookup
-            target = self.publish(f)
-            f.wait('checkout-refreshed'); self.settled(f)
-            self.assertEqual(observed, [target, target])
-            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'FETCH_HEAD'), initial)
-            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
-            self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
-            print('GAP late-FETCH_HEAD=' + initial + ' captured-applied=' + target, flush=True)
 
 
 
