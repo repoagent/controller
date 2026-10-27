@@ -60,7 +60,17 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
         }
         else if (state.CategoryStartsAsRead is { } json) file["enrollmentCategories"] = JsonNode.Parse(json);
         var temporary = statePath + ".tmp";
-        File.WriteAllText(temporary, Kept(file, state.Unknown).ToJsonString(Indented));
+        var text = Kept(file, state.Unknown).ToJsonString(Indented);
+        const UnixFileMode privateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write };
+        if (!OperatingSystem.IsWindows()) options.UnixCreateMode = privateMode;
+        using (var output = new FileStream(temporary, options))
+        {
+            // UnixCreateMode only applies to new files; an earlier replacement may have left a temporary file.
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(output.SafeFileHandle, privateMode);
+            output.Write(System.Text.Encoding.UTF8.GetBytes(text));
+            output.Flush(true);
+        }
         File.Move(temporary, statePath, true);
     }
 
