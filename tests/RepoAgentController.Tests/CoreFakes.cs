@@ -755,7 +755,7 @@ sealed class ScriptedCheckout : IRepositoryCheckout
 /// the approved repository at <see cref="Head"/>, owned by <see cref="Owner"/> and recorded; a test changes what it needs.
 /// Reads are recorded by name; a clone or write the workspace would refuse throws before it is recorded.
 /// </summary>
-sealed class InMemoryCheckout : ICheckoutWorkspace, ICheckoutFacts
+sealed class InMemoryCheckout : ICheckoutUpdateWorkspace, ICheckoutUpdateFacts
 {
     public const string State = "/srv/repoagent/state.json", RootPath = "/srv/repoagent/workspace/repository";
     public const string Head = "1111111111111111111111111111111111111111", Owner = "0123456789abcdef0123456789abcdef";
@@ -801,10 +801,59 @@ sealed class InMemoryCheckout : ICheckoutWorkspace, ICheckoutFacts
         Commit = Head
     };
 
-    T Read<T>(string name, T value) { Reads.Add(name); return value; }
+    public string Target { get; set; } = Head;
+    public FetchedBranch? Fetched { get; set; }
+    public bool RecordUnchanged { get; set; } = true;
+    public Action<string>? Reading { get; set; }
+    public Action? Fetching { get; set; }
+    public Exception? FetchFailure { get; set; }
+    public Exception? PrepareFailure { get; set; }
+    public bool ForceSettles { get; set; } = true;
+    public Action? Forcing { get; set; }
+    public (string Branch, string Target, IReadOnlyList<string> Hidden)? Forced { get; private set; }
+    public string? RewrittenCommit { get; private set; }
+
+    T Read<T>(string name, T value) { Reads.Add(name); Reading?.Invoke(name); return value; }
     Task<T> Git<T>(string name, T value) => Task.FromResult(Read(name, value));
 
     public Task<RepositoryCheckout> AuthoritativeRepository(CancellationToken ct) => Task.FromResult(Read("repository", Repository));
+    public Task<string> AuthoritativeCommit(string branch, CancellationToken ct) => Git("authoritative-commit " + branch, Target);
+    public bool Unchanged() => Read("record-unchanged", RecordUnchanged);
+    public void PrepareFetch()
+    {
+        Reads.Add("prepare-fetch");
+        if (PrepareFailure is { } error) throw error;
+    }
+    public Task<FetchedBranch> Fetch(CancellationToken ct)
+    {
+        Writes.Add("fetch");
+        if (FetchFailure is { } error) throw error;
+        var fetched = Fetched ?? new(Target);
+        Commits["FETCH_HEAD^{commit}"] = fetched.Commit ?? "";
+        Fetching?.Invoke();
+        return Task.FromResult(fetched);
+    }
+    public void Rewrite(CheckoutRecord record)
+    {
+        Saved = record;
+        RewrittenCommit = record.Commit;
+        Writes.Add("rewrite " + record.Commit);
+    }
+    public Task Force(string branch, string target, IReadOnlyList<string> hidden, CancellationToken ct)
+    {
+        Forcing?.Invoke();
+        Forced = (branch, target, hidden);
+        Writes.Add("force " + target);
+        if (ForceSettles)
+        {
+            Branch = "refs/heads/" + branch;
+            Commits["HEAD^{commit}"] = target;
+            TrackedChanges = false; UntrackedFiles = false;
+            for (var i = 0; i < Entries.Count; i++) Entries[i] = Entries[i] with { SkipWorktree = false, AssumeUnchanged = false };
+            Held.Remove("MERGE_HEAD"); Held.Remove("CHERRY_PICK_HEAD"); Held.Remove("REVERT_HEAD");
+        }
+        return Task.CompletedTask;
+    }
     public CheckoutRecord? Record() => Read("record", Saved);
     public CheckoutRoot Root() => Read("root", RootEntry);
 

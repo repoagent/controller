@@ -8,28 +8,23 @@ namespace RepoAgentController;
 /// <summary>Owns one persistent, disposable checkout of the bound origin mainline, refusing foreign or unsafe state.</summary>
 internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
 {
-    static readonly string[] BlockingGitFiles = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"];
-
     const UnixFileMode PrivateFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
     // These ownership records contain no credentials. An executable SMB view
     // reports owner execute on every file, without granting another user access.
     const UnixFileMode CheckoutMetadataMode = PrivateFileMode | UnixFileMode.UserExecute;
     readonly FileStream lease;
     public string Root { get; }
-    readonly Workspace workspace;
     readonly CheckoutRecord metadata;
     readonly RepositoryCheckout repository;
-    readonly CheckoutFacts facts;
-    readonly GitHub github;
-    readonly GitHubAppCredentials credentials;
+    readonly CheckoutUpdate update;
     public string Owner => metadata.Owner!;
     public long RepositoryId => repository.Id;
     public string DefaultRef => "refs/heads/" + repository.Branch;
     ManagedCheckout(string root, FileStream lease, Workspace workspace, CheckoutRecord metadata,
-        RepositoryCheckout repository, CheckoutFacts facts, GitHub github, GitHubAppCredentials credentials)
+        RepositoryCheckout repository, CheckoutFacts facts)
     {
-        Root = root; this.lease = lease; this.workspace = workspace; this.metadata = metadata;
-        this.repository = repository; this.facts = facts; this.github = github; this.credentials = credentials;
+        Root = root; this.lease = lease; this.metadata = metadata; this.repository = repository;
+        update = new(workspace, facts, root, new(repository, metadata), new ControllerLog());
     }
 
     public static async Task<ManagedCheckout> Open(string workspace, string state, GitHub github,
@@ -52,7 +47,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
             var files = new Workspace(root, record, github, credentials, gh);
             var opened = await CheckoutInspection.Open(files, facts, state, root, credentials.RepositoryId, ct);
             Log.Write("checkout-ready", $"repository={opened.Repository.Name} root={root} commit={opened.Record.Commit}");
-            return new(root, lease, files, opened.Record, opened.Repository, facts, github, credentials);
+            return new(root, lease, files, opened.Record, opened.Repository, facts);
         }
         catch { lease.Dispose(); throw; }
     }
@@ -61,12 +56,27 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
     /// The workspace's files, its clone and the authoritative repository lookup. It keeps the record's text as last read or
     /// written, which a refresh compares with the file as JSON before it changes the checkout.
     /// </summary>
-    sealed class Workspace(string root, string record, GitHub github, GitHubAppCredentials credentials, string gh) : ICheckoutWorkspace
+    sealed class Workspace(string root, string record, GitHub github, GitHubAppCredentials credentials, string gh) : ICheckoutUpdateWorkspace
     {
         readonly string ownerFile = Path.Combine(root, ".git", "repoagent-owner");
         string recorded = "";
 
         public Task<RepositoryCheckout> AuthoritativeRepository(CancellationToken ct) => github.CheckoutRepository(ct);
+        public Task<string> AuthoritativeCommit(string branch, CancellationToken ct) => github.CheckoutCommit(branch, ct);
+
+        public void PrepareFetch() => CheckPath(Path.Combine(root, ".git", "FETCH_HEAD"));
+
+        public async Task<FetchedBranch> Fetch(CancellationToken ct)
+        {
+            var start = new ProcessStartInfo(Path.Combine(credentials.CredentialDirectory, "bin", "repoagent-git")) { UseShellExecute = false };
+            foreach (var arg in new[] { "fetch", "--directory", root }) start.ArgumentList.Add(arg);
+            await Run(start, ct);
+            var fetched = Path.Combine(root, ".git", "FETCH_HEAD");
+            CheckPath(fetched);
+            if (new FileInfo(fetched).Length > 65536) return new(null, Oversized: true);
+            var lines = File.ReadAllLines(fetched);
+            return new(lines.Length == 1 ? lines[0].Split('\t')[0] : null);
+        }
 
         public CheckoutRecord? Record()
         {
@@ -111,7 +121,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
     }
 
     /// <summary>The checkout's Git directory, and Git run on it with the managed environment. Git is found on first use.</summary>
-    internal sealed class CheckoutFacts(string root) : ICheckoutFacts
+    internal sealed class CheckoutFacts(string root) : ICheckoutUpdateFacts
     {
         readonly string dotGit = Path.Combine(root, ".git");
         string? git;
@@ -217,74 +227,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
         return json.ToJsonString();
     }
 
-    // Safe refusals retain the recorded baseline while existing assistance may continue.
-    static CheckoutDeferred Deferred(string reason) => new(reason);
-
-    async Task VerifyOwnership(CancellationToken ct)
-    {
-        if (!workspace.Unchanged() || (workspace.Owner() ?? throw Blocked("private state is missing or unsafe")) != Owner)
-            throw Blocked("ownership record changed");
-        await CheckoutInspection.Verify(facts, Root, repository, ct);
-    }
-
-    public async Task<bool> Refresh(Action<string, string> beforeApply, CancellationToken ct)
-    {
-        await VerifyOwnership(ct);
-        RepositoryCheckout current;
-        string target;
-        try { current = await github.CheckoutRepository(ct); }
-        catch (IOException error) when (error is not CheckoutIdentityException)
-        { throw Deferred("authoritative repository lookup unavailable; retry pending"); }
-        if (current.Id != repository.Id || current.Name != repository.Name || current.Remote != repository.Remote)
-            throw Blocked("authoritative repository identity changed");
-        if (current.Branch != repository.Branch) throw Deferred("default branch changed; inspect the recorded binding");
-        try { target = await github.CheckoutCommit(current.Branch, ct); }
-        catch (IOException) { throw Deferred("authoritative default-branch lookup unavailable; retry pending"); }
-        var previous = metadata.Commit!;
-        // An unmoved origin still restores local edits, commits, branch switches and merge state left in the owned checkout.
-        if (target == previous && await Matches(target, ct)) return false;
-        var fetched = Path.Combine(Root, ".git", "FETCH_HEAD");
-        CheckPath(fetched);
-        try
-        {
-            var start = new ProcessStartInfo(Path.Combine(credentials.CredentialDirectory, "bin", "repoagent-git")) { UseShellExecute = false };
-            foreach (var arg in new[] { "fetch", "--directory", Root }) start.ArgumentList.Add(arg);
-            await Run(start, ct);
-            CheckPath(fetched);
-            if (new FileInfo(fetched).Length > 65536) throw Deferred("ambiguous fetched default branch");
-            var lines = File.ReadAllLines(fetched);
-            if (lines.Length != 1 || lines[0].Split('\t')[0] != target ||
-                await facts.Commit("FETCH_HEAD^{commit}", ct) != target ||
-                await github.CheckoutCommit(repository.Branch, ct) != target)
-                throw Deferred("default branch changed during fetch; retry pending");
-        }
-        catch (IOException error) { throw Deferred("fetch refused: " + error.Message); }
-        try { current = await github.CheckoutRepository(ct); }
-        catch (IOException error) when (error is not CheckoutIdentityException)
-        { throw Deferred("authoritative repository lookup unavailable after fetch; retry pending"); }
-        if (current.Id != repository.Id || current.Name != repository.Name || current.Remote != repository.Remote)
-            throw Blocked("authoritative repository identity changed during fetch");
-        if (current.Branch != repository.Branch) throw Deferred("default branch changed during fetch");
-        await VerifyOwnership(ct);
-        beforeApply(previous, target);
-        // Origin is authoritative inside the owned checkout: local edits, commits, branch switches, hidden index flags and
-        // merge-like state are discarded. Ignored files and nested repositories stay; other branches and worktrees are untouched.
-        await facts.Force(repository.Branch, target, [.. CheckoutInspection.Hidden(await facts.Index(ct))], ct);
-        if (await CheckoutInspection.Inspect(facts, Root, repository, ct) != target) throw Blocked("applied commit differs");
-        metadata.Commit = target;
-        workspace.Rewrite(metadata);
-        Log.Write("checkout-refreshed", $"root={Root} commit={target}" + (target == previous ? " restored=local-changes" : ""));
-        return true;
-    }
-
-    // The owned checkout is on its default branch at the commit, with no tracked, untracked, hidden or merge-like local state.
-    // Ignored files do not count.
-    async Task<bool> Matches(string commit, CancellationToken ct) =>
-        await facts.HeadName(ct) == "refs/heads/" + repository.Branch &&
-        await facts.Commit("HEAD^{commit}", ct) == commit &&
-        !await facts.Changed(true, ct) &&
-        !CheckoutInspection.Hidden(await facts.Index(ct)).Any() &&
-        !BlockingGitFiles.Any(facts.Holds);
+    public Task<bool> Refresh(Action<string, string> beforeApply, CancellationToken ct) => update.Refresh(beforeApply, ct);
 
     internal static void SavePrivate(string path, string value) => SaveFile(path, value, PrivateFileMode);
 
