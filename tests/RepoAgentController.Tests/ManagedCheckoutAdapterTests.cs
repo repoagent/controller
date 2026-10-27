@@ -54,6 +54,128 @@ public sealed class ManagedCheckoutAdapterTests
         Assert.Equal(before, fixture.Snapshot());
     }
 
+    [Theory]
+    [InlineData(true, "owned checkout is missing")]
+    [InlineData(false, "checkout has no ownership record")]
+    public async Task A_restart_refuses_a_file_in_place_of_the_checkout_root_and_changes_nothing(bool recorded, string reason)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await Cloned();
+        Directory.Move(fixture.Root, Path.Combine(fixture.Broker.Directory, "saved-root"));
+        File.WriteAllText(fixture.Root, "not a checkout");
+        if (!recorded) File.Delete(fixture.Record);
+        var before = fixture.Snapshot();
+
+        Assert.Equal("Managed checkout blocked: " + reason + "; preserve this workspace and inspect it before retrying",
+            (await Assert.ThrowsAsync<IOException>(() => fixture.Open())).Message);
+
+        Assert.Equal(before, fixture.Snapshot());
+    }
+
+    [Fact]
+    public async Task A_restart_refuses_a_Git_file_in_place_of_the_checkouts_own_Git_directory_and_changes_nothing()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await Cloned();
+        var dotGit = Path.Combine(fixture.Root, ".git");
+        var saved = Path.Combine(fixture.Broker.Directory, "saved-git");
+        Directory.Move(dotGit, saved);
+        File.WriteAllText(dotGit, "gitdir: " + saved + "\n");
+        var before = fixture.Snapshot();
+
+        Assert.Equal("Managed checkout blocked: checkout must have its own Git directory; preserve this workspace and inspect it before retrying",
+            (await Assert.ThrowsAsync<IOException>(() => fixture.Open())).Message);
+
+        Assert.Equal(before, fixture.Snapshot());
+    }
+
+    [Fact]
+    public async Task A_clone_refuses_repository_metadata_other_than_the_approved_repository_and_clones_nothing()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = new CheckoutFixture();
+        await fixture.Start();
+        File.WriteAllText(fixture.Metadata, File.ReadAllText(fixture.Metadata).Replace("\"trunk\"", "\"../trunk\"", StringComparison.Ordinal));
+
+        Assert.Equal("Repository metadata does not match the approved checkout",
+            (await Assert.ThrowsAsync<CheckoutIdentityException>(() => fixture.Open())).Message);
+
+        Assert.False(File.Exists(fixture.CloneLog));
+        Assert.Equal(["lock"], fixture.Snapshot().Values);
+    }
+
+    [Fact]
+    public async Task A_refresh_refuses_repository_metadata_other_than_the_approved_repository_and_changes_nothing()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await Cloned();
+        await fixture.Advance("advanced");
+        using var checkout = await fixture.Open();
+        File.WriteAllText(fixture.Metadata, File.ReadAllText(fixture.Metadata).Replace("\"trunk\"", "\"../trunk\"", StringComparison.Ordinal));
+        var before = fixture.Snapshot();
+
+        Assert.Equal("Repository metadata does not match the approved checkout",
+            (await Assert.ThrowsAsync<CheckoutIdentityException>(() => checkout.Refresh((_, _) => { }, TestContext.Current.CancellationToken))).Message);
+
+        Assert.Equal(before, fixture.Snapshot());
+    }
+
+    [Fact]
+    public void Git_output_is_read_as_Git_writes_it()
+    {
+        Assert.Equal(["core.bare", "branch.trunk.merge", "Remote.origin.url"],
+            ManagedCheckout.CheckoutFacts.Keys("core.bare\nfalse\0branch.trunk.merge\nrefs/heads/trunk\nuser.name=x\0\0Remote.origin.url\nhttps://x\0"));
+        Assert.Empty(ManagedCheckout.CheckoutFacts.Keys(""));
+        Assert.Equal(["https://github.com/a.git", "https://github.com/b.git"], ManagedCheckout.CheckoutFacts.Lines("https://github.com/a.git\nhttps://github.com/b.git\n"));
+        Assert.Equal(["https://github.com/a.git"], ManagedCheckout.CheckoutFacts.Lines("https://github.com/a.git \n\n"));
+        Assert.Equal([""], ManagedCheckout.CheckoutFacts.Lines(""));
+        Assert.False(ManagedCheckout.CheckoutFacts.Bare("false\n"));
+        Assert.True(ManagedCheckout.CheckoutFacts.Bare("true\n"));
+        Assert.True(ManagedCheckout.CheckoutFacts.Bare(""));
+        Assert.Equal(
+            [new("tracked", false, false), new("assumed", false, true), new("skipped", true, false), new("both", true, true),
+                new("merged", false, false), new("assumed other", false, true), new("changed", false, false)],
+            ManagedCheckout.CheckoutFacts.Entries("H tracked\0h assumed\0S skipped\0s both\0M merged\0c assumed other\0C changed\0"));
+    }
+
+    // What the refresh reads through the facts port while origin has not moved: local state it restores, and then rests.
+    [Theory]
+    [InlineData("untracked")]
+    [InlineData("merge")]
+    [InlineData("skip-worktree")]
+    public async Task A_refresh_while_origin_is_unmoved_restores_local_state_then_finds_the_checkout_settled(string scenario)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await Cloned();
+        using var checkout = await fixture.Open();
+        var tracked = Path.Combine(fixture.Root, "tracked-sentinel");
+        if (scenario == "untracked") File.WriteAllText(Path.Combine(fixture.Root, "local-only"), "user bytes");
+        if (scenario == "merge") File.WriteAllText(Path.Combine(fixture.Root, ".git", "MERGE_HEAD"), fixture.Commit + "\n");
+        if (scenario == "skip-worktree")
+        {
+            await CheckoutFixture.Git("-C", fixture.Root, "update-index", "--skip-worktree", "tracked-sentinel");
+            File.AppendAllText(tracked, "hidden local edit");
+        }
+
+        Assert.True(await checkout.Refresh((_, _) => { }, TestContext.Current.CancellationToken));
+        Assert.False(await checkout.Refresh((_, _) => { }, TestContext.Current.CancellationToken));
+
+        Assert.Equal("approved repository\n", File.ReadAllText(tracked));
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "local-only")));
+    }
+
+    [Fact]
+    public async Task A_refresh_refuses_a_checkout_whose_owner_marker_was_removed()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = await Cloned();
+        await fixture.Advance("advanced");
+        using var checkout = await fixture.Open();
+        File.Delete(fixture.Marker);
+
+        Assert.Equal(Unsafe, (await Assert.ThrowsAsync<IOException>(() => checkout.Refresh((_, _) => { }, TestContext.Current.CancellationToken))).Message);
+    }
+
     public static TheoryData<string> Links() => ["root-symlink", "index-symlink"];
 
     [Theory]
