@@ -61,7 +61,7 @@ public sealed class GrantSnapshot(string partitionRepositoryId, string enrollmen
         _ = Id(RepositoryId);
         if (Text(Gate.RepositoryId) != RepositoryId
             || Text(Gate.OwnerEnrollmentId) != EnrollmentId
-            || Text(Enrollment.Epoch) != Epoch
+            || !BrokerOptions.IsDeploymentEpoch(Epoch) || Text(Enrollment.Epoch) != Epoch
             || Number(Enrollment.AppId) != AppId
             || Text(Enrollment.AppSlug) != AppSlug
             || Text(Enrollment.GitHubHost) != "github.com"

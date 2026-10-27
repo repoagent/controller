@@ -21,8 +21,7 @@ public sealed record BrokerOptions(Uri TableEndpoint, string TableName, string D
             || !table.All(char.IsAsciiLetterOrDigit))
             throw new InvalidOperationException("Broker:TableName must be a valid existing Azure table name.");
         var epoch = Broker("DeploymentEpoch");
-        if (epoch is null || epoch.Length is < 1 or > 128
-            || !epoch.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))
+        if (epoch is null || !IsDeploymentEpoch(epoch))
             throw new InvalidOperationException("Broker:DeploymentEpoch must be an externally supplied epoch identifier.");
         var clientId = Broker("ManagedIdentityClientId");
         if (clientId is not null && !Guid.TryParse(clientId, out _))
@@ -52,6 +51,9 @@ public sealed record BrokerOptions(Uri TableEndpoint, string TableName, string D
         if (table != new Uri(TableEndpoint.AbsoluteUri.TrimEnd('/') + "/" + TableName) || !BrokerSettings.IsBare(table))
             throw new InvalidOperationException("Development storage destination does not match.");
     }
+
+    internal static bool IsDeploymentEpoch(string epoch) =>
+        epoch.Length is >= 1 and <= 128 && epoch.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 
     private static bool IsDevelopmentTableEndpoint(Uri endpoint) =>
         endpoint.Scheme == "http" && endpoint.IsLoopback
