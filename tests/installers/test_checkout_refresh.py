@@ -716,6 +716,100 @@ class CheckoutRefreshTests(unittest.TestCase):
 
 
 
+    def test_missing_journal_stays_blocked_after_provider_forgets_the_last_discussion(self):
+        with self.fixture(protocol=True, webhooks=True) as f:
+            webhook_port = free_port()
+            f.command += ['--webhook-url', 'https://fixture.invalid', '--listen-port', str(webhook_port),
+                          '--reconcile-interval', '3600']
+            status_port = int(f.command[f.command.index('--status-port') + 1])
+
+            def status():
+                with closing(http.client.HTTPConnection('127.0.0.1', status_port, timeout=5)) as connection:
+                    connection.request('GET', '/status')
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    return json.loads(response.read())
+
+            def deliver(number, action):
+                settings = json.loads(Path(str(f.state) + '.webhook/hook.json').read_text())
+                body = json.dumps(dict(repository=dict(full_name='owner/project', id=345),
+                                       action=action, discussion=dict(number=number))).encode()
+                digest = hmac.new(settings['secret'].encode(), body, hashlib.sha256).hexdigest()
+                with closing(http.client.HTTPConnection('127.0.0.1', webhook_port, timeout=10)) as connection:
+                    connection.request('POST', '/github/webhook', body, {'X-GitHub-Event': 'discussion',
+                        'X-GitHub-Delivery': '00000000-0000-4000-8000-000000000001',
+                        'X-Hub-Signature-256': 'sha256=' + digest})
+                    response = connection.getresponse(); response.read()
+                    self.assertEqual(response.status, 202)
+
+            f.provider.discussions = [self.discussion(1)]
+            with self.controller(f, ' ready repository='):
+                request = self.rpc(f, 'thread/start')
+                self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
+                request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
+                f.wait('reconciliation-completed discussion=all success=True')
+            self.assertEqual(f.process.returncode, 0)
+            self.assertTrue(json.loads(f.journal.read_text())['active'])
+            original = f.state.read_bytes()
+            self.assertEqual(json.loads(original)['discussions']['D1']['sessionId'], 'S1')
+            before = self.local_state(f)
+            requests = len(f.provider.git_tokens)
+            # Simulate lost lifecycle evidence; only the real observation path may remove Discussion state.
+            f.journal.unlink()
+            f.provider.discussions = []
+            with self.controller(f, ' ready repository='):
+                f.wait('reconciliation-completed discussion=all success=True')
+                self.assertTrue(status()['work']['admissionBlocked'])
+                self.assertEqual(status()['state'], 'busy')
+                self.assertFalse(f.journal.exists())
+                evidence = Path(str(f.state) + '.checkout-evidence')
+                snapshots = list(evidence.iterdir())
+                self.assertEqual(len(snapshots), 1)
+                archive = snapshots[0]
+                self.assertEqual((archive / 'state.json').read_bytes(), original)
+                self.assertFalse((archive / 'refresh.json').exists())
+                self.assertTrue((archive / 'complete').is_file())
+                for directory in (evidence, archive):
+                    self.assertEqual(oct(directory.stat().st_mode & 0o777), '0o700')
+                for name in ('state.json', 'complete'):
+                    self.assertEqual(oct((archive / name).stat().st_mode & 0o777), '0o600')
+                raw_evidence = {p: p.read_bytes() for p in archive.iterdir() if p.is_file()}
+                # The fixture's normal GraphQL NOT_FOUND result drives Bridge.Observe -> Forget -> durable Remove.
+                deliver(1, 'deleted')
+                f.wait('discussion-forgotten https://github.com/owner/project/discussions/1 reason=not-found session=S1')
+                f.wait('webhook-observed discussion=1 success=True')
+                self.assertEqual(json.loads(f.state.read_text())['discussions'], {})
+                self.assertTrue(status()['work']['admissionBlocked'])
+                self.assertEqual(status()['state'], 'busy')
+                self.assertFalse(f.journal.exists())
+                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Blocked Forget admitted native input')
+            self.assertEqual(f.process.returncode, 0)
+            self.assertFalse(f.journal.exists())
+            self.assertEqual({p: p.read_bytes() for p in raw_evidence}, raw_evidence)
+            self.assertEqual(self.local_state(f), before)
+            self.assertEqual(len(f.provider.git_tokens), requests)
+            print('MISSING_FENCE first-start=blocked provider-not-found=forgotten-last-discussion records=0 journal=missing evidence=retained', flush=True)
+            with self.controller(f, ' ready repository='):
+                f.wait('reconciliation-completed discussion=all success=True')
+                restarted = status()
+                print('MISSING_FENCE restart=' + json.dumps(dict(state=restarted['state'],
+                      admissionBlocked=restarted['work']['admissionBlocked'], journalExists=f.journal.exists())), flush=True)
+                self.assertEqual({p: p.read_bytes() for p in raw_evidence}, raw_evidence)
+                self.assertTrue(restarted['work']['admissionBlocked'],
+                                'Restart must retain missing-journal uncertainty after confirmed deletion of the final Discussion')
+                self.assertEqual(restarted['state'], 'busy')
+                self.assertFalse(f.journal.exists(), 'Restart synthesized a lifecycle journal from an empty Discussion state')
+                f.provider.discussions = [self.discussion(2)]
+                deliver(2, 'created')
+                self.assertIsNotNone(f.wait_or_native('observation-error'), 'Restart admitted native input after Forget')
+                f.wait('webhook-observed discussion=2 success=False')
+                self.assertFalse(select.select([f.responses], [], [], 0)[0])
+                self.assertFalse(f.journal.exists())
+                self.assertEqual({p: p.read_bytes() for p in raw_evidence}, raw_evidence)
+                self.assertEqual(self.local_state(f), before)
+                self.assertEqual(len(f.provider.git_tokens), requests)
+            self.assertEqual(f.process.returncode, 0)
+
     def test_create_resume_and_clean_active_restart_preserve_reservations(self):
         for case in ('create', 'resume', 'save-failure', 'active-restart'):
             with self.subTest(case=case), self.fixture(protocol=True) as f:
