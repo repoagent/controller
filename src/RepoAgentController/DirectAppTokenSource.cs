@@ -5,22 +5,10 @@ using System.Text.Json.Nodes;
 
 namespace RepoAgentController;
 
-internal readonly record struct InstallationLease(string Token, DateTimeOffset ExpiresAt);
-
-internal interface IInstallationTokenSource : IDisposable
+internal sealed class DirectAppTokenSource : IGitHubTokenSource
 {
-    string AppSlug { get; }
-    long? RepositoryId => null;
-    string? GitRepository => null;
-    string? GitProfile => null;
-    /// <summary>Why the runtime token cannot read repository settings, or null when it can.</summary>
-    string? SettingsUnreadable => null;
-    Task Initialize(long? expectedInstallation, CancellationToken ct);
-    Task<InstallationLease> Acquire(CancellationToken ct);
-}
+    public bool RequiresNewLifetimeOnFailure => false;
 
-internal sealed class DirectAppTokenSource : IInstallationTokenSource
-{
     readonly HttpClient http;
     readonly string appId;
     readonly RSA key;
@@ -82,7 +70,7 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
         Log.Write("app-installation", $"app={slug} installation={installationId} repository={repository} actor={appSlug}[bot]");
     }
 
-    public async Task<InstallationLease> Acquire(CancellationToken ct)
+    public async Task<GitHubTokenLease> Acquire(CancellationToken ct)
     {
         var permissions = profile.Permissions();
         var request = Json.Object(("permissions", permissions));
@@ -112,6 +100,7 @@ internal sealed class DirectAppTokenSource : IInstallationTokenSource
             !DateTimeOffset.TryParse(result.Text("expires_at"), out var expiry) || expiry <= clock.GetUtcNow().AddMinutes(5) ||
             (clone && (expiry > clock.GetUtcNow().AddMinutes(65) || freshToken.Any(char.IsWhiteSpace) || freshToken.Any(char.IsControl))))
             throw new InvalidOperationException("GitHub returned an unusable installation token or expiry");
+        Log.Protect(freshToken);
         return new(freshToken, expiry);
     }
 

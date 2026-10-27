@@ -75,6 +75,8 @@ src/RepoAgentController.Core/RefreshJournal.cs
 src/RepoAgentController.Core/CheckoutRefresh.cs
 src/RepoAgentController.Core/CheckoutInspection.cs
 src/RepoAgentController.Core/CheckoutUpdate.cs
+src/RepoAgentController.Core/GitHubTokenSource.cs
+src/RepoAgentController.Core/GitHubTokenLifetime.cs
 tests/NativeSmoke/NativeSmoke.csproj
 tests/NativeSmoke/Program.cs
 tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj

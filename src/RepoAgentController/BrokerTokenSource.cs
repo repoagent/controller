@@ -6,8 +6,10 @@ using System.Text.RegularExpressions;
 namespace RepoAgentController;
 
 /// <summary>Consumes only leases bound to the operator's explicitly versioned protected enrollment.</summary>
-internal sealed class BrokerTokenSource : IInstallationTokenSource
+internal sealed class BrokerTokenSource : IGitHubTokenSource
 {
+    public bool RequiresNewLifetimeOnFailure => true;
+
     const int MaximumBytes = 64 * 1024;
     const string VariableName = @"\A[A-Za-z_][A-Za-z0-9_]{0,127}\z";
     // Setup v4 Agent-variable approval; its settings profiles read Agent variables (ADR 0012).
@@ -145,7 +147,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
             throw Invalid("CLI installation differs from enrollment");
     }
 
-    public async Task<InstallationLease> Acquire(CancellationToken ct)
+    public async Task<GitHubTokenLease> Acquire(CancellationToken ct)
     {
         // ResponseHeadersRead ends HttpClient.Timeout at the headers; bound body consumption too.
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60), clock);
@@ -189,6 +191,7 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
                 !DateTimeOffset.TryParse(expiryText, CultureInfo.InvariantCulture, DateTimeStyles.None, out var expiry) ||
                 expiry <= clock.GetUtcNow().AddMinutes(5) || expiry > clock.GetUtcNow().AddMinutes(65))
                 throw Invalid("unusable installation token or expiry");
+            Log.Protect(token);
             return new(token, expiry);
         }
     }

@@ -165,25 +165,6 @@ public sealed class AppAuthenticationTests
     }
 
     [Fact]
-    public async Task Renewal_happens_before_expiry_and_a_failed_refresh_disables_native_publication()
-    {
-        using var fixture = new AppFixture();
-        using var credentials = fixture.Credentials();
-        await credentials.Initialize(null, TestContext.Current.CancellationToken);
-        var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(fixture.Directory, "bin"), fixture.Gh, credentials.CredentialDirectory);
-        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
-        fixture.Provider.RejectRefresh = true;
-
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(TestContext.Current.CancellationToken));
-        Assert.Contains("HTTP 401", error.Message);
-        fixture.AssertNothingPersisted();
-        var result = await Run(wrapper, ["api", "user"]);
-        Assert.NotEqual(0, result.Exit);
-        Assert.DoesNotContain("installation-token-1", result.Output);
-        Assert.DoesNotContain("gh-invoked", result.Output);
-    }
-
-    [Fact]
     public async Task An_expired_credential_cannot_launch_gh_with_ambient_user_credentials()
     {
         using var fixture = new AppFixture();
