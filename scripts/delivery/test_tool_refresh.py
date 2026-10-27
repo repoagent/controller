@@ -1,4 +1,4 @@
-"""Upstream gh/Codex discovery feeding verified baseline image publication.
+"""Upstream gh/Codex/cloudflared discovery feeding verified baseline image publication.
 
 Step tests execute the per-tool refresh workflow's actual shell steps against a
 copy of this checkout, committed as its own git repository, with a gh double
@@ -25,18 +25,21 @@ WORKFLOWS = ROOT / '.github/workflows'
 WORKFLOW = WORKFLOWS / 'refresh-baseline-tools.yml'
 PIPELINE = WORKFLOWS / 'refresh-baseline-tool.yml'
 DEFAULT = json.loads((ROOT / 'image/default.json').read_text())
+CLOUDFLARED = DEFAULT['tools']['cloudflared']
 GH, CODEX = DEFAULT['githubCli']['version'], DEFAULT['agent']['version']
 CATALOG = runpy.run_path(str(ROOT / 'scripts/compose-image.py'))['ARTIFACTS']
 CANARY = 'ghs_TOKEN-MUST-NOT-APPEAR'
 # Newer than anything this repository will pin for a long time, so the tests do not age.
-GH_NEW, CODEX_NEW = '99.1.0', '99.2.0'
-DIGESTS = {'gh': '1' * 64, 'codex': '2' * 64, 'codex-code-mode-host': '3' * 64}
-URLS = {'gh': f'https://github.com/cli/cli/releases/download/v{GH_NEW}/gh_{GH_NEW}_linux_amd64.tar.gz',
+GH_NEW, CODEX_NEW, CLOUDFLARED_NEW = '99.1.0', '99.2.0', '9999.3.0'
+DIGESTS = {'gh': '1' * 64, 'codex': '2' * 64, 'codex-code-mode-host': '3' * 64, 'cloudflared': '4' * 64}
+URLS = {'cloudflared': f'https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_NEW}/cloudflared-linux-amd64',
+        'gh': f'https://github.com/cli/cli/releases/download/v{GH_NEW}/gh_{GH_NEW}_linux_amd64.tar.gz',
         'codex': f'https://github.com/openai/codex/releases/download/rust-v{CODEX_NEW}/codex-x86_64-unknown-linux-musl.tar.gz',
         'codex-code-mode-host': f'https://github.com/openai/codex/releases/download/rust-v{CODEX_NEW}/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz'}
 # Tool -> (upstream repository, its catalog artifacts, the newer version the tests offer, the current pin).
 TOOLS = {'gh': ('cli/cli', ('gh',), GH_NEW, GH),
-         'codex': ('openai/codex', ('codex', 'codex-code-mode-host'), CODEX_NEW, CODEX)}
+         'codex': ('openai/codex', ('codex', 'codex-code-mode-host'), CODEX_NEW, CODEX),
+         'cloudflared': ('cloudflare/cloudflared', ('cloudflared',), CLOUDFLARED_NEW, CLOUDFLARED)}
 # Identical trees and metadata give every checkout copy the same commit, as with one main commit.
 # Without auto maintenance: from Git 2.55 a commit may start a detached repack, depending on which loose objects the copied
 # files hash to, and that repack would still be writing into .git when the test removes the checkout.
@@ -66,8 +69,17 @@ def codex_release(version, **changes):
     return release
 
 
+def cloudflared_release(version, **changes):
+    release = {'tag_name': version, 'draft': False, 'prerelease': False, 'assets': [
+        {'name': 'cloudflared-linux-amd64', 'digest': 'sha256:' + DIGESTS['cloudflared'],
+         'browser_download_url': f'https://github.com/cloudflare/cloudflared/releases/download/{version}/cloudflared-linux-amd64'}]}
+    release.update(changes)
+    return release
+
+
 def newer_upstream():
-    return {'cli/cli': gh_release(GH_NEW), 'openai/codex': codex_release(CODEX_NEW)}
+    return {'cli/cli': gh_release(GH_NEW), 'openai/codex': codex_release(CODEX_NEW),
+            'cloudflare/cloudflared': cloudflared_release(CLOUDFLARED_NEW)}
 
 
 # Transport double only: serves controlled upstream release metadata and records
@@ -196,6 +208,7 @@ class RefreshStepTests(unittest.TestCase):
         _, artifacts, version, _ = TOOLS[tool]
         self.assertEqual((inventory['githubCli']['version'], inventory['agent']['version']),
                          (GH_NEW if tool == 'gh' else GH, CODEX_NEW if tool == 'codex' else CODEX))
+        self.assertEqual(inventory['tools']['cloudflared'], CLOUDFLARED_NEW if tool == 'cloudflared' else CLOUDFLARED)
         catalog = runpy.run_path(str(copy / 'scripts/compose-image.py'))['ARTIFACTS']
         for artifact, reviewed in CATALOG.items():
             with self.subTest(artifact=artifact):
@@ -230,8 +243,10 @@ class RefreshStepTests(unittest.TestCase):
 
     def test_current_or_older_upstream_releases_select_nothing(self):
         for name, upstream in {
-                'current': {'cli/cli': gh_release(GH), 'openai/codex': codex_release(CODEX)},
-                'older is never a downgrade': {'cli/cli': gh_release('1.0.0'), 'openai/codex': codex_release('0.1.0')},
+                'current': {'cli/cli': gh_release(GH), 'openai/codex': codex_release(CODEX),
+                            'cloudflare/cloudflared': cloudflared_release(CLOUDFLARED)},
+                'older is never a downgrade': {'cli/cli': gh_release('1.0.0'), 'openai/codex': codex_release('0.1.0'),
+                                           'cloudflare/cloudflared': cloudflared_release('2020.1.0')},
         }.items():
             for tool in TOOLS:
                 with self.subTest(case=name, tool=tool):
@@ -244,7 +259,23 @@ class RefreshStepTests(unittest.TestCase):
     def test_unusable_newer_releases_fail_visibly_and_select_nothing(self):
         gh = gh_release(GH_NEW)
         linux = gh['assets'][1]
+        cloudflared = cloudflared_release(CLOUDFLARED_NEW)['assets'][0]
         cases = {
+            'cloudflared prerelease': ('cloudflared', {'cloudflare/cloudflared': cloudflared_release(CLOUDFLARED_NEW, prerelease=True)}),
+            'cloudflared draft': ('cloudflared', {'cloudflare/cloudflared': cloudflared_release(CLOUDFLARED_NEW, draft=True)}),
+            'cloudflared prefixed tag': ('cloudflared', {'cloudflare/cloudflared': cloudflared_release(CLOUDFLARED_NEW, tag_name='v' + CLOUDFLARED_NEW)}),
+            'cloudflared release candidate': ('cloudflared', {'cloudflare/cloudflared': cloudflared_release(CLOUDFLARED_NEW, tag_name=CLOUDFLARED_NEW + '-rc.1')}),
+            'cloudflared wrong architecture': ('cloudflared', {'cloudflare/cloudflared': cloudflared_release(CLOUDFLARED_NEW, assets=[
+                {**cloudflared, 'name': 'cloudflared-linux-arm64'}])}),
+            'cloudflared without digest': ('cloudflared', {'cloudflare/cloudflared': cloudflared_release(CLOUDFLARED_NEW, assets=[
+                {**cloudflared, 'digest': None}])}),
+            'cloudflared non-sha256 digest': ('cloudflared', {'cloudflare/cloudflared': cloudflared_release(CLOUDFLARED_NEW, assets=[
+                {**cloudflared, 'digest': 'md5:' + '4' * 32}])}),
+            'cloudflared malformed sha256': ('cloudflared', {'cloudflare/cloudflared': cloudflared_release(CLOUDFLARED_NEW, assets=[
+                {**cloudflared, 'digest': 'sha256:' + '4' * 63}])}),
+            'cloudflared foreign URL': ('cloudflared', {'cloudflare/cloudflared': cloudflared_release(CLOUDFLARED_NEW, assets=[
+                {**cloudflared, 'browser_download_url': URLS['cloudflared'].replace('cloudflare/cloudflared', 'someone/cloudflared')}])}),
+            'cloudflared upstream unavailable': ('cloudflared', {'cloudflare/cloudflared': None}),
             'prerelease': ('codex', {'openai/codex': codex_release(CODEX_NEW, prerelease=True)}),
             'draft': ('gh', {'cli/cli': gh_release(GH_NEW, draft=True)}),
             'release candidate tag': ('gh', {'cli/cli': gh_release(GH_NEW, tag_name=f'v{GH_NEW}-rc.1')}),
@@ -267,8 +298,10 @@ class RefreshStepTests(unittest.TestCase):
                 self.assertFalse((temporary / 'tool-selection').exists())
 
     def test_an_unusable_release_of_one_tool_never_blocks_the_others_update(self):
-        for tool, other in (('gh', 'openai/codex'), ('codex', 'cli/cli')):
-            with self.subTest(tool=tool):
+        for tool, other in (('gh', 'openai/codex'), ('codex', 'cli/cli'),
+                            ('gh', 'cloudflare/cloudflared'), ('codex', 'cloudflare/cloudflared'),
+                            ('cloudflared', 'cli/cli'), ('cloudflared', 'openai/codex')):
+            with self.subTest(tool=tool, other=other):
                 upstream = newer_upstream()
                 upstream[other]['draft'] = True
                 temporary, copy = self.checkout()
@@ -309,12 +342,13 @@ class RefreshStepTests(unittest.TestCase):
                 manifest = json.loads(files['image/default.json'])
                 self.assertEqual((manifest['githubCli']['version'], manifest['agent']['version']),
                                  (GH_NEW if tool == 'gh' else GH, CODEX_NEW if tool == 'codex' else CODEX))
+                self.assertEqual(manifest['tools'], DEFAULT['tools'] | {'cloudflared': CLOUDFLARED_NEW if tool == 'cloudflared' else CLOUDFLARED})
                 (temporary / 'committed-catalog.py').write_bytes(files['scripts/compose-image.py'])
                 catalog = runpy.run_path(str(temporary / 'committed-catalog.py'))['ARTIFACTS']
                 self.assertEqual(catalog, CATALOG | {artifact: (version, URLS[artifact], DIGESTS[artifact])
                                                      for artifact in artifacts},
                                  'Only the verified tool changes; every other pin stays as reviewed')
-                label = 'gh' if tool == 'gh' else 'Codex'
+                label = 'Codex' if tool == 'codex' else tool
                 self.assertEqual(change['message']['headline'], f'chore: refresh baseline {label} to {version}')
                 self.assertIn(f'{label} {current} -> {version}', change['message']['body'])
                 self.assertIn('https://github.com/repoagent/controller/actions/runs/4242', change['message']['body'])
@@ -324,11 +358,35 @@ class RefreshStepTests(unittest.TestCase):
         for name, moved, environment, attempted in [
                 ('main moved after verification', False, dict(GH_COMMIT_REFUSED='1'), [['api', 'graphql']]),
                 ('selection verified for another commit', True, {}, [])]:
-            with self.subTest(case=name):
-                temporary, _ = self.selected()
-                result, calls, _ = self.commit(temporary, moved=moved, **environment)
+            for tool in TOOLS:
+                with self.subTest(case=name, tool=tool):
+                    temporary, _ = self.selected(tool)
+                    result, calls, _ = self.commit(temporary, moved=moved, **environment)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual([call['argv'][:2] for call in calls], attempted)
+
+    def test_incompatible_selections_pin_and_publish_nothing(self):
+        for mutation in ('old schema', 'missing pinned tool', 'another tool artifact'):
+            with self.subTest(mutation=mutation):
+                temporary, _ = self.selected('cloudflared')
+                path = temporary / 'tool-selection/selection.json'
+                selection = json.loads(path.read_text())
+                if mutation == 'old schema':
+                    selection['schema'] = 'repoagent.tool-selection/v2'
+                elif mutation == 'missing pinned tool':
+                    del selection['pinned']['cloudflared']
+                else:
+                    selection['artifacts']['gh'] = {'version': GH_NEW, 'url': URLS['gh'], 'sha256': DIGESTS['gh']}
+                path.write_text(json.dumps(selection))
+
+                result, calls, _ = self.commit(temporary)
+
                 self.assertNotEqual(result.returncode, 0)
-                self.assertEqual([call['argv'][:2] for call in calls], attempted)
+                self.assertEqual(calls, [], 'An invalid selection cannot write a pin or dispatch publication')
+                self.assertEqual((temporary / 'commit-checkout/image/default.json').read_bytes(),
+                                 (ROOT / 'image/default.json').read_bytes())
+                self.assertEqual((temporary / 'commit-checkout/scripts/compose-image.py').read_bytes(),
+                                 (ROOT / 'scripts/compose-image.py').read_bytes())
 
     def test_verification_refuses_a_checkout_of_another_commit(self):
         temporary, _ = self.selected()
@@ -389,14 +447,17 @@ class RefreshWorkflowTests(unittest.TestCase):
         self.assertRegex(on_block(WORKFLOW), r"cron: '\d+ \d+ \* \* \*'")
         self.assertEqual(events(PIPELINE), {'workflow_call'}, 'A tool refresh runs only as part of the scheduled refresh')
 
-    def test_each_tool_is_selected_verified_and_pinned_by_its_own_refresh(self):
+    def test_each_scheduled_tool_is_selected_verified_and_pinned_by_its_own_refresh(self):
         refresh = job('refresh', WORKFLOW)
         self.assertRegex(refresh, r'(?m)^    uses: \./\.github/workflows/refresh-baseline-tool\.yml$',
                          'gh and Codex share one selection, verification and pin, so one bad release blocks the other')
         self.assertIn('      tool: ${{ matrix.tool }}\n', refresh)
         tools = re.search(r'(?m)^        tool: \[(.*)\]$', refresh)[1]
         upstream = runpy.run_path(str(ROOT / 'scripts/delivery/tool-refresh.py'))['UPSTREAM']
-        self.assertEqual({item.strip() for item in tools.split(',')}, set(upstream))
+        scheduled = {item.strip() for item in tools.split(',')}
+        self.assertEqual(scheduled, {'gh', 'codex'},
+                         'Cloudflared must stay unscheduled until the hosted smoke gate is implemented')
+        self.assertLessEqual(scheduled, set(upstream))
         self.assertIn('      fail-fast: false\n', refresh, "One tool's failed refresh must not cancel the other's")
         self.assertIn('      max-parallel: 1\n', refresh,
                       'Concurrent refreshes would both pin on the same main and the later pin would be refused')
