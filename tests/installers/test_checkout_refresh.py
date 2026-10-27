@@ -616,9 +616,26 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.assertFalse(select.select([f.responses], [], [], 0)[0])
                     self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
                     self.assertEqual(len(f.provider.git_tokens), requests)
-                result = subprocess.run(f.command + ['--once'], env=f.environment, capture_output=True, text=True, timeout=20)
-                self.assertEqual(result.returncode, 1)
-                self.assertIn('refresh' if case == 'journal-write' else 'uncertain', result.stdout.lower())
+                if case == 'journal-write':
+                    # Incomplete journal replacement is still a protective refusal, never an empty safe journal.
+                    result = subprocess.run(f.command + ['--once'], env=f.environment, capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn('refresh', result.stdout.lower())
+                else:
+                    # The actual CLI now reaches its HTTP host while preserving the native admission fence.
+                    with self.controller(f, 'ready '):
+                        port = int(f.command[f.command.index('--status-port') + 1])
+                        with closing(http.client.HTTPConnection('127.0.0.1', port, timeout=5)) as connection:
+                            connection.request('GET', '/status')
+                            response = connection.getresponse()
+                            self.assertEqual(response.status, 200)
+                            status = json.loads(response.read())
+                        self.assertEqual(status['state'], 'busy')
+                        self.assertTrue(status['work']['admissionBlocked'])
+                        self.assertEqual(status['work']['running'], 0, 'Prior journal evidence is not a current running turn')
+                        self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
+                        self.assertEqual(len(f.provider.git_tokens), requests)
+                    self.assertEqual(f.process.returncode, 0)
                 print('MATRIX_FAULT case=' + case + ' durable-busy=true admission-blocked=true', flush=True)
 
 
@@ -698,8 +715,18 @@ class CheckoutRefreshTests(unittest.TestCase):
                     if case == 'active-restart':
                         saved = json.loads(f.journal.read_text())
                         self.assertTrue(saved['active']); self.assertFalse(saved['blocked'])
-                        result = subprocess.run(f.command + ['--once'], env=f.environment, capture_output=True, text=True, timeout=20)
-                        self.assertEqual(result.returncode, 1); self.assertIn('uncertain', result.stdout)
+                        with self.controller(f, 'ready '):
+                            port = int(f.command[f.command.index('--status-port') + 1])
+                            with closing(http.client.HTTPConnection('127.0.0.1', port, timeout=5)) as connection:
+                                connection.request('GET', '/status')
+                                response = connection.getresponse()
+                                self.assertEqual(response.status, 200)
+                                status = json.loads(response.read())
+                            self.assertEqual(status['state'], 'busy')
+                            self.assertTrue(status['work']['admissionBlocked'])
+                            self.assertEqual(status['work']['running'], 0)
+                            self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Blocked restart dispatched native input')
+                        self.assertEqual(f.process.returncode, 0)
                         self.assertTrue(json.loads(f.journal.read_text())['active'])
                         print('GAP clean-active restart=blocked persisted-active=true', flush=True)
                         continue

@@ -8,6 +8,9 @@ public interface IRefreshJournal
 {
     RefreshJournal? Read();
     void Write(RefreshJournal journal);
+
+    /// <summary>Durably preserves the original journal and Discussion state before startup or explicit recovery changes them.</summary>
+    void PreserveStartupEvidence();
 }
 
 /// <summary>
@@ -30,16 +33,20 @@ public sealed class RefreshJournal(string root, string owner, long repositoryId)
 
     /// <summary>Each unresolved admission by its ID, in the order admitted.</summary>
     public OrderedDictionary<string, RefreshAdmission> Active { get; } = [];
+    /// <summary>Whether duplicate admission IDs were collapsed while reading; never safe recovery evidence.</summary>
+    public bool ActiveUnreadable { get; set; }
+    public string? ActiveAsRead { get; set; }
     public bool Blocked { get; set; }
     public int Running
     {
         get => running;
-        set { running = value; RunningUnreadable = false; }
+        set { running = value; RunningUnreadable = false; RunningAsRead = null; }
     }
 
     /// <summary>Whether <c>running</c> was read in a form no writer leaves. A start reads it only when nothing before it blocks,
     /// and then refuses the journal; setting <see cref="Running"/> clears it.</summary>
     public bool RunningUnreadable { get; set; }
+    public string? RunningAsRead { get; set; }
 
     /// <summary>Why refresh is held back or blocked; setting it replaces a reason read in a form no writer leaves.</summary>
     public string? Reason

@@ -40,7 +40,7 @@ A turn whose credentials are rejected (`401`/`unauthorized`) logs `codex-auth-fa
 
 ### Status endpoint
 
-A running controller also serves `GET /status` on a local port, in polling and webhook mode. `--status-port` selects it (default 8081); it listens on loopback only and must differ from `--listen-port`. The answer is `busy` while an agent turn runs or input is pending, retrying or waiting, otherwise `idle`, with the `work` counts of `status` above (`admissionBlocked` is `true` while a managed checkout refresh holds new turns, and `null` without a managed clone):
+A running controller also serves `GET /status` on a local port, in polling and webhook mode. `--status-port` selects it (default 8081); it listens on loopback only and must differ from `--listen-port`. The answer is `busy` while an agent turn runs, input is pending, retrying or waiting, or managed checkout admission is blocked by uncertainty; otherwise `idle`, with the `work` counts of `status` above (`admissionBlocked` is `true` while uncertainty holds new turns, and `null` without a managed clone). A known block remains busy even when no Discussion remains, without claiming an uncertain turn is running:
 
 ```json
 {"state":"busy","work":{"sessions":1,"pending":0,"retrying":0,"waiting":0,"running":1,"limit":4,"admissionBlocked":null}}
@@ -68,6 +68,20 @@ An image built `FROM` a baseline image without changing its inventory still matc
 Updates use the retained outbox above with one coalesced entry, so writes held back by a rate limit or outage are replaced by the latest status, which is written once when GitHub allows it. A missing category or a permission or validation error is logged once as a permanent `dashboard-error`, and dashboard updates stop until the controller restarts; the dashboard never affects Discussion work. If you delete the dashboard Discussion, restart the controller to recreate it.
 
 ## Checkpoints and manual recovery
+
+### Managed checkout startup recovery
+
+An interrupted native admission or pending delivery can leave the shared managed checkout unsafe to refresh. The controller retains that evidence, serves `GET /status` as busy with `admissionBlocked: true`, and reports `refresh-blocked` in status and the dashboard. Discussion observation and controller-owned GitHub writes continue; new agent turns and credential-driven runtime restarts wait. Deleting a Discussion does not prove its agent tools have stopped and cannot remove the block.
+
+For a readable, exactly bound journal with no interrupted checkout apply, including legacy generic blocks from an earlier crash loop, stop the controller, its agent runtime **and every agent-launched tool or process that can still access the checkout**. Then run the controller executable offline against the same mounted state and workspace:
+
+```sh
+RepoAgentController recover-checkout --state /state/bridge.json --workspace /workspace --confirm-runtime-stopped
+```
+
+The flag is your explicit attestation that all that activity has stopped. The command takes both normal leases and verifies the retained checkout binding using local Git; it starts no agent runtime and uses no network. It preserves the original Discussion state and refresh journal, including unknown fields, privately under `PATH.checkout-evidence/`, marks interrupted input for the existing ordered retry/redelivery, then clears the fence. This settles current quiescence; it does not prove the original block's cause or that past work completed. It does not mark input processed or add EYES receipts. Restart with the existing configuration; a normal authoritative checkout refresh still precedes admission. Input may already have executed or a stopped turn's output may have been lost; duplicate work remains possible.
+
+Recovery refuses missing journals, unreadable or foreign evidence, interrupted checkout applies/reloads, unsafe paths and active lease holders. Retain the old workspace, ownership records, state, evidence snapshots and native history together; use an isolated fresh approved instance when recovery is refused. Do not edit private files or delete the journal to force admission. Evidence snapshots are retained until the operator deliberately disposes of them with the associated old state; ordinary log rotation does not remove them.
 
 One JSON file holds the repository/bot binding, session IDs and last accepted content/reaction versions. An adjacent `.lock` file prevents concurrent writers for that state file; keep one bridge per repository/App. A private adjacent `.github-app` directory holds isolated `gh` configuration and command wrappers. Short-lived GitHub tokens stay in process memory and reach authenticated child commands through a local credential handoff; they are not written to this directory. Persist this directory with the state volume and keep it out of source control. Signing keys and tokens are never stored in the conversation checkpoint. Use a fresh state file when switching from a user identity to an App; the bridge rejects a mismatched identity instead of silently replaying or migrating old conversations. Codex retains conversation history itself.
 

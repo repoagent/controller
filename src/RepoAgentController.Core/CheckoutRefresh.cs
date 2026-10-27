@@ -37,7 +37,12 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
         blocked = journal.Blocked || active.Count != 0 || journal.Applying is not null ||
             (journal.RunningUnreadable ? throw new IOException(RefreshJournal.Unusable) : journal.Running != 0) || pendingDiscussion ||
             (recorded is null && priorSessions);
-        if (blocked) journal.Reason = "Native activity or checkout update is uncertain; inspect state before recovery";
+        if (blocked)
+        {
+            store.PreserveStartupEvidence();
+            if (journal.ReasonAsRead is null)
+                journal.Reason = "Native activity or checkout update is uncertain; inspect state before recovery";
+        }
         Save();
     }
 
@@ -45,7 +50,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     void Save()
     {
         journal.Blocked = blocked;
-        journal.Running = turns.Values.Count(turn => !turn.Done);
+        if (!blocked) journal.Running = turns.Values.Count(turn => !turn.Done);
         try { store.Write(journal); }
         catch { blocked = true; throw; }
     }
@@ -62,6 +67,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
 
     public long RepositoryId => binding.RepositoryId;
     public string DefaultRef => binding.DefaultRef;
+    public bool AdmissionBlocked { get { lock (journalLock) return blocked; } }
 
     public void Request()
     {
@@ -77,6 +83,12 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     public async Task Start(AgentSessions native, TimeSpan interval, CancellationToken ct)
     {
         sessions = native;
+        lock (journalLock)
+            if (blocked)
+            {
+                log.Write("refresh-blocked", "Checkout/native state uncertain; native admission is held. Stop the controller, runtime and ALL agent tools before using recover-checkout; applying or malformed evidence requires an isolated fresh instance.");
+                return;
+            }
         Request();
         await exclusion.WaitAsync(ct);
         try { await Reconcile(ct); }
@@ -192,6 +204,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
         await exclusion.WaitAsync(ct);
         try
         {
+            lock (journalLock) if (blocked || journal.Applying is not null) return false;
             await Reconcile(ct);
             lock (journalLock)
             {

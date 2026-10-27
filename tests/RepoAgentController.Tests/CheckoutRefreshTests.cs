@@ -42,6 +42,48 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         return recorded;
     }
 
+    [Fact]
+    public async Task Startup_uncertainty_keeps_the_controller_available_without_admitting_or_restarting_agent_work()
+    {
+        journal.Saved = Recorded();
+        var opened = Open(pendingDiscussion: true);
+
+        await Start(opened, Token);
+
+        Assert.True(Saved.Blocked);
+        Assert.Contains(log.Entries, entry => entry.Kind == "refresh-blocked");
+        Assert.Equal(Uncertain, (await Assert.ThrowsAsync<IOException>(() => opened.Admit(Token))).Message);
+        var committed = false;
+        Assert.False(await opened.CommitAtIdle(_ => { committed = true; return Task.CompletedTask; }, Token));
+        Assert.False(committed);
+        Assert.Equal(0, checkout.Refreshes);
+        Assert.Equal(1, runtime.Epoch);
+    }
+
+    [Fact]
+    public void A_failed_startup_evidence_snapshot_does_not_rewrite_the_original_journal()
+    {
+        journal.Saved = Recorded();
+        journal.PreserveFailure = new IOException("Evidence storage unavailable");
+
+        Assert.Throws<IOException>(() => Open(pendingDiscussion: true));
+
+        Assert.False(Saved.Blocked);
+    }
+
+    [Fact]
+    public async Task A_later_runtime_fault_keeps_admission_closed_until_explicit_recovery()
+    {
+        journal.Saved = Recorded();
+        var opened = Open(pendingDiscussion: true);
+        await Start(opened, Token);
+
+        runtime.Disconnect();
+
+        Assert.True(Saved.Blocked);
+        Assert.True(opened.AdmissionBlocked);
+    }
+
     static async Task Idle(CheckoutRefresh refresh)
     {
         using var turn = await refresh.Admit(Token);
@@ -118,7 +160,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
 
         Assert.Equal((true, "Native activity or checkout update is uncertain; inspect state before recovery"), (Saved.Blocked, Saved.Reason));
         Assert.Equal(Uncertain, (await Assert.ThrowsAsync<IOException>(() => opened.Admit(Token))).Message);
-        Assert.Equal(Uncertain, (await Assert.ThrowsAsync<IOException>(() => opened.CommitAtIdle(_ => Task.CompletedTask, Token))).Message);
+        Assert.False(await opened.CommitAtIdle(_ => throw new InvalidOperationException("A blocked checkout must not commit"), Token));
     }
 
     public static TheoryData<string> BlocksBeforeTheRunningCount() => ["a recorded block", "a recorded admission", "a recorded refresh applying"];
@@ -126,7 +168,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
     // As before the move, the start reads the running count only when nothing before it blocks.
     [Theory]
     [MemberData(nameof(BlocksBeforeTheRunningCount))]
-    public void A_running_count_no_writer_leaves_beside_an_earlier_block_starts_blocked_and_is_rewritten(string form)
+    public void A_running_count_no_writer_leaves_beside_an_earlier_block_is_retained_for_recovery_refusal(string form)
     {
         journal.Saved = Recorded(saved =>
         {
@@ -138,7 +180,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
 
         Open();
 
-        Assert.Equal((true, 0, false), (Saved.Blocked, Saved.Running, Saved.RunningUnreadable));
+        Assert.Equal((true, 0, true), (Saved.Blocked, Saved.Running, Saved.RunningUnreadable));
         Assert.Equal("Native activity or checkout update is uncertain; inspect state before recovery", Saved.Reason);
     }
 
