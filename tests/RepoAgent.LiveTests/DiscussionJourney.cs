@@ -197,7 +197,7 @@ public sealed class DiscussionJourney
         child.StandardInput.Close();
         var output = child.StandardOutput.ReadToEndAsync();
         var errors = child.StandardError.ReadToEndAsync();
-        try { await child.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(60)); }
+        try { await child.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(60)); }
         catch { if (!child.HasExited) child.Kill(true); throw; }
         var text = await output;
         Assert.True(child.ExitCode == 0, "GitHub operation failed: " + await errors);
