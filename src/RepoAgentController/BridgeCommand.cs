@@ -187,9 +187,12 @@ public static class BridgeCommand
                         var nativeRoot = checkout?.Root ?? cwd;
                         var nativeConfig = Path.Combine(credentialDirectory, "gh-config");
                         if (checkout is not null) await Codex.TrustWorkspace(nativeRoot, wrapper, nativeConfig, runtimeToken, credentials.BrokerCredentialLost);
+                        // Read retained evidence before the constructor can archive this lifetime. Forgetting the final
+                        // Discussion cannot prove prior tools stopped, so a missing journal must remain fenced.
                         var reconciliation = checkout is null ? null : new CheckoutRefresh(checkout,
                             new CheckoutBinding(checkout.Root, checkout.Owner, checkout.RepositoryId, checkout.DefaultRef), new RefreshJournalFile(statePath),
-                            store.Discussions.Values.Any(record => record.HoldsSession), store.Discussions.Values.Any(record => record.HoldsPending), time, new ControllerLog());
+                            store.Discussions.Values.Any(record => record.HoldsSession) || Directory.Exists(statePath + ".checkout-evidence"),
+                            store.Discussions.Values.Any(record => record.HoldsPending), time, new ControllerLog());
                         await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, credentials.BrokerCredentialLost,
                             suppliedCredentials: agentCredentials is not null);
                         var sessions = new AgentSessions(codex, new ControllerLog(), reconciliation, credentials.BrokerCredentialLost, agentCredentials is not null);
