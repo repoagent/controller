@@ -716,6 +716,134 @@ class CheckoutRefreshTests(unittest.TestCase):
 
 
 
+    def test_legacy_block_with_ten_completed_sessions_serves_until_explicit_recovery_and_controlled_restart(self):
+        with self.fixture(responses=True, webhooks=True) as f:
+            home = Path(f.environment['CODEX_HOME'])
+            config = home / 'config.toml'
+            config.write_text(config.read_text() + FIXTURE_MODEL)
+            f.provider.model_request_limit = 10
+            webhook_port = free_port()
+            f.command += ['--webhook-url', 'https://fixture.invalid', '--listen-port', str(webhook_port),
+                          '--reconcile-interval', '3600']
+            status_port = int(f.command[f.command.index('--status-port') + 1])
+            delivery = 0
+
+            def status():
+                with closing(http.client.HTTPConnection('127.0.0.1', status_port, timeout=5)) as connection:
+                    connection.request('GET', '/status')
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    return json.loads(response.read())
+
+            def deliver(event, number=None):
+                nonlocal delivery
+                delivery += 1
+                settings = json.loads(Path(str(f.state) + '.webhook/hook.json').read_text())
+                payload = dict(repository=dict(full_name='owner/project', id=345))
+                if number is not None: payload.update(action='edited', discussion=dict(number=number))
+                body = json.dumps(payload).encode()
+                digest = hmac.new(settings['secret'].encode(), body, hashlib.sha256).hexdigest()
+                with closing(http.client.HTTPConnection('127.0.0.1', webhook_port, timeout=10)) as connection:
+                    connection.request('POST', '/github/webhook', body, {'X-GitHub-Event': event,
+                        'X-GitHub-Delivery': '00000000-0000-4000-8000-' + format(delivery, '012d'),
+                        'X-Hub-Signature-256': 'sha256=' + digest})
+                    response = connection.getresponse(); response.read()
+                    self.assertEqual(response.status, 204 if event == 'ping' else 202)
+
+            with self.controller(f, ' ready repository='):
+                f.wait('reconciliation-completed discussion=all success=True')
+                f.provider.discussions = []
+                for number in range(1, 11):
+                    f.provider.discussions.append(self.discussion(number))
+                    deliver('discussion', number)
+                    f.wait('webhook-observed discussion=' + str(number) + ' success=True')
+                    session = json.loads(f.state.read_text())['discussions']['D' + str(number)]['sessionId']
+                    # The actual pinned native creates and completes every session; no manufactured session IDs.
+                    while not any(' native-event ' in line and native_event(line)['method'] == 'turn/completed'
+                                  and native_event(line)['thread'] == session for line in f.lines):
+                        f.wait('native-event')
+                    completion = next(native_event(line) for line in f.lines if ' native-event ' in line
+                                      and native_event(line)['method'] == 'turn/completed' and native_event(line)['thread'] == session)
+                    self.assertEqual(completion['status'], 'completed', completion)
+                # A completed observation settles the final running marker before the retained snapshot is read.
+                deliver('discussion', 1); f.wait('webhook-observed discussion=1 success=True')
+            self.assertEqual(f.process.returncode, 0)
+            records = json.loads(f.state.read_text())['discussions']
+            identities = {key: record['sessionId'] for key, record in records.items()}
+            self.assertEqual(len(identities), 10)
+            self.assertEqual(len(set(identities.values())), 10)
+            for record in records.values():
+                self.assertNotIn('pending', record)
+                self.assertNotIn('running', record)
+            rollouts = list(home.rglob('rollout-*.jsonl'))
+            self.assertTrue(all(any(session in path.name for path in rollouts) for session in identities.values()))
+            self.assertEqual(len(f.provider.model_requests), 10)
+            legacy = json.loads(f.journal.read_text())
+            self.assertEqual(legacy['active'], {})
+            self.assertEqual(legacy['running'], 0)
+            self.assertIsNone(legacy.get('applying'))
+            # Load only this isolated fixture's reported legacy shape, not the unknown cause of a production HTTP429.
+            legacy.update(blocked=True, reason='Native activity or checkout update is uncertain; inspect state before recovery')
+            f.journal.write_text(json.dumps(legacy)); f.journal.chmod(0o600)
+            legacy_state, legacy_journal = f.state.read_bytes(), f.journal.read_bytes()
+            before = self.local_state(f)
+            requests = len(f.provider.git_tokens)
+            print('LEGACY_INPUT sessions=10 pending=0 running=0 active=0 applying=null blocked=true state-sha256='
+                  + hashlib.sha256(legacy_state).hexdigest() + ' journal-sha256=' + hashlib.sha256(legacy_journal).hexdigest(), flush=True)
+            with self.controller(f, ' ready repository='):
+                f.wait('reconciliation-completed discussion=all success=True')
+                blocked = status()
+                self.assertEqual(blocked['state'], 'busy')
+                self.assertTrue(blocked['work']['admissionBlocked'])
+                self.assertEqual(blocked['work']['running'], 0)
+                print('LEGACY_BLOCKED state=busy admissionBlocked=true running=0 sessions=10', flush=True)
+                deliver('ping'); f.wait('webhook-ping')
+                self.assertEqual(len(f.provider.model_requests), 10)
+                self.assertEqual(len(f.provider.git_tokens), requests)
+                self.assertEqual(self.local_state(f), before)
+            self.assertEqual(f.process.returncode, 0)
+            evidence = Path(str(f.state) + '.checkout-evidence')
+            startup, = evidence.iterdir()
+            self.assertEqual((startup / 'state.json').read_bytes(), legacy_state)
+            self.assertEqual((startup / 'refresh.json').read_bytes(), legacy_journal)
+            snapshots = set(evidence.iterdir())
+            recovery_state, recovery_journal = f.state.read_bytes(), f.journal.read_bytes()
+            result = subprocess.run(self.controller_command + ['recover-checkout', '--state', str(f.state),
+                '--workspace', str(f.checkout.parent), '--confirm-runtime-stopped'], env=f.environment,
+                capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('explicitly settled', result.stdout)
+            self.assertIn('may already have executed or lost output', result.stdout)
+            archive, = set(evidence.iterdir()) - snapshots
+            for snapshot, state, journal in ((startup, legacy_state, legacy_journal), (archive, recovery_state, recovery_journal)):
+                self.assertEqual((snapshot / 'state.json').read_bytes(), state)
+                self.assertEqual((snapshot / 'refresh.json').read_bytes(), journal)
+                self.assertTrue((snapshot / 'complete').is_file())
+                self.assertEqual(oct(snapshot.stat().st_mode & 0o777), '0o700')
+                for name in ('state.json', 'refresh.json', 'complete'):
+                    self.assertEqual(oct((snapshot / name).stat().st_mode & 0o777), '0o600')
+            self.assertEqual(oct(f.state.stat().st_mode & 0o777), '0o600')
+            self.assertEqual(oct(evidence.stat().st_mode & 0o777), '0o700')
+            self.assertEqual({key: record['sessionId'] for key, record in json.loads(f.state.read_text())['discussions'].items()}, identities)
+            recovered = json.loads(f.journal.read_text())
+            self.assertFalse(recovered['blocked'])
+            self.assertEqual(recovered['active'], {})
+            self.assertEqual(recovered['running'], 0)
+            self.assertIsNone(recovered.get('applying'))
+            self.assertEqual((recovered['requested'], recovered['completed']), (legacy['requested'], legacy['completed']))
+            self.assertEqual(self.local_state(f), before)
+            for restart in range(2):
+                with self.controller(f, ' ready repository='):
+                    f.wait('reconciliation-completed discussion=all success=True')
+                    deliver('ping'); f.wait('webhook-ping')
+                    self.assertFalse(status()['work']['admissionBlocked'])
+                    self.assertEqual(status()['state'], 'idle')
+                    self.assertEqual({key: record['sessionId'] for key, record in json.loads(f.state.read_text())['discussions'].items()}, identities)
+                    self.assertEqual(len(f.provider.model_requests), 10, 'Quiet retained sessions dispatched native work')
+                    self.assertFalse(json.loads(f.journal.read_text())['blocked'])
+                self.assertEqual(f.process.returncode, 0)
+                print('LEGACY_RECOVERY sessions=10 pending=0 active=0 normal-ready=true signed-ping=true full-reconcile=true controlled-restart=' + str(restart), flush=True)
+
     def test_missing_journal_stays_blocked_after_provider_forgets_the_last_discussion(self):
         with self.fixture(protocol=True, webhooks=True) as f:
             webhook_port = free_port()
