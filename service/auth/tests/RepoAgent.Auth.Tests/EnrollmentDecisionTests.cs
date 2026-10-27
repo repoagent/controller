@@ -27,7 +27,7 @@ public sealed class EnrollmentDecisionTests
             f.State.Change(scope == InMemoryBroker.Partition ? RepositoryGate.Key(InMemoryBroker.RepositoryId) : EnrollmentQuota.Key, _ => { });
             return Task.CompletedTask;
         };
-        var start = await f.Start(InMemoryBroker.Request());
+        var start = await Retained.HistoricalDiscovery(f, () => f.Start(InMemoryBroker.Request()));
         Assert.True(injected);
         Assert.Equal(1, f.State.Conflicts);
         Assert.Equal(HttpStatusCode.OK, start.StatusCode);
@@ -77,7 +77,7 @@ public sealed class EnrollmentDecisionTests
         var f = new InMemoryBroker();
         await Start(f);
         f.State.Change(RepositoryGate.Key(InMemoryBroker.RepositoryId), row => row["PendingCount"] = 4L);
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Start(InMemoryBroker.Request())).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await Retained.HistoricalDiscovery(f, () => f.Start(InMemoryBroker.Request()))).StatusCode);
         Assert.Single(f.Rows(), row => row.Scope == InMemoryBroker.Partition && row.Name.StartsWith("pending:", StringComparison.Ordinal));
         Assert.Equal(1, f.GitHub.Mints);
     }
@@ -99,7 +99,11 @@ public sealed class EnrollmentDecisionTests
     public async Task Inconsistent_enrollment_counts_deny_admission_without_a_charge(string corruption)
     {
         var f = new InMemoryBroker();
-        await Start(f);
+        // A real lost publication response leaves one pending enrollment and no verifier to mask the quota check.
+        f.State.AfterCommit = transaction => transaction.Writes("State", "discovering")
+            ? Lost("Lost repository publication response") : Task.CompletedTask;
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Start(InMemoryBroker.Request())).StatusCode);
+        f.State.AfterCommit = null;
         if (corruption == "candidates") f.State.Change(EnrollmentQuota.Key, row => row["CandidateCount"] = 0L);
         else f.State.Change(CandidateRepository.Key(InMemoryBroker.RepositoryId), row => row["PendingCount"] = 2L);
         var before = f.Rows().Select(row => (row.Key, row.Version)).ToList();
@@ -126,7 +130,11 @@ public sealed class EnrollmentDecisionTests
         // Admissions are charged per minute; the outstanding verifier counts until it settles.
         if (limit == "RepositoryAttempts") f.Clock.Advance(TimeSpan.FromMinutes(1));
         var (mints, authorizations) = (f.GitHub.Mints, f.GitHub.Authorizations);
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Start(InMemoryBroker.Request())).StatusCode);
+        var blocked = limit == "RepositoryAttempts"
+            ? await f.Start(InMemoryBroker.Request())
+            : await Retained.HistoricalDiscovery(f, () => f.Start(InMemoryBroker.Request()));
+        // Outstanding foreign authority now denies before the numeric attempt ceiling is reached.
+        Assert.Equal(limit == "RepositoryAttempts" ? HttpStatusCode.Conflict : HttpStatusCode.TooManyRequests, blocked.StatusCode);
         Assert.Equal((mints, authorizations), (f.GitHub.Mints, f.GitHub.Authorizations));
     }
 
@@ -145,7 +153,7 @@ public sealed class EnrollmentDecisionTests
         f.State.Change(IssuanceQuota.Key, row => (row["Slots"], row["RetainedIssuanceCount"]) = (2L, 2L));
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var mints = f.GitHub.Mints;
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Start(InMemoryBroker.Request())).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await Retained.HistoricalDiscovery(f, () => f.Start(InMemoryBroker.Request()))).StatusCode);
         Assert.Equal(mints, f.GitHub.Mints);
         Assert.Null(f.State.Get(IssuanceSlot.Key(1)));
     }
@@ -276,7 +284,8 @@ public sealed class EnrollmentDecisionTests
         f.State.AfterCommit = null;
         var attempt = Assert.Single(f.Rows(), row => row.Name.StartsWith("attempt:", StringComparison.Ordinal)).Read<IssuanceAttempt>();
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        // Reclamation settled the reservation as it settles an unsent one.
+        // Deliberate synthetic settlement variants; match reclamation's repository counter release too.
+        f.State.Change(RepositoryGate.Key(InMemoryBroker.RepositoryId), row => row["OutstandingTokenCount"] = 0L);
         f.State.Change(IssuanceAttempt.Key(InMemoryBroker.RepositoryId, attempt.OperationId!), row =>
         {
             row["State"] = "settled";
@@ -504,7 +513,11 @@ public sealed class EnrollmentDecisionTests
         Assert.Equal(HttpStatusCode.OK, (await f.Complete(first)).StatusCode);
         var incumbent = f.Gate.OwnerEnrollmentId;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var second = await Start(f);
+        var legacy = await Retained.HistoricalDiscovery(f, () => f.Start(InMemoryBroker.Request()));
+        Assert.Equal(HttpStatusCode.OK, legacy.StatusCode);
+        var second = legacy.Json.GetProperty("pendingId").GetString()!;
+        f.GitHub.Marker = legacy.Json.GetProperty("marker").GetString()!;
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         f.State.Change(RepositoryGate.Key(InMemoryBroker.RepositoryId), row => row["OutstandingTokenCount"] = 1L);
         var reads = f.GitHub.Reads;
         Assert.Equal(HttpStatusCode.Conflict, (await f.Complete(second)).StatusCode);

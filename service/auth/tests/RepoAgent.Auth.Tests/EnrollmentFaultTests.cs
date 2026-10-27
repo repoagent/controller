@@ -194,7 +194,11 @@ public sealed class EnrollmentFaultTests
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Start(original)).StatusCode);
         Assert.Equal(1, f.GitHub.Mints);
-        var next = await Start(f);
+        var historical = await Retained.HistoricalDiscovery(f, () => f.Start(InMemoryBroker.Request()));
+        Assert.Equal(HttpStatusCode.OK, historical.StatusCode);
+        var next = historical.Json.GetProperty("pendingId").GetString()!;
+        f.GitHub.Marker = historical.Json.GetProperty("marker").GetString()!;
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var reads = f.GitHub.Reads;
         Assert.Equal(HttpStatusCode.Conflict, (await f.Complete(next)).StatusCode);
         Assert.Equal(reads, f.GitHub.Reads);
@@ -260,7 +264,11 @@ public sealed class EnrollmentFaultTests
         Assert.Equal(HttpStatusCode.OK, (await f.Complete(first)).StatusCode);
         var incumbent = f.Gate;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var second = await Start(f);
+        var historical = await Retained.HistoricalDiscovery(f, () => f.Start(InMemoryBroker.Request()));
+        Assert.Equal(HttpStatusCode.OK, historical.StatusCode);
+        var second = historical.Json.GetProperty("pendingId").GetString()!;
+        f.GitHub.Marker = historical.Json.GetProperty("marker").GetString()!;
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var gate = f.Gate;
         Assert.Equal(incumbent.OwnerEnrollmentId, gate.OwnerEnrollmentId);
         Assert.Equal(incumbent.VerifierAttempt, gate.VerifierAttempt);

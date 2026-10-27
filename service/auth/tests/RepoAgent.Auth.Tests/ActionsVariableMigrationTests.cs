@@ -4,12 +4,12 @@ using Xunit;
 namespace RepoAgent.Auth.Tests;
 
 // Moving a repository to another approval contract or profile, over the in-memory broker state. It is always a fresh
-// enrollment: the old owner keeps working and blocks the new completion until it is revoked, its GitHub tokens settle
+// enrollment: the old owner keeps working and blocks the new start until it is revoked, its GitHub tokens settle
 // and reclamation releases its ownership. Nothing converts or upgrades the old grant.
 public sealed class ActionsVariableMigrationTests
 {
     // Deliberate migration: an Agent-variable (setup v2) owner keeps working and blocks
-    // Actions-variable (setup v3) completion until it is revoked, its capabilities settle
+    // Actions-variable (setup v3) admission until it is revoked, its capabilities settle
     // and cleanup releases ownership. Nothing converts or overwrites the old grant.
     [Fact]
     public async Task Agent_owner_migrates_to_Actions_approval_only_after_revocation_settlement_and_release()
@@ -19,13 +19,13 @@ public sealed class ActionsVariableMigrationTests
         var old = await ActionsVariableEnrollmentTests.Active(f, github, version: 2);
         Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.Device, old.Secret)).StatusCode);
 
-        var start = await f.Start(ActionsVariableEnrollmentTests.Request(), 3);
-        Assert.Equal(HttpStatusCode.OK, start.StatusCode);
-        github.Actions["REPOAGENT_APPROVAL"] = start.Json.GetProperty("marker").GetString()!;
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var blocked = await f.Complete(start.Json.GetProperty("pendingId").GetString()!, 3);
+        var before = f.Rows().Select(row => (row.Key, row.Version)).ToList();
+        var mints = f.GitHub.Mints;
+        var blocked = await f.Start(ActionsVariableEnrollmentTests.Request(), 3);
         Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
         Assert.DoesNotContain("deviceSecret", blocked.Text);
+        Assert.Equal(before, f.Rows().Select(row => (row.Key, row.Version)));
+        Assert.Equal(mints, f.GitHub.Mints);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.Device, old.Secret)).StatusCode);
 
@@ -56,13 +56,13 @@ public sealed class ActionsVariableMigrationTests
         var old = await ActionsVariableEnrollmentTests.Active(f, github);
         Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.Device, old.Secret)).StatusCode);
 
-        var start = await f.Start(ActionsVariableEnrollmentTests.Request("polling-settings") with { Variable = "SETTINGS_APPROVAL" }, 3);
-        Assert.Equal(HttpStatusCode.OK, start.StatusCode);
-        github.Actions["SETTINGS_APPROVAL"] = start.Json.GetProperty("marker").GetString()!;
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var blocked = await f.Complete(start.Json.GetProperty("pendingId").GetString()!, 3);
+        var before = f.Rows().Select(row => (row.Key, row.Version)).ToList();
+        var mints = f.GitHub.Mints;
+        var blocked = await f.Start(ActionsVariableEnrollmentTests.Request("polling-settings") with { Variable = "SETTINGS_APPROVAL" }, 3);
         Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
         Assert.DoesNotContain("deviceSecret", blocked.Text);
+        Assert.Equal(before, f.Rows().Select(row => (row.Key, row.Version)));
+        Assert.Equal(mints, f.GitHub.Mints);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.Device, old.Secret, 3)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.Device, old.Secret)).StatusCode);
@@ -83,7 +83,7 @@ public sealed class ActionsVariableMigrationTests
     }
 
     // StoryBeam's shape: a setup v2 webhook-clone owner keeps renewing exactly as before setup v4 existed, and blocks
-    // a v4 completion until it is revoked, its GitHub tokens settle and reclamation releases its ownership.
+    // v4 admission until it is revoked, its GitHub tokens settle and reclamation releases its ownership.
     [Fact]
     public async Task Agent_v2_clone_owner_keeps_renewing_unchanged_and_moves_to_v4_only_after_revocation_settlement_and_release()
     {
@@ -102,12 +102,13 @@ public sealed class ActionsVariableMigrationTests
         }
         AssertV2Lease(await f.Issue(old.Device, old.Secret, 2));
 
-        var (pending, marker) = await ActionsVariableEnrollmentTests.Start(f, 4, ActionsVariableEnrollmentTests.Request("webhook-clone-settings"));
-        github.Agent["REPOAGENT_APPROVAL"] = marker;
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var blocked = await f.Complete(pending, 4);
+        var before = f.Rows().Select(row => (row.Key, row.Version)).ToList();
+        var mints = f.GitHub.Mints;
+        var blocked = await f.Start(ActionsVariableEnrollmentTests.Request("webhook-clone-settings"), 4);
         Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
         Assert.DoesNotContain("deviceSecret", blocked.Text);
+        Assert.Equal(before, f.Rows().Select(row => (row.Key, row.Version)));
+        Assert.Equal(mints, f.GitHub.Mints);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         AssertV2Lease(await f.Issue(old.Device, old.Secret, 2));
 

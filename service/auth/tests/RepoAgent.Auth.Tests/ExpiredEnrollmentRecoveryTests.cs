@@ -54,7 +54,7 @@ public sealed class ExpiredEnrollmentRecoveryTests
         var old = await Retained.CompletedAgent(f);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("Provider send outcome unknown");
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await Retained.HistoricalDiscovery(f, () => f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2))).StatusCode);
         f.Clock.Advance(TimeSpan.FromDays(2));
         foreach (var ledger in Retained.IssuanceLedgers(f)) await Retained.ReclaimIssuance(f, ledger.Value);
         await Retained.ReclaimEnrollment(f, old.Id);

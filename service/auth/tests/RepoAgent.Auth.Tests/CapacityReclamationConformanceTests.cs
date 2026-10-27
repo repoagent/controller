@@ -224,15 +224,15 @@ public sealed class CapacityReclamationConformanceTests
     public async Task Enrollment_reuses_lowest_hole_at_original_expiry_plus_five_minutes_but_retained_backlog_still_denies()
     {
         var f = new InMemoryBroker { Retained = new(128, 256, 3), Limits = new(GlobalAttempts: 2) };
-        var first = await Retained.StartAgent(f);
+        var first = await Retained.HistoricalAgent(f);
         var a = Assert.Single(Retained.IssuanceLedgers(f)).Value;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        _ = await Retained.StartAgent(f);
+        _ = await Retained.HistoricalAgent(f);
         var second = Retained.IssuanceLedgers(f).Single(x => x.Value.OperationId != a.OperationId).Value;
         Assert.Equal(0L, a.GlobalSlot);
         Assert.Equal(1L, second.GlobalSlot);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Start(Retained.AgentRequest(NewId()), 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await Retained.HistoricalDiscovery(f, () => f.Start(Retained.AgentRequest(NewId()), 2))).StatusCode);
         var due = f.State.Get(Retained.Attempt(a))!.ExpiresAt!.Value.AddMinutes(5);
         f.Clock.Advance(due.AddTicks(-1) - f.Clock.GetUtcNow());
         await Retained.ReclaimIssuance(f, a);
@@ -246,7 +246,7 @@ public sealed class CapacityReclamationConformanceTests
         foreach (var field in new[] { "RetainedIssuanceCount", "Admissions", "Reads", "Signs", "Mints" })
             Assert.Equal(before[field], freed[field]);
         await Retained.ReclaimEnrollment(f, first.Id);
-        _ = await Retained.StartAgent(f);
+        _ = await Retained.HistoricalAgent(f);
         var replacement = Assert.Single(Retained.IssuanceLedgers(f),
             x => x.Value.OperationId != a.OperationId && x.Value.OperationId != second.OperationId).Value;
         Assert.Equal(0L, replacement.GlobalSlot);
@@ -258,7 +258,7 @@ public sealed class CapacityReclamationConformanceTests
         f.Clock.Advance(f.State.Get(Retained.Attempt(replacement))!.ExpiresAt!.Value.AddMinutes(5) - f.Clock.GetUtcNow());
         await Retained.ReclaimIssuance(f, replacement);
         await Retained.ReclaimEnrollment(f, replacement.PendingId!.Split('_')[1]);
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Start(Retained.AgentRequest(NewId()), 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await Retained.HistoricalDiscovery(f, () => f.Start(Retained.AgentRequest(NewId()), 2))).StatusCode);
         Assert.Equal(3, f.GitHub.VerifierMints);
     }
 

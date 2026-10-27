@@ -25,6 +25,46 @@ internal static class Retained
         return (id, start.Json.GetProperty("pendingId").GetString()!);
     }
 
+    // Explicit historical-state construction for recovery/quota tests: earlier brokers admitted competing verifiers.
+    // Current admission cannot produce this state. Temporarily hide the old gate authority through the fake state
+    // port, run the real enrollment writer, then restore that authority and its count. Never used by readiness tests.
+    public static async Task<Answer> HistoricalDiscovery(InMemoryBroker f, Func<Task<Answer>> start)
+    {
+        var key = RepositoryGate.Key(Repository);
+        var old = f.State.Get(key);
+        if (old is null) return await start();
+        f.State.Change(key, row =>
+        {
+            row["State"] = "vacant";
+            row["OutstandingTokenCount"] = 0L;
+            row.Remove("OwnerDeviceId");
+            row.Remove("VerifierAttempt");
+        });
+        try { return await start(); }
+        finally
+        {
+            f.State.Change(key, row =>
+            {
+                row["State"] = old.State!;
+                row["OutstandingTokenCount"] = (long)row["OutstandingTokenCount"] + old.OutstandingTokenCount!.Value;
+                if (old.OwnerEnrollmentId is { } owner) row["OwnerDeviceId"] = owner;
+                else row.Remove("OwnerDeviceId");
+                if (old.VerifierAttempt is { } verifier) row["VerifierAttempt"] = verifier;
+                else row.Remove("VerifierAttempt");
+            });
+        }
+    }
+
+    public static async Task<(string Id, string Pending)> HistoricalAgent(InMemoryBroker f, string profile = "polling")
+    {
+        CloneEnrollmentContractTests.ConfigureGitHub(f.GitHub, profile);
+        var id = Guid.NewGuid().ToString("N");
+        var start = await HistoricalDiscovery(f, () => f.Start(AgentRequest(id, profile), 2));
+        Assert.Equal(HttpStatusCode.OK, start.StatusCode);
+        f.GitHub.Marker = start.Json.GetProperty("marker").GetString()!;
+        return (id, start.Json.GetProperty("pendingId").GetString()!);
+    }
+
     // Started and completed one minute later; not acknowledged.
     public static async Task<Journey> CompletedAgent(InMemoryBroker f, string profile = "polling")
     {

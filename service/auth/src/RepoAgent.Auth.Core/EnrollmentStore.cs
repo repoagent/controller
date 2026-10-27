@@ -97,6 +97,7 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
         {
             reservation = (await state.ReadAsync(ledgerKey, ct))?.Value;
             if (reservation is not null) break;
+            RequireReady((await state.ReadAsync(RepositoryGate.Key(repository), ct))?.Value, repository);
             var quota = (await capacity.QuotasAsync(ct)).Enrollment;
             var directory = await capacity.CandidateAsync(repository, ct);
             var candidate = directory?.Value ?? new() { RepositoryId = repository, PendingCount = 0 };
@@ -152,7 +153,7 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
             if (await state.ReadAsync(pendingKey, ct) is not null)
                 return await SnapshotAsync(Text(reservation.PendingId), hash, ct, request.Approval.SetupVersion);
             var record = gate?.Value ?? RepositoryGate.Vacant(repository, epoch);
-            if (Text(record.Epoch) != epoch || Text(record.RepositoryId) != repository) throw new IssuanceDenied();
+            RequireReady(record, repository);
             var count = record.PendingCount ?? 0;
             if (count >= RepositoryPending) throw new IssuanceDenied(429);
             record.PendingCount = count + 1;
@@ -256,6 +257,7 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
     {
         var ct = work.Cancellation;
         RequireLive(s.Pending);
+        if (mint) RequireReady(s.Gate, s.RepositoryId);
         _ = await capacity.QuotasAsync(ct);
         _ = await capacity.CandidateAsync(s.RepositoryId, ct) ?? throw new IssuanceDenied();
         var now = clock.GetUtcNow();
@@ -435,9 +437,35 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
     public static GrantSnapshot Grant(PendingSnapshot s, Tracked<ControllerEnrollment> enrollment) => new(s.PartitionRepositoryId, s.EnrollmentId,
         new(s.Gate, s.GateVersion), new(enrollment.Value, enrollment.Version ?? throw new IssuanceDenied()));
 
+    // A resumed reservation already counts its own verifier. Its attempt binding was checked by AttemptAsync.
+    public void RequireUnsentReady(PendingSnapshot s) => RequireReady(s.Gate, s.RepositoryId, ownAttempt: true);
+
+    // Readiness never settles authority. Only reclamation may publish vacancy after durable owner release.
+    private void RequireReady(RepositoryGate? gate, string repository, bool ownAttempt = false)
+    {
+        if (gate is null) return;
+        if (Text(gate.RepositoryId) != repository || Text(gate.Epoch) != epoch) throw new IssuanceDenied();
+        _ = Number(gate.Sequence);
+        _ = Number(gate.PendingCount);
+        var outstanding = Number(gate.OutstandingTokenCount);
+        var state = Text(gate.State);
+        if (gate.OwnerEnrollmentId is not null)
+        {
+            _ = Text(gate.OwnerEnrollmentId);
+            if (state is not ("active" or "unacknowledged" or "closed")) throw new IssuanceDenied();
+            throw new EnrollmentNotReady();
+        }
+        if (state != "vacant" || gate.VerifierAttempt is not null || ownAttempt && outstanding == 0)
+            throw new IssuanceDenied();
+        if (outstanding != (ownAttempt ? 1 : 0)) throw new EnrollmentNotReady();
+    }
+
     // A record's approval contract must be the request's. Ledgers never carry an environment.
     private static void Require(ApprovalContract approval, EnrollmentLedger ledger)
     {
         if (ApprovalContract.Stored(ledger.ApprovalKind, ledger.SetupVersion, ledger.PolicyVersion, false) != approval) throw new IssuanceDenied();
     }
 }
+
+// Kept separate from request-binding conflicts so a caller never treats a mismatched recovery as a safe recheck.
+internal sealed class EnrollmentNotReady : Exception;
