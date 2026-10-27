@@ -121,7 +121,7 @@ Fill in the **Test kind** column. Suggested values:
 | 3.7 | Import Codex auth or log in. An unattended run never starts device login | | |
 | 3.8 | Local lifecycle: start, stop, restart, status, logs | | |
 | 3.9 | Local update and rollback of the image, keeping volumes and saved choices | | |
-| 3.10 | Rerun keeps saved model, hosting and update choices | | |
+| 3.10 | Rerun keeps saved model and hosting choices | | |
 | 3.11 | Write repository settings (`repository-settings.ps1`) | | |
 | 3.12 | Revoke approval: delete only a matching marker, and report unresolved results honestly | | |
 | 3.15 | Build the image locally, and publish it | | |
@@ -136,7 +136,7 @@ Fill in the **Test kind** column. Suggested values:
 | 4.2 | `runtime.py configure`: saved settings become controller arguments | | |
 | 4.3 | Install skills; optional skills cannot shadow required ones | | |
 | 4.4 | Prepare the Codex home and supply auth to the controller only | | |
-| 4.5 | Optional tool updates at startup | | |
+| 4.5 | Pinned image tools at startup, including legacy latest/pinned/absent settings | | |
 | 4.6 | Quick tunnel: acquire a cloudflared URL and recover after it is lost | | |
 | 4.7 | Runs as non-root with read-only mounts where required | | |
 | 4.8 | The built image actually starts and reaches `ready` | | |
