@@ -159,6 +159,13 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
 
         var opened = Open(priorSessions: form == "earlier sessions without a journal",
             pendingDiscussion: form is "a pending Discussion delivery" or "a pending create without a journal");
+        if (missingJournal)
+        {
+            Assert.True(opened.AdmissionBlocked);
+            Assert.Null(journal.Read());
+            Assert.Throws<IOException>(opened.Request);
+            Assert.Null(journal.Read());
+        }
 
         await Start(opened, Token);
 

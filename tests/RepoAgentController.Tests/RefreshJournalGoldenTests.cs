@@ -19,17 +19,26 @@ public sealed class RefreshJournalGoldenTests : IDisposable
 
     string JournalPath => statePath + ".refresh.json";
 
-    [Fact]
-    public async Task A_missing_journal_with_prior_sessions_stays_missing_and_blocked_across_starts_requests_and_offline_recovery()
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task A_missing_journal_with_prior_native_work_stays_missing_and_blocked_across_starts_requests_and_offline_recovery(bool priorSessions, bool pendingDiscussion)
     {
         var files = new ControllerStateFiles(statePath);
-        var state = new DiscussionState("owner/repository");
-        state.Discussions["D1"] = new("https://github.com/owner/repository/discussions/1") { SessionId = "S1" };
-        files.WriteDiscussions(state);
         var clock = new SteppedClock(DateTimeOffset.UnixEpoch);
+        var state = new DiscussionState("owner/repository");
+        var record = new DiscussionRecord("https://github.com/owner/repository/discussions/1") { SessionId = priorSessions ? "S1" : null };
+        if (pendingDiscussion)
+        {
+            record.Waiting = new WaitingInput("{}");
+            record.Waiting.Inputs.Add(new(clock.GetUtcNow(), "{}", null));
+            record.Pending = new("create-and-send", clock.GetUtcNow(), ["D1"], 1);
+        }
+        state.Discussions["D1"] = record;
+        files.WriteDiscussions(state);
         for (var lifetime = 0; lifetime < 2; lifetime++)
         {
-            await using var refresh = Open(priorSessions: true);
+            await using var refresh = Open(priorSessions, pendingDiscussion);
             await refresh.Start(new AgentSessions(new FakeAgentRuntime(), new RecordingLog(), refresh), TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
             Assert.True(refresh.AdmissionBlocked);
             Assert.Throws<IOException>(refresh.Request);
@@ -40,7 +49,9 @@ public sealed class RefreshJournalGoldenTests : IDisposable
                 files, new RefreshJournalFile(statePath), true, clock));
             Assert.Contains("missing", refused.Message, StringComparison.Ordinal);
             Assert.False(File.Exists(JournalPath));
-            Assert.Equal("S1", files.ReadDiscussions()!.Discussions["D1"].SessionId);
+            var retained = files.ReadDiscussions()!.Discussions["D1"];
+            Assert.Equal(record.SessionId, retained.SessionId);
+            Assert.Equal(pendingDiscussion, retained.Pending is not null);
         }
     }
 
@@ -312,8 +323,6 @@ public sealed class RefreshJournalGoldenTests : IDisposable
 
     public static TheoryData<string, string, string> Written() => new()
     {
-        { "a first start with a Discussion delivery pending", LeftByBlockedStart, WrittenByBlockedStart },
-        { "a first start with a Discussion delivery pending, then a start", LeftByBlockedStart, WrittenByBlockedStart },
         // The one row whose bytes match f742e2b's: the journal a process killed mid-refresh leaves, which the next row starts over.
         { "the applying record saved before applying",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":false,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""",
