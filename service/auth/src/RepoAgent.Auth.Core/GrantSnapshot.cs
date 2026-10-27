@@ -54,13 +54,14 @@ public sealed class GrantSnapshot(string partitionRepositoryId, string enrollmen
             || Date(Enrollment.ExpiresAt) <= now) throw new IssuanceDenied(401);
     }
 
-    // The enrollment is bound to this deployment, the App, its repository and its approval marker.
+    // Validate the stored binding before denying a consistent grant from another deployment with 401.
+    // Denial changes no capability settlement or owner-release evidence.
     public void RequireBinding(string epoch)
     {
         _ = Id(RepositoryId);
         if (Text(Gate.RepositoryId) != RepositoryId
             || Text(Gate.OwnerEnrollmentId) != EnrollmentId
-            || Epoch != epoch || Text(Enrollment.Epoch) != Epoch
+            || Text(Enrollment.Epoch) != Epoch
             || Number(Enrollment.AppId) != AppId
             || Text(Enrollment.AppSlug) != AppSlug
             || Text(Enrollment.GitHubHost) != "github.com"
@@ -76,6 +77,7 @@ public sealed class GrantSnapshot(string partitionRepositoryId, string enrollmen
         if (Marker != ApprovalMarker.Create(Approval, RepositoryId, Repository, InstallationId, EnrollmentId, Enrollment.Challenge,
                 Profile, Epoch, Variable, legacy ? Environment : null, legacy ? EnvironmentId : null))
             throw new IssuanceDenied();
+        if (Epoch != epoch) throw new IssuanceDenied(401);
     }
 }
 
