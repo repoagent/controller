@@ -74,7 +74,9 @@ public sealed class GitHubOutbox : IAsyncDisposable
             var existing = index < 0 ? null : operations[index];
             operation = operation with
             {
-                Attempts = existing?.Attempts ?? 0, DueAt = existing?.DueAt ?? clock.GetUtcNow(), Uncertain = existing?.Uncertain ?? false,
+                Attempts = existing?.Attempts ?? 0,
+                DueAt = existing?.DueAt ?? clock.GetUtcNow(),
+                Uncertain = existing?.Uncertain ?? false,
                 LastError = existing?.LastError
             };
             if (existing is null) operations.Add(operation);
@@ -212,7 +214,7 @@ public sealed class GitHubOutbox : IAsyncDisposable
                 if (uncertain && await discussions.HasEyesReceipt(receipt.SubjectId, ct)) return ("receipt-reconciled", receipt.Url);
                 await discussions.AddEyesReceipt(receipt.SubjectId, ct);
                 return ("receipt", receipt.Url);
-            case DashboardOperation (var category, var title, var body):
+            case DashboardOperation(var category, var title, var body):
                 if (dashboard is { } known && dashboardCategory == category)
                 {
                     await discussions.UpdateDashboard(known.Id, title, body, ct);

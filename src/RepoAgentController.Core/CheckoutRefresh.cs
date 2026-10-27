@@ -10,6 +10,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     readonly TimeProvider clock;
     readonly IControllerLog log;
     readonly object journalLock = new();
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2213", Justification = "Native reader callbacks may still signal after the worker stops; these managed-only semaphores never create wait handles.")]
     readonly SemaphoreSlim exclusion = new(1), wake = new(0, 1);
     readonly CancellationTokenSource stop = new();
     readonly RefreshJournal journal;
@@ -322,12 +323,12 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             }
     }
     static bool Unsettled(RefreshAdmission operation, string thread) => operation.Unconfirmed && operation.Thread == thread;
-    public void NewEpoch(int value)
+    public void NewEpoch(int epoch)
     {
         lock (journalLock)
         {
             if (Busy || blocked) throw new IOException("Cannot replace native transport with unresolved work");
-            epoch = value; turns.Clear();
+            this.epoch = epoch; turns.Clear();
         }
     }
     public void Observe(AgentRuntimeEvent change)

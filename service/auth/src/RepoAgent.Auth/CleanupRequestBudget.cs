@@ -8,8 +8,12 @@ internal sealed class CleanupRequestBudget : HttpPipelineTransport, ICleanupBudg
 {
     private readonly HttpClientTransport inner = new(new SocketsHttpHandler
     {
-        UseProxy = false, AllowAutoRedirect = false, UseCookies = false,
-        Credentials = null, DefaultProxyCredentials = null, PreAuthenticate = false
+        UseProxy = false,
+        AllowAutoRedirect = false,
+        UseCookies = false,
+        Credentials = null,
+        DefaultProxyCredentials = null,
+        PreAuthenticate = false
     });
     private readonly object sync = new();
     public int Dispatches { get; private set; }
@@ -17,7 +21,7 @@ internal sealed class CleanupRequestBudget : HttpPipelineTransport, ICleanupBudg
     public bool Exceeded { get; private set; }
     public bool CanStart(int dispatches, int batches) => Dispatches + dispatches <= 128 && BatchDispatches + batches <= 32;
     // The reviewed reference scope of this transport, and the most sends one counted dispatch makes in it.
-    public string EnvelopeScope => "Azure.Core1.62.0/.NET10.0.13/direct HTTP1.x/no handler authentication";
+    public string EnvelopeScope => "Azure.Core1.62.0/.NET11.0.0-rc.3.26522.148/direct HTTP1.x/no handler authentication";
     public int MaxSendsPerDispatch => 4;
     public void Dispose() => inner.Dispose();
     public override Request CreateRequest() => inner.CreateRequest();

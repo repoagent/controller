@@ -135,10 +135,18 @@ public sealed class CheckoutInspectionTests
     static CheckoutRecord With(CheckoutRecord record, int? version = 1, string? state = InMemoryCheckout.State, string? root = InMemoryCheckout.RootPath,
         string? owner = InMemoryCheckout.Owner, long? repositoryId = 345, string? repository = "owner/repository", string? remote = InMemoryCheckout.Remote,
         string? branch = "trunk") => new()
-    {
-        Version = version, State = state, Root = root, Owner = owner, RepositoryId = repositoryId, Repository = repository, Remote = remote,
-        Branch = branch, Commit = record.Commit, Unknown = record.Unknown
-    };
+        {
+            Version = version,
+            State = state,
+            Root = root,
+            Owner = owner,
+            RepositoryId = repositoryId,
+            Repository = repository,
+            Remote = remote,
+            Branch = branch,
+            Commit = record.Commit,
+            Unknown = record.Unknown
+        };
 
     [Fact]
     public async Task A_record_the_adapter_could_not_read_is_refused_as_invalid()
@@ -337,8 +345,15 @@ public sealed class CheckoutInspectionTests
         Assert.Same(checkout.Saved, opened.Record);
         Assert.Equivalent(new CheckoutRecord
         {
-            Version = 1, State = InMemoryCheckout.State, Root = InMemoryCheckout.RootPath, Owner = owner, RepositoryId = 345,
-            Repository = "owner/repository", Remote = InMemoryCheckout.Remote, Branch = "trunk", Commit = InMemoryCheckout.Head
+            Version = 1,
+            State = InMemoryCheckout.State,
+            Root = InMemoryCheckout.RootPath,
+            Owner = owner,
+            RepositoryId = 345,
+            Repository = "owner/repository",
+            Remote = InMemoryCheckout.Remote,
+            Branch = "trunk",
+            Commit = InMemoryCheckout.Head
         }, opened.Record, strict: true);
         Assert.Equal(["head-branch", "tracked-changes", "index", "commit HEAD^{commit}", "commit refs/remotes/origin/trunk^{commit}"],
             checkout.Reads.SkipWhile(read => read != "origin-urls").Skip(1));

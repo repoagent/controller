@@ -35,7 +35,7 @@ def controller_inputs():
 
 class ControllerImageSources(unittest.TestCase):
     def test_default_image_contains_every_evaluated_input_of_the_controller_and_its_core(self):
-        expected = controller_inputs()
+        expected = controller_inputs() | {'global.json', 'Directory.Build.props', '.editorconfig'}
         self.assertIn('src/RepoAgentController.Core/RepoAgentController.Core.csproj', expected)
         inventory = {line.strip() for line in (ROOT / 'image/source-files.txt').read_text().splitlines()
                      if line.strip() and not line.startswith('#')}
@@ -56,6 +56,16 @@ class ControllerImageSources(unittest.TestCase):
                                      '--nologo', '--configfile', str(config), '-p:TreatWarningsAsErrors=true', '-p:NuGetAudit=false'],
                                     env=environment, capture_output=True, text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            # The shipping context must enforce the checkout's policy, not just compile its sources.
+            (context / 'src/RepoAgentController/CancellationPolicyProbe.cs').write_text(
+                'internal static class CancellationPolicyProbe { '
+                'internal static System.Threading.Tasks.Task Run(System.Threading.CancellationToken token) '
+                '=> System.Threading.Tasks.Task.Delay(1); }')
+            rejected = subprocess.run(['dotnet', 'build', str(context / 'src/RepoAgentController'), '-c', 'Release',
+                                       '--no-restore', '--nologo'], env=environment, capture_output=True,
+                                      text=True, timeout=120)
+            self.assertNotEqual(rejected.returncode, 0, 'Shipping context accepted a cancellation policy violation')
+            self.assertIn('error CA2016', rejected.stdout + rejected.stderr)
 
 
 if __name__ == '__main__':

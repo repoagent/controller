@@ -65,7 +65,8 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         }
         using var golden = typeof(RefreshJournalGoldenTests).Assembly.GetManifestResourceStream("RefreshJournalWritten.txt")!;
 
-        Assert.Equal(new StreamReader(golden).ReadToEnd(), string.Join("\n", written) + "\n");
+        using var reader = new StreamReader(golden);
+        Assert.Equal(reader.ReadToEnd(), string.Join("\n", written) + "\n");
     }
 
     const string Bound = "\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345";

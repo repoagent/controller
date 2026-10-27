@@ -83,7 +83,7 @@ public sealed class MemoryOnlyTokenTests
     [
         "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
         "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
-        "--workspace", fixture.Directory, "--status-port", ControllerHarness.FreePort().ToString(), .. extra
+        "--workspace", fixture.Directory, "--status-port", ControllerHarness.FreePort().ToString(System.Globalization.CultureInfo.InvariantCulture), .. extra
     ];
 
     static async Task Until(Func<bool> condition)
@@ -156,7 +156,7 @@ public sealed class MemoryOnlyTokenTests
         static void WriteExecutable(string path, string source)
         {
             File.WriteAllText(path, source);
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
 
         // An agent turn asks its gh for the token, as an agent's own GitHub work would.

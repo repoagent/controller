@@ -1,3 +1,4 @@
+#pragma warning disable CA1051 // These storage records use ref fields in RecordMap to preserve typed, lossless row mapping.
 namespace RepoAgent.Auth;
 
 // The records a controller's self-revocation reads and writes. Each maps every property that any broker writer stores
@@ -32,7 +33,12 @@ public sealed class RepositoryGate : BrokerRecord
     // Add can write it.
     public static RepositoryGate Vacant(string repositoryId, string epoch) => new()
     {
-        RepositoryId = repositoryId, Epoch = epoch, State = "vacant", Sequence = 0, OutstandingTokenCount = 0, PendingCount = 0
+        RepositoryId = repositoryId,
+        Epoch = epoch,
+        State = "vacant",
+        Sequence = 0,
+        OutstandingTokenCount = 0,
+        PendingCount = 0
     };
 
     protected override void Map(RecordMap map)
@@ -126,3 +132,5 @@ public sealed class RevocationReceipt : BrokerRecord
         map.Text("Reason", ref Reason);
     }
 }
+
+#pragma warning restore CA1051

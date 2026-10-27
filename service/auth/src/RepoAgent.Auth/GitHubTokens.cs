@@ -25,7 +25,7 @@ internal sealed class GitHubTokens(GitHubRest github) : IGitHubTokens
             ? selection.GetString() == "selected" : null,
         Repositories(root), Permissions(root));
 
-    private static IReadOnlyList<RepositoryIdentity>? Repositories(JsonElement root)
+    private static List<RepositoryIdentity>? Repositories(JsonElement root)
     {
         if (!root.TryGetProperty("repositories", out var list) || list.ValueKind != JsonValueKind.Array) return null;
         var repositories = new List<RepositoryIdentity>();
@@ -40,7 +40,7 @@ internal sealed class GitHubTokens(GitHubRest github) : IGitHubTokens
     }
 
     // A permission level that is not a JSON string is passed on as null.
-    private static IReadOnlyDictionary<string, string?>? Permissions(JsonElement root) =>
+    private static Dictionary<string, string?>? Permissions(JsonElement root) =>
         root.TryGetProperty("permissions", out var permissions) && permissions.ValueKind == JsonValueKind.Object
             ? permissions.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : null, StringComparer.Ordinal)
             : null;

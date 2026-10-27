@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+bash scripts/delivery/verify-dotnet.sh
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 work=$(cd "$work" && pwd)

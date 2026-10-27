@@ -8,6 +8,7 @@ namespace RepoAgentController;
 /// A failed or unacknowledged delivery keeps its batch first in line and retries it with backoff; input that may already
 /// have reached the native is sent again marked as a redelivery, accepting possible duplicate processing.
 /// </summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "Managed-only semaphores have no wait handles; callbacks and dispatch share their lifetime and may still unwind during controller shutdown.")]
 public sealed class Bridge(string repository, IDiscussions discussions, AppIdentity identity, AgentSessions sessions, StateStore store, GitHubOutbox outbox,
     HashSet<int> enroll, RepositorySettings settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? admission = null)
 {
@@ -457,7 +458,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
 
     // Caller holds the gate and saves. The native accepted this batch but the provider refused the Codex account, so no agent
     // work ran; the history may still hold the input, so it is marked as a redelivery. Returns the event to log once saved.
-    string Requeue(DiscussionRecord record, RunningBatch batch, string turn)
+    static string Requeue(DiscussionRecord record, RunningBatch batch, string turn)
     {
         var waiting = record.Waiting ?? new WaitingInput(batch.DiscussionJson);
         if (batch.ContextJson is { } context && waiting.ContextJson is null) waiting.ContextJson = context;
@@ -577,7 +578,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
 
     // The checkpointed state fields whose values differ, in checkpoint order. A field with no earlier value differs unless it is
     // null now.
-    static IReadOnlyList<CheckpointPart> Changed(CheckpointState? before, CheckpointState? after, IReadOnlyList<CheckpointPart> readAsChanged)
+    static List<CheckpointPart> Changed(CheckpointState? before, CheckpointState? after, IReadOnlyList<CheckpointPart> readAsChanged)
     {
         if (after is null) return [];
         var changed = new List<CheckpointPart>();

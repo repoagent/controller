@@ -130,12 +130,24 @@ public sealed partial class IssuanceStore(IBrokerState state, string epoch, long
                 var approval = grant.Approval;
                 var attempt = new IssuanceAttempt
                 {
-                    OperationId = operation, Generation = generation, RepositoryId = grant.RepositoryId,
-                    EnrollmentId = grant.EnrollmentId, Epoch = grant.Epoch, Purpose = purpose,
-                    Profile = profile, InstallationId = grant.InstallationId,
-                    RepositoryCharged = true, State = "reserved", ReservedAt = now, PayloadPurgeAt = now.AddHours(24),
-                    JwtIssuedAt = now.AddSeconds(-60), JwtExpiresAt = now.AddSeconds(120), GlobalSlot = slot.Value,
-                    ApprovalKind = approval.Kind, SetupVersion = approval.SetupVersion, PolicyVersion = approval.Policy
+                    OperationId = operation,
+                    Generation = generation,
+                    RepositoryId = grant.RepositoryId,
+                    EnrollmentId = grant.EnrollmentId,
+                    Epoch = grant.Epoch,
+                    Purpose = purpose,
+                    Profile = profile,
+                    InstallationId = grant.InstallationId,
+                    RepositoryCharged = true,
+                    State = "reserved",
+                    ReservedAt = now,
+                    PayloadPurgeAt = now.AddHours(24),
+                    JwtIssuedAt = now.AddSeconds(-60),
+                    JwtExpiresAt = now.AddSeconds(120),
+                    GlobalSlot = slot.Value,
+                    ApprovalKind = approval.Kind,
+                    SetupVersion = approval.SetupVersion,
+                    PolicyVersion = approval.Policy
                 };
                 await CommitAsync(grant, transaction =>
                 {
@@ -166,9 +178,17 @@ public sealed partial class IssuanceStore(IBrokerState state, string epoch, long
         quota.Value.Slots = occupancy + 1;
         var reservation = new IssuanceSlot
         {
-            OperationId = operation, Generation = generation, RepositoryId = repository, Purpose = purpose,
-            Epoch = epoch, ReservedAt = now, PayloadPurgeAt = now.AddHours(24), GlobalSlot = slot,
-            ApprovalKind = approval.Kind, SetupVersion = approval.SetupVersion, PolicyVersion = approval.Policy
+            OperationId = operation,
+            Generation = generation,
+            RepositoryId = repository,
+            Purpose = purpose,
+            Epoch = epoch,
+            ReservedAt = now,
+            PayloadPurgeAt = now.AddHours(24),
+            GlobalSlot = slot,
+            ApprovalKind = approval.Kind,
+            SetupVersion = approval.SetupVersion,
+            PolicyVersion = approval.Policy
         };
         var ledger = capacity.ChargeIssuance(quota.Value, reservation, enrollmentId);
         await state.CommitAsync(new StateTransaction()
@@ -240,7 +260,10 @@ public sealed partial class IssuanceStore(IBrokerState state, string epoch, long
         grant.Enrollment.FirstTerminalAt ??= clock.GetUtcNow();
         var receipt = new RevocationReceipt
         {
-            RepositoryId = grant.RepositoryId, EnrollmentId = grant.EnrollmentId, Epoch = grant.Epoch, RevokedAt = clock.GetUtcNow()
+            RepositoryId = grant.RepositoryId,
+            EnrollmentId = grant.EnrollmentId,
+            Epoch = grant.Epoch,
+            RevokedAt = clock.GetUtcNow()
         };
         await CommitAsync(grant, transaction => transaction.Add(RevocationReceipt.Key(grant.PartitionRepositoryId, grant.EnrollmentId), receipt), ct);
     }

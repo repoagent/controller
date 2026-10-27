@@ -291,10 +291,17 @@ public sealed class IssuanceFaultTests
         foreach (var index in new long[] { 100, 101, 102 })
             f.State.Seed(IssuanceSlot.Key(index), new()
             {
-                OperationId = occupied.OperationId, Generation = occupied.Generation, RepositoryId = occupied.RepositoryId,
-                Purpose = occupied.Purpose, Epoch = occupied.Epoch, ReservedAt = occupied.ReservedAt,
-                PayloadPurgeAt = occupied.PayloadPurgeAt, GlobalSlot = index, ApprovalKind = occupied.ApprovalKind,
-                SetupVersion = occupied.SetupVersion, PolicyVersion = occupied.PolicyVersion
+                OperationId = occupied.OperationId,
+                Generation = occupied.Generation,
+                RepositoryId = occupied.RepositoryId,
+                Purpose = occupied.Purpose,
+                Epoch = occupied.Epoch,
+                ReservedAt = occupied.ReservedAt,
+                PayloadPurgeAt = occupied.PayloadPurgeAt,
+                GlobalSlot = index,
+                ApprovalKind = occupied.ApprovalKind,
+                SetupVersion = occupied.SetupVersion,
+                PolicyVersion = occupied.PolicyVersion
             });
         f.State.Change(IssuanceQuota.Key, row => (row["Slots"], row["RetainedIssuanceCount"]) = (4L, 4L));
         var commits = f.State.Commits;

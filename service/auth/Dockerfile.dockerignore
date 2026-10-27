@@ -1,0 +1,25 @@
+# Root build context: send only shared policy and broker production sources.
+**
+!global.json
+!Directory.Build.props
+!.editorconfig
+!service/
+!service/auth/
+!service/auth/global.json
+!service/auth/src/
+!service/auth/src/**
+**/bin
+**/obj
+**/.local
+**/*.pem
+**/*.key
+**/auth.json
+**/.env*
+**/hosts.yml
+**/*.github-app
+**/installation-token.json*
+**/.bridge-state*
+**/.git
+**/.claude
+**/.codex
+**/artifacts

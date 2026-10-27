@@ -80,7 +80,7 @@ public sealed class WebhookDeliveryTests
 
         Assert.Contains(controller.Log, line => line.Contains(" webhook-rejected reason=repository", StringComparison.Ordinal));
         Assert.Contains(controller.Log, line => line.Contains(" webhook-ping delivery=", StringComparison.Ordinal));
-        Assert.Contains(controller.Log, line => line.Contains(" webhook-ignored delivery=", StringComparison.Ordinal) && line.EndsWith(" discussion=1 reason=own-comment"));
+        Assert.Contains(controller.Log, line => line.Contains(" webhook-ignored delivery=", StringComparison.Ordinal) && line.EndsWith(" discussion=1 reason=own-comment", StringComparison.Ordinal));
         Assert.DoesNotContain(controller.Log, line => line.Contains(" webhook-delivery ", StringComparison.Ordinal));
         Assert.Equal(0, controller.Native.TurnCount);
     }
@@ -100,7 +100,7 @@ public sealed class WebhookDeliveryTests
         Assert.Equal(2, controller.Hooks.Length);
         Assert.Equal(("PATCH", "repos/owner/repository/hooks/7"), (deactivation.Text("method"), deactivation.Text("resource")));
         Assert.True(JsonNode.DeepEquals(new JsonObject { ["active"] = false }, deactivation["input"]));
-        Assert.Contains(controller.Log, line => line.EndsWith(" webhook-disabled hook=7"));
+        Assert.Contains(controller.Log, line => line.EndsWith(" webhook-disabled hook=7", StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -117,8 +117,9 @@ public sealed class WebhookDeliveryTests
             $"X-GitHub-Delivery: {Guid.NewGuid()}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n"),
             TestContext.Current.CancellationToken);
         if (meanwhile is not null) await meanwhile();
-        var status = await new StreamReader(stream, Encoding.ASCII).ReadLineAsync(TestContext.Current.CancellationToken)
+        using var reader = new StreamReader(stream, Encoding.ASCII);
+        var status = await reader.ReadLineAsync(TestContext.Current.CancellationToken)
             .AsTask().WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
-        return int.Parse(status!.Split(' ')[1]);
+        return int.Parse(status!.Split(' ')[1], System.Globalization.CultureInfo.InvariantCulture);
     }
 }

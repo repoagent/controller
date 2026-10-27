@@ -137,9 +137,9 @@ public sealed class ControllerStateFilesTests : IDisposable
         Assert.Equal(Usual, File.ReadAllText(ControllerStateFiles.OutboxPath(statePath)));
         Assert.Equal(("owner/repository", (DateTimeOffset?)null), (usual.Repository, usual.PausedUntil));
         Assert.Equal(new ReceiptOperation("D_kwDOAbc", "https://github.com/owner/repository/discussions/2")
-            { Attempts = 1, DueAt = new(2026, 10, 24, 11, 0, 15, TimeSpan.Zero), LastError = "HTTP 401: Bad credentials" }, usual.Operations[0]);
+        { Attempts = 1, DueAt = new(2026, 10, 24, 11, 0, 15, TimeSpan.Zero), LastError = "HTTP 401: Bad credentials" }, usual.Operations[0]);
         Assert.Equal(new DashboardOperation("Controller status", "RepoAgent controller status", "<!-- repoagent:controller-dashboard -->\nHeartbeat\n")
-            { DueAt = new(2026, 10, 24, 11, 0, 3, TimeSpan.Zero) }, usual.Operations[1]);
+        { DueAt = new(2026, 10, 24, 11, 0, 3, TimeSpan.Zero) }, usual.Operations[1]);
 
         File.WriteAllText(ControllerStateFiles.OutboxPath(statePath), Paused);
         var outbox = files.ReadOutbox()!;
@@ -148,7 +148,7 @@ public sealed class ControllerStateFilesTests : IDisposable
         var paused = new DateTimeOffset(2026, 10, 24, 10, 1, 1, 500, TimeSpan.Zero);
         Assert.Equal(new OutboxState("owner/repository", paused, outbox.Operations), outbox);
         Assert.Equal(new ReceiptOperation("DC_kwDOAbc", "https://github.com/owner/repository/discussions/1#discussioncomment-7")
-            { Attempts = 2, DueAt = paused, Uncertain = true, LastError = "HTTP 502: <html>Bad gateway</html> & retry's \"later\"" }, outbox.Operations[0]);
+        { Attempts = 2, DueAt = paused, Uncertain = true, LastError = "HTTP 502: <html>Bad gateway</html> & retry's \"later\"" }, outbox.Operations[0]);
         var publication = Assert.IsType<DashboardOperation>(outbox.Operations[1]);
         Assert.Equal(("Controller status", "Attention: RepoAgent controller authentication failed", 0, new DateTimeOffset(2026, 10, 24, 10, 0, 30, 250, TimeSpan.Zero), false, (string?)null),
             (publication.Category, publication.Title, publication.Attempts, publication.DueAt, publication.Uncertain, publication.LastError));
@@ -298,7 +298,8 @@ public sealed class ControllerStateFilesTests : IDisposable
 
         using (var leased = new LeasedStateStore(statePath, "owner/repository")) leased.Store.Save();
 
-        Assert.Equal(new StreamReader(written).ReadToEnd(), File.ReadAllText(statePath));
+        using var reader = new StreamReader(written);
+        Assert.Equal(reader.ReadToEnd(), File.ReadAllText(statePath));
     }
 
     // Keys in ordinal order at every level, so two documents compare by their keys and values alone.

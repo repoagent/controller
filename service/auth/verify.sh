@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
-dotnet build dev/RepoAgent.Auth.AppHost/RepoAgent.Auth.AppHost.csproj --configuration Release --nologo
+bash ../../scripts/delivery/verify-dotnet.sh
 
 results=$(mktemp -d)
 trap 'rm -rf -- "$results"' EXIT

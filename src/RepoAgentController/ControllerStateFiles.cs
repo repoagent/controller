@@ -88,7 +88,8 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
                 Sources = Read(RecordKey.Sources, sources => new OrderedDictionary<string, SourceCheckpoint>(sources.AsObject().Where(checkpoint => checkpoint.Value is not null)
                     .Select(checkpoint => KeyValuePair.Create(checkpoint.Key, ReadCheckpoint(checkpoint.Value!.AsObject())))), required: true) ?? [],
                 Labels = Read<IReadOnlyList<string>>(RecordKey.Labels, labels => [.. labels.AsArray().Select(label => label?.GetValue<string>() ?? throw Missing("labels"))]),
-                SessionId = Read(RecordKey.SessionId, session => session.GetValue<string>()), Waiting = Read(RecordKey.Waiting, waiting => Waiting(waiting.AsObject())),
+                SessionId = Read(RecordKey.SessionId, session => session.GetValue<string>()),
+                Waiting = Read(RecordKey.Waiting, waiting => Waiting(waiting.AsObject())),
                 Pending = item[Name(RecordKey.Pending)] is { } pending ? Pending(pending) : null,
                 Running = Read(RecordKey.Running, node =>
                 {
@@ -112,12 +113,14 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
         {
             var pending = node.AsObject();
             return new(Required(pending, "operation"), At(pending, "since"), [.. Part<JsonArray>(pending, "sourceIds").Select(source =>
-                source?.GetValue<string>() ?? throw Missing("sourceIds"))], pending["inputs"]?.GetValue<int>()) { Unknown = Unknown(pending, PendingKeys) };
+                source?.GetValue<string>() ?? throw Missing("sourceIds"))], pending["inputs"]?.GetValue<int>())
+            { Unknown = Unknown(pending, PendingKeys) };
         }
         catch (Exception error) when (Damaged(error))
         {
             return new("", default, [], error is not ArgumentException && node is JsonObject pending && pending["inputs"] is JsonValue inputs &&
-                inputs.TryGetValue<int>(out var count) ? count : null) { AsRead = node.ToJsonString() };
+                inputs.TryGetValue<int>(out var count) ? count : null)
+            { AsRead = node.ToJsonString() };
         }
     }
 
@@ -132,8 +135,14 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
 
     static string Name(RecordKey key) => key switch
     {
-        RecordKey.Url => "url", RecordKey.Sources => "sources", RecordKey.Labels => "labels", RecordKey.SessionId => "sessionId",
-        RecordKey.Waiting => "waiting", RecordKey.Pending => "pending", RecordKey.Running => "running", _ => throw new UnreachableException()
+        RecordKey.Url => "url",
+        RecordKey.Sources => "sources",
+        RecordKey.Labels => "labels",
+        RecordKey.SessionId => "sessionId",
+        RecordKey.Waiting => "waiting",
+        RecordKey.Pending => "pending",
+        RecordKey.Running => "running",
+        _ => throw new UnreachableException()
     };
 
     static JsonNode? Written(DiscussionRecord record, RecordKey key) => key switch
@@ -160,7 +169,8 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
         if (pending.AsRead is { } json) return JsonNode.Parse(json);
         var written = new JsonObject
         {
-            ["operation"] = pending.Operation, ["since"] = Time(pending.Since),
+            ["operation"] = pending.Operation,
+            ["since"] = Time(pending.Since),
             ["sourceIds"] = new JsonArray([.. pending.SourceIds.Select(source => (JsonNode?)JsonValue.Create(source))])
         };
         if (pending.Inputs is { } inputs) written["inputs"] = inputs;
@@ -173,7 +183,9 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
     {
         var waiting = new WaitingInput(item["discussion"]?.ToJsonString() ?? "null")
         {
-            ContextJson = item["context"]?.ToJsonString(), Retry = item["retry"]?.AsObject() is { } retry ? Retry(retry) : null, Unknown = Unknown(item, WaitingKeys)
+            ContextJson = item["context"]?.ToJsonString(),
+            Retry = item["retry"]?.AsObject() is { } retry ? Retry(retry) : null,
+            Unknown = Unknown(item, WaitingKeys)
         };
         foreach (var node in (item["inputs"] ?? throw Missing("inputs")).AsArray())
         {
@@ -184,7 +196,7 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
             var observed = at.OptionalText() is { } text && DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var time) ? time : DateTimeOffset.MinValue;
             waiting.Inputs.Add(new(observed, Part<JsonObject>(input, "change").ToJsonString(),
                 input["receipt"] is { } receipt ? ReadReceipt(receipt.AsObject()) : null, input["redelivery"] is not null)
-                { Unknown = Unknown(input, InputKeys), ObservedAtAsRead = at.OptionalText() == Time(observed) ? null : at?.ToJsonString() ?? "null" });
+            { Unknown = Unknown(input, InputKeys), ObservedAtAsRead = at.OptionalText() == Time(observed) ? null : at?.ToJsonString() ?? "null" });
         }
         return waiting;
     }
@@ -215,7 +227,8 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
     static DeliveryRetry Retry(JsonObject retry)
     {
         var read = new DeliveryRetry(retry["attempts"] is JsonValue attempts && attempts.TryGetValue<int>(out var count) ? count : 0,
-            retry["after"] is null ? DateTimeOffset.MinValue : At(retry, "after")) { Unknown = Unknown(retry, RetryKeys) };
+            retry["after"] is null ? DateTimeOffset.MinValue : At(retry, "after"))
+        { Unknown = Unknown(retry, RetryKeys) };
         return JsonNode.DeepEquals(Retry(read), retry) ? read : read with { AsRead = retry.ToJsonString() };
     }
 
@@ -236,7 +249,10 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
 
     static JsonObject State(CheckpointState? state) => state is null ? [] : new()
     {
-        ["title"] = state.Title, ["closed"] = state.Closed, ["locked"] = state.Locked, ["answer"] = DiscussionJson.Answer(state.AnswerId),
+        ["title"] = state.Title,
+        ["closed"] = state.Closed,
+        ["locked"] = state.Locked,
+        ["answer"] = DiscussionJson.Answer(state.AnswerId),
         ["category"] = DiscussionJson.Category(state.Category)
     };
 
@@ -257,8 +273,12 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
         changed.AddRange(written.Select(field => field.Key).Union(state.Select(field => field.Key)).Where(key => !JsonNode.DeepEquals(written[key], state[key]))
             .Select(key => key switch
             {
-                "title" => CheckpointPart.Title, "closed" => CheckpointPart.Closed, "locked" => CheckpointPart.Locked, "answer" => CheckpointPart.Answer,
-                "category" => CheckpointPart.Category, _ => CheckpointPart.OtherState
+                "title" => CheckpointPart.Title,
+                "closed" => CheckpointPart.Closed,
+                "locked" => CheckpointPart.Locked,
+                "answer" => CheckpointPart.Answer,
+                "category" => CheckpointPart.Category,
+                _ => CheckpointPart.OtherState
             }));
         // A key that holds null where the writer leaves it out, or the reverse, changes no field but the state as compared.
         if (!JsonNode.DeepEquals(written, state) && changed.All(part => part == CheckpointPart.Content)) changed.Add(CheckpointPart.OtherState);
@@ -281,7 +301,8 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
     /// <summary>A waiting input's receipt as the state file holds it, and as ec1ccf7 saved it.</summary>
     internal static JsonObject Receipt(EyesReceipt receipt) => receipt.AsRead is { } json ? JsonNode.Parse(json)!.AsObject() : new JsonObject
     {
-        ["id"] = receipt.SubjectId, ["url"] = receipt.Url,
+        ["id"] = receipt.SubjectId,
+        ["url"] = receipt.Url,
         ["reactionGroups"] = new JsonArray([.. receipt.ReactionGroups.Select(group => (JsonNode?)new JsonObject
             { ["content"] = group.Content, ["viewerHasReacted"] = group.ViewerHasReacted })])
     };
@@ -298,7 +319,6 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
     // The state file's own documents read strictly: a key the writers always write is required, and another type throws.
     static string Required(JsonObject item, string name) => item[name]?.GetValue<string>() ?? throw Missing(name);
     static T Part<T>(JsonObject item, string name) where T : JsonNode => item[name] as T ?? throw Missing(name);
-    static bool Flag(JsonObject item, string name) => item[name]?.GetValue<bool>() ?? throw Missing(name);
     static DateTimeOffset At(JsonObject item, string name) =>
         DateTimeOffset.Parse(Required(item, name), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
     static InvalidDataException Missing(string name) => new($"'{name}' is missing or not of its type");

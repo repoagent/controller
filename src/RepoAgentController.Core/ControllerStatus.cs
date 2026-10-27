@@ -43,7 +43,7 @@ public sealed class ControllerStatus : IDisposable
         var now = Time(clock.GetUtcNow());
         // Earlier failures stay visible after a restart; their timestamps place them before startedAt.
         lifetime = new(repository, new("starting") { Mode = mode, StartedAt = now, UpdatedAt = now }, new("unknown"), new("unknown"))
-            { Failures = previous?.Failures ?? [], LatestActivity = previous?.LatestActivity };
+        { Failures = previous?.Failures ?? [], LatestActivity = previous?.LatestActivity };
         record.Write(lifetime);
     }
 
@@ -192,7 +192,7 @@ public sealed class ControllerStatus : IDisposable
             recorded?.Authentication ?? new("unknown"), recorded?.CodexAuthentication ?? new("unknown"), settings,
             // Running agent turns against the effective active-session limit.
             new(started, pending, retrying, waiting, running, limit, journal?.AdmissionBlocked), sessions, recorded?.Failures ?? [], recorded?.LatestActivity)
-            { FailuresAsRead = recorded?.FailuresAsRead };
+        { FailuresAsRead = recorded?.FailuresAsRead };
     }
 
     static string Time(DateTimeOffset value) => value.ToString("O", CultureInfo.InvariantCulture);

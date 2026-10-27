@@ -9,6 +9,8 @@ namespace RepoAgent.Auth.Tests;
 // attempt's outcome is unknown or untrusted. A lost commit response converges on retry without a second refund.
 public sealed class CapacityReclamationConformanceTests
 {
+    static readonly string[] ExpectedSlots = ["slot:000", "slot:001"];
+
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Theory]
@@ -251,7 +253,7 @@ public sealed class CapacityReclamationConformanceTests
         Assert.NotEqual(a.Generation, replacement.Generation);
         await Retained.ReclaimIssuance(f, a); // Old identity must never touch the new occupant of slot zero.
         Assert.Equal(replacement.Generation, f.State.Get(IssuanceSlot.Key(0))!.Generation);
-        Assert.Equal(new[] { "slot:000", "slot:001" }, Slots(f));
+        Assert.Equal(ExpectedSlots, Slots(f));
         Assert.Equal(3L, Quota(f).RetainedIssuanceCount);
         f.Clock.Advance(f.State.Get(Retained.Attempt(replacement))!.ExpiresAt!.Value.AddMinutes(5) - f.Clock.GetUtcNow());
         await Retained.ReclaimIssuance(f, replacement);

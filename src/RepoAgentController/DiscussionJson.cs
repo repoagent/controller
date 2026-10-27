@@ -49,17 +49,29 @@ static class DiscussionJson
     /// <summary>The Discussion as agent input carries it: its GraphQL fields without reaction groups and rendered body.</summary>
     public static JsonObject Public(Discussion discussion) => new()
     {
-        ["id"] = discussion.Id, ["url"] = discussion.Url, ["body"] = discussion.Body, ["createdAt"] = Time(discussion.CreatedAt),
-        ["updatedAt"] = Time(discussion.UpdatedAt), ["author"] = Author(discussion.Author), ["number"] = discussion.Number,
-        ["title"] = discussion.Title, ["closed"] = discussion.Closed, ["locked"] = discussion.Locked, ["answer"] = Answer(discussion.AnswerId),
+        ["id"] = discussion.Id,
+        ["url"] = discussion.Url,
+        ["body"] = discussion.Body,
+        ["createdAt"] = Time(discussion.CreatedAt),
+        ["updatedAt"] = Time(discussion.UpdatedAt),
+        ["author"] = Author(discussion.Author),
+        ["number"] = discussion.Number,
+        ["title"] = discussion.Title,
+        ["closed"] = discussion.Closed,
+        ["locked"] = discussion.Locked,
+        ["answer"] = Answer(discussion.AnswerId),
         ["category"] = Category(discussion.Category)
     };
 
     /// <summary>A comment as bootstrap context carries it, with its reactions.</summary>
     public static JsonObject Public(DiscussionComment comment) => new()
     {
-        ["id"] = comment.Id, ["url"] = comment.Url, ["body"] = comment.Body, ["createdAt"] = Time(comment.CreatedAt),
-        ["updatedAt"] = Time(comment.UpdatedAt), ["author"] = Author(comment.Author),
+        ["id"] = comment.Id,
+        ["url"] = comment.Url,
+        ["body"] = comment.Body,
+        ["createdAt"] = Time(comment.CreatedAt),
+        ["updatedAt"] = Time(comment.UpdatedAt),
+        ["author"] = Author(comment.Author),
         ["replyTo"] = comment.ReplyToId is { } parent ? new JsonObject { ["id"] = parent } : null,
         ["reactions"] = new JsonArray([.. comment.Reactions.Select(reaction => (JsonNode)Public(reaction))])
     };
@@ -75,7 +87,10 @@ static class DiscussionJson
     /// <summary>A reaction as agent input and checkpoints carry it.</summary>
     public static JsonObject Public(Reaction reaction) => new()
     {
-        ["id"] = reaction.Id, ["content"] = reaction.Content, ["user"] = Author(reaction.User), ["createdAt"] = Time(reaction.CreatedAt)
+        ["id"] = reaction.Id,
+        ["content"] = reaction.Content,
+        ["user"] = Author(reaction.User),
+        ["createdAt"] = Time(reaction.CreatedAt)
     };
 
     /// <summary>A Discussion's answer and category as agent input and checkpoints carry them, or null.</summary>

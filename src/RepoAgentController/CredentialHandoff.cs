@@ -22,6 +22,7 @@ internal sealed class CredentialHandoff : IDisposable
     readonly Socket listener;
     readonly Func<InstallationCredential?> current;
     readonly Action<string> reject;
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2213", Justification = "Socket handlers still read this source while asynchronously unwinding after synchronous Dispose; disposing it there would race their token access.")]
     readonly CancellationTokenSource stopping = new();
 
     public CredentialHandoff(string credentialDirectory, Func<InstallationCredential?> current, Action<string> reject)

@@ -8,6 +8,8 @@ namespace RepoAgentController;
 /// <summary>Owns one persistent, disposable checkout of the bound origin mainline, refusing foreign or unsafe state.</summary>
 internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
 {
+    static readonly string[] BlockingGitFiles = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"];
+
     const UnixFileMode PrivateFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
     // These ownership records contain no credentials. An executable SMB view
     // reports owner execute on every file, without granting another user access.
@@ -186,9 +188,14 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
             using var raw = JsonDocument.Parse(text);
             return new()
             {
-                Version = Value<int>(read["version"]), State = read["state"].OptionalText(), Root = read["root"].OptionalText(),
-                Owner = read["owner"].OptionalText(), RepositoryId = Value<long>(read["repositoryId"]),
-                Repository = read["repository"].OptionalText(), Remote = read["remote"].OptionalText(), Branch = read["branch"].OptionalText(),
+                Version = Value<int>(read["version"]),
+                State = read["state"].OptionalText(),
+                Root = read["root"].OptionalText(),
+                Owner = read["owner"].OptionalText(),
+                RepositoryId = Value<long>(read["repositoryId"]),
+                Repository = read["repository"].OptionalText(),
+                Remote = read["remote"].OptionalText(),
+                Branch = read["branch"].OptionalText(),
                 Commit = read["commit"] is null ? "" : read["commit"].OptionalText(),
                 Unknown = [.. raw.RootElement.EnumerateObject().Where(key => !RecordKeys.Contains(key.Name)).Select(key => new UnknownKey(key.Name, key.Value.GetRawText()))]
             };
@@ -277,7 +284,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
         await facts.Commit("HEAD^{commit}", ct) == commit &&
         !await facts.Changed(true, ct) &&
         !CheckoutInspection.Hidden(await facts.Index(ct)).Any() &&
-        !new[] { "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD" }.Any(facts.Holds);
+        !BlockingGitFiles.Any(facts.Holds);
 
     internal static void SavePrivate(string path, string value) => SaveFile(path, value, PrivateFileMode);
 
@@ -363,7 +370,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
         catch
         {
             if (!process.HasExited) process.Kill(true);
-            await process.WaitForExitAsync();
+            await process.WaitForExitAsync(CancellationToken.None); // Reap the killed child even when its caller cancelled.
             try { await Task.WhenAll(output, error); } catch { }
             throw;
         }

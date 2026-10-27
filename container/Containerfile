@@ -2,7 +2,7 @@ FROM __SDK_IMAGE__ AS build
 WORKDIR /source
 RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
-COPY global.json ./
+COPY global.json Directory.Build.props .editorconfig ./
 COPY src/ ./src/
 COPY .agents/skills/github-discussion/ ./.agents/skills/github-discussion/
 COPY .agents/skills/repoagent-orientation/ ./.agents/skills/repoagent-orientation/

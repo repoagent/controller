@@ -67,8 +67,11 @@ public sealed class TelemetryPrivacyTests
         var propagator = new BrokerContextPropagator();
         var carrier = new Dictionary<string, string>
         {
-            ["traceparent"] = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01", ["tracestate"] = "private=state",
-            ["baggage"] = "private=baggage", ["Request-Id"] = "|private.parent.", ["Correlation-Context"] = "private=context"
+            ["traceparent"] = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+            ["tracestate"] = "private=state",
+            ["baggage"] = "private=baggage",
+            ["Request-Id"] = "|private.parent.",
+            ["Correlation-Context"] = "private=context"
         };
         void Get(object? from, string name, out string? value, out IEnumerable<string>? values) =>
             (value, values) = (((Dictionary<string, string>)from!).GetValueOrDefault(name), null);
@@ -78,7 +81,8 @@ public sealed class TelemetryPrivacyTests
         Assert.Null(traceState);
         Assert.Null(propagator.ExtractBaggage(carrier, Get));
         Assert.Empty(propagator.Fields);
-        using var activity = Span("/v1/enrollments", "POST", 401).Start();
+        using var activity = Span("/v1/enrollments", "POST", 401);
+        activity.Start();
         propagator.Inject(activity, carrier, (_, _, _) => Assert.Fail("Nothing is injected."));
     }
 

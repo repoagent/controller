@@ -146,12 +146,12 @@ public sealed class ControllerDashboard : IAsyncDisposable
             };
             text.AppendLine($"- {Link(session.Discussion)}: " + string.Join("; ", new[] { doing, reason }.OfType<string>()));
         }
-        if (busy.Length > MaximumSessions) text.AppendLine($"- and {busy.Length - MaximumSessions} more");
+        if (busy.Length > MaximumSessions) text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- and {busy.Length - MaximumSessions} more");
         if (busy.Length == 0) text.AppendLine("None.");
         text.AppendLine();
         text.AppendLine("### Recent failures");
         var failures = snapshot.Failures.Select(Listed).OfType<StatusEvent>().Reverse().Take(MaximumFailures).ToArray();
-        foreach (var item in failures) text.AppendLine($"- {Time(item.At)} {Code(item.Kind)}: {Code(item.Message)}");
+        foreach (var item in failures) text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- {Time(item.At)} {Code(item.Kind)}: {Code(item.Message)}");
         if (failures.Length == 0) text.AppendLine("None recorded.");
         return text.ToString();
     }
@@ -184,20 +184,20 @@ public sealed class ControllerDashboard : IAsyncDisposable
         var at = Time(notice.CheckedAt);
         if (notice.Failure is { } failure)
         {
-            text.AppendLine($"The baseline release check failed at {at}: {Code(failure)}. No update is claimed; the next check is in about an hour.");
+            text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"The baseline release check failed at {at}: {Code(failure)}. No update is claimed; the next check is in about an hour.");
             return;
         }
-        if (notice.Newest is not { } newest) { text.AppendLine($"No published baseline release was found at {at}."); return; }
+        if (notice.Newest is not { } newest) { text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"No published baseline release was found at {at}."); return; }
         if (notice.Uncertainty is not null || notice.Running is not { } running)
         {
-            text.AppendLine($"**Release identity uncertain** (checked at {at}): {notice.Uncertainty}. No replacement is suggested.");
+            text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"**Release identity uncertain** (checked at {at}): {notice.Uncertainty}. No replacement is suggested.");
             text.AppendLine($"- Newest published baseline release: {Release(newest)}, image {Image(newest)} with gh {Code(newest.Gh)} and Codex {Code(newest.Codex)}. " +
                 "Compare it with this controller's image before deciding whether to rebuild or recreate it.");
             return;
         }
-        if (notice.Newer == 0) { text.AppendLine($"This controller's image matches {Release(running)}, the newest published baseline release at {at}."); return; }
-        text.AppendLine($"**Update available:** baseline release {Release(newest)} is newer than this controller's {Release(running)} ({notice.Newer} newer {(notice.Newer == 1 ? "release" : "releases")}; checked at {at}).");
-        text.AppendLine($"- Image {Image(newest)} with gh {Code(newest.Gh)} and Codex {Code(newest.Codex)}.");
+        if (notice.Newer == 0) { text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"This controller's image matches {Release(running)}, the newest published baseline release at {at}."); return; }
+        text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"**Update available:** baseline release {Release(newest)} is newer than this controller's {Release(running)} ({notice.Newer} newer {(notice.Newer == 1 ? "release" : "releases")}; checked at {at}).");
+        text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- Image {Image(newest)} with gh {Code(newest.Gh)} and Codex {Code(newest.Codex)}.");
         text.AppendLine("- Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.");
         text.AppendLine("- To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see " +
             $"[baseline releases](https://github.com/{BaselineReleases.Repository}/blob/{newest.Commit}/docs/ci-cd.md#baseline-releases).");

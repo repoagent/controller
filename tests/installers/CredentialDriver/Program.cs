@@ -2,7 +2,8 @@ using RepoAgentController;
 
 // Drives the real manager through its public lifecycle; external HTTPS replies
 // are supplied by the process fixture. Never publishes or prints credentials.
-using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+using var http = new HttpClient(handler, disposeHandler: false);
 var clock = new Clock();
 using var credentials = GitHubAppCredentials.FromBroker(http, "https://broker.fixture", args[0],
     "123", "owner/project", args[1], new RuntimeProfile(ManagedClone: true), clock);

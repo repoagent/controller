@@ -11,7 +11,7 @@ public sealed class CleanupRequestBudgetTests
     {
         using var budget = new CleanupRequestBudget();
 
-        Assert.Equal("Azure.Core1.62.0/.NET10.0.13/direct HTTP1.x/no handler authentication", budget.EnvelopeScope);
+        Assert.Equal("Azure.Core1.62.0/.NET11.0.0-rc.3.26522.148/direct HTTP1.x/no handler authentication", budget.EnvelopeScope);
         Assert.Equal(4, budget.MaxSendsPerDispatch);
         Assert.True(budget.CanStart(128, 32));
         Assert.False(budget.CanStart(129, 0));

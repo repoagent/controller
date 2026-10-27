@@ -1,3 +1,4 @@
+#pragma warning disable CA1051 // These storage records use ref fields in RecordMap to preserve typed, lossless row mapping.
 using System.Globalization;
 
 namespace RepoAgent.Auth;
@@ -213,3 +214,5 @@ public sealed class IssuanceSlot : BrokerRecord
         map.Text("PolicyVersion", ref PolicyVersion);
     }
 }
+
+#pragma warning restore CA1051

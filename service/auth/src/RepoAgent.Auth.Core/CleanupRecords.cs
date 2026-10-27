@@ -1,3 +1,4 @@
+#pragma warning disable CA1051 // These storage records use ref fields in RecordMap to preserve typed, lossless row mapping.
 namespace RepoAgent.Auth;
 
 // The records only cleanup writes. Each maps every property that any broker writer stores in its row shape (see the
@@ -89,3 +90,5 @@ public sealed class CleanupPosition
     public long? Cycle;
     public DateTimeOffset? StartedAt, ProgressAt, CompletedAt;
 }
+
+#pragma warning restore CA1051

@@ -319,9 +319,9 @@ public sealed class BridgeEnrollmentTests
         await world.End();
         var state = JsonNode.Parse(File.ReadAllText(world.StatePath))!;
         var keys = path.Split('.');
-        var parent = keys[..^1].Aggregate(state["discussions"]!["D1"]!, (node, key) => node is JsonArray array ? array[int.Parse(key)]! : node[key]!);
+        var parent = keys[..^1].Aggregate(state["discussions"]!["D1"]!, (node, key) => node is JsonArray array ? array[int.Parse(key, System.Globalization.CultureInfo.InvariantCulture)]! : node[key]!);
         if (json is null) parent.AsObject().Remove(keys[^1]);
-        else if (parent is JsonArray array) array[int.Parse(keys[^1])] = "\u0001"; // Replaced as text, so the edit can repeat a key.
+        else if (parent is JsonArray array) array[int.Parse(keys[^1], System.Globalization.CultureInfo.InvariantCulture)] = "\u0001"; // Replaced as text, so the edit can repeat a key.
         else parent[keys[^1]] = "\u0001";
         File.WriteAllText(world.StatePath, state.ToJsonString().Replace("\"\\u0001\"", json));
     }
@@ -352,7 +352,7 @@ public sealed class BridgeEnrollmentTests
         // Never observed as new: no session starts for it and its input is not sent again; the other Discussion continues.
         Assert.Equal(["S1", "S2", "S2"], world.Turns.Select(turn => turn.SessionId));
         Assert.StartsWith(BridgeWorld.Url(1) + ": ", Assert.Single(world.Logged("observation-error")));
-        Assert.Equal(waiting, world.Logged("dispatch-error").Any(message => message.StartsWith(BridgeWorld.Url(1) + ": ")));
+        Assert.Equal(waiting, world.Logged("dispatch-error").Any(message => message.StartsWith(BridgeWorld.Url(1) + ": ", StringComparison.Ordinal)));
         Assert.Equal(damaged, world.Record(1)!.ToJsonString());
     }
 
@@ -403,7 +403,7 @@ public sealed class BridgeEnrollmentTests
         // A damaged value is replaced or removed; a removed key has no damaged value to replace.
         var value = path.Split('.').Aggregate((JsonNode?)world.Record(1), (node, key) => node switch
         {
-            JsonArray items => items.ElementAtOrDefault(int.Parse(key)),
+            JsonArray items => items.ElementAtOrDefault(int.Parse(key, System.Globalization.CultureInfo.InvariantCulture)),
             JsonObject item => item[key],
             _ => null
         });

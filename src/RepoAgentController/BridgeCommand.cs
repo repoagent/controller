@@ -199,7 +199,7 @@ public static class BridgeCommand
                         var dispatcher = bridge.DispatchWhenIdle(dispatchStop.Token, runtimeToken);
                         try
                         {
-                            var webhooks = publicUrl is null ? null : new DiscussionWebhooks(github, bridge, new GitHubWebhookRegistration(github, statePath),
+                            using var webhooks = publicUrl is null ? null : new DiscussionWebhooks(github, bridge, new GitHubWebhookRegistration(github, statePath),
                                 new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), time, reconciliation);
                             // A long-running controller reports busy or idle in every mode; --once observes once and exits.
                             // Disposed after the webhook is deactivated: the HTTP server stops last.

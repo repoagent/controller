@@ -4,10 +4,11 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using RepoAgentController;
 using Microsoft.Extensions.Time.Testing;
+using RepoAgentController;
 using Xunit;
 
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1050", Justification = "Retain this existing test identity; production types remain namespaced.")]
 public sealed class AppAuthenticationTests
 {
     [Theory]
@@ -360,6 +361,7 @@ public sealed class AppAuthenticationTests
         public void Dispose() { http.Dispose(); key.Dispose(); System.IO.Directory.Delete(Directory, true); }
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "The test clock has managed-only signaling semaphores; timer callbacks and cancelled waits can outlive the observed operation. No wait handle is created.")]
     sealed class Clock : TimeProvider
     {
         readonly FakeTimeProvider time = new(DateTimeOffset.UtcNow);
@@ -419,8 +421,14 @@ public sealed class AppAuthenticationTests
                         if (CloneScopeDefect == "name") repos[0]!["full_name"] = "other/repository";
                         if (CloneScopeDefect == "contents-write") scope["contents"] = "write";
                         if (CloneScopeDefect == "extra-permission") scope["actions"] = "read";
-                        result = new { token = "installation-token-" + TokenRequests.Count,
-                            expires_at = clock.GetUtcNow().AddHours(1), repository_selection = "selected", permissions = scope, repositories = repos };
+                        result = new
+                        {
+                            token = "installation-token-" + TokenRequests.Count,
+                            expires_at = clock.GetUtcNow().AddHours(1),
+                            repository_selection = "selected",
+                            permissions = scope,
+                            repositories = repos
+                        };
                     }
                     else result = new { token = "installation-token-" + TokenRequests.Count, expires_at = clock.GetUtcNow().AddHours(1) };
                     break;

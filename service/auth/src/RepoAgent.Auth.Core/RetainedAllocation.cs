@@ -26,8 +26,13 @@ internal readonly record struct RetainedAllocation(string? RepositoryId, string?
 
     public static RetainedAllocation Of(BrokerRecord record) => record switch
     {
-        EnrollmentLedger l => Of(l), IssuanceLedger l => Of(l), PendingControllerEnrollment p => Of(p), IssuanceAttempt a => Of(a),
-        ReleaseProof r => Of(r), ControllerEnrollment e => Of(e), RevocationReceipt r => Of(r),
+        EnrollmentLedger l => Of(l),
+        IssuanceLedger l => Of(l),
+        PendingControllerEnrollment p => Of(p),
+        IssuanceAttempt a => Of(a),
+        ReleaseProof r => Of(r),
+        ControllerEnrollment e => Of(e),
+        RevocationReceipt r => Of(r),
         _ => throw new ArgumentException("Not a record of a retained allocation.", nameof(record))
     };
 

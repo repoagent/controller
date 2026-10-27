@@ -75,6 +75,7 @@ static class ControllerHarness
 
     const int OpenReadWrite = 2, OpenCloseOnExec = 0x80000, LockExclusive = 2, Interrupted = 4; // Linux values.
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2101", Justification = "Linux open consumes UTF-8 paths, explicitly marshalled as LPUTF8Str; UTF-16 would call the native API incorrectly.")]
     [DllImport("libc", EntryPoint = "open", SetLastError = true)]
     static extern int Open([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
 
@@ -122,12 +123,12 @@ static class ControllerHarness
     /// <summary>A Discussion event payload for the controlled repository, unless another is named.</summary>
     public static string Event(int? number, string action = "created", string repository = "owner/repository",
         (string Login, string Type)? sender = null) => new JsonObject
-    {
-        ["action"] = action,
-        ["repository"] = new JsonObject { ["full_name"] = repository, ["id"] = 1 },
-        ["discussion"] = number is null ? new JsonObject() : new JsonObject { ["number"] = number, ["user"] = new JsonObject { ["login"] = "participant", ["type"] = "User" }, ["body"] = "Hello" },
-        ["sender"] = new JsonObject { ["login"] = sender?.Login ?? "participant", ["type"] = sender?.Type ?? "User" }
-    }.ToJsonString();
+        {
+            ["action"] = action,
+            ["repository"] = new JsonObject { ["full_name"] = repository, ["id"] = 1 },
+            ["discussion"] = number is null ? new JsonObject() : new JsonObject { ["number"] = number, ["user"] = new JsonObject { ["login"] = "participant", ["type"] = "User" }, ["body"] = "Hello" },
+            ["sender"] = new JsonObject { ["login"] = sender?.Login ?? "participant", ["type"] = sender?.Type ?? "User" }
+        }.ToJsonString();
 
     /// <summary>One native turn the controlled peer accepted, with the Discussion its envelope carried.</summary>
     internal sealed record Turn(string Thread, string Id, int Discussion, JsonNode Envelope);
@@ -176,6 +177,7 @@ static class ControllerHarness
         }
 
         /// <summary>Starts the controller in polling mode and returns after its first complete observation.</summary>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "Run transfers the handler to its HttpClient, disposed by the controller task.")]
         public async Task Start(params string[] options)
         {
             Run(new RepositorySettingsTests.Provider(), options);
@@ -186,14 +188,16 @@ static class ControllerHarness
         /// Starts the controller in webhook mode on a free port and returns after its first complete reconciliation.
         /// Full reconciliations are an hour apart, so only deliveries observe Discussions after that.
         /// </summary>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "Run transfers the handler to its HttpClient, disposed by the controller task.")]
         public async Task StartWebhooks(params string[] options)
         {
             WebhookPort = FreePort(StatusPort);
             Run(new RepositorySettingsTests.Provider { HooksPermission = "write" },
-                ["--webhook-url", "https://fixture.invalid", "--listen-port", WebhookPort.ToString(), "--reconcile-interval", "3600", .. options]);
+                ["--webhook-url", "https://fixture.invalid", "--listen-port", WebhookPort.ToString(System.Globalization.CultureInfo.InvariantCulture), "--reconcile-interval", "3600", .. options]);
             await Logged(" reconciliation-completed discussion=all success=True");
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "The controller task owns and disposes this client after BridgeCommand returns.")]
         void Run(RepositorySettingsTests.Provider provider, string[] options)
         {
             Save();
@@ -203,8 +207,8 @@ static class ControllerHarness
             run = Task.Run(async () =>
             {
                 using (http) return await BridgeCommand.Run(["--repo", "owner/repository", "--app-id", "123", "--private-key", privateKey,
-                    "--state", state, "--workspace", directory, "--interval", ((int)PollInterval.TotalSeconds).ToString(),
-                    "--status-port", StatusPort.ToString(), .. options],
+                    "--state", state, "--workspace", directory, "--interval", ((int)PollInterval.TotalSeconds).ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "--status-port", StatusPort.ToString(System.Globalization.CultureInfo.InvariantCulture), .. options],
                     http, gh, clock, shutdown.Token);
             });
         }
@@ -301,7 +305,7 @@ static class ControllerHarness
             var status = await OperatorStatus();
             var waiting = status["sessions"]!.AsArray().Where(session => session!["waiting"] is not null).ToArray();
             Assert.Equal(waiting.Sum(session => session!["waiting"]!.GetValue<int>()), status["work"]!["waiting"]!.GetValue<int>());
-            return [.. waiting.Select(session => int.Parse(session!["discussion"]!.GetValue<string>().Split('/')[^1]))];
+            return [.. waiting.Select(session => int.Parse(session!["discussion"]!.GetValue<string>().Split('/')[^1], System.Globalization.CultureInfo.InvariantCulture))];
         }
 
         /// <summary>Replaces a Discussion's labels; the controller observes them at its next observation.</summary>
@@ -322,19 +326,32 @@ static class ControllerHarness
             if (comments["D" + discussion] is not JsonArray list) comments["D" + discussion] = list = [];
             list.Add(new JsonObject
             {
-                ["id"] = id, ["url"] = Url(discussion) + "#discussioncomment-" + id, ["body"] = body, ["bodyHTML"] = "<p>" + body + "</p>",
-                ["createdAt"] = "2026-10-23T00:00:00Z", ["updatedAt"] = "2026-10-23T00:00:00Z",
-                ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" }, ["replyTo"] = null
+                ["id"] = id,
+                ["url"] = Url(discussion) + "#discussioncomment-" + id,
+                ["body"] = body,
+                ["bodyHTML"] = "<p>" + body + "</p>",
+                ["createdAt"] = "2026-10-23T00:00:00Z",
+                ["updatedAt"] = "2026-10-23T00:00:00Z",
+                ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" },
+                ["replyTo"] = null
             });
             Save();
         }
 
         static JsonObject Discussion(int number) => new()
         {
-            ["id"] = "D" + number, ["number"] = number, ["url"] = Url(number), ["title"] = "Fixture " + number,
-            ["body"] = "@test-app[bot] please look at fixture " + number, ["bodyHTML"] = "<p>fixture</p>",
-            ["createdAt"] = "2026-10-23T00:00:00Z", ["updatedAt"] = "2026-10-23T00:00:00Z", ["closed"] = false, ["locked"] = false,
-            ["answer"] = null, ["category"] = new JsonObject { ["id"] = "DIC1", ["name"] = "General" },
+            ["id"] = "D" + number,
+            ["number"] = number,
+            ["url"] = Url(number),
+            ["title"] = "Fixture " + number,
+            ["body"] = "@test-app[bot] please look at fixture " + number,
+            ["bodyHTML"] = "<p>fixture</p>",
+            ["createdAt"] = "2026-10-23T00:00:00Z",
+            ["updatedAt"] = "2026-10-23T00:00:00Z",
+            ["closed"] = false,
+            ["locked"] = false,
+            ["answer"] = null,
+            ["category"] = new JsonObject { ["id"] = "DIC1", ["name"] = "General" },
             ["author"] = new JsonObject { ["__typename"] = "User", ["login"] = "participant" + number }
         };
 
@@ -343,8 +360,11 @@ static class ControllerHarness
             var temporary = world + ".tmp";
             File.WriteAllText(temporary, new JsonObject
             {
-                ["discussions"] = discussions.DeepClone(), ["comments"] = comments.DeepClone(), ["labels"] = labels.DeepClone(),
-                ["variables"] = JsonSerializer.SerializeToNode(Variables), ["statuses"] = JsonSerializer.SerializeToNode(Statuses)
+                ["discussions"] = discussions.DeepClone(),
+                ["comments"] = comments.DeepClone(),
+                ["labels"] = labels.DeepClone(),
+                ["variables"] = JsonSerializer.SerializeToNode(Variables),
+                ["statuses"] = JsonSerializer.SerializeToNode(Statuses)
             }.ToJsonString());
             File.Move(temporary, world, true);
         }
@@ -545,10 +565,12 @@ static class ControllerHarness
             listener.Dispose();
             connection?.Dispose();
             await serving;
+            writer?.Dispose();
         }
     }
 
     /// <summary>Controlled time: one-minute refresh loops advance on a fake clock; the poll interval fires only on request.</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "The test clock has managed-only signaling semaphores; timer callbacks and cancelled waits can outlive the observed operation. No wait handle is created.")]
     internal sealed class Clock : TimeProvider
     {
         readonly FakeTimeProvider time = new(DateTimeOffset.UtcNow);
@@ -610,6 +632,7 @@ static class ControllerHarness
     /// <summary>Observes the controller's operator log through its actual console writer; waits are event-driven.</summary>
     internal sealed class LogCapture : TextWriter
     {
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2213", Justification = "Borrowed Console.Out is restored on disposal; its owner, the runner, must keep using it.")]
         readonly TextWriter previous = Console.Out;
         readonly List<string> lines = [];
         readonly List<(string Fragment, int Occurrence, TaskCompletionSource<string> Seen)> waiters = [];

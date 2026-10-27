@@ -23,7 +23,7 @@ public sealed class AgentVariableConformanceTests
         Assert.DoesNotContain(InMemoryGitHub.PrivateValue, body);
 
         f.GitHub.VariableAnswer = null;
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var recovered = await f.Complete(pending, 2);
         Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
         Assert.Equal(receipt.ToString(), recovered.Json.ToString());
@@ -68,7 +68,7 @@ public sealed class AgentVariableConformanceTests
         var ack = await f.Acknowledge(Device(receipt), receipt.GetProperty("completionId").GetString()!, Secret(receipt), 3 - version);
         Assert.Equal(HttpStatusCode.Conflict, ack.StatusCode);
         Assert.Equal(reads, f.GitHub.Reads);
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var recovered = await f.Complete(pending, version);
         Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
         Assert.Equal(receipt.ToString(), recovered.Json.ToString());
@@ -117,7 +117,8 @@ public sealed class AgentVariableConformanceTests
             f.GitHub.Repositories = GitHubRead.Found(new InstallationRepositories(1, [new RepositoryIdentity(123456, "other/project")]));
         else f.GitHub.MintAnswer = (_, token) => GitHubRead.Found(token with
         {
-            Value = "invalid-binding-token", Permissions = new Dictionary<string, string?> { ["agent_variables"] = "read", ["actions"] = "read" }
+            Value = "invalid-binding-token",
+            Permissions = new Dictionary<string, string?> { ["agent_variables"] = "read", ["actions"] = "read" }
         });
         f.GitHub.BeforeRevoke = _ =>
         {
@@ -158,7 +159,7 @@ public sealed class AgentVariableConformanceTests
             if (fault == "unknown-kind") row["ApprovalKind"] = "unknown";
             if (fault == "wrong-policy") row["PolicyVersion"] = IssuancePolicy.Version;
         });
-                var reads = f.GitHub.Reads;
+        var reads = f.GitHub.Reads;
         var denied = await f.Issue(Device(receipt), Secret(receipt));
         Assert.NotEqual(HttpStatusCode.OK, denied.StatusCode);
         Assert.Equal("", denied.Text);
@@ -173,7 +174,7 @@ public sealed class AgentVariableConformanceTests
         var f = AgentFixture();
         var receipt = await Complete(f, await Start(f, profile));
         await Ack(f, receipt);
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var issued = await f.Issue(Device(receipt), Secret(receipt));
         Assert.Equal(HttpStatusCode.OK, issued.StatusCode);
         var permissions = issued.Json.GetProperty("permissions");
@@ -201,12 +202,12 @@ public sealed class AgentVariableConformanceTests
         // pending ID and plaintext. Only the approval protocol domain differs.
         var legacy = ApprovalContract.Legacy.CompletionPurpose(InMemoryBroker.RepositoryId, InMemoryBroker.Epoch, pending);
         f.State.Change(key, row => row["ProtectedCompletion"] = f.Secrets.Protect(legacy, receipt.GetProperty("enrollment").GetRawText()));
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var denied = await f.Complete(pending, 2);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, denied.StatusCode);
         Assert.DoesNotContain(Secret(receipt), denied.Text);
         f.State.Change(key, row => row["ProtectedCompletion"] = original);
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var recovered = await f.Complete(pending, 2);
         Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
         Assert.Equal(receipt.ToString(), recovered.Json.ToString());
@@ -232,7 +233,7 @@ public sealed class AgentVariableConformanceTests
         Assert.DoesNotContain("deviceSecret", changed.Text);
         f.GitHub.Installation = GitHubRead.Found(InMemoryGitHub.Installed);
         f.GitHub.Marker = marker;
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var restored = await f.Complete(pending, 2);
         Assert.Equal(HttpStatusCode.Gone, restored.StatusCode);
     }
@@ -265,7 +266,7 @@ public sealed class AgentVariableConformanceTests
 
         f.GitHub.BeforeRead = null;
         f.GitHub.Marker = marker;
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var recovered = await f.Issue(Device(receipt), Secret(receipt));
         Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
         Assert.Equal(Device(receipt), f.Gate.OwnerEnrollmentId);
@@ -292,7 +293,7 @@ public sealed class AgentVariableConformanceTests
 
         f.GitHub.BeforeRead = null;
         f.GitHub.Installation = GitHubRead.Found(InMemoryGitHub.Installed);
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var restored = await f.Issue(Device(receipt), Secret(receipt));
         Assert.Equal(terminal ? HttpStatusCode.Unauthorized : HttpStatusCode.OK, restored.StatusCode);
         if (terminal) Assert.Equal("closed", f.Gate.State);
@@ -326,7 +327,7 @@ public sealed class AgentVariableConformanceTests
         f.GitHub.BeforeRead = null;
         f.GitHub.Installation = GitHubRead.Found(InMemoryGitHub.Installed);
         f.GitHub.Repositories = GitHubRead.Found(new InstallationRepositories(1, [InMemoryGitHub.Project]));
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var restored = await Continue();
         Assert.Equal(terminal ? HttpStatusCode.Gone : HttpStatusCode.OK, restored.StatusCode);
         if (terminal) return;

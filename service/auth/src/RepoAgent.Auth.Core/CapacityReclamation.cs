@@ -203,7 +203,10 @@ public sealed class CapacityReclamation(IBrokerState state, string deploymentEpo
         var receipt = stored is null
             ? new Tracked<RevocationReceipt>(receiptKey, new()
             {
-                RepositoryId = Text(ledger.RepositoryId), EnrollmentId = Text(ledger.EnrollmentId), Epoch = Text(ledger.Epoch), RevokedAt = clock.GetUtcNow()
+                RepositoryId = Text(ledger.RepositoryId),
+                EnrollmentId = Text(ledger.EnrollmentId),
+                Epoch = Text(ledger.Epoch),
+                RevokedAt = clock.GetUtcNow()
             }, null)
             : new(receiptKey, stored.Value, stored.Version);
         receipt.Value.OwnerReleasedAt = clock.GetUtcNow();
@@ -330,7 +333,9 @@ public sealed class CapacityReclamation(IBrokerState state, string deploymentEpo
 
     private static long? RowCredits(BrokerRecord ledger) => ledger switch
     {
-        EnrollmentLedger l => l.RowCredits, IssuanceLedger l => l.RowCredits, _ => null
+        EnrollmentLedger l => l.RowCredits,
+        IssuanceLedger l => l.RowCredits,
+        _ => null
     };
 
     private static void BindRelease(RetainedAllocation ledger, long? rowCredits, ReleaseProof release)
@@ -407,7 +412,7 @@ public sealed class CapacityReclamation(IBrokerState state, string deploymentEpo
     }
 
     // Every repository transaction writes the gate with the next sequence, as an Add when the repository had none.
-    private async Task CommitAsync(Tracked<RepositoryGate> gate, IReadOnlyList<TrackedRecord> writes,
+    private async Task CommitAsync(Tracked<RepositoryGate> gate, List<TrackedRecord> writes,
         IReadOnlyList<Action<StateTransaction>> deletes, CancellationToken ct)
     {
         gate.Value.Sequence = checked(Number(gate.Value.Sequence) + 1);

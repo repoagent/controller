@@ -13,7 +13,9 @@ var tables = storage.AddTables("tables");
 var blobs = storage.AddBlobs("blobs");
 var vault = builder.AddAzureKeyVaultEmulator("keyvault", new KeyVaultEmulatorOptions
 {
-    Persist = true, Port = 4997, UseDotnetDevCerts = true,
+    Persist = true,
+    Port = 4997,
+    UseDotnetDevCerts = true,
     LocalCertificatePath = Path.Combine(localDirectory, "keyvault")
 });
 var settingsFile = Path.Combine(localDirectory, "broker.json");

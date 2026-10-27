@@ -1,3 +1,5 @@
+Directory.Build.props
+.editorconfig
 global.json
 .agents/skills/github-discussion/SKILL.md
 .agents/skills/repoagent-orientation/SKILL.md

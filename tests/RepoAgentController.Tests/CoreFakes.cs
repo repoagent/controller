@@ -395,7 +395,7 @@ sealed class InMemoryDiscussionStore : IDiscussionStore
     static DiscussionState Copy(DiscussionState state)
     {
         var copy = new DiscussionState(state.Repository)
-            { AgentLogin = state.AgentLogin, CategoryStartsAsRead = state.CategoryStartsAsRead, Unknown = state.Unknown, Unreadable = state.Unreadable };
+        { AgentLogin = state.AgentLogin, CategoryStartsAsRead = state.CategoryStartsAsRead, Unknown = state.Unknown, Unreadable = state.Unreadable };
         foreach (var (name, since) in state.CategoryStarts) copy.CategoryStarts[name] = since;
         foreach (var (id, record) in state.Discussions)
         {
@@ -403,8 +403,14 @@ sealed class InMemoryDiscussionStore : IDiscussionStore
             waiting?.Inputs.AddRange(record.Waiting!.Inputs);
             var kept = copy.Discussions[id] = new(record.Url)
             {
-                Sources = new(record.Sources), Labels = record.Labels, SessionId = record.SessionId, Waiting = waiting, Pending = record.Pending,
-                Running = record.Running, Unknown = record.Unknown, Unreadable = record.Unreadable
+                Sources = new(record.Sources),
+                Labels = record.Labels,
+                SessionId = record.SessionId,
+                Waiting = waiting,
+                Pending = record.Pending,
+                Running = record.Running,
+                Unknown = record.Unknown,
+                Unreadable = record.Unreadable
             };
             foreach (var (key, value) in record.UnreadableKeys) kept.UnreadableKeys[key] = value;
         }
@@ -524,6 +530,7 @@ sealed class RecordingLog : IControllerLog
 }
 
 /// <summary>Controlled time that reports each timer a loop arms, so a test moves time only once the loop waits.</summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "The test clock has managed-only signaling semaphores; timer callbacks and cancelled waits can outlive the observed operation. No wait handle is created.")]
 sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 {
     readonly FakeTimeProvider time = new(start);
@@ -695,16 +702,25 @@ sealed class InMemoryRefreshJournal : IRefreshJournal
     {
         var copy = new RefreshJournal(journal.Root, journal.Owner, journal.RepositoryId)
         {
-            Requested = journal.Requested, Completed = journal.Completed, Blocked = journal.Blocked, Running = journal.Running,
-            Reason = journal.Reason, Applying = journal.Applying, Unknown = journal.Unknown
+            Requested = journal.Requested,
+            Completed = journal.Completed,
+            Blocked = journal.Blocked,
+            Running = journal.Running,
+            Reason = journal.Reason,
+            Applying = journal.Applying,
+            Unknown = journal.Unknown
         };
         copy.ReasonAsRead = journal.ReasonAsRead;
         copy.RunningUnreadable = journal.RunningUnreadable;
         foreach (var (id, admission) in journal.Active)
             copy.Active[id] = new(admission.Since)
             {
-                Thread = admission.Thread, Turn = admission.Turn, Confirmed = admission.Confirmed, Unconfirmed = admission.Unconfirmed,
-                Unknown = admission.Unknown, AsRead = admission.AsRead
+                Thread = admission.Thread,
+                Turn = admission.Turn,
+                Confirmed = admission.Confirmed,
+                Unconfirmed = admission.Unconfirmed,
+                Unknown = admission.Unknown,
+                AsRead = admission.AsRead
             };
         return copy;
     }
@@ -774,8 +790,15 @@ sealed class InMemoryCheckout : ICheckoutWorkspace, ICheckoutFacts
     /// <summary>The ownership record a clone of the approved repository at <see cref="Head"/> leaves.</summary>
     public static CheckoutRecord Recorded() => new()
     {
-        Version = 1, State = State, Root = RootPath, Owner = Owner, RepositoryId = 345, Repository = "owner/repository", Remote = Remote,
-        Branch = "trunk", Commit = Head
+        Version = 1,
+        State = State,
+        Root = RootPath,
+        Owner = Owner,
+        RepositoryId = 345,
+        Repository = "owner/repository",
+        Remote = Remote,
+        Branch = "trunk",
+        Commit = Head
     };
 
     T Read<T>(string name, T value) { Reads.Add(name); return value; }

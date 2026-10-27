@@ -119,7 +119,9 @@ public sealed class CleanupCommandTests
     {
         var summary = JsonSerializer.SerializeToElement(new
         {
-            failures = 2, unknownDeadlineCount = 3, stopReason = "request-budget",
+            failures = 2,
+            unknownDeadlineCount = 3,
+            stopReason = "request-budget",
             cursorAndCycleAges = new[]
             {
                 new { cursorAgeSeconds = cursor, cycleAgeSeconds = cycle },

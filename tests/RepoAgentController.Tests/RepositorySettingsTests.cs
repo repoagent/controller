@@ -13,6 +13,8 @@ namespace RepoAgentController.Tests;
 [System.Runtime.Versioning.UnsupportedOSPlatform("windows")] // The App gh wrapper is Linux/macOS only.
 public sealed class RepositorySettingsTests
 {
+    static readonly string[] AllowedMethods = ["GET", "POST"];
+
     const string Setting = "REPOAGENT_MAX_ACTIVE_SESSIONS";
 
     [Fact]
@@ -23,7 +25,7 @@ public sealed class RepositorySettingsTests
 
         Assert.Equal(0, await fixture.Check("--repository-settings"));
 
-        Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=configured value=4"));
+        Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=configured value=4", StringComparison.Ordinal));
         var token = Assert.Single(fixture.Provider.TokenRequests);
         Assert.Equal("read", token["permissions"]!["agent_variables"]!.GetValue<string>());
         var read = Assert.Single(fixture.GitHubRequests(), request => request.Endpoint.EndsWith("/" + Setting, StringComparison.Ordinal));
@@ -59,7 +61,7 @@ public sealed class RepositorySettingsTests
         var permissions = Assert.Single(fixture.Provider.TokenRequests)["permissions"]!.AsObject();
         Assert.Equal(new Dictionary<string, string> { ["discussions"] = "write", ["agent_variables"] = "read" },
             permissions.ToDictionary(permission => permission.Key, permission => permission.Value!.GetValue<string>()));
-        Assert.All(fixture.GitHubRequests(), request => Assert.Contains(request.Method, new[] { "GET", "POST" }));
+        Assert.All(fixture.GitHubRequests(), request => Assert.Contains(request.Method, AllowedMethods));
         Assert.DoesNotContain(fixture.GitHubRequests(), request => request.Method == "POST" && request.Endpoint != "graphql");
     }
 
@@ -80,7 +82,7 @@ public sealed class RepositorySettingsTests
         Assert.Equal(["discussions"], fixture.Provider.TokenRequests[1]["permissions"]!.AsObject().Select(permission => permission.Key));
         Assert.Single(fixture.GitHubRequests(), request => request.Endpoint.Contains("/variables/" + Setting));
         Assert.Contains(fixture.Log, line => line.EndsWith(
-            $" repository-setting name={Setting} state=read-failed value=4 reason=\"the App installation does not grant Agent variables: read\""));
+            $" repository-setting name={Setting} state=read-failed value=4 reason=\"the App installation does not grant Agent variables: read\"", StringComparison.Ordinal));
     }
 
     [Theory]
@@ -94,7 +96,7 @@ public sealed class RepositorySettingsTests
 
         Assert.Equal(0, await fixture.CheckBroker(broker, [.. clone ? ["--clone"] : Array.Empty<string>(), "--repository-settings"]));
 
-        Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=configured value=4"));
+        Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=configured value=4", StringComparison.Ordinal));
         Assert.Equal("/v3/devices/device-1/installation-token", Assert.Single(broker.Transport.Requests).AbsolutePath);
         // Every catalogue read is a direct Agent-variable GET with the brokered lease.
         var reads = fixture.GitHubRequests().Where(request => request.Endpoint != "graphql").ToArray();
@@ -166,9 +168,9 @@ public sealed class RepositorySettingsTests
         }
 
         string[] Arguments() => ["--repo", "owner/repository", "--app-id", "123", "--private-key", privateKey,
-            "--state", Path.Combine(Directory, "bridge.json"), "--workspace", Directory, "--status-port", ControllerHarness.FreePort().ToString()];
+            "--state", Path.Combine(Directory, "bridge.json"), "--workspace", Directory, "--status-port", ControllerHarness.FreePort().ToString(System.Globalization.CultureInfo.InvariantCulture)];
 
-        public IReadOnlyList<GitHubRequest> GitHubRequests() => File.Exists(requests)
+        public List<GitHubRequest> GitHubRequests() => File.Exists(requests)
             ? File.ReadAllLines(requests).Select(line => JsonSerializer.Deserialize<GitHubRequest>(line, JsonSerializerOptions.Web)!).ToList()
             : [];
 
@@ -242,6 +244,7 @@ public sealed class RepositorySettingsTests
     // Observes the controller's operator log through its actual console writer.
     sealed class LogCapture : TextWriter
     {
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2213", Justification = "Borrowed Console.Out is restored on disposal; its owner, the runner, must keep using it.")]
         readonly TextWriter previous = Console.Out;
         readonly List<string> lines = [];
         public LogCapture() => Console.SetOut(this);

@@ -19,7 +19,8 @@ public sealed class ControllerStatusGoldenTests : IDisposable
     static Dictionary<string, string> Golden()
     {
         using var stream = typeof(ControllerStatusGoldenTests).Assembly.GetManifestResourceStream("ControllerStatusGolden.txt")!;
-        var sections = new StreamReader(stream).ReadToEnd().Split("--- ", StringSplitOptions.RemoveEmptyEntries);
+        using var reader = new StreamReader(stream);
+        var sections = reader.ReadToEnd().Split("--- ", StringSplitOptions.RemoveEmptyEntries);
         return sections.ToDictionary(section => section[..section.IndexOf(" ---\n", StringComparison.Ordinal)],
             section => section[(section.IndexOf(" ---\n", StringComparison.Ordinal) + 5)..].TrimEnd('\n'));
     }
@@ -56,7 +57,7 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         File.WriteAllText(State + ".refresh.json", """{"version":1,"root":"/workspace/repository","owner":"owner","repositoryId":7,"requested":1,"completed":1,"active":{"6f1c2a9e0b7d4e5f8a3c1d2e4f6a8b0c":{"thread":"S6","turn":"T6","since":1,"confirmed":true}},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":1}""");
     }
 
-    void Log(ControllerStatus status, int seconds, string kind, string message) => status.Record(new(Start.AddSeconds(seconds), kind, message));
+    static void Log(ControllerStatus status, int seconds, string kind, string message) => status.Record(new(Start.AddSeconds(seconds), kind, message));
 
     [Fact]
     public void Status_and_its_record_are_the_bytes_1f36818_wrote_for_a_controller_written_state_over_two_lifetimes()
@@ -107,7 +108,7 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         WriteFiles();
         Directory.CreateDirectory(StatusFiles.PathFor(State) + ".tmp"); // The record's temporary file cannot be created.
         var previous = Console.Out;
-        var stdout = new StringWriter();
+        using var stdout = new StringWriter();
         Console.SetOut(TextWriter.Synchronized(stdout));
         string state;
         try
@@ -211,7 +212,7 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         else status = OperatorStatusJson.Render(StatusFiles.Read(State, clock)!);
 
         var reported = " " + string.Join(" ", parts.Split(' ').Select(part => part.Split('.').Aggregate((JsonNode?)status,
-            (node, key) => node is JsonArray array ? array[int.Parse(key)] : node?[key])?.ToJsonString() ?? "null")) + " ";
+            (node, key) => node is JsonArray array ? array[int.Parse(key, System.Globalization.CultureInfo.InvariantCulture)] : node?[key])?.ToJsonString() ?? "null")) + " ";
         Assert.Equal(expected, reported);
     }
 
@@ -225,10 +226,10 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         }
         var root = JsonNode.Parse(File.ReadAllText(file))!;
         var keys = path.Split('.');
-        var parent = keys[..^1].Aggregate(root, (node, key) => node is JsonArray array ? array[int.Parse(key)]! : node[key]!);
+        var parent = keys[..^1].Aggregate(root, (node, key) => node is JsonArray array ? array[int.Parse(key, System.Globalization.CultureInfo.InvariantCulture)]! : node[key]!);
         // A placeholder value stands where the JSON goes, so a form no JsonNode holds, such as a repeated key, is written as given.
         if (json is null) parent.AsObject().Remove(keys[^1]);
-        else if (parent is JsonArray array) array[int.Parse(keys[^1])] = "\u0001";
+        else if (parent is JsonArray array) array[int.Parse(keys[^1], System.Globalization.CultureInfo.InvariantCulture)] = "\u0001";
         else parent[keys[^1]] = "\u0001";
         File.WriteAllText(file, root.ToJsonString().Replace("\"\\u0001\"", json));
     }

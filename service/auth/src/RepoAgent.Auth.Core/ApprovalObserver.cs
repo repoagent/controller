@@ -4,6 +4,7 @@ namespace RepoAgent.Auth;
 
 // GitHub confirmed, with fresh well-formed evidence, that the approval or its binding changed. Callers close the
 // enrollment for good; uncertain evidence denies instead (IssuanceDenied) and leaves the enrollment recoverable.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1710:Identifiers should have correct suffix", Justification = "Preserve the established core exception contract; renaming is outside the analyzer rollout.")]
 public sealed class ApprovalChanged : Exception;
 
 // A controller enrollment's bound approval, which GitHub must still show unchanged before the broker issues.

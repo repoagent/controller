@@ -109,7 +109,10 @@ public sealed class RetainedDecisionTests
         if (published == "receipt")
             f.State.Seed(RevocationReceipt.Key(Retained.Repository, enrollmentId), new()
             {
-                RepositoryId = Retained.Repository, EnrollmentId = enrollmentId, Epoch = InMemoryBroker.Epoch, RevokedAt = f.Clock.GetUtcNow()
+                RepositoryId = Retained.Repository,
+                EnrollmentId = enrollmentId,
+                Epoch = InMemoryBroker.Epoch,
+                RevokedAt = f.Clock.GetUtcNow()
             });
         var before = Versions(f).ToList();
 

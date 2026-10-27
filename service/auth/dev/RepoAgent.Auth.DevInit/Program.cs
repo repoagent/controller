@@ -21,13 +21,21 @@ if (created.GetRawResponse().Status is 201 or 204)
 {
     await table.AddEntityAsync(new TableEntity("global:enrollment-v1", "quota")
     {
-        ["RetentionSchemaVersion"] = 1L, ["CandidateCount"] = 0L,
-        ["RetainedEnrollmentCount"] = 0L, ["Count"] = 0L
+        ["RetentionSchemaVersion"] = 1L,
+        ["CandidateCount"] = 0L,
+        ["RetainedEnrollmentCount"] = 0L,
+        ["Count"] = 0L
     }, ct);
     await table.AddEntityAsync(new TableEntity("global:issuance-v1", "quota")
     {
-        ["RetentionSchemaVersion"] = 1L, ["RetainedIssuanceCount"] = 0L,
-        ["Window"] = 0L, ["Admissions"] = 0L, ["Reads"] = 0L, ["Signs"] = 0L, ["Mints"] = 0L, ["Slots"] = 0L
+        ["RetentionSchemaVersion"] = 1L,
+        ["RetainedIssuanceCount"] = 0L,
+        ["Window"] = 0L,
+        ["Admissions"] = 0L,
+        ["Reads"] = 0L,
+        ["Signs"] = 0L,
+        ["Mints"] = 0L,
+        ["Slots"] = 0L
     }, ct);
 }
 // Missing metadata in an existing store is an error, never a reason to reset accounting.
@@ -48,12 +56,15 @@ var settings = new
     Broker = new
     {
         TableEndpoint = table.Uri.AbsoluteUri[..table.Uri.AbsoluteUri.LastIndexOf('/')],
-        TableName = table.Name, DeploymentEpoch = "aspire-local-v1", BrokerOrigin = "https://localhost:7443",
+        TableName = table.Name,
+        DeploymentEpoch = "aspire-local-v1",
+        BrokerOrigin = "https://localhost:7443",
         DevelopmentConnectionString = configuration.GetConnectionString("tables")
     },
     Auth = new
     {
-        DevelopmentVaultUri = vault.AbsoluteUri, SigningKeyUri = signing.Id.AbsoluteUri,
+        DevelopmentVaultUri = vault.AbsoluteUri,
+        SigningKeyUri = signing.Id.AbsoluteUri,
         DevelopmentBlobConnectionString = configuration.GetConnectionString("blobs"),
         DataProtectionKeyUri = wrapping.Id.AbsoluteUri,
         DataProtectionBlobUri = container.GetBlobClient("keyring.xml").Uri.AbsoluteUri,

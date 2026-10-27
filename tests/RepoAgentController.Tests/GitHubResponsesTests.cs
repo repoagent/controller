@@ -134,11 +134,13 @@ public sealed class GitHubResponsesTests
         Classified(Assert.Throws<GitHubRequestException>(() => GitHubResponses.Found(Response(200, "Could not resolve to a Repository with the name 'owner/project'.", true,
             Error("NOT_FOUND", "repository")), Lookup, "Discussion")), GitHubFailure.Permanent, false, "HTTP 200 NOT_FOUND: Could not resolve to a Repository with the name 'owner/project'.");
         Classified(Assert.Throws<GitHubRequestException>(() => GitHubResponses.Found(Response(200, "Resource not accessible by integration", true,
-            Error("FORBIDDEN", Lookup)) with { Field = ResponseField.Null }, Lookup, "Discussion")), GitHubFailure.Permanent, false, "HTTP 200 FORBIDDEN: Resource not accessible by integration");
+            Error("FORBIDDEN", Lookup)) with
+        { Field = ResponseField.Null }, Lookup, "Discussion")), GitHubFailure.Permanent, false, "HTTP 200 FORBIDDEN: Resource not accessible by integration");
         Classified(Assert.Throws<GitHubRequestException>(() => GitHubResponses.Found(Response(200, "API rate limit exceeded for installation.", false,
             Error("RATE_LIMITED")), Lookup, "Discussion")), GitHubFailure.RateLimited, false, "HTTP 200 RATE_LIMITED: API rate limit exceeded for installation.");
         Classified(Assert.Throws<GitHubRequestException>(() => GitHubResponses.Found(Response(200, "Could not resolve to a Discussion with the number of 1.", true,
-            Error("", Lookup)) with { Field = ResponseField.Null }, Lookup, "Discussion")), GitHubFailure.Transient, true, "HTTP 200: Could not resolve to a Discussion with the number of 1.");
+            Error("", Lookup)) with
+        { Field = ResponseField.Null }, Lookup, "Discussion")), GitHubFailure.Transient, true, "HTTP 200: Could not resolve to a Discussion with the number of 1.");
         Classified(Assert.Throws<GitHubRequestException>(() => GitHubResponses.Found(Response(200, data: true) with { Field = ResponseField.Null }, Lookup, "Discussion")),
             GitHubFailure.Transient, false, "incomplete Discussion response");
         Classified(Assert.Throws<GitHubRequestException>(() => GitHubResponses.Found(Response(502, "Server Error"), Lookup, "Discussion")),

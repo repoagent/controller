@@ -104,12 +104,22 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
             var now = clock.GetUtcNow();
             reservation = new()
             {
-                RepositoryId = repository, PendingId = repository + "_" + request.IdempotencyId,
-                SetupSecretHash = hash, BodyHash = request.BodyHash, Epoch = epoch,
-                CreatedAt = now, Deadline = now.Add(PendingLifetime), PayloadPurgeAt = now.Add(PendingLifetime).AddHours(24),
-                Generation = Guid.NewGuid().ToString("N"), RowCredits = 8, ReclamationVersion = 1,
-                EnrollmentId = Guid.NewGuid().ToString("N"), Challenge = EnrollmentSecrets.Generate(),
-                ApprovalKind = request.Approval.Kind, SetupVersion = request.Approval.SetupVersion, PolicyVersion = request.Approval.Policy
+                RepositoryId = repository,
+                PendingId = repository + "_" + request.IdempotencyId,
+                SetupSecretHash = hash,
+                BodyHash = request.BodyHash,
+                Epoch = epoch,
+                CreatedAt = now,
+                Deadline = now.Add(PendingLifetime),
+                PayloadPurgeAt = now.Add(PendingLifetime).AddHours(24),
+                Generation = Guid.NewGuid().ToString("N"),
+                RowCredits = 8,
+                ReclamationVersion = 1,
+                EnrollmentId = Guid.NewGuid().ToString("N"),
+                Challenge = EnrollmentSecrets.Generate(),
+                ApprovalKind = request.Approval.Kind,
+                SetupVersion = request.Approval.SetupVersion,
+                PolicyVersion = request.Approval.Policy
             };
             var candidateKey = CandidateRepository.Key(repository);
             var admission = new StateTransaction().Replace(EnrollmentQuota.Key, quota.Value, quota.Version);
@@ -176,14 +186,27 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
     // Retirement is not copied; admission denies a ledger that has started it.
     private static PendingControllerEnrollment Copy(EnrollmentLedger ledger) => new()
     {
-        RepositoryId = ledger.RepositoryId, PendingId = ledger.PendingId, SetupSecretHash = ledger.SetupSecretHash,
-        BodyHash = ledger.BodyHash, Epoch = ledger.Epoch, CreatedAt = ledger.CreatedAt, Deadline = ledger.Deadline,
-        PayloadPurgeAt = ledger.PayloadPurgeAt, Generation = ledger.Generation, RowCredits = ledger.RowCredits,
-        ReclamationVersion = ledger.ReclamationVersion, EnrollmentId = ledger.EnrollmentId, Challenge = ledger.Challenge,
-        ApprovalKind = ledger.ApprovalKind, SetupVersion = ledger.SetupVersion, PolicyVersion = ledger.PolicyVersion,
-        PendingCapacityReleased = ledger.PendingCapacityReleased, PayloadRedacted = ledger.PayloadRedacted
+        RepositoryId = ledger.RepositoryId,
+        PendingId = ledger.PendingId,
+        SetupSecretHash = ledger.SetupSecretHash,
+        BodyHash = ledger.BodyHash,
+        Epoch = ledger.Epoch,
+        CreatedAt = ledger.CreatedAt,
+        Deadline = ledger.Deadline,
+        PayloadPurgeAt = ledger.PayloadPurgeAt,
+        Generation = ledger.Generation,
+        RowCredits = ledger.RowCredits,
+        ReclamationVersion = ledger.ReclamationVersion,
+        EnrollmentId = ledger.EnrollmentId,
+        Challenge = ledger.Challenge,
+        ApprovalKind = ledger.ApprovalKind,
+        SetupVersion = ledger.SetupVersion,
+        PolicyVersion = ledger.PolicyVersion,
+        PendingCapacityReleased = ledger.PendingCapacityReleased,
+        PayloadRedacted = ledger.PayloadRedacted
     };
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1068", Justification = "Preserve existing positional callers; this token is distinct from the optional configuration that follows it.")]
     public async Task<PendingSnapshot> SnapshotAsync(string id, string? setupSecretHash, CancellationToken ct, long setupVersion)
     {
         var parts = id.Split('_');
@@ -258,9 +281,17 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
             global.Value.Slots = occupancy + 1;
             var slotReservation = new IssuanceSlot
             {
-                OperationId = operation, Generation = generation, RepositoryId = s.RepositoryId, Purpose = "verification",
-                Epoch = epoch, ReservedAt = now, PayloadPurgeAt = now.AddHours(24), GlobalSlot = slot.Value,
-                ApprovalKind = s.Approval.Kind, SetupVersion = s.Approval.SetupVersion, PolicyVersion = s.Approval.Policy
+                OperationId = operation,
+                Generation = generation,
+                RepositoryId = s.RepositoryId,
+                Purpose = "verification",
+                Epoch = epoch,
+                ReservedAt = now,
+                PayloadPurgeAt = now.AddHours(24),
+                GlobalSlot = slot.Value,
+                ApprovalKind = s.Approval.Kind,
+                SetupVersion = s.Approval.SetupVersion,
+                PolicyVersion = s.Approval.Policy
             };
             charge.Add(IssuanceLedger.Key(operation), capacity.ChargeIssuance(global.Value, slotReservation, s.EnrollmentId, s.Id));
             charge.Add(IssuanceSlot.Key(slot.Value), slotReservation);
@@ -280,11 +311,24 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
             s.Pending.Attempt = operation;
             extra.Add(new Tracked<IssuanceAttempt>(IssuanceAttempt.Key(s.PartitionRepositoryId, operation), new()
             {
-                OperationId = operation, Generation = generation, RepositoryId = s.RepositoryId, EnrollmentId = s.EnrollmentId,
-                PendingId = s.Id, Epoch = epoch, Purpose = "verification", Profile = s.Approval.VerifierProfile,
-                RepositoryCharged = true, State = "reserved", ReservedAt = now, PayloadPurgeAt = now.AddHours(24),
-                JwtIssuedAt = now.AddSeconds(-60), JwtExpiresAt = now.AddSeconds(120), GlobalSlot = slot!.Value,
-                ApprovalKind = s.Approval.Kind, SetupVersion = s.Approval.SetupVersion, PolicyVersion = s.Approval.Policy
+                OperationId = operation,
+                Generation = generation,
+                RepositoryId = s.RepositoryId,
+                EnrollmentId = s.EnrollmentId,
+                PendingId = s.Id,
+                Epoch = epoch,
+                Purpose = "verification",
+                Profile = s.Approval.VerifierProfile,
+                RepositoryCharged = true,
+                State = "reserved",
+                ReservedAt = now,
+                PayloadPurgeAt = now.AddHours(24),
+                JwtIssuedAt = now.AddSeconds(-60),
+                JwtExpiresAt = now.AddSeconds(120),
+                GlobalSlot = slot!.Value,
+                ApprovalKind = s.Approval.Kind,
+                SetupVersion = s.Approval.SetupVersion,
+                PolicyVersion = s.Approval.Policy
             }, null));
         }
         // Observation JWT timestamps stay in this bounded pending row, not an append-only operation log.

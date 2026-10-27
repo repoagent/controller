@@ -1,3 +1,4 @@
+#pragma warning disable CA1051 // These storage records use ref fields in RecordMap to preserve typed, lossless row mapping.
 namespace RepoAgent.Auth;
 
 // The records enrollment reads and writes besides the gate, enrollment, locator, receipt and the issuance records. Each
@@ -110,3 +111,5 @@ public sealed class PendingControllerEnrollment : BrokerRecord
         map.Flag("PayloadRedacted", ref PayloadRedacted);
     }
 }
+
+#pragma warning restore CA1051

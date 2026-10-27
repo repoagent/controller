@@ -6,6 +6,8 @@ namespace RepoAgentController;
 // Only managed clone/fetch cross this interface. Ordinary local Git is not intercepted.
 internal static class AppGitCredential
 {
+    static readonly string[] UnsafePrefixes = ["credential.", "http.", "url.", "include.", "includeif."];
+
     // Only clone-capable credentials carry the approved repository binding Git may use.
     static InstallationCredential Lease(InstallationCredential credential)
     {
@@ -163,12 +165,12 @@ internal static class AppGitCredential
     static bool UnsafeConfig(string entry)
     {
         var key = entry.Split('\n', 2)[0];
-        return new[] { "credential.", "http.", "url.", "include.", "includeif." }.Any(p => key.StartsWith(p, StringComparison.OrdinalIgnoreCase)) ||
+        return UnsafePrefixes.Any(p => key.StartsWith(p, StringComparison.OrdinalIgnoreCase)) ||
             key.Equals("core.askpass", StringComparison.OrdinalIgnoreCase) || key.Equals("core.sshcommand", StringComparison.OrdinalIgnoreCase);
     }
     static async Task<int> Helper(string credentials, string operation)
     {
-        if (operation is not ("get" or "store" or "erase")) throw new ArgumentException();
+        if (operation is not ("get" or "store" or "erase")) throw new ArgumentException("Unsupported credential helper operation", nameof(operation));
         var fields = new Dictionary<string, string>(StringComparer.Ordinal);
         var line = new StringBuilder();
         var buffer = new char[1];

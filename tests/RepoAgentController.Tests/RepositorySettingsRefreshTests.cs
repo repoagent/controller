@@ -18,7 +18,7 @@ public sealed class RepositorySettingsRefreshTests
     RepositorySettings Lifetime(TimeProvider? time = null) => new(RepositorySettingsCatalogue.Settings, github, state, time ?? clock, log);
 
     // The repository-setting lines logged for one setting, without the kind.
-    IReadOnlyList<string> Reported(string name = Setting) =>
+    List<string> Reported(string name = Setting) =>
         log.Entries.Where(entry => entry.Kind == "repository-setting" && entry.Message.StartsWith($"name={name} ", StringComparison.Ordinal))
             .Select(entry => entry.Message).ToList();
 

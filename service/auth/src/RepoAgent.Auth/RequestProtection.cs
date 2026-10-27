@@ -32,8 +32,10 @@ internal static class RequestProtection
                 PartitionedRateLimiter.Create<HttpContext, string>(_ => RateLimitPartition.GetFixedWindowLimiter(
                     "broker", _ => new FixedWindowRateLimiterOptions
                     {
-                        PermitLimit = options.RequestLimitPerMinute, QueueLimit = 0,
-                        Window = TimeSpan.FromMinutes(1), AutoReplenishment = true
+                        PermitLimit = options.RequestLimitPerMinute,
+                        QueueLimit = 0,
+                        Window = TimeSpan.FromMinutes(1),
+                        AutoReplenishment = true
                     })));
             limiter.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             limiter.OnRejected = (context, _) =>

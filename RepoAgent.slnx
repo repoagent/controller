@@ -1,0 +1,13 @@
+<Solution>
+  <Project Path="service/auth/dev/RepoAgent.Auth.AppHost/RepoAgent.Auth.AppHost.csproj" />
+  <Project Path="service/auth/dev/RepoAgent.Auth.DevInit/RepoAgent.Auth.DevInit.csproj" />
+  <Project Path="service/auth/src/RepoAgent.Auth.Core/RepoAgent.Auth.Core.csproj" />
+  <Project Path="service/auth/src/RepoAgent.Auth/RepoAgent.Auth.csproj" />
+  <Project Path="service/auth/tests/RepoAgent.Auth.Tests/RepoAgent.Auth.Tests.csproj" />
+  <Project Path="src/RepoAgentController.Core/RepoAgentController.Core.csproj" />
+  <Project Path="src/RepoAgentController/RepoAgentController.csproj" />
+  <Project Path="tests/NativeSmoke/NativeSmoke.csproj" />
+  <Project Path="tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj" />
+  <Project Path="tests/RepoAgentController.Tests/RepoAgentController.Tests.csproj" />
+  <Project Path="tests/installers/CredentialDriver/CredentialDriver.csproj" />
+</Solution>

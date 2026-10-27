@@ -91,6 +91,7 @@ sealed class BridgeWorld : IAsyncDisposable
     /// Starts a controller lifetime, ending the running one: state, settings and outbox are read again from their files, the
     /// runtime process is new, and deliveries an earlier lifetime left unacknowledged are retried.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "The retained Lifetime owns stop, lease, status and outbox; End disposes them together after cancellation.")]
     public async Task Begin(params int[] enroll)
     {
         await End();
@@ -235,7 +236,7 @@ sealed class BridgeWorld : IAsyncDisposable
         var status = Status();
         var waiting = status["sessions"]!.AsArray().Where(session => session!["waiting"] is not null).ToArray();
         Assert.Equal(waiting.Sum(session => session!["waiting"]!.GetValue<int>()), status["work"]!["waiting"]!.GetValue<int>());
-        return [.. waiting.Select(session => int.Parse(session!["discussion"]!.GetValue<string>().Split('/')[^1]))];
+        return [.. waiting.Select(session => int.Parse(session!["discussion"]!.GetValue<string>().Split('/')[^1], System.Globalization.CultureInfo.InvariantCulture))];
     }
 
     public static string Url(int number) => "https://github.com/owner/repository/discussions/" + number;

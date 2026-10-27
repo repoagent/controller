@@ -8,7 +8,7 @@ static class RepositorySettingsCatalogue
 {
     public static IReadOnlyList<RepositorySetting> Settings { get; } = Load();
 
-    static IReadOnlyList<RepositorySetting> Load()
+    static List<RepositorySetting> Load()
     {
         using var stream = typeof(RepositorySettingsCatalogue).Assembly.GetManifestResourceStream("repository-settings.json")
             ?? throw new InvalidOperationException("Missing repository settings catalogue");

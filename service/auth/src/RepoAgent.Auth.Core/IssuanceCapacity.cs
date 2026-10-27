@@ -104,10 +104,21 @@ public sealed class IssuanceCapacity(IBrokerState state, long retainedIssuanceLi
         var approval = ApprovalContract.Stored(slot.ApprovalKind, slot.SetupVersion, slot.PolicyVersion, false);
         return new()
         {
-            OperationId = slot.OperationId, Generation = slot.Generation, RepositoryId = slot.RepositoryId, Purpose = slot.Purpose,
-            Epoch = slot.Epoch, ReservedAt = slot.ReservedAt, PayloadPurgeAt = slot.PayloadPurgeAt, GlobalSlot = slot.GlobalSlot,
-            EnrollmentId = enrollmentId, AttemptRowKey = "attempt:" + operation, RowCredits = 4, PendingId = pendingId,
-            ApprovalKind = approval.Kind, SetupVersion = approval.SetupVersion, PolicyVersion = approval.Policy
+            OperationId = slot.OperationId,
+            Generation = slot.Generation,
+            RepositoryId = slot.RepositoryId,
+            Purpose = slot.Purpose,
+            Epoch = slot.Epoch,
+            ReservedAt = slot.ReservedAt,
+            PayloadPurgeAt = slot.PayloadPurgeAt,
+            GlobalSlot = slot.GlobalSlot,
+            EnrollmentId = enrollmentId,
+            AttemptRowKey = "attempt:" + operation,
+            RowCredits = 4,
+            PendingId = pendingId,
+            ApprovalKind = approval.Kind,
+            SetupVersion = approval.SetupVersion,
+            PolicyVersion = approval.Policy
         };
     }
 }

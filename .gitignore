@@ -6,3 +6,5 @@ __pycache__/
 *.key
 *.pem:Zone.Identifier
 *.key:Zone.Identifier
+
+.claude/worktrees/

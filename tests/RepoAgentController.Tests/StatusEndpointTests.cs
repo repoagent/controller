@@ -88,7 +88,7 @@ public sealed class StatusEndpointTests
         using var log = new LogCapture();
         Assert.Equal(1, await BridgeCommand.Run(["--repo", "owner/repository", "--app-id", "123", .. options],
             shutdownToken: TestContext.Current.CancellationToken));
-        Assert.Contains(log.Lines, line => line.EndsWith(" fatal " + error));
+        Assert.Contains(log.Lines, line => line.EndsWith(" fatal " + error, StringComparison.Ordinal));
     }
 
     [Theory]
