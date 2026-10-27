@@ -24,7 +24,10 @@ public sealed class CheckoutRecoveryTests
         discussions.WriteDiscussions(state);
         var journal = new RefreshJournal(Binding.Root, Binding.Owner, Binding.RepositoryId)
         {
-            Requested = 4, Completed = 3, Blocked = true, Running = 1,
+            Requested = 4,
+            Completed = 3,
+            Blocked = true,
+            Running = 1,
             Reason = "Native activity or checkout update is uncertain; inspect state before recovery",
             Unknown = [new("future", "{\"keep\":\"verbatim\"}")]
         };
