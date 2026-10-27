@@ -102,6 +102,27 @@ function Broker([string]$Method, [string]$Path, [string]$Secret, $Body = $null) 
         Write-Host "Broker rate limit reached; retrying the same operation in $delay seconds ($($attempt + 1)/2)."
         Start-Sleep -Milliseconds ([int]($delay * 1000))
     }
+    # Only enrollment start has the settlement-preflight diagnostic contract.
+    # Empty 409 binding/possession conflicts and unrecognized bodies remain stop/inspect.
+    if ($Method -ceq 'POST' -and $Path -ceq "/v$setupVersion/enrollments" -and $r.Status -in @(409,503)) {
+        $startDiagnostic = $null
+        try {
+            $denial = Read-HostJson $r.Body
+            if ($r.Status -eq 409) {
+                Assert-Fields $denial @('code','retryAfterSeconds')
+                if ($denial.code -is [string] -and $denial.code -ceq 'enrollment_not_ready' -and
+                    ($denial.retryAfterSeconds -is [long] -or $denial.retryAfterSeconds -is [int]) -and $denial.retryAfterSeconds -eq 60) {
+                    $startDiagnostic = 'Old repository authority is not ready for replacement. Recheck using this same private state after at least 60 seconds; that interval does not promise settlement or readiness. No approval was written; private state is retained.'
+                }
+            } else {
+                Assert-Fields $denial @('code')
+                if ($denial.code -is [string] -and $denial.code -ceq 'enrollment_settlement_unconfirmed') {
+                    $startDiagnostic = 'Old repository authority settlement is unconfirmed. Retain this private state and inspect broker availability and settlement before retrying the same request. No safe-ready time is known and no approval was written.'
+                }
+            }
+        } catch { } # Never reflect provider bodies or treat malformed guidance as readiness.
+        if ($startDiagnostic) { Stop-Enrollment $startDiagnostic }
+    }
     if ($r.Status -ne 200) { Stop-Enrollment "Broker operation failed (HTTP $($r.Status)); private state is retained. Retry the same enrollment after inspection; no new identity was created." }
     return Read-HostJson $r.Body
 }
