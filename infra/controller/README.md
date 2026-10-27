@@ -23,7 +23,7 @@ az containerapp job execution list --resource-group rg-storybeam-repoagent-contr
   --name storybeam-repoagent-smoke --output table
 ```
 
-Rerun the same incremental deployment to reuse the foundation. These commands target a dedicated resource group; do not use them to adopt unrelated resources. No deployment wrapper or simulated Azure validation is needed. `.github/workflows/ci-controller-infra.yml` compiles affected PRs and supports manual compilation.
+Rerun the same incremental deployment to reuse the foundation. These commands target a dedicated resource group; do not use them to adopt unrelated resources. No deployment wrapper or simulated Azure validation is needed. `.github/workflows/controller.yml` includes read-only infrastructure compilation alongside controller verification.
 
 ## Storage, cost and lifecycle
 

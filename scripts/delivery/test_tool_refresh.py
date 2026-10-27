@@ -322,7 +322,7 @@ class RefreshStepTests(unittest.TestCase):
                 self.assertEqual(change['message']['headline'], f'chore: refresh baseline {label} to {version}')
                 self.assertIn(f'{label} {current} -> {version}', change['message']['body'])
                 self.assertIn('https://github.com/repoagent/controller/actions/runs/4242', change['message']['body'])
-                self.assertEqual(calls[1]['argv'], ['workflow', 'run', 'publish-controller-image.yml', '--ref', 'main'])
+                self.assertEqual(calls[1]['argv'], ['workflow', 'run', 'controller.yml', '--ref', 'main'])
 
     def test_moved_main_or_another_commit_pins_and_publishes_nothing(self):
         for name, moved, environment, attempted in [
@@ -347,7 +347,7 @@ class RefreshStepTests(unittest.TestCase):
         result, calls, _ = self.commit(temporary, GH_DISPATCH_FAILS='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual([call['argv'][:2] for call in calls], [['api', 'graphql'], ['workflow', 'run']])
-        self.assertIn('gh workflow run publish-controller-image.yml --ref main', result.stderr)
+        self.assertIn('gh workflow run controller.yml --ref main', result.stderr)
 
 
 def needs(name, workflow=PIPELINE):
@@ -385,7 +385,7 @@ def checkout_ref(name):
 class RefreshWorkflowTests(unittest.TestCase):
     def test_a_scheduled_workflow_refreshes_the_baseline_from_upstream_tool_releases(self):
         refreshing = [workflow.name for workflow in sorted(WORKFLOWS.glob('*.yml')) if 'schedule' in events(workflow)
-                      and any('publish-controller-image.yml' in (WORKFLOWS / called).read_text()
+                      and any('controller.yml' in (WORKFLOWS / called).read_text()
                               for called in re.findall(r'(?m)^    uses: \./\.github/workflows/(\S+)$', workflow.read_text()))]
         self.assertTrue(refreshing, 'No workflow checks upstream gh/Codex releases and feeds baseline publication')
         self.assertEqual(events(WORKFLOW), {'schedule', 'workflow_dispatch'},

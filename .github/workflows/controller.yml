@@ -1,41 +1,63 @@
-name: Publish controller image
+name: Controller
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Optional existing vMAJOR.MINOR.PATCH tag on main for a native release; omit for a baseline image
+        type: string
   pull_request:
     paths:
       - 'src/**'
-      - 'tests/NativeSmoke/**'
-      - 'tests/RepoAgent.LiveTests/**'
+      - 'tests/**'
+      - 'infra/controller/**'
+      - 'install*'
+      - 'repoagent*'
+      - 'Directory.*'
+      - 'NuGet.*'
+      - 'nuget.config'
+      - '.editorconfig'
+      - '.globalconfig'
       - 'container/**'
       - 'image/**'
       - 'global.json'
       - '.agents/skills/github-discussion/**'
       - '.agents/skills/repoagent-orientation/**'
-      - 'scripts/compose-image.py'
-      - 'scripts/delivery/image-release.py'
-      - '.github/workflows/publish-controller-image.yml'
+      - 'scripts/**'
+      - '.github/workflows/controller.yml'
+      - '.github/workflows/broker.yml'
+      - '.github/workflows/refresh-baseline-tool.yml'
+      - '.github/workflows/refresh-baseline-tools.yml'
   push:
     branches: [main]
     paths:
       - 'src/**'
-      - 'tests/NativeSmoke/**'
-      - 'tests/RepoAgent.LiveTests/**'
+      - 'tests/**'
+      - 'infra/controller/**'
+      - 'install*'
+      - 'repoagent*'
+      - 'Directory.*'
+      - 'NuGet.*'
+      - 'nuget.config'
+      - '.editorconfig'
+      - '.globalconfig'
       - 'container/**'
       - 'image/**'
       - 'global.json'
       - '.agents/skills/github-discussion/**'
       - '.agents/skills/repoagent-orientation/**'
-      - 'scripts/compose-image.py'
-      - 'scripts/delivery/image-release.py'
-      - '.github/workflows/publish-controller-image.yml'
+      - 'scripts/**'
+      - '.github/workflows/controller.yml'
+      - '.github/workflows/broker.yml'
+      - '.github/workflows/refresh-baseline-tool.yml'
+      - '.github/workflows/refresh-baseline-tools.yml'
 permissions:
   contents: read
-concurrency:
-  group: controller-image-${{ github.ref }}
-  cancel-in-progress: false
 jobs:
   build:
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    concurrency:
+      group: controller-build-${{ github.ref }}
+      cancel-in-progress: true
+    if: (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && inputs.tag == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -80,6 +102,9 @@ jobs:
           compression-level: 0
           retention-days: 7
   verify-artifact:
+    concurrency:
+      group: controller-verify-artifact-${{ github.ref }}
+      cancel-in-progress: true
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -98,8 +123,10 @@ jobs:
           docker load --input controller.tar
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}:{{.Config.User}}:{{index .Config.Labels "io.repoagent.role"}}:{{index .Config.Labels "org.opencontainers.image.revision"}}:{{index .Config.Labels "org.opencontainers.image.source"}}' "$IMAGE")" = "linux/amd64:1000:controller:$GITHUB_SHA:https://github.com/$GITHUB_REPOSITORY"
   verify:
-    # Pull requests are already gated by Verify controller; main has no required checks.
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    concurrency:
+      group: controller-verify-${{ github.ref }}
+      cancel-in-progress: true
+    if: (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && inputs.tag == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -111,8 +138,11 @@ jobs:
           global-json-file: global.json
       - run: bash scripts/delivery/verify.sh "$RUNNER_TEMP/controller-package"
   publish:
+    concurrency:
+      group: controller-publish
+      cancel-in-progress: false
     needs: [build, verify-artifact, verify]
-    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && inputs.tag == '' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     environment: controller-release
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -162,8 +192,11 @@ jobs:
           printf 'image=%s\nreference=%s\n' "$immutable" "$REFERENCE" >> "$GITHUB_OUTPUT"
           printf 'Public controller image: `%s`\n\nSource: `%s`\n' "$immutable" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
   release:
+    concurrency:
+      group: controller-release
+      cancel-in-progress: false
     needs: [build, publish]
-    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && inputs.tag == '' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     environment: controller-release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -187,3 +220,64 @@ jobs:
           set -euo pipefail
           (cd "$RUNNER_TEMP/controller-image" && sha256sum --check SHA256SUMS)
           python3 scripts/delivery/image-release.py publish "$RUNNER_TEMP/controller-image"
+
+  compile:
+    if: (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && inputs.tag == ''
+    concurrency:
+      group: controller-infrastructure-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - run: az bicep install --version v0.48.1
+      - run: |
+          for template in infra/controller/*.bicep; do
+            "$HOME/.azure/bin/bicep" build "$template" --outfile "$RUNNER_TEMP/$(basename "$template" .bicep).json"
+          done
+
+  native-release:
+    concurrency:
+      group: controller-native-release
+      cancel-in-progress: false
+    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    environment: controller-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate and select immutable tagged source
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || exit 1
+          commit=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
+          git merge-base --is-ancestor "$commit" origin/main
+          git checkout --detach "$commit"
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          global-json-file: global.json
+      - name: Verify and package
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          bash scripts/delivery/verify.sh "$RUNNER_TEMP/release" "${RELEASE_TAG#v}"
+      - name: Publish new release without replacing existing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          # Existing release (including a partial upload) requires operator inspection.
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'Release already exists; preserving all existing assets.' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" "$RUNNER_TEMP/release/"* --verify-tag --title "$RELEASE_TAG" --notes "Linux amd64 controller. Source: $(git rev-parse HEAD). See docs/ci-cd.md for runtime requirements."
