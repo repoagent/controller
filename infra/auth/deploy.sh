@@ -55,8 +55,13 @@ case "$operation" in
     case "$operation" in
       cleanup-identity-*) parameters+=(identityOnly=true) ;;
       *)
+        api_image=$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query 'properties.template.containers[0].image' -o tsv)
+        if [[ "$api_image" != "${AUTH_IMAGE:?Select an immutable image}" ]]; then
+          echo 'Cleanup must use the current broker API image; change releases through the paired Broker deployment.' >&2
+          exit 1
+        fi
         python3 "$root/scripts/delivery/auth-pipeline.py" attest
-        parameters+=(identityOnly=false image="${AUTH_IMAGE:?Select an immutable image}"
+        parameters+=(identityOnly=false image="$AUTH_IMAGE"
           deploymentEpoch="${AUTH_DEPLOYMENT_EPOCH:?Set the external restore epoch}") ;;
     esac ;;
   monitoring-plan|monitoring-apply)
@@ -91,9 +96,17 @@ case "$operation" in
 esac
 
 case "$operation" in
+  apply|promote-staged|cleanup-apply)
+    api_image=$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query 'properties.template.containers[0].image' -o tsv)
+    cleanup_image=$(az containerapp job show "${target[@]}" --name "$AUTH_APP_NAME-cleanup" --query 'properties.template.containers[0].image' -o tsv)
+    if [[ "$api_image" != "$AUTH_IMAGE" || "$cleanup_image" != "$AUTH_IMAGE" ]]; then
+      printf 'Broker image mismatch: expected %s; API %s; cleanup %s. Inspect both resources before retrying.\n' "$AUTH_IMAGE" "$api_image" "$cleanup_image" >&2
+      exit 1
+    fi ;;
+esac
+
+case "$operation" in
   apply|promote-staged)
-    test "$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query 'properties.template.containers[0].image' -o tsv)" = "$AUTH_IMAGE"
-    test "$(az containerapp job show "${target[@]}" --name "$AUTH_APP_NAME-cleanup" --query 'properties.template.containers[0].image' -o tsv)" = "$AUTH_IMAGE"
     ready=false
     for ((attempt=0; attempt<60; attempt++)); do
       if [[ "$(az containerapp show "${target[@]}" --name "$AUTH_APP_NAME" --query 'properties.latestRevisionName != `null` && properties.latestRevisionName == properties.latestReadyRevisionName' -o json)" == true ]]; then

@@ -222,6 +222,8 @@ These source routes preserve the exact main-only OIDC subject, Contributor scope
      -f operation=cleanup-apply -f expected-source-sha="$accepted_source" -f image="$accepted_image"
    ```
 
+A cleanup-only plan/apply must select the current API image; it refuses a different release before a deployment write. To upgrade or roll back a release, use paired `operation=deploy` or `operation=deploy-image`, which deploy both resources. Cleanup apply also reads both images back before succeeding. Azure portal or direct CLI edits bypass these workflow checks and can still introduce drift.
+
 After deployment inspect the actual Job: Consumption environment, immutable image, six environment bindings, cleanup-only identity, command, schedule and capacity must match Bicep. A Job can already be running after apply or a client disconnect. Restoring a Manual Job to its Bicep schedule does not prove older executions drained.
 
 ## Cleanup schedule suspension and drain
