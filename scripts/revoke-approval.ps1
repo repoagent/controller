@@ -30,7 +30,7 @@ $repositoryId = $null
 $environmentId = $null
 $script:BrokerClosure = 'unconfirmed'
 $script:Legacy = $false
-$script:Kind = 'repository-actions-variable'
+$script:Kind = 'repository-agent-variable'
 
 function Stop-Revoke([string]$Message) {
     $script:SafeDiagnostic = $Message
@@ -138,6 +138,7 @@ try {
     $script:Legacy = -not [string]::IsNullOrEmpty($GitHubEnvironment)
     if ($script:Legacy -and $ApprovalLocation) { Stop-Revoke 'A GitHub Environment cannot be combined with a repository variable location.' }
     $script:Kind = if ($script:Legacy) { 'environment-variable' } else { (Get-ApprovalLocation -Location $ApprovalLocation).Kind }
+    $location = if (-not $script:Legacy) { Get-ApprovalLocation -Location $ApprovalLocation }
     if ($ExpectedEnvironmentId -and -not $GitHubEnvironment -and -not $ApprovalStatePath) { Stop-Revoke 'Legacy Environment ID requires an explicit GitHub Environment or matching saved legacy state.' }
     if ($ApprovalStatePath) {
         if ([IO.FileInfo]::new([IO.Path]::GetFullPath($ApprovalStatePath)).Length -gt 65536) { Stop-Revoke 'Saved approval exceeds 64 KiB.' }
@@ -145,7 +146,8 @@ try {
         $kind = Get-ApprovalStateKind $saved
         if ($kind -ne 'environment-variable' -and ($GitHubEnvironment -or $ExpectedEnvironmentId)) { Stop-Revoke 'Repository-variable state cannot be combined with Environment arguments.' }
         # The saved location is authoritative; a conflicting explicit location never reinterprets it.
-        $savedLocation = if ($kind -ne 'environment-variable') { (Get-ApprovalLocation -Kind $kind).Location }
+        if ($kind -ne 'environment-variable') { $location = Get-ApprovalLocation -Kind $kind -SetupVersion $saved.setupVersion }
+        $savedLocation = if ($kind -ne 'environment-variable') { $location.Location }
         if ($ApprovalLocation -and (Get-ApprovalLocation -Location $ApprovalLocation).Location -cne $savedLocation) { Stop-Revoke 'Arguments conflict with saved approval coordinates.' }
         $script:Legacy = $kind -eq 'environment-variable'
         $script:Kind = $kind
@@ -157,7 +159,7 @@ try {
             Set-Variable -Name $pair[0] -Value ([string]$saved[$pair[1]])
         }
     }
-    if (-not $ApprovalVariable) { $ApprovalVariable = if ($script:Legacy) { 'APPROVED_CONTROLLER' } else { (Get-ApprovalLocation -Kind $script:Kind).DefaultVariable } }
+    if (-not $ApprovalVariable) { $ApprovalVariable = if ($script:Legacy) { 'APPROVED_CONTROLLER' } else { $location.DefaultVariable } }
     if (-not $Repository -and -not $NonInteractive) { $Repository = Read-Host 'Repository (OWNER/REPO)' }
     if ($Repository -cnotmatch '\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z' `
         -or @($Repository.Split('/') | Where-Object { $_ -in @('.', '..') }).Count) {
@@ -197,7 +199,6 @@ try {
         $variableEndpoint = $environmentEndpoint + '/variables/' + [Uri]::EscapeDataString($ApprovalVariable)
         Write-Host 'Inspecting explicitly selected legacy Environment approval using host gh.'
     } else {
-        $location = Get-ApprovalLocation -Kind $script:Kind
         $variableEndpoint = $repoEndpoint + '/' + $location.Path + '/' + [Uri]::EscapeDataString($ApprovalVariable)
         Write-Host "Inspecting $(if ($location.Legacy) { 'legacy ' })repository $($location.Name)-variable approval using host gh."
     }
@@ -237,11 +238,11 @@ try {
             $settings = $enrollment.protocolVersion -eq 3
             if ($clone -or $settings) { $fields += @('profile','policyVersion') }
             Assert-Fields $enrollment $fields
-            $actions = $script:Kind -eq 'repository-actions-variable'
-            if ($settings -and -not $actions) { throw 'Repository-settings profile enrollment differs.' }
-            $policy = if ($settings) { 'repository-actions-settings-approval-v3' }
-                elseif ($actions) { if ($clone) { 'repository-actions-clone-approval-v3' } else { 'repository-actions-approval-v3' } }
-                elseif ($clone) { 'repository-agent-clone-approval-v2' } else { 'repository-agent-approval-v2' }
+            $policy = if ($script:Legacy) { 'repository-approval-v1' }
+                else { Get-ApprovalPolicy -SetupVersion $location.SetupVersion -Profile $saved.profile }
+            $expectedRuntime = if ($saved.profile.EndsWith('-settings', [StringComparison]::Ordinal)) { 3 }
+                elseif ($saved.profile.Contains('-clone', [StringComparison]::Ordinal)) { 2 } else { 1 }
+            if ($enrollment.protocolVersion -ne $expectedRuntime) { throw 'Runtime profile differs from saved approval.' }
             if ($clone -and ($enrollment.profile -cnotin @('polling-clone','webhook-clone') -or $enrollment.policyVersion -cne $policy)) { throw 'Clone enrollment differs.' }
             if ($settings -and ($enrollment.profile -cnotin @('polling-settings','webhook-settings','polling-clone-settings','webhook-clone-settings') -or $enrollment.policyVersion -cne $policy)) { throw 'Repository-settings profile enrollment differs.' }
             Assert-Text $enrollment.deviceId '\A[A-Za-z0-9_-]{1,128}\z'

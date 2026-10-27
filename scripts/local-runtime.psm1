@@ -346,7 +346,10 @@ function Invoke-LocalUninstall([hashtable]$Options) {
                     $recovery = Read-LocalJson (Join-Path $stateDirectory 'recovery.json')
                     Assert-Fields $recovery @('version','setupVersion','approvalKind','request','secret','completionId','lastWorkAt','acknowledged','ackAttempted')
                     Assert-Fields $recovery.request @('idempotencyId','repositoryId','repository','variable','profile')
-                    $recoveryVersion = (Get-ApprovalLocation -Kind $binding.approvalKind).SetupVersion
+                    # Agent-variable kind alone cannot distinguish setup v2 from v4.
+                    # Missing original approval proof leaves private recovery protected.
+                    if (-not $approval -or $approval.version -notin @(2,3,4)) { throw 'Original repository approval setup version is unconfirmed.' }
+                    $recoveryVersion = $approval.version
                     if ($recovery.version -ne $recoveryVersion -or $recovery.setupVersion -ne $recoveryVersion -or $recovery.approvalKind -cne $binding.approvalKind -or $recovery.acknowledged -isnot [bool] -or $recovery.ackAttempted -cne $true -or $recovery.completionId -cnotmatch '^[0-9a-f]{32}$') { throw 'Unresolved recovery.' }
                     foreach ($pair in @(@('repositoryId','repositoryId'),@('repository','repository'),@('variable','approvalVariable'),@('profile','profile'))) {
                         if ($recovery.request[$pair[0]] -cne $binding[$pair[1]]) { throw 'Recovery binding differs.' }

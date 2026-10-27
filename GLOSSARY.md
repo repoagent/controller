@@ -42,7 +42,7 @@ _Avoid_: repository-held approval, approval
 The nonsecret, enrollment-specific representation of a controller approval. A copied marker identifies a controller approval but does not authenticate a controller.
 
 **Approval variable**:
-The direct repository Actions variable that holds a controller approval's marker, named at controller enrollment.
+The direct repository Agent variable that holds a controller approval's marker, named at controller enrollment. A legacy enrollment keeps its original variable location.
 _Avoid_: approval location
 
 **Approval authority**:
