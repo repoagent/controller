@@ -37,9 +37,9 @@ public sealed class InstallationTokenTests
         Assert.Equal(f.Clock.GetUtcNow().AddDays(90), f.Enrollment.ExpiresAt);
     }
 
-    // Who may receive a GitHub token is decided before any GitHub work or write. A row that contradicts the deployment,
-    // the key it was read under or its approval contract is corrupt (503); anything else that is not this controller's
-    // active grant is 401.
+    // Who may receive a GitHub token is decided before any GitHub work or write. A row that contradicts its
+    // stored binding or approval contract is corrupt (503); a consistent grant of another deployment or
+    // anything else that is not this controller's active grant is 401.
     [Theory]
     [InlineData("enrollment-id", 401)]
     [InlineData("secret", 401)]
@@ -49,7 +49,7 @@ public sealed class InstallationTokenTests
     [InlineData("unacknowledged", 401)]
     [InlineData("expired", 401)]
     [InlineData("redacted", 503)]
-    [InlineData("other-deployment", 503)]
+    [InlineData("other-deployment", 401)]
     [InlineData("gate-repository", 503)]
     [InlineData("grant-repository", 503)]
     [InlineData("agent-with-environment", 503)]
@@ -110,6 +110,65 @@ public sealed class InstallationTokenTests
         Assert.Equal(commits, f.State.Commits);
         Assert.Equal(0, f.GitHub.Authorizations);
         if (scenario == "enrollment-id") Assert.Equal(reads, f.State.Reads);
+    }
+
+    [Theory]
+    [InlineData("gate-epoch-missing")]
+    [InlineData("enrollment-epoch-missing")]
+    [InlineData("enrollment-epoch-mismatch")]
+    [InlineData("epoch-whitespace")]
+    [InlineData("epoch-invalid-character")]
+    [InlineData("epoch-too-long")]
+    [InlineData("foreign-app")]
+    [InlineData("foreign-repository")]
+    [InlineData("marker-missing")]
+    [InlineData("marker-mismatch")]
+    [InlineData("sequence")]
+    public async Task Restored_deployment_still_reports_corrupt_stored_bindings_as_unavailable(string corruption)
+    {
+        var f = IssuanceFixture.Create();
+        if (corruption is "epoch-whitespace" or "epoch-invalid-character" or "epoch-too-long")
+        {
+            var epoch = corruption switch
+            {
+                "epoch-whitespace" => "corrupt epoch",
+                "epoch-invalid-character" => "corrupt/epoch",
+                _ => new string('a', 129)
+            };
+            // Keep both stored epochs and the canonical marker consistent: only the epoch syntax is corrupt.
+            f.State.Change(IssuanceFixture.GateKey, row => row["Epoch"] = epoch);
+            f.State.Change(f.EnrollmentKey, row =>
+            {
+                row["Epoch"] = epoch;
+                row["Marker"] = ApprovalMarker.Create(ApprovalContract.Legacy, IssuanceFixture.RepositoryId,
+                    "owner/project", 789, f.Device.DeviceId, new string('a', 43), "polling", epoch, "APPROVAL",
+                    "approval/environment", 987);
+            });
+        }
+        else if (corruption == "gate-epoch-missing") f.State.Change(IssuanceFixture.GateKey, row => row.Remove("Epoch"));
+        else if (corruption == "foreign-repository") f.State.Change(IssuanceFixture.GateKey, row => row["RepositoryId"] = "654321");
+        else if (corruption == "sequence") f.State.Change(IssuanceFixture.GateKey, row => row["Sequence"] = -1L);
+        else f.State.Change(f.EnrollmentKey, row =>
+        {
+            switch (corruption)
+            {
+                case "enrollment-epoch-missing": row.Remove("Epoch"); break;
+                case "enrollment-epoch-mismatch": row["Epoch"] = "different-stored-epoch"; break;
+                case "foreign-app": row["AppId"] = 1L; break;
+                case "marker-missing": row.Remove("Marker"); break;
+                case "marker-mismatch": row["Marker"] = "copied-unbound-marker"; break;
+            }
+        });
+        var before = f.State.All().Select(row => (row.Scope, row.Name, row.Version)).ToList();
+        var store = new IssuanceStore(f.State, "restored-epoch", 4096, f.Secrets, f.Clock);
+        var issuer = new InstallationTokenIssuer(store, f.GitHub, f.GitHub, f.GitHub, f.Clock);
+
+        var result = await issuer.IssueAsync(f.Device.DeviceId, f.Device.Secret, Token);
+
+        Assert.Equal(503, result.Status);
+        Assert.Null(result.Body);
+        Assert.Equal(before, f.State.All().Select(row => (row.Scope, row.Name, row.Version)));
+        Assert.Equal((0, 0, 0, 0), (f.GitHub.Authorizations, f.GitHub.Reads, f.GitHub.Mints, f.GitHub.Revokes));
     }
 
     [Fact]

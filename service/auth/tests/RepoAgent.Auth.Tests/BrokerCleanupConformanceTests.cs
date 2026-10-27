@@ -115,7 +115,7 @@ public sealed partial class BrokerCleanupTests
             var mints = f.GitHub.Mints;
             var signs = f.GitHub.Authorizations;
             f.DeploymentEpoch = "restored-epoch";
-            Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(journey.Device, journey.Secret, runtimeVersion)).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(journey.Device, journey.Secret, runtimeVersion)).StatusCode);
             Assert.Equal(mints, f.GitHub.Mints);
             Assert.Equal(signs, f.GitHub.Authorizations);
         }
