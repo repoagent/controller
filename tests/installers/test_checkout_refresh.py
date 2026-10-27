@@ -543,10 +543,27 @@ class CheckoutRefreshTests(unittest.TestCase):
                     else: self.settled(f)
                 if hold_reload:
                     (f.directory / 'hold-reload').unlink()
-                    result = subprocess.run(f.command + ['--once'], env=f.environment, capture_output=True, text=True, timeout=20)
-                    self.assertEqual(result.returncode, 1)
-                    self.assertIn('uncertain', result.stdout)
+                    with self.controller(f, ' ready repository='):
+                        port = int(f.command[f.command.index('--status-port') + 1])
+                        with closing(http.client.HTTPConnection('127.0.0.1', port, timeout=5)) as connection:
+                            connection.request('GET', '/status')
+                            response = connection.getresponse()
+                            self.assertEqual(response.status, 200)
+                            status = json.loads(response.read())
+                        self.assertEqual(status['state'], 'busy')
+                        self.assertTrue(status['work']['admissionBlocked'])
+                        self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
+                    self.assertEqual(f.process.returncode, 0)
                     self.assertEqual(json.loads(f.journal.read_text())['applying']['target'], target)
+                    # The instance is now stopped; even explicit quiescence cannot clear an interrupted checkout apply.
+                    f.state.chmod(0o600)
+                    original = f.journal.read_bytes()
+                    result = subprocess.run(self.controller_command + ['recover-checkout', '--state', str(f.state),
+                        '--workspace', str(f.checkout.parent), '--confirm-runtime-stopped'], env=f.environment,
+                        capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn('applying', result.stdout.lower())
+                    self.assertEqual(f.journal.read_bytes(), original)
                 print('MATRIX_LIFECYCLE all-session-completion=true hold-reload=' + str(hold_reload), flush=True)
 
 
@@ -623,7 +640,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.assertIn('refresh', result.stdout.lower())
                 else:
                     # The actual CLI now reaches its HTTP host while preserving the native admission fence.
-                    with self.controller(f, 'ready '):
+                    with self.controller(f, ' ready repository='):
                         port = int(f.command[f.command.index('--status-port') + 1])
                         with closing(http.client.HTTPConnection('127.0.0.1', port, timeout=5)) as connection:
                             connection.request('GET', '/status')
@@ -715,7 +732,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                     if case == 'active-restart':
                         saved = json.loads(f.journal.read_text())
                         self.assertTrue(saved['active']); self.assertFalse(saved['blocked'])
-                        with self.controller(f, 'ready '):
+                        with self.controller(f, ' ready repository='):
                             port = int(f.command[f.command.index('--status-port') + 1])
                             with closing(http.client.HTTPConnection('127.0.0.1', port, timeout=5)) as connection:
                                 connection.request('GET', '/status')
@@ -728,6 +745,26 @@ class CheckoutRefreshTests(unittest.TestCase):
                             self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Blocked restart dispatched native input')
                         self.assertEqual(f.process.returncode, 0)
                         self.assertTrue(json.loads(f.journal.read_text())['active'])
+                        # Recovery shares normal checkout metadata modes, including owner-executable SMB views.
+                        f.state.chmod(0o600)
+                        marker = f.checkout / '.git/repoagent-owner'
+                        f.owner.chmod(0o700); marker.chmod(0o700)
+                        original = f.journal.read_bytes()
+                        recovery = self.controller_command + ['recover-checkout', '--state', str(f.state),
+                            '--workspace', str(f.checkout.parent), '--confirm-runtime-stopped']
+                        f.owner.chmod(0o740)
+                        refused = subprocess.run(recovery, env=f.environment, capture_output=True, text=True, timeout=20)
+                        self.assertEqual(refused.returncode, 1)
+                        self.assertIn('private state is missing or unsafe', refused.stdout)
+                        self.assertEqual(f.journal.read_bytes(), original)
+                        f.owner.chmod(0o700)
+                        before = self.local_state(f)
+                        settled = subprocess.run(recovery, env=f.environment, capture_output=True, text=True, timeout=20)
+                        self.assertEqual(settled.returncode, 0, settled.stdout + settled.stderr)
+                        self.assertIn('explicitly settled', settled.stdout)
+                        self.assertFalse(json.loads(f.journal.read_text())['blocked'])
+                        self.assertEqual(json.loads(f.journal.read_text())['active'], {})
+                        self.assertEqual(self.local_state(f), before, 'Offline settlement changed the checkout')
                         print('GAP clean-active restart=blocked persisted-active=true', flush=True)
                         continue
                 f.provider.ref_status = 404

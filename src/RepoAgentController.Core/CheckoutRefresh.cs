@@ -14,6 +14,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     readonly SemaphoreSlim exclusion = new(1), wake = new(0, 1);
     readonly CancellationTokenSource stop = new();
     readonly RefreshJournal journal;
+    readonly bool originalJournalMissing;
     readonly OrderedDictionary<string, RefreshAdmission> active;
     readonly Dictionary<(string Thread, string Turn), (bool Done, long Sequence)> turns = [];
     Task worker = Task.CompletedTask;
@@ -28,6 +29,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     {
         this.checkout = checkout; this.binding = binding; this.store = store; this.clock = clock; this.log = log;
         var recorded = store.Read();
+        originalJournalMissing = recorded is null && priorSessions;
         journal = recorded ?? new RefreshJournal(binding.Root, binding.Owner, binding.RepositoryId);
         if (journal.Root != binding.Root || journal.Owner != binding.Owner || journal.RepositoryId != binding.RepositoryId ||
             journal.Completed < 0 || journal.Requested < journal.Completed)
@@ -50,6 +52,8 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     void Save()
     {
         journal.Blocked = blocked;
+        // A replacement cannot establish what the missing journal recorded. Keep its original absence across this lifetime.
+        if (originalJournalMissing) return;
         if (!blocked) journal.Running = turns.Values.Count(turn => !turn.Done);
         try { store.Write(journal); }
         catch { blocked = true; throw; }
@@ -73,6 +77,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     {
         lock (journalLock)
         {
+            if (originalJournalMissing) throw new IOException("Lifecycle journal is missing; preserve evidence and use an isolated fresh instance");
             journal.Requested = checked(journal.Requested + 1);
             eligible = true; Save();
             retryStarted = null;
@@ -86,7 +91,9 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
         lock (journalLock)
             if (blocked)
             {
-                log.Write("refresh-blocked", "Checkout/native state uncertain; native admission is held. Stop the controller, runtime and ALL agent tools before using recover-checkout; applying or malformed evidence requires an isolated fresh instance.");
+                log.Write("refresh-blocked", originalJournalMissing
+                    ? "Lifecycle journal is missing; native admission is held. Preserve evidence and use an isolated fresh instance."
+                    : "Checkout/native state uncertain; native admission is held. Stop the controller, runtime and ALL agent tools before using recover-checkout; applying or malformed evidence requires an isolated fresh instance.");
                 return;
             }
         Request();

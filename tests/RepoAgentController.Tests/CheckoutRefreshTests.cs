@@ -158,7 +158,9 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
 
         var opened = Open(priorSessions: form == "earlier sessions without a journal", pendingDiscussion: form == "a pending Discussion delivery");
 
-        Assert.Equal((true, "Native activity or checkout update is uncertain; inspect state before recovery"), (Saved.Blocked, Saved.Reason));
+        Assert.True(opened.AdmissionBlocked);
+        if (form == "earlier sessions without a journal") Assert.Null(journal.Saved);
+        else Assert.Equal((true, "Native activity or checkout update is uncertain; inspect state before recovery"), (Saved.Blocked, Saved.Reason));
         Assert.Equal(Uncertain, (await Assert.ThrowsAsync<IOException>(() => opened.Admit(Token))).Message);
         Assert.False(await opened.CommitAtIdle(_ => throw new InvalidOperationException("A blocked checkout must not commit"), Token));
     }

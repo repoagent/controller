@@ -19,7 +19,7 @@ static class CheckoutRecoveryCommand
         CheckoutInspection.Workspace(Directory.EnumerateFileSystemEntries(workspace).Select(Path.GetFileName)!);
         var recordPath = Path.Combine(workspace, CheckoutInspection.RecordName);
         if (Path.Exists(recordPath + ".tmp")) throw new IOException("Incomplete checkout identity; retain it and use an isolated fresh instance");
-        var record = ManagedCheckout.ParseRecord(ManagedCheckout.ReadPrivate(recordPath));
+        var record = ManagedCheckout.ParseRecord(ManagedCheckout.ReadCheckoutMetadata(recordPath));
         var root = Path.Combine(workspace, CheckoutInspection.RootName);
         var files = new ControllerStateFiles(statePath);
         var state = files.ReadDiscussions() ?? throw new IOException("Discussion state is missing");
@@ -31,7 +31,7 @@ static class CheckoutRecoveryCommand
         var repository = RepositoryCheckout.Approved(state.Repository, record.RepositoryId.Value, record.Repository, record.Remote, record.Branch);
         var facts = new ManagedCheckout.CheckoutFacts(root);
         await CheckoutInspection.Verify(facts, root, repository, ct);
-        if (ManagedCheckout.ReadPrivate(Path.Combine(root, ".git", "repoagent-owner")) != record.Owner)
+        if (ManagedCheckout.ReadCheckoutMetadata(Path.Combine(root, ".git", "repoagent-owner")) != record.Owner)
             throw new IOException("Checkout recovery owner differs; retain this instance");
         // Verify all identity before normalization. There is no reset, network lookup, process adoption or inferred completion.
         CheckoutRecovery.Recover(new(root, record.Owner!, repository.Id, "refs/heads/" + repository.Branch), files,

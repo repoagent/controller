@@ -20,6 +20,31 @@ public sealed class RefreshJournalGoldenTests : IDisposable
     string JournalPath => statePath + ".refresh.json";
 
     [Fact]
+    public async Task A_missing_journal_with_prior_sessions_stays_missing_and_blocked_across_starts_requests_and_offline_recovery()
+    {
+        var files = new ControllerStateFiles(statePath);
+        var state = new DiscussionState("owner/repository");
+        state.Discussions["D1"] = new("https://github.com/owner/repository/discussions/1") { SessionId = "S1" };
+        files.WriteDiscussions(state);
+        var clock = new SteppedClock(DateTimeOffset.UnixEpoch);
+        for (var lifetime = 0; lifetime < 2; lifetime++)
+        {
+            await using var refresh = Open(priorSessions: true);
+            await refresh.Start(new AgentSessions(new FakeAgentRuntime(), new RecordingLog(), refresh), TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
+            Assert.True(refresh.AdmissionBlocked);
+            Assert.Throws<IOException>(refresh.Request);
+            await Assert.ThrowsAsync<IOException>(() => refresh.Admit(TestContext.Current.CancellationToken));
+            Assert.False(File.Exists(JournalPath));
+            Assert.True(new CheckoutJournalFile(statePath).Read()!.AdmissionBlocked);
+            var refused = Assert.Throws<IOException>(() => CheckoutRecovery.Recover(new(Root, Owner, 345, "refs/heads/main"),
+                files, new RefreshJournalFile(statePath), true, clock));
+            Assert.Contains("missing", refused.Message, StringComparison.Ordinal);
+            Assert.False(File.Exists(JournalPath));
+            Assert.Equal("S1", files.ReadDiscussions()!.Discussions["D1"].SessionId);
+        }
+    }
+
+    [Fact]
     public async Task Startup_keeps_the_exact_original_journal_and_Discussion_bytes_before_normalizing_a_pending_delivery()
     {
         const string original = "{ \"version\":1, \"root\":\"/workspace/repository\", \"owner\":\"0123456789abcdef0123456789abcdef\", \"repositoryId\":345, \"requested\":4, \"completed\":3, \"active\":{}, \"blocked\":false, \"running\":1 }\n";
@@ -287,9 +312,6 @@ public sealed class RefreshJournalGoldenTests : IDisposable
 
     public static TheoryData<string, string, string> Written() => new()
     {
-        { "a first start after earlier sessions", LeftByBlockedStart, WrittenByBlockedStart },
-        { "a first start after earlier sessions, then a start", LeftByBlockedStart, WrittenByBlockedStart },
-        { "a first start after earlier sessions, then a start, then a start", LeftByBlockedStart, WrittenByBlockedStart },
         { "a first start with a Discussion delivery pending", LeftByBlockedStart, WrittenByBlockedStart },
         { "a first start with a Discussion delivery pending, then a start", LeftByBlockedStart, WrittenByBlockedStart },
         // The one row whose bytes match f742e2b's: the journal a process killed mid-refresh leaves, which the next row starts over.
@@ -333,9 +355,6 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         { "an unsafe failure after applying began, then a request",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":2,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"boom"}""",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":2,"completed":0,"active":{},"blocked":true,"running":0,"reason":"boom","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
-        { "a first start after earlier sessions, then a request",
-            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":0}""",
-            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""" },
         { "the next start after f742e2b's unsafe failure after applying", LeftByStartOverApplying, WrittenByStartOverApplying },
         { "the next start after f742e2b's first start after earlier sessions", LeftByBlockedStart, WrittenByBlockedStart },
     };
