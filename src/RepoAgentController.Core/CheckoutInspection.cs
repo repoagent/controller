@@ -181,8 +181,15 @@ public static class CheckoutInspection
         var created = Guid.NewGuid().ToString("N");
         var record = new CheckoutRecord
         {
-            Version = 1, State = state, Root = root, Owner = created, RepositoryId = repository.Id,
-            Repository = repository.Name, Remote = repository.Remote, Branch = repository.Branch, Commit = commit
+            Version = 1,
+            State = state,
+            Root = root,
+            Owner = created,
+            RepositoryId = repository.Id,
+            Repository = repository.Name,
+            Remote = repository.Remote,
+            Branch = repository.Branch,
+            Commit = commit
         };
         workspace.WriteOwner(created);
         workspace.WriteRecord(record);

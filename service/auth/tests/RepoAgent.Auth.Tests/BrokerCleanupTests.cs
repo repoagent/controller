@@ -9,6 +9,13 @@ namespace RepoAgent.Auth.Tests;
 // uses the broker's manual clock.
 public sealed partial class BrokerCleanupTests
 {
+    static readonly string[] SummaryCounts = [ "processedAllocations", "deletedRowsObserved", "payloadFieldsRemovedObserved", "unsettledAllocationsObserved",
+            "failures", "conflicts", "incompleteCoverage", "stopReason", "logicalQueryPages", "sdkTableDispatches", "sdkBatchDispatches",
+            "reviewedHttp11Envelope", "elapsedMilliseconds", "oldestObservedOverduePayloadAt", "oldestObservedOverduePayloadAgeSeconds",
+            "unknownDeadlineCount", "cursorAndCycleAges" ];
+
+    static readonly string[] Families = ["Enrollment", "Issuance"];
+
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Fact]
@@ -46,7 +53,7 @@ public sealed partial class BrokerCleanupTests
             {
                 row["NextFamily"] = 0L;
                 if (key == CleanupCursor.Payload) row["NextLane"] = 0L;
-                foreach (var family in new[] { "Enrollment", "Issuance" })
+                foreach (var family in Families)
                     row[family + "StartedAt"] = row[family + "ProgressAt"] = old;
             });
         var durableBefore = f.State.Get(CleanupCursor.Audit)!;
@@ -89,10 +96,7 @@ public sealed partial class BrokerCleanupTests
     public async Task Summary_keeps_its_monitored_properties_when_the_run_succeeds_or_its_store_fails()
     {
         // Production dashboards compute metrics from these names.
-        string[] schema = [.. new[] { "processedAllocations", "deletedRowsObserved", "payloadFieldsRemovedObserved", "unsettledAllocationsObserved",
-            "failures", "conflicts", "incompleteCoverage", "stopReason", "logicalQueryPages", "sdkTableDispatches", "sdkBatchDispatches",
-            "reviewedHttp11Envelope", "elapsedMilliseconds", "oldestObservedOverduePayloadAt", "oldestObservedOverduePayloadAgeSeconds",
-            "unknownDeadlineCount", "cursorAndCycleAges" }.Order()];
+        string[] schema = [.. SummaryCounts.Order()];
         var succeeding = await Run(new InMemoryBroker());
         Assert.Equal(0, succeeding.Exit);
         Assert.Equal(schema, succeeding.Summary.EnumerateObject().Select(p => p.Name).Order());
@@ -156,7 +160,7 @@ public sealed partial class BrokerCleanupTests
     {
         var f = new InMemoryBroker();
         AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
-        string[] ids = [1.ToString("x32"), 2.ToString("x32"), 3.ToString("x32")];
+        string[] ids = [1.ToString("x32", System.Globalization.CultureInfo.InvariantCulture), 2.ToString("x32", System.Globalization.CultureInfo.InvariantCulture), 3.ToString("x32", System.Globalization.CultureInfo.InvariantCulture)];
         foreach (var id in ids)
         {
             Assert.Equal(HttpStatusCode.OK, (await f.Start(Retained.AgentRequest(id), 2)).StatusCode);
@@ -258,7 +262,7 @@ public sealed partial class BrokerCleanupTests
             "not-after-the-position" => page with { Rows = [Ledger(page.Scope, key.Name)] },
             "oversized-page" => page with
             {
-                Rows = [Ledger(page.Scope, key.Name), .. Enumerable.Range(0, 32).Select(i => Ledger(page.Scope, key.Name + i.ToString("D2")))]
+                Rows = [Ledger(page.Scope, key.Name), .. Enumerable.Range(0, 32).Select(i => Ledger(page.Scope, key.Name + i.ToString("D2", System.Globalization.CultureInfo.InvariantCulture)))]
             },
             _ => page with { Rows = [], Continuation = "after:" + new string('~', 8187) },
         };
@@ -287,7 +291,7 @@ public sealed partial class BrokerCleanupTests
     {
         var f = new InMemoryBroker();
         AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
-        string[] ids = [1.ToString("x32"), 2.ToString("x32"), 3.ToString("x32")];
+        string[] ids = [1.ToString("x32", System.Globalization.CultureInfo.InvariantCulture), 2.ToString("x32", System.Globalization.CultureInfo.InvariantCulture), 3.ToString("x32", System.Globalization.CultureInfo.InvariantCulture)];
         foreach (var id in ids)
         {
             Assert.Equal(HttpStatusCode.OK, (await f.Start(Retained.AgentRequest(id), 2)).StatusCode);

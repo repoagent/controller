@@ -54,14 +54,21 @@ sealed class AgentInputJson : IAgentInput
 
     static string Name(CheckpointPart field) => field switch
     {
-        CheckpointPart.Title => "title", CheckpointPart.Closed => "closed", CheckpointPart.Locked => "locked", CheckpointPart.Answer => "answer",
-        CheckpointPart.Category => "category", _ => throw new UnreachableException()
+        CheckpointPart.Title => "title",
+        CheckpointPart.Closed => "closed",
+        CheckpointPart.Locked => "locked",
+        CheckpointPart.Answer => "answer",
+        CheckpointPart.Category => "category",
+        _ => throw new UnreachableException()
     };
 
     static JsonNode? Value(CheckpointPart field, CheckpointState state) => field switch
     {
-        CheckpointPart.Title => state.Title, CheckpointPart.Closed => state.Closed, CheckpointPart.Locked => state.Locked,
-        CheckpointPart.Answer => DiscussionJson.Answer(state.AnswerId), CheckpointPart.Category => DiscussionJson.Category(state.Category),
+        CheckpointPart.Title => state.Title,
+        CheckpointPart.Closed => state.Closed,
+        CheckpointPart.Locked => state.Locked,
+        CheckpointPart.Answer => DiscussionJson.Answer(state.AnswerId),
+        CheckpointPart.Category => DiscussionJson.Category(state.Category),
         _ => throw new UnreachableException()
     };
 }

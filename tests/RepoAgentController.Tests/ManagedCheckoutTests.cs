@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Security.Cryptography;
 using RepoAgentController;
 using Xunit;
 
@@ -14,6 +14,8 @@ public sealed class ManagedCheckoutEnvironment;
 [Collection("Managed checkout environment")]
 public sealed class ManagedCheckoutTests
 {
+    static readonly string[] ExpectedMethods = ["thread/start", "turn/start", "thread/resume", "turn/start"];
+
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, false)]
@@ -51,7 +53,8 @@ public sealed class ManagedCheckoutTests
         using var fixture = new BrokerAuthenticationTests.Fixture(clone: clone);
         // Graceful shutdown belongs to explicit own-App mode; broker teardown always ends the tree before EOF.
         using var ownKey = scenario.StartsWith("shutdown-", StringComparison.Ordinal) ? RSA.Create(2048) : null;
-        using var ownApp = ownKey is null ? null : new HttpClient(new GracefulOwnAppProvider());
+        using var ownHandler = ownKey is null ? null : new GracefulOwnAppProvider();
+        using var ownApp = ownHandler is null ? null : new HttpClient(ownHandler, disposeHandler: false);
         var ownKeyFile = Path.Combine(fixture.Directory, "own-app.pem");
         if (ownKey is not null) File.WriteAllText(ownKeyFile, ownKey.ExportRSAPrivateKeyPem());
         var origin = Path.Combine(fixture.Directory, "origin");
@@ -156,10 +159,19 @@ public sealed class ManagedCheckoutTests
         var environment = new Dictionary<string, string?>
         {
             ["PATH"] = bin + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"),
-            ["CHECKOUT_CAPTURE"] = capture, ["CHECKOUT_ORIGIN"] = origin,
-            ["CHECKOUT_TRANSPORT"] = null, ["CHECKOUT_DISCUSSION"] = null, ["CHECKOUT_CAS"] = null, ["CHECKOUT_SHUTDOWN_SIGNAL"] = null, ["CHECKOUT_SHUTDOWN_RELEASE"] = null, ["CHECKOUT_SHUTDOWN_PID"] = null,
-            ["CHECKOUT_METADATA"] = metadataFile, ["CHECKOUT_CLONE_LOG"] = cloneLog,
-            ["CHECKOUT_REAL_NATIVE"] = native, ["CODEX_HOME"] = home, ["CHECKOUT_REAL_GIT"] = realGit
+            ["CHECKOUT_CAPTURE"] = capture,
+            ["CHECKOUT_ORIGIN"] = origin,
+            ["CHECKOUT_TRANSPORT"] = null,
+            ["CHECKOUT_DISCUSSION"] = null,
+            ["CHECKOUT_CAS"] = null,
+            ["CHECKOUT_SHUTDOWN_SIGNAL"] = null,
+            ["CHECKOUT_SHUTDOWN_RELEASE"] = null,
+            ["CHECKOUT_SHUTDOWN_PID"] = null,
+            ["CHECKOUT_METADATA"] = metadataFile,
+            ["CHECKOUT_CLONE_LOG"] = cloneLog,
+            ["CHECKOUT_REAL_NATIVE"] = native,
+            ["CODEX_HOME"] = home,
+            ["CHECKOUT_REAL_GIT"] = realGit
         };
         var previous = environment.Keys.ToDictionary(k => k, Environment.GetEnvironmentVariable);
         try
@@ -218,7 +230,7 @@ public sealed class ManagedCheckoutTests
                 discussion["body"] = "@test-app[bot] updated fixture"; File.WriteAllText(input, discussion.ToJsonString());
                 Assert.Equal(0, await Start());
                 var requests = File.ReadAllLines(transport).Select(line => JsonNode.Parse(line)!).ToArray();
-                Assert.Equal(new[] { "thread/start", "turn/start", "thread/resume", "turn/start" }, requests.Select(value => value["method"]!.GetValue<string>()));
+                Assert.Equal(ExpectedMethods, requests.Select(value => value["method"]!.GetValue<string>()));
                 foreach (var request in requests.Where(value => value["method"]!.GetValue<string>().StartsWith("thread/", StringComparison.Ordinal)))
                 {
                     Assert.Equal(expected, request["params"]!["cwd"]!.GetValue<string>());
@@ -240,7 +252,7 @@ public sealed class ManagedCheckoutTests
                 var observed = Task.Run(() => File.ReadAllText(signal));
                 var leader = Task.Run(Start);
                 Assert.Equal("shutdown", await observed.WaitAsync(TimeSpan.FromSeconds(20)));
-                using var rootProcess = scenario == "shutdown-forced" ? Process.GetProcessById(int.Parse(File.ReadAllText(pidFile))) : null;
+                using var rootProcess = scenario == "shutdown-forced" ? Process.GetProcessById(int.Parse(File.ReadAllText(pidFile), System.Globalization.CultureInfo.InvariantCulture)) : null;
                 try
                 {
                     if (rootProcess is not null) Assert.False(rootProcess.HasExited);
@@ -305,8 +317,10 @@ public sealed class ManagedCheckoutTests
                 "/repos/owner/repository/installation" => new { id = 234, app_id = 123, permissions },
                 "/app/installations/234/access_tokens" => new
                 {
-                    token = "opaque-token-own-app", expires_at = DateTimeOffset.UtcNow.AddHours(1),
-                    repository_selection = "selected", permissions,
+                    token = "opaque-token-own-app",
+                    expires_at = DateTimeOffset.UtcNow.AddHours(1),
+                    repository_selection = "selected",
+                    permissions,
                     repositories = new[] { new { id = 345, full_name = "owner/repository" } }
                 },
                 _ => throw new InvalidOperationException("Unexpected own-App request")

@@ -1,7 +1,7 @@
 using Azure.Core;
 using Azure.Identity;
-using Azure.Storage.Blobs;
 using Azure.Security.KeyVault.Keys.Cryptography;
+using Azure.Storage.Blobs;
 using Microsoft.AspNetCore.DataProtection;
 
 namespace RepoAgent.Auth;
@@ -38,11 +38,16 @@ public static class IssuanceServices
             .ProtectKeysWithAzureKeyVault(settings.WrappingKey, new KeyResolver(credential, CryptoOptions()));
         builder.Services.AddSingleton<ISecretProtection, DataProtectionSecretProtection>();
         builder.Services.AddSingleton(new CryptographyClient(settings.SigningKey, credential, CryptoOptions()));
-        builder.Services.AddSingleton(new GitHubRest(new HttpClient(new SocketsHttpHandler
+        builder.Services.AddSingleton(_ => new HttpClient(new SocketsHttpHandler
         {
-            AllowAutoRedirect = false, UseCookies = false, MaxConnectionsPerServer = 8,
-            ConnectTimeout = TimeSpan.FromSeconds(3), MaxResponseHeadersLength = 16
-        }) { Timeout = Timeout.InfiniteTimeSpan }));
+            AllowAutoRedirect = false,
+            UseCookies = false,
+            MaxConnectionsPerServer = 8,
+            ConnectTimeout = TimeSpan.FromSeconds(3),
+            MaxResponseHeadersLength = 16
+        })
+        { Timeout = Timeout.InfiniteTimeSpan });
+        builder.Services.AddSingleton(services => new GitHubRest(services.GetRequiredService<HttpClient>()));
         builder.Services.AddSingleton(IssuanceLimits.Read(builder.Configuration));
         builder.Services.AddSingleton(CreateStore);
         builder.Services.AddSingleton<IAppInstallations, GitHubAppInstallations>();

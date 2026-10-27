@@ -95,10 +95,13 @@ public sealed class StateTransaction
 }
 
 // The store did not answer, or answered in a way that proves nothing. After a commit, the outcome is unknown.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1710:Identifiers should have correct suffix", Justification = "Preserve the established core exception contract; renaming is outside the analyzer rollout.")]
 public sealed class BrokerStateUnavailable(string message, Exception? cause = null) : Exception(message, cause);
 
 // A write's precondition failed: another writer got there first. Nothing in the transaction was written.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1710:Identifiers should have correct suffix", Justification = "Preserve the established core exception contract; renaming is outside the analyzer rollout.")]
 public sealed class StateConflict() : Exception("Another writer changed the records first; nothing was written.");
 
 // The stored row is not exactly a record of the expected type, so the core must not act on it or rewrite it.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1710:Identifiers should have correct suffix", Justification = "Preserve the established core exception contract; renaming is outside the analyzer rollout.")]
 public sealed class BrokerRecordUnreadable(string message) : Exception(message);

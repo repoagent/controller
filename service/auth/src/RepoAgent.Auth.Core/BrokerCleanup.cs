@@ -93,17 +93,25 @@ public sealed class BrokerCleanup(IBrokerState state, string deploymentEpoch, IC
                 var position = cursors[lane]?.Value.Family(family);
                 ages.Add(new
                 {
-                    lane = lane == 0 ? "payload" : "audit", family = family == 0 ? "enrollment" : "issuance",
+                    lane = lane == 0 ? "payload" : "audit",
+                    family = family == 0 ? "enrollment" : "issuance",
                     cursorAgeSeconds = Age(position?.ProgressAt, now),
                     cycleAgeSeconds = Age(position?.StartedAt, now)
                 });
             }
         return new
         {
-            processedAllocations = processed, deletedRowsObserved = deleted, payloadFieldsRemovedObserved = removed,
-            unsettledAllocationsObserved = unsettled, failures, conflicts,
-            incompleteCoverage = completed.Cast<bool>().Any(value => !value), stopReason,
-            logicalQueryPages = pages, sdkTableDispatches = budget.Dispatches, sdkBatchDispatches = budget.BatchDispatches,
+            processedAllocations = processed,
+            deletedRowsObserved = deleted,
+            payloadFieldsRemovedObserved = removed,
+            unsettledAllocationsObserved = unsettled,
+            failures,
+            conflicts,
+            incompleteCoverage = completed.Cast<bool>().Any(value => !value),
+            stopReason,
+            logicalQueryPages = pages,
+            sdkTableDispatches = budget.Dispatches,
+            sdkBatchDispatches = budget.BatchDispatches,
             // Reference-scope calculation, not measured traffic or runtime-version detection.
             reviewedHttp11Envelope = new
             {
@@ -113,8 +121,10 @@ public sealed class BrokerCleanup(IBrokerState state, string deploymentEpoch, IC
                 batchRequestUpperBound = budget.MaxSendsPerDispatch * budget.BatchDispatches
             },
             elapsedMilliseconds = (long)clock.GetElapsedTime(started).TotalMilliseconds,
-            oldestObservedOverduePayloadAt = oldest, oldestObservedOverduePayloadAgeSeconds = Age(oldest, now),
-            unknownDeadlineCount = unknownDeadlines, cursorAndCycleAges = ages
+            oldestObservedOverduePayloadAt = oldest,
+            oldestObservedOverduePayloadAgeSeconds = Age(oldest, now),
+            unknownDeadlineCount = unknownDeadlines,
+            cursorAndCycleAges = ages
         };
     }
 

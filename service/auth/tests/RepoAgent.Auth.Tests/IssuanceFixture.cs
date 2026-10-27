@@ -19,8 +19,9 @@ internal sealed class IssuanceFixture
 
     public IssuanceStore Store(IssuanceLimits? limits = null) => new(State, Epoch, 4096, Secrets, Clock, limits);
     public InstallationTokenIssuer Issuer(IssuanceLimits? limits = null) => new(Store(limits), GitHub, GitHub, GitHub, Clock);
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1068", Justification = "Preserve existing positional callers; this token is distinct from the optional configuration that follows it.")]
     public Task<IssuanceResult> IssueAsync(CancellationToken caller = default, IssuanceLimits? limits = null) =>
-        Issuer(limits).IssueAsync(Device.DeviceId, Device.Secret, caller);
+            Issuer(limits).IssueAsync(Device.DeviceId, Device.Secret, caller);
     public DeviceRevocation Revocation() => new(State, Epoch, Clock);
 
     public static StateKey<RepositoryGate> GateKey => RepositoryGate.Key(RepositoryId);
@@ -90,43 +91,96 @@ internal sealed class IssuanceFixture
             var generation = Guid.NewGuid().ToString("N");
             State.Seed(IssuanceQuota.Key, new()
             {
-                RetentionSchemaVersion = 1, RetainedIssuanceCount = 1,
-                Window = 0, Admissions = 0, Reads = 0, Signs = 0, Mints = 0, Slots = 1
+                RetentionSchemaVersion = 1,
+                RetainedIssuanceCount = 1,
+                Window = 0,
+                Admissions = 0,
+                Reads = 0,
+                Signs = 0,
+                Mints = 0,
+                Slots = 1
             });
             var ledger = new IssuanceLedger
             {
-                OperationId = "one", Generation = generation, RepositoryId = repositoryId, EnrollmentId = deviceId, Purpose = "runtime",
-                Epoch = Epoch, ReservedAt = created, PayloadPurgeAt = created.AddHours(24), GlobalSlot = 0, AttemptRowKey = "attempt:one",
-                RowCredits = 4, ApprovalKind = "environment-variable", SetupVersion = 1, PolicyVersion = IssuancePolicy.Version
+                OperationId = "one",
+                Generation = generation,
+                RepositoryId = repositoryId,
+                EnrollmentId = deviceId,
+                Purpose = "runtime",
+                Epoch = Epoch,
+                ReservedAt = created,
+                PayloadPurgeAt = created.AddHours(24),
+                GlobalSlot = 0,
+                AttemptRowKey = "attempt:one",
+                RowCredits = 4,
+                ApprovalKind = "environment-variable",
+                SetupVersion = 1,
+                PolicyVersion = IssuancePolicy.Version
             };
             State.Seed(IssuanceLedger.Key("one"), ledger);
             State.Seed(IssuanceSlot.Key(0), new()
             {
-                OperationId = "one", Generation = generation, RepositoryId = repositoryId, Purpose = "runtime", Epoch = Epoch,
-                ReservedAt = created, PayloadPurgeAt = created.AddHours(24), GlobalSlot = 0,
-                ApprovalKind = "environment-variable", SetupVersion = 1, PolicyVersion = IssuancePolicy.Version
+                OperationId = "one",
+                Generation = generation,
+                RepositoryId = repositoryId,
+                Purpose = "runtime",
+                Epoch = Epoch,
+                ReservedAt = created,
+                PayloadPurgeAt = created.AddHours(24),
+                GlobalSlot = 0,
+                ApprovalKind = "environment-variable",
+                SetupVersion = 1,
+                PolicyVersion = IssuancePolicy.Version
             });
             State.Seed(EnrollmentLocator.Key(deviceId), new() { RepositoryId = repositoryId, EnrollmentId = deviceId, PendingId = repositoryId + "_" + Guid.NewGuid().ToString("N") });
             State.Seed(IssuanceAttempt.Key(repositoryId, "one"), new()
             {
-                RepositoryId = repositoryId, EnrollmentId = deviceId, Epoch = Epoch, State = "outstanding", Purpose = "runtime",
-                OperationId = "one", Generation = generation, ReservedAt = created, PayloadPurgeAt = created.AddHours(24), GlobalSlot = 0,
-                ApprovalKind = "environment-variable", SetupVersion = 1, PolicyVersion = IssuancePolicy.Version
+                RepositoryId = repositoryId,
+                EnrollmentId = deviceId,
+                Epoch = Epoch,
+                State = "outstanding",
+                Purpose = "runtime",
+                OperationId = "one",
+                Generation = generation,
+                ReservedAt = created,
+                PayloadPurgeAt = created.AddHours(24),
+                GlobalSlot = 0,
+                ApprovalKind = "environment-variable",
+                SetupVersion = 1,
+                PolicyVersion = IssuancePolicy.Version
             });
         }
         State.Seed(RepositoryGate.Key(repositoryId), new()
         {
-            RepositoryId = repositoryId, Epoch = Epoch, OwnerEnrollmentId = deviceId, State = "active", Sequence = 7, OutstandingTokenCount = outstanding
+            RepositoryId = repositoryId,
+            Epoch = Epoch,
+            OwnerEnrollmentId = deviceId,
+            State = "active",
+            Sequence = 7,
+            OutstandingTokenCount = outstanding
         });
         var challenge = new string('a', 43);
         State.Seed(ControllerEnrollment.Key(repositoryId, deviceId), new()
         {
-            RepositoryId = repositoryId, EnrollmentId = deviceId, Epoch = Epoch,
+            RepositoryId = repositoryId,
+            EnrollmentId = deviceId,
+            Epoch = Epoch,
             ControllerSecretHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret))),
-            ExpiresAt = created.AddHours(1), State = "active", OutstandingTokenCount = outstanding, Acknowledged = true,
-            AppId = IssuancePolicy.AppId, AppSlug = IssuancePolicy.AppSlug, GitHubHost = "github.com", PolicyVersion = IssuancePolicy.Version,
-            Repository = repository, InstallationId = 789, Profile = "polling", Environment = "approval/environment", EnvironmentId = 987,
-            Variable = "APPROVAL", Challenge = challenge,
+            ExpiresAt = created.AddHours(1),
+            State = "active",
+            OutstandingTokenCount = outstanding,
+            Acknowledged = true,
+            AppId = IssuancePolicy.AppId,
+            AppSlug = IssuancePolicy.AppSlug,
+            GitHubHost = "github.com",
+            PolicyVersion = IssuancePolicy.Version,
+            Repository = repository,
+            InstallationId = 789,
+            Profile = "polling",
+            Environment = "approval/environment",
+            EnvironmentId = 987,
+            Variable = "APPROVAL",
+            Challenge = challenge,
             Marker = ApprovalMarker.Create(ApprovalContract.Legacy, repositoryId, repository, 789, deviceId, challenge, "polling", Epoch,
                 "APPROVAL", "approval/environment", 987)
         });

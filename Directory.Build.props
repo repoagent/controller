@@ -1,0 +1,18 @@
+<Project>
+  <PropertyGroup>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>11-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Nullable>enable</Nullable>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.claude/**;**/.claude/**;artifacts/**</DefaultItemExcludes>
+  </PropertyGroup>
+  <!-- Nested native worktrees must not inherit the enclosing checkout's global policy.
+       Retain SDK and package global configs, which are outside either checkout. -->
+  <Target Name="ExcludeEnclosingCheckoutGlobalConfig" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <EditorConfigFiles Remove="@(EditorConfigFiles)"
+        Condition="'%(Filename)%(Extension)' == '.globalconfig' and $([System.String]::Copy('$(MSBuildThisFileDirectory)').StartsWith('%(RootDir)%(Directory)')) and '%(FullPath)' != '$(MSBuildThisFileDirectory).globalconfig'" />
+    </ItemGroup>
+  </Target>
+</Project>

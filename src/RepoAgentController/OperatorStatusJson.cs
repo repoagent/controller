@@ -59,10 +59,13 @@ static class OperatorStatusJson
     {
         var record = new JsonObject
         {
-            ["version"] = 1, ["repository"] = status.Repository,
-            ["controller"] = Controller(status.Controller), ["authentication"] = Credential(status.Authentication),
+            ["version"] = 1,
+            ["repository"] = status.Repository,
+            ["controller"] = Controller(status.Controller),
+            ["authentication"] = Credential(status.Authentication),
             ["codexAuthentication"] = Credential(status.CodexAuthentication),
-            ["failures"] = Failures(status.Failures, status.FailuresAsRead), ["latestActivity"] = Event(status.LatestActivity)
+            ["failures"] = Failures(status.Failures, status.FailuresAsRead),
+            ["latestActivity"] = Event(status.LatestActivity)
         };
         if (status.RunningSessions.Count != 0) record["runningSessions"] = new JsonArray([.. status.RunningSessions.Select(session => (JsonNode?)JsonValue.Create(session))]);
         return record;
@@ -85,7 +88,9 @@ static class OperatorStatusJson
         var item = node as JsonObject;
         var run = new ControllerRun(item?["state"].OptionalText() ?? "")
         {
-            Mode = item?["mode"].OptionalText(), StartedAt = item?["startedAt"].OptionalText(), UpdatedAt = item?["updatedAt"].OptionalText(),
+            Mode = item?["mode"].OptionalText(),
+            StartedAt = item?["startedAt"].OptionalText(),
+            UpdatedAt = item?["updatedAt"].OptionalText(),
             StoppedAt = item?["stoppedAt"].OptionalText()
         };
         return Same(Controller(run), node) ? run : run with { AsRead = node.ToJsonString() };
@@ -104,7 +109,7 @@ static class OperatorStatusJson
         if (node is null) return null;
         var item = node as JsonObject;
         var read = new StatusEvent(item?["at"].OptionalText() ?? "", item?["kind"].OptionalText() ?? "", item?["message"].OptionalText() ?? "")
-            { Url = item?["url"].OptionalText() };
+        { Url = item?["url"].OptionalText() };
         return Same(Event(read), node) ? read : read with { AsRead = node.ToJsonString(), AsReadIsObject = item is not null };
     }
 

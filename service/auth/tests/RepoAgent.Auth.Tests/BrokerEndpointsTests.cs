@@ -22,8 +22,8 @@ public sealed class BrokerEndpointsTests
 
         var mapped = ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints).OfType<RouteEndpoint>()
             .Select(e => string.Join(',', e.Metadata.GetRequiredMetadata<IHttpMethodMetadata>().HttpMethods) + " " + e.RoutePattern.RawText);
-        var runtime = new[] { 1, 2, 3 }.SelectMany(v => new[] { $"DELETE /v{v}/devices/{{deviceId}}", $"POST /v{v}/devices/{{deviceId}}/installation-token" });
-        var setup = new[] { 1, 2, 3, 4 }.SelectMany(v => new[] { $"POST /v{v}/enrollments", $"GET /v{v}/enrollments/{{id}}",
+        var runtime = Enumerable.Range(1, 3).SelectMany(v => new[] { $"DELETE /v{v}/devices/{{deviceId}}", $"POST /v{v}/devices/{{deviceId}}/installation-token" });
+        var setup = Enumerable.Range(1, 4).SelectMany(v => new[] { $"POST /v{v}/enrollments", $"GET /v{v}/enrollments/{{id}}",
             $"POST /v{v}/enrollments/{{id}}/completion", $"POST /v{v}/devices/{{id}}/acknowledgment" });
         Assert.Equal(runtime.Concat(setup).Order(StringComparer.Ordinal), mapped.Order(StringComparer.Ordinal));
     }

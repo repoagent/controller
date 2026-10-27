@@ -94,18 +94,38 @@ public static class ApprovalMarker
         if (approval.IsRepositoryVariable)
             return JsonSerializer.Serialize(new
             {
-                version = approval.SetupVersion, approvalKind = approval.Kind, githubHost = "github.com", appId = AppId, appSlug = AppSlug,
-                repositoryId = Id(repositoryId), repository,
-                installationId, deviceId = enrollmentId, challenge = text,
-                profile, policyVersion = approval.Policy, epoch, variable
+                version = approval.SetupVersion,
+                approvalKind = approval.Kind,
+                githubHost = "github.com",
+                appId = AppId,
+                appSlug = AppSlug,
+                repositoryId = Id(repositoryId),
+                repository,
+                installationId,
+                deviceId = enrollmentId,
+                challenge = text,
+                profile,
+                policyVersion = approval.Policy,
+                epoch,
+                variable
             });
         return JsonSerializer.Serialize(new
         {
-            version = 1, githubHost = "github.com", appId = AppId, appSlug = AppSlug,
-            repositoryId = Id(repositoryId), repository,
-            installationId, deviceId = enrollmentId, challenge = text,
-            profile, policyVersion = IssuancePolicy.Version, epoch,
-            environment = Text(environment), environmentId = Number(environmentId), variable
+            version = 1,
+            githubHost = "github.com",
+            appId = AppId,
+            appSlug = AppSlug,
+            repositoryId = Id(repositoryId),
+            repository,
+            installationId,
+            deviceId = enrollmentId,
+            challenge = text,
+            profile,
+            policyVersion = IssuancePolicy.Version,
+            epoch,
+            environment = Text(environment),
+            environmentId = Number(environmentId),
+            variable
         });
     }
 }

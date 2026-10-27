@@ -104,7 +104,8 @@ public sealed class RetainedStateConformanceTests
             var settings = new Dictionary<string, string?>
             {
                 ["Broker:TableEndpoint"] = "https://example.table.core.windows.net",
-                ["Broker:TableName"] = "tests", ["Broker:DeploymentEpoch"] = "test"
+                ["Broker:TableName"] = "tests",
+                ["Broker:DeploymentEpoch"] = "test"
             };
             if (value is not null) settings["Broker:" + limit] = value;
             return BrokerOptions.Read(name => settings.GetValueOrDefault(name));
@@ -117,8 +118,8 @@ public sealed class RetainedStateConformanceTests
         };
         Assert.Equal(maximum, Selected(Read(null)));
         Assert.Equal(1, Selected(Read("1")));
-        Assert.Equal(maximum, Selected(Read(maximum.ToString())));
-        foreach (var invalid in new[] { "garbage", "0", "-1", (maximum + 1).ToString() })
+        Assert.Equal(maximum, Selected(Read(maximum.ToString(System.Globalization.CultureInfo.InvariantCulture))));
+        foreach (var invalid in new[] { "garbage", "0", "-1", (maximum + 1).ToString(System.Globalization.CultureInfo.InvariantCulture) })
             Assert.Throws<InvalidOperationException>(() => Read(invalid));
     }
 

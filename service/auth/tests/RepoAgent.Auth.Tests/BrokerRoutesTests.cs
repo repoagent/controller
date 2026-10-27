@@ -310,7 +310,7 @@ public sealed class BrokerRoutesTests
             RouteName.Status => BrokerRoutes.StatusAsync(request, Id, () => Compose(Broker.Enrollment), Version),
             RouteName.Complete => BrokerRoutes.CompleteAsync(request, Id, () => Compose(Broker.Enrollment), Version),
             RouteName.Acknowledge => BrokerRoutes.AcknowledgeAsync(request, Id, () => Compose(Broker.Enrollment), Version),
-            _ => throw new ArgumentOutOfRangeException(nameof(name), name, "Not a public route."),
+            _ => throw new InvalidOperationException("Not a public route: " + name),
         };
 
         public void AssertNoWork()

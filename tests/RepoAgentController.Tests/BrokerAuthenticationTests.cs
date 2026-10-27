@@ -398,7 +398,7 @@ public sealed class BrokerAuthenticationTests
         using var fixture = new Fixture(webhooks, clone: true);
         using var credentials = fixture.Credentials();
         await credentials.Initialize(null, TestContext.Current.CancellationToken);
-        Assert.Equal(1, fixture.Transport.Requests.Count);
+        Assert.Single(fixture.Transport.Requests);
         fixture.Clock.Advance(TimeSpan.FromMinutes(56));
         await credentials.GetToken(TestContext.Current.CancellationToken);
         Assert.Equal(2, fixture.Transport.Requests.Count);
@@ -550,7 +550,7 @@ public sealed class BrokerAuthenticationTests
             case "without-variables": fixture.Enrollment["permissions"]!.AsObject().Remove("agent_variables"); break;
             case "variables-write": fixture.Enrollment["permissions"]!["agent_variables"] = value; break;
             case "actions-variables": fixture.Enrollment["permissions"]!["actions_variables"] = value; break;
-            case "protocolVersion": fixture.Enrollment[field] = int.Parse(value); break;
+            case "protocolVersion": fixture.Enrollment[field] = int.Parse(value, System.Globalization.CultureInfo.InvariantCulture); break;
             default: fixture.Enrollment[field] = value; break;
         }
         fixture.SaveEnrollment();

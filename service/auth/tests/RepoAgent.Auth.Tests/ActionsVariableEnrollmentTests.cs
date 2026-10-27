@@ -63,7 +63,7 @@ public sealed class ActionsVariableEnrollmentTests
         var removed = await f.Issue(device, secret);
         Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
         github.Actions["REPOAGENT_APPROVAL"] = marker;
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var restored = await f.Issue(device, secret);
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
@@ -90,7 +90,7 @@ public sealed class ActionsVariableEnrollmentTests
         var removed = await f.Issue(active.Device, active.Secret);
         Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
         github.Actions["REPOAGENT_APPROVAL"] = active.Marker;
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var restored = await f.Issue(active.Device, active.Secret);
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
@@ -176,7 +176,7 @@ public sealed class ActionsVariableEnrollmentTests
 
         f.GitHub.VariableAnswer = null;
         github.Actions["REPOAGENT_APPROVAL"] = active.Marker;
-                f.Clock.Advance(TimeSpan.FromMinutes(1));
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var after = await f.Issue(active.Device, active.Secret);
         Assert.Equal(terminal ? HttpStatusCode.Unauthorized : HttpStatusCode.OK, after.StatusCode);
     }

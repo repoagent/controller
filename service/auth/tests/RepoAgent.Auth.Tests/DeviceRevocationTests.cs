@@ -28,12 +28,22 @@ public sealed class DeviceRevocationTests
         state.Seed(LocatorKey(id), new EnrollmentLocator { RepositoryId = Repository, EnrollmentId = id, PendingId = Repository + "_pending" });
         state.Seed(GateKey, new RepositoryGate
         {
-            RepositoryId = Repository, Epoch = Epoch, OwnerEnrollmentId = id, State = "active", Sequence = 7, OutstandingTokenCount = 1
+            RepositoryId = Repository,
+            Epoch = Epoch,
+            OwnerEnrollmentId = id,
+            State = "active",
+            Sequence = 7,
+            OutstandingTokenCount = 1
         });
         var enrollment = new ControllerEnrollment
         {
-            RepositoryId = Repository, EnrollmentId = id, Epoch = Epoch, ControllerSecretHash = Hash(secret ?? Secret),
-            ExpiresAt = clock.GetUtcNow().AddHours(1), State = "active", OutstandingTokenCount = 1
+            RepositoryId = Repository,
+            EnrollmentId = id,
+            Epoch = Epoch,
+            ControllerSecretHash = Hash(secret ?? Secret),
+            ExpiresAt = clock.GetUtcNow().AddHours(1),
+            State = "active",
+            OutstandingTokenCount = 1
         };
         shape?.Invoke(enrollment);
         state.Seed(EnrollmentKey(id), enrollment);

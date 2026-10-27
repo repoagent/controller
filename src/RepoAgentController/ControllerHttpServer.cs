@@ -31,7 +31,9 @@ sealed class ControllerHttpServer : IAsyncDisposable
         // answer a failing request with the developer exception page.
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
         {
-            Args = [], ContentRootPath = AppContext.BaseDirectory, EnvironmentName = Environments.Production
+            Args = [],
+            ContentRootPath = AppContext.BaseDirectory,
+            EnvironmentName = Environments.Production
         });
         builder.Configuration.Sources.Clear();
         builder.Logging.ClearProviders();

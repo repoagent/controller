@@ -32,7 +32,7 @@ public sealed class BaselineReleaseCheckTests
         var ct = TestContext.Current.CancellationToken;
         var current = Release(101, image: "running");
         published.Publish(current);
-        var releases = Check(Inventory("running"));
+        await using var releases = Check(Inventory("running"));
 
         await releases.Check(ct);
         Assert.Equal(new ReleaseNotice(Start, current, current, 0, null), releases.Current);
@@ -58,7 +58,7 @@ public sealed class BaselineReleaseCheckTests
         var rerun = Release(102, attempt: 2);
         var newest = Release(103);
         foreach (var release in new[] { newest, rerun, running, Release(101, attempt: 3) }) published.Publish(release);
-        var releases = Check(Inventory("running"));
+        await using var releases = Check(Inventory("running"));
 
         await releases.Check(TestContext.Current.CancellationToken);
 
@@ -74,7 +74,7 @@ public sealed class BaselineReleaseCheckTests
         published.Publish(current);
         published.Publish(newer);
         published.Fail(new IOException("GitHub returned HTTP 503"));
-        var releases = Check(Inventory("running"));
+        await using var releases = Check(Inventory("running"));
 
         await releases.Check(ct);
         Assert.Equal(new ReleaseNotice(Start, null, null, 0, null, "GitHub returned HTTP 503"), releases.Current);
@@ -101,7 +101,7 @@ public sealed class BaselineReleaseCheckTests
     {
         var ct = TestContext.Current.CancellationToken;
         string[] secrets = ["ghs_first", "ghs_second"];
-        var releases = Check(Inventory("running"), redact: text => secrets.Aggregate(text, (redacted, secret) => redacted.Replace(secret, "<redacted>", StringComparison.Ordinal)));
+        await using var releases = Check(Inventory("running"), redact: text => secrets.Aggregate(text, (redacted, secret) => redacted.Replace(secret, "<redacted>", StringComparison.Ordinal)));
 
         published.Fail(new IOException("gh failed: HTTP 401 for token ghs_first"));
         await releases.Check(ct);
@@ -120,7 +120,7 @@ public sealed class BaselineReleaseCheckTests
     public async Task An_unreadable_image_inventory_fails_the_check_like_an_unreadable_release_list()
     {
         published.Publish(Release(101));
-        var releases = new BaselineReleases(published, _ => throw new FileNotFoundException("Could not find file '/opt/repoagent/image-inventory.json'."),
+        await using var releases = new BaselineReleases(published, _ => throw new FileNotFoundException("Could not find file '/opt/repoagent/image-inventory.json'."),
             clock, log, text => text);
 
         await releases.Check(TestContext.Current.CancellationToken);
@@ -138,7 +138,7 @@ public sealed class BaselineReleaseCheckTests
         var newer = Release(102, gh: "2.103.1");
         published.Publish(baseline);
         published.Publish(newer);
-        var releases = image switch
+        await using var releases = image switch
         {
             // Composed with a derived Dockerfile, for example: its inventory differs from every published one.
             "derived image" => Check(Inventory("derived")),
@@ -155,7 +155,7 @@ public sealed class BaselineReleaseCheckTests
     [Fact]
     public async Task Without_a_published_baseline_release_none_is_newest()
     {
-        var releases = Check(Inventory("running"));
+        await using var releases = Check(Inventory("running"));
 
         await releases.Check(TestContext.Current.CancellationToken);
 
@@ -170,7 +170,7 @@ public sealed class BaselineReleaseCheckTests
     {
         var ct = TestContext.Current.CancellationToken;
         published.Publish(Release(101, image: "running"));
-        var releases = Check(Inventory("running"));
+        await using var releases = Check(Inventory("running"));
         var changes = 0;
         releases.Changed += () => changes++;
 

@@ -255,7 +255,8 @@ public sealed class InstallationTokenTests
         // Which reported scopes are out of scope is the core's rule (GitHubTokenMinterTests); this is the issuer's outcome.
         f.GitHub.MintAnswer = (mint, token) => GitHubRead.Found(mint.Number == 2 ? token with
         {
-            Value = "excess-token", Permissions = new Dictionary<string, string?> { ["discussions"] = "write", ["contents"] = "read" }
+            Value = "excess-token",
+            Permissions = new Dictionary<string, string?> { ["discussions"] = "write", ["contents"] = "read" }
         } : token);
         Assert.Equal(503, (await f.IssueAsync(Token)).Status);
         Assert.Equal(1, f.GitHub.Revokes);

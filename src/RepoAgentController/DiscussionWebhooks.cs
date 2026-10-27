@@ -17,8 +17,10 @@ sealed record WebhookConfiguration(Uri PublicUrl, int Port, TimeSpan ReconcileIn
 /// <see cref="Receive"/>; <see cref="Run"/> registers the repository webhook and deactivates it when the controller stops.
 /// </summary>
 sealed class DiscussionWebhooks(GitHub github, Bridge bridge, IWebhookRegistration registration, WebhookConfiguration configuration, TimeProvider time,
-    CheckoutRefresh? refresh = null)
+    CheckoutRefresh? refresh = null) : IDisposable
 {
+    // The HTTP server is disposed first, after Run has joined its workers.
+    public void Dispose() { slots.Dispose(); stop.Dispose(); }
     readonly Channel<int> work = Channel.CreateUnbounded<int>(new UnboundedChannelOptions { SingleReader = true });
     readonly HashSet<int> queued = [];
     readonly SemaphoreSlim slots = new(16);
@@ -74,7 +76,7 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, IWebhookRegistrati
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
             var succeeded = number == 0 ? await bridge.Poll(ct) : await bridge.Observe(number, ct);
             Log.Write(number == 0 ? "reconciliation-completed" : "webhook-observed",
-                $"discussion={(number == 0 ? "all" : number.ToString())} success={succeeded} elapsed-ms={System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0}");
+                $"discussion={(number == 0 ? "all" : number.ToString(System.Globalization.CultureInfo.InvariantCulture))} success={succeeded} elapsed-ms={System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0}");
         }
     }
 

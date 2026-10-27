@@ -10,8 +10,13 @@ internal sealed class InMemoryGitHub(TimeProvider? clock = null) : IAppInstallat
     // The App's installation on owner/project, with every permission a setup version asks for.
     public static readonly AppInstallation Installed = new(789, IssuancePolicy.AppId, IssuancePolicy.AppSlug, false, new Dictionary<string, string?>
     {
-        ["discussions"] = "write", ["repository_hooks"] = "write", ["contents"] = "read", ["environments"] = "read",
-        ["actions"] = "read", ["actions_variables"] = "read", ["agent_variables"] = "read"
+        ["discussions"] = "write",
+        ["repository_hooks"] = "write",
+        ["contents"] = "read",
+        ["environments"] = "read",
+        ["actions"] = "read",
+        ["actions_variables"] = "read",
+        ["agent_variables"] = "read"
     });
     private string marker = "";
     private int authorizations, reads, mints, verifierMints, revokes;

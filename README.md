@@ -23,7 +23,7 @@ Category enrollment, repository model defaults and concurrency changes require [
 
 ## Get started
 
-You need a repository with Discussions enabled, a compatible GitHub App installed, Codex credentials, and Docker with Linux containers. The supported image targets Linux amd64.
+You need a repository with Discussions enabled, a compatible GitHub App installed, Codex credentials, and Docker with Linux containers. The supported image targets Linux amd64. Building from source uses the pinned .NET 11 RC3 SDK; see [development and code quality](docs/code-quality.md).
 
 - **Local installation:** follow the [guided PowerShell installer](docs/local-installation.md) for Windows, Linux or WSL. It previews changes before `-Apply`, supports shared-App enrollment through a trusted credential broker, and can reuse an existing Codex sign-in.
 - **Your own GitHub App:** use the [App setup guide](docs/github-app-auth.md) and [container setup](docs/container-setup.md). Bash installation is available for this mode.

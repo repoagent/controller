@@ -55,8 +55,9 @@ public sealed class AgentSessions
     /// <summary>A turn the agent runtime reported ended, with its status as reported, and whether the provider rejected the Codex account credentials for it.</summary>
     public sealed record TurnOutcome(string Session, string Turn, string Status, bool CredentialsRejected);
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1068", Justification = "Preserve existing positional callers; this token is distinct from the optional configuration that follows it.")]
     public AgentSessions(IAgentRuntime runtime, IControllerLog log, IAgentTurnJournal? journal = null, CancellationToken credentialLost = default,
-        bool suppliedCredentials = false)
+            bool suppliedCredentials = false)
     {
         this.runtime = runtime;
         this.log = log;

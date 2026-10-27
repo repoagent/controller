@@ -98,7 +98,7 @@ public sealed class GitHubResponseGoldenTests
         var (read, value) = lookup ? GitHub.Read(response, GitHubDiscussions.Lookup) : GitHub.Read(response);
         if (read is null) return "unrecognized";
         var errors = string.Join(" ", read.Errors.Select(error => error.Type + "@" + string.Join(".", error.Path.Select(segment => segment ?? "#"))));
-        return $"{read.Status} data={read.HasData} errors=[{errors}] message=\"{read.Message}\" remaining={read.RateLimitRemaining?.ToString() ?? "-"} " +
+        return $"{read.Status} data={read.HasData} errors=[{errors}] message=\"{read.Message}\" remaining={read.RateLimitRemaining?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"} " +
             $"reset={read.RateLimitReset?.ToString("O") ?? "-"} retryAfter={read.RetryAfter?.ToString() ?? "-"} field={read.Field} value={value?.ToJsonString() ?? "-"}";
     }
 }

@@ -9,11 +9,23 @@ namespace RepoAgent.Auth.Tests;
 // unresolved, whose enrollment may be published, or that is of another generation stays charged.
 public sealed class RetainedRetirementConformanceTests
 {
+    static readonly string[] RetainedFields = [
+                "global:enrollment-v1/quota", "global:enrollment-v1/repository:123456", "global:issuance-v1/quota", "repository:123456/gate"
+            ];
+
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Theory]
-    [InlineData(1, false)] [InlineData(2, false)] [InlineData(3, false)] [InlineData(4, false)] [InlineData(5, false)]
-    [InlineData(1, true)] [InlineData(2, true)] [InlineData(3, true)] [InlineData(4, true)] [InlineData(5, true)]
+    [InlineData(1, false)]
+    [InlineData(2, false)]
+    [InlineData(3, false)]
+    [InlineData(4, false)]
+    [InlineData(5, false)]
+    [InlineData(1, true)]
+    [InlineData(2, true)]
+    [InlineData(3, true)]
+    [InlineData(4, true)]
+    [InlineData(5, true)]
     public async Task Retirement_lost_committed_phase_converges_with_one_refund(int boundary, bool enrollment)
     {
         var f = new InMemoryBroker();
@@ -38,7 +50,11 @@ public sealed class RetainedRetirementConformanceTests
     }
 
     [Theory]
-    [InlineData(1)] [InlineData(2)] [InlineData(3)] [InlineData(4)] [InlineData(5)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
     public async Task Retirement_uncommitted_phase_failure_keeps_credit_until_recovery(int boundary)
     {
         var f = new InMemoryBroker();
@@ -54,16 +70,24 @@ public sealed class RetainedRetirementConformanceTests
     }
 
     [Theory]
-    [InlineData("target")] [InlineData("release")] [InlineData("gate")] [InlineData("reference")]
-    [InlineData("quota")] [InlineData("ledger")]
+    [InlineData("target")]
+    [InlineData("release")]
+    [InlineData("gate")]
+    [InlineData("reference")]
+    [InlineData("quota")]
+    [InlineData("ledger")]
     public async Task Retirement_real_version_conflict_rolls_back_delete_or_refund(string competing)
     {
         var f = new InMemoryBroker();
         var allocation = await RetirementEligible(f, false);
         StateKey key = competing switch
         {
-            "target" => allocation.Target, "release" => allocation.Release, "gate" => RepositoryGate.Key(Retained.Repository),
-            "reference" => Reference(f, allocation), "quota" => IssuanceQuota.Key, _ => allocation.Ledger
+            "target" => allocation.Target,
+            "release" => allocation.Release,
+            "gate" => RepositoryGate.Key(Retained.Repository),
+            "reference" => Reference(f, allocation),
+            "quota" => IssuanceQuota.Key,
+            _ => allocation.Ledger
         };
         var commits = 0;
         f.State.BeforeCommit = _ =>
@@ -87,7 +111,8 @@ public sealed class RetainedRetirementConformanceTests
     }
 
     [Theory]
-    [InlineData(false)] [InlineData(true)]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task Retirement_unexplained_missing_target_or_obligation_never_refunds(bool missingRelease)
     {
         var f = new InMemoryBroker();
@@ -99,7 +124,10 @@ public sealed class RetainedRetirementConformanceTests
     }
 
     [Theory]
-    [InlineData(false, false)] [InlineData(false, true)] [InlineData(true, false)] [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
     public async Task Retirement_redactor_cannot_recreate_rows_with_fresh_or_stale_gate(bool enrollment, bool afterDecision)
     {
         var f = new InMemoryBroker();
@@ -125,7 +153,8 @@ public sealed class RetainedRetirementConformanceTests
     }
 
     [Theory]
-    [InlineData(false)] [InlineData(true)]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task Retirement_late_first_settlement_uses_original_audit_clock(bool enrollment)
     {
         var f = new InMemoryBroker();
@@ -135,7 +164,8 @@ public sealed class RetainedRetirementConformanceTests
     }
 
     [Theory]
-    [InlineData(false)] [InlineData(true)]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task Retirement_request_budget_and_metadata_survive_exact_audit_boundary(bool enrollment)
     {
         var f = new InMemoryBroker();
@@ -169,7 +199,8 @@ public sealed class RetainedRetirementConformanceTests
     }
 
     [Theory]
-    [InlineData(false)] [InlineData(true)]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task Retirement_mint_work_claim_and_cleanup_have_one_real_gate_winner(bool mintWins)
     {
         var f = new InMemoryBroker();
@@ -244,7 +275,9 @@ public sealed class RetainedRetirementConformanceTests
     }
 
     [Theory]
-    [InlineData("unversioned")] [InlineData("mint-started")] [InlineData("completed")]
+    [InlineData("unversioned")]
+    [InlineData("mint-started")]
+    [InlineData("completed")]
     public async Task Retirement_manual_enrollment_proofs_remain_charged(string reason)
     {
         var f = new InMemoryBroker();
@@ -328,7 +361,9 @@ public sealed class RetainedRetirementConformanceTests
     }
 
     [Theory]
-    [InlineData("sending")] [InlineData("unknown")] [InlineData("invalid-scope")]
+    [InlineData("sending")]
+    [InlineData("unknown")]
+    [InlineData("invalid-scope")]
     public async Task Retirement_unresolved_authority_remains_charged_after_payload_and_audit_ages(string state)
     {
         var f = new InMemoryBroker();
@@ -384,10 +419,7 @@ public sealed class RetainedRetirementConformanceTests
             var allocation = await RetirementEligible(f, true);
             await Retirement(f, allocation);
             RetirementGone(f, allocation);
-            Assert.Equal(new[]
-            {
-                "global:enrollment-v1/quota", "global:enrollment-v1/repository:123456", "global:issuance-v1/quota", "repository:123456/gate"
-            }, f.Rows().Select(row => row.Key));
+            Assert.Equal(RetainedFields, f.Rows().Select(row => row.Key));
             Assert.Equal(1L, f.State.Get(EnrollmentQuota.Key)!.CandidateCount);
         }
         AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
@@ -395,7 +427,8 @@ public sealed class RetainedRetirementConformanceTests
     }
 
     [Theory]
-    [InlineData(1)] [InlineData(2)]
+    [InlineData(1)]
+    [InlineData(2)]
     public async Task Retirement_two_workers_race_real_commits_and_refund_once(int pausedBatch)
     {
         var f = new InMemoryBroker();

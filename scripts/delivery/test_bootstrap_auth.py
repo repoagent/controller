@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unittest
 
-from test_auth_pipeline import SCRIPT, SOURCE_FILES, REPOSITORY, IMAGE, CANARY
+from test_auth_pipeline import SCRIPT, SOURCE_FILES, REPOSITORY, IMAGE, CANARY, SDK
 
 
 BOUNDARY = '''import json, os, pathlib, subprocess, sys
@@ -52,7 +52,8 @@ class BootstrapArchiveTests(unittest.TestCase):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('committed bytes\n')
-        (self.root / 'service/auth/global.json').write_text('{"sdk":{"version":"10.0.100"}}')
+        for name in ('global.json', 'service/auth/global.json'):
+            (self.root / name).write_text(json.dumps(dict(sdk=dict(version=SDK, rollForward='disable', allowPrerelease=True))))
         (self.root / 'service/auth/verify.sh').write_text('test "$(cat service/auth/Dockerfile)" = "committed bytes"\n')
         self.git('init', '-qb', 'main')
         self.git('add', '.')
@@ -113,7 +114,7 @@ os.execv(os.environ['REAL_GIT'], ['git', *sys.argv[1:]])
         receipts = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual(receipts, [dict(source=self.sha, image=IMAGE, publicationComplete=value) for value in (False, True)])
         build = next(call for call in self.calls if call['args'][:1] == ['build'])
-        self.assertEqual(build['context']['Dockerfile'], 'committed bytes\n')
+        self.assertEqual(build['context']['service/auth/Dockerfile'], 'committed bytes\n')
         self.assertNotIn('untracked-private.txt', build['context'])
         self.assertFalse(Path(build['args'][-1]).exists(), 'Archived context must be removed')
         self.assertEqual([call['name'] for call in self.calls], ['docker'] * 4 + ['skopeo'])

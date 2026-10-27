@@ -218,7 +218,7 @@ public sealed class ManagedCheckoutAdapterTests
         CheckoutFixture.Executable(hostile);
         var clone = Path.Combine(fixture.Broker.Directory, "agent-clone");
         var start = new ProcessStartInfo(Path.Combine(fixture.Broker.CredentialDirectory, "bin", "gh"))
-            { ArgumentList = { "repo", "clone", "https://github.com/owner/repository.git", clone }, RedirectStandardOutput = true, RedirectStandardError = true };
+        { ArgumentList = { "repo", "clone", "https://github.com/owner/repository.git", clone }, RedirectStandardOutput = true, RedirectStandardError = true };
         start.Environment["PATH"] = bin + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
         using (var live = fixture.Broker.Credentials())
         {

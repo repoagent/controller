@@ -304,14 +304,14 @@ public sealed class ApprovalObserverTests
     public async Task Discovery_finds_the_installation_and_a_bound_one_must_not_change(long? bound, string outcome)
     {
         var request = Request("agent") with { InstallationId = bound };
-        Assert.Equal(outcome, await Outcome(async () => (await Observer.DiscoverAsync(request, await AppAsync(), Work())).ToString()));
+        Assert.Equal(outcome, await Outcome(async () => (await Observer.DiscoverAsync(request, await AppAsync(), Work())).ToString(System.Globalization.CultureInfo.InvariantCulture)));
     }
 
     [Fact]
     public async Task Discovery_denies_an_installation_that_lacks_the_verifier_permission()
     {
         github.Installation = GitHubRead.Found(Installation("missing-verifier-permission"));
-        Assert.Equal("denied", await Outcome(async () => (await Observer.DiscoverAsync(Request("agent"), await AppAsync(), Work())).ToString()));
+        Assert.Equal("denied", await Outcome(async () => (await Observer.DiscoverAsync(Request("agent"), await AppAsync(), Work())).ToString(System.Globalization.CultureInfo.InvariantCulture)));
     }
 
     [Theory]
@@ -333,7 +333,7 @@ public sealed class ApprovalObserverTests
     {
         github.Environment = GitHubRead.Found(new ApprovalEnvironment(id, name));
         var request = Request("legacy") with { EnvironmentId = bound };
-        Assert.Equal(outcome, await Outcome(async () => (await Observer.BindAsync(request, Verifier, Work())).EnvironmentId.ToString()!));
+        Assert.Equal(outcome, await Outcome(async () => (await Observer.BindAsync(request, Verifier, Work())).EnvironmentId?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? ""));
     }
 
     [Theory]
@@ -433,7 +433,9 @@ public sealed class ApprovalObserverTests
     // A pending enrollment after start: installation, repository (and environment) bound, marker published.
     private static ApprovalRequest Bound(ApprovalRequest request) => request with
     {
-        InstallationId = 789, Repository = "owner/project", Marker = "pending-marker",
+        InstallationId = 789,
+        Repository = "owner/project",
+        Marker = "pending-marker",
         EnvironmentId = request.Contract == ApprovalContract.Legacy ? 987 : null
     };
 

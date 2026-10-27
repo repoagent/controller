@@ -33,9 +33,9 @@ public sealed class DiscussionJourney
             var repo = (await Api("query($o:String!,$r:String!){repository(owner:$o,name:$r){id discussionCategories(first:20){nodes{id name isAnswerable}}}}", new { o = parts[0], r = parts[1] }))["repository"]!;
             var categories = repo["discussionCategories"]!["nodes"]!.AsArray();
             var category = categories.FirstOrDefault(c => c!["isAnswerable"]!.GetValue<bool>()) ?? throw new InvalidOperationException("NOT EXERCISED: repository needs an answerable Discussion category.");
-            var inspection = JsonNode.Parse(await File.ReadAllTextAsync("/data/control/runtime-inspection.json"))!;
+            var inspection = JsonNode.Parse(await File.ReadAllTextAsync("/data/control/runtime-inspection.json", TestContext.Current.CancellationToken))!;
             Assert.False(inspection["privileged"]!.GetValue<bool>());
-            Pass("C14", new { runtime = inspection, selectedSkills = JsonNode.Parse(await File.ReadAllTextAsync("/data/control/skills.json")) });
+            Pass("C14", new { runtime = inspection, selectedSkills = JsonNode.Parse(await File.ReadAllTextAsync("/data/control/skills.json", TestContext.Current.CancellationToken)) });
             if (Environment.GetEnvironmentVariable("REPOAGENT_LIVE_CASE") == "skill")
             {
                 var expectedSkill = "SKILL_ACTION_" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("repoagent-skill-v1:" + run)))[..16];
@@ -43,7 +43,7 @@ public sealed class DiscussionJourney
                 await Control("replace", fixture["url"]!.ToString());
                 await Reply(fixture, expectedSkill);
                 Pass("C06", new { correlation = run, expectedSkill });
-                await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + ".json"), (await Snapshot(fixture)).ToJsonString());
+                await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + ".json"), (await Snapshot(fixture)).ToJsonString(), TestContext.Current.CancellationToken);
                 await Api("mutation($id:ID!){deleteDiscussion(input:{id:$id}){clientMutationId}}", new { id = fixture["id"]!.ToString() });
                 return;
             }
@@ -105,7 +105,7 @@ public sealed class DiscussionJourney
                 await Until(async () => Waiting(await Logs(), during["id"]!.ToString()), "second input waits during native work");
                 Assert.Equal(0, CountAcceptedSources(await Logs(), during["id"]!.ToString()));
                 Assert.Equal(0, Eyes(await Source(during["id"]!.ToString())));
-                var activeGate = JsonNode.Parse(await File.ReadAllTextAsync("/workspace/hold-ready-" + run))!;
+                var activeGate = JsonNode.Parse(await File.ReadAllTextAsync("/workspace/hold-ready-" + run, TestContext.Current.CancellationToken))!;
                 Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "native skill gate remains active while the additional input waits");
                 Assert.False(File.Exists("/workspace/hold-release-" + run));
                 File.WriteAllText("/workspace/hold-release-" + run, "release");
@@ -168,7 +168,7 @@ public sealed class DiscussionJourney
 
             foreach (var fixture in fixtures)
             {
-                await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + ".json"), (await Snapshot(fixture)).ToJsonString());
+                await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + ".json"), (await Snapshot(fixture)).ToJsonString(), TestContext.Current.CancellationToken);
                 await Api("mutation($id:ID!){deleteDiscussion(input:{id:$id}){clientMutationId}}", new { id = fixture["id"]!.ToString() });
             }
             Pass("CLEANUP", new { deletedDiscussions = fixtures.Count });
@@ -178,15 +178,15 @@ public sealed class DiscussionJourney
             foreach (var fixture in fixtures)
             {
                 if (File.Exists(Path.Combine(evidence, fixture["number"] + ".json"))) continue;
-                try { await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + ".json"), (await Snapshot(fixture)).ToJsonString()); }
-                catch (Exception error) { await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + "-observation.txt"), error.Message); }
+                try { await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + ".json"), (await Snapshot(fixture)).ToJsonString(), CancellationToken.None); }
+                catch (Exception error) { await File.WriteAllTextAsync(Path.Combine(evidence, fixture["number"] + "-observation.txt"), error.Message, CancellationToken.None); }
             }
-            await File.WriteAllTextAsync(Path.Combine(evidence, "outcomes.json"), System.Text.Json.JsonSerializer.Serialize(outcomes));
-            await File.WriteAllTextAsync(Path.Combine(evidence, "fixtures.json"), new JsonArray(fixtures.Select(x => x.DeepClone()).ToArray()).ToJsonString());
+            await File.WriteAllTextAsync(Path.Combine(evidence, "outcomes.json"), System.Text.Json.JsonSerializer.Serialize(outcomes), CancellationToken.None);
+            await File.WriteAllTextAsync(Path.Combine(evidence, "fixtures.json"), new JsonArray(fixtures.Select(x => x.DeepClone()).ToArray()).ToJsonString(), CancellationToken.None);
         }
     }
 
-    async Task<JsonNode> Api(string query, object? variables = null)
+    static async Task<JsonNode> Api(string query, object? variables = null)
     {
         var start = new ProcessStartInfo("gh") { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
         start.Environment["GH_CONFIG_DIR"] = "/data/participant";
@@ -213,7 +213,7 @@ public sealed class DiscussionJourney
         return discussion;
     }
 
-    async Task<JsonNode> Comment(JsonNode discussion, string body, string? replyTo = null) =>
+    static async Task<JsonNode> Comment(JsonNode discussion, string body, string? replyTo = null) =>
         (await Api("mutation($d:ID!,$b:String!,$r:ID){addDiscussionComment(input:{discussionId:$d,body:$b,replyToId:$r}){comment{id url}}}", new { d = discussion["id"]!.ToString(), b = body, r = replyTo }))["addDiscussionComment"]!["comment"]!;
 
     async Task<JsonNode> Snapshot(JsonNode discussion)
@@ -252,7 +252,7 @@ public sealed class DiscussionJourney
 
     bool IsActor(string? login) => login == actor || login == actor.Replace("[bot]", "");
     int Eyes(JsonNode source) => source["reactionGroups"]!.AsArray().Where(g => g!["content"]!.ToString() == "EYES").SelectMany(g => g!["users"]!["nodes"]!.AsArray()).Count(u => u!["login"]!.ToString() == actor);
-    async Task<JsonNode> Source(string id) => (await Api("""
+    static async Task<JsonNode> Source(string id) => (await Api("""
         query($id:ID!) { node(id:$id) {
           ... on Discussion { id reactionGroups { content users(first:5) { nodes { login } } } }
           ... on DiscussionComment { id reactionGroups { content users(first:5) { nodes { login } } } }
@@ -260,7 +260,7 @@ public sealed class DiscussionJourney
         """, new { id }))["node"]!;
     Task Receipt(string id) => Until(async () => Eyes(await Source(id)) == 1, "one source-specific EYES");
 
-    async Task Control(string operation, string? argument = null)
+    static async Task Control(string operation, string? argument = null)
     {
         var id = Guid.NewGuid().ToString("N");
         var request = new JsonObject { ["id"] = id, ["operation"] = operation, ["argument"] = argument };
@@ -272,8 +272,8 @@ public sealed class DiscussionJourney
         Assert.True(response["ok"]!.GetValue<bool>(), response["error"]?.ToString());
     }
 
-    async Task<string> Logs() { await Control("capture"); return await File.ReadAllTextAsync("/data/control/bridge.log"); }
-    async Task<string> Session(JsonNode discussion)
+    static async Task<string> Logs() { await Control("capture"); return await File.ReadAllTextAsync("/data/control/bridge.log"); }
+    static async Task<string> Session(JsonNode discussion)
     {
         var url = discussion["url"]!.ToString();
         string? session = null;
@@ -343,7 +343,7 @@ public sealed class DiscussionJourney
         }
         Assert.Fail("Timed out waiting for " + expectation);
     }
-    async Task StableAcrossPolls(Func<string, bool> condition, string expectation, bool requireSuccessfulPolls = true)
+    static async Task StableAcrossPolls(Func<string, bool> condition, string expectation, bool requireSuccessfulPolls = true)
     {
         static int Completed(string log, bool successful) => log.Split('\n').Count(line => IsEvent(line, "poll-completed") && (!successful || line.Contains("success=True")));
         var baseline = Completed(await Logs(), requireSuccessfulPolls);

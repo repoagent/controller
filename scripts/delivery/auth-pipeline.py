@@ -20,13 +20,17 @@ def command(args, *, capture=False, cwd=ROOT):
 
 
 def source(root=ROOT):
-    for name in ('service/auth/global.json', 'service/auth/verify.sh', 'service/auth/Dockerfile',
+    for name in ('RepoAgent.slnx', 'scripts/delivery/verify-dotnet.sh', 'global.json', 'Directory.Build.props', '.editorconfig', 'service/auth/Dockerfile.dockerignore', 'service/auth/global.json', 'service/auth/verify.sh', 'service/auth/Dockerfile',
                  'infra/auth/deploy.sh', 'infra/auth/main.bicep'):
         if not (root / name).is_file():
             raise ValueError(f'Missing {name}; deliver service #30/#31 and infrastructure #47 before auth CI can deploy')
-    sdk = json.loads((root / 'service/auth/global.json').read_text()).get('sdk', {}).get('version', '')
-    if not re.fullmatch(r'10\.\d+\.\d+', sdk):
-        raise ValueError('service/auth/global.json must pin a stable .NET 10 SDK')
+    policy = json.loads((root / 'global.json').read_text()).get('sdk', {})
+    broker_policy = json.loads((root / 'service/auth/global.json').read_text()).get('sdk', {})
+    if (not re.fullmatch(r'11\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', policy.get('version', ''))
+            or policy.get('rollForward') != 'disable' or policy.get('allowPrerelease') is not True):
+        raise ValueError('global.json must pin the reviewed .NET 11 SDK without roll-forward')
+    if broker_policy != policy:
+        raise ValueError('Root and broker SDK policies must match exactly')
 
 
 def repository():
@@ -82,7 +86,7 @@ def publish():
     sha = os.environ.get('GITHUB_SHA', '')
     if not re.fullmatch(r'[0-9a-f]{40}', sha):
         raise ValueError('GITHUB_SHA must identify the reviewed source commit')
-    image = build_publish(sha, 'service/auth')
+    image = build_publish(sha, '.')
     os.environ.update(AUTH_IMAGE=image, AUTH_EXPECTED_SOURCE_SHA=sha)
     attest()  # Anonymous pull confirms public access to this exact digest.
     with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
@@ -92,7 +96,7 @@ def publish():
 def build_publish(sha, context, bootstrap=False, *, before_push=None):
     tag = repository() + ':sha-' + sha
     command(['docker', 'build', '--platform', 'linux/amd64', '--label',
-             'org.opencontainers.image.revision=' + sha, '--tag', tag, str(context)], capture=bootstrap)
+             'org.opencontainers.image.revision=' + sha, '--tag', tag, '--file', str(Path(context) / 'service/auth/Dockerfile'), str(context)], capture=bootstrap)
     data = json.loads(command(['docker', 'image', 'inspect', tag], capture=True))[0]
     validate_config(data.get('Config', {}))
     if data.get('Os') != 'linux' or data.get('Architecture') != 'amd64':
@@ -124,7 +128,7 @@ def bootstrap_publish(*, before_push=None):
         command(['tar', '-xf', str(archive), '-C', str(checkout)], capture=True)
         source(checkout)
         command(['bash', 'service/auth/verify.sh'], cwd=checkout, capture=True)
-        image = build_publish(sha, checkout / 'service/auth', bootstrap=True, before_push=before_push)
+        image = build_publish(sha, checkout, bootstrap=True, before_push=before_push)
     receipt = dict(source=sha, image=image, publicationComplete=False)
     print(json.dumps(receipt), flush=True)
     os.environ.update(AUTH_IMAGE=image, AUTH_EXPECTED_SOURCE_SHA=sha)

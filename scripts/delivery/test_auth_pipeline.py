@@ -20,10 +20,12 @@ SHA = 'b' * 40
 TAG = REPOSITORY + ':sha-' + SHA
 IMAGE = REPOSITORY + '@sha256:' + 'a' * 64
 CANARY = 'fake-token-$(touch token-was-executed);keep-private'
-SOURCE_FILES = ('service/auth/global.json', 'service/auth/verify.sh', 'service/auth/Dockerfile',
+SDK = '11.0.100-rc.3.26522.148'
+SOURCE_FILES = ('service/auth/global.json', 'RepoAgent.slnx', 'scripts/delivery/verify-dotnet.sh', 'global.json', 'Directory.Build.props', '.editorconfig',
+                'service/auth/Dockerfile.dockerignore', 'service/auth/verify.sh', 'service/auth/Dockerfile',
                 'infra/auth/deploy.sh', 'infra/auth/main.bicep')
 BUILD = ['docker', 'build', '--platform', 'linux/amd64', '--label',
-         'org.opencontainers.image.revision=' + SHA, '--tag', TAG, 'service/auth']
+         'org.opencontainers.image.revision=' + SHA, '--tag', TAG, '--file', 'service/auth/Dockerfile', '.']
 INSPECT = ['docker', 'image', 'inspect', TAG]
 PUSH = ['docker', 'push', TAG]
 ATTEST = ['skopeo', 'inspect', '--no-creds', '--config', '--override-os', 'linux',
@@ -78,7 +80,7 @@ def publication(local=None, digests=None, remote=None):
 
 
 class AuthPipelineCliTests(unittest.TestCase):
-    def invoke(self, verb, transcript=(), *, missing=None, sdk='10.0.100', environment=None, shell=None):
+    def invoke(self, verb, transcript=(), *, missing=None, sdk=SDK, root_sdk=None, environment=None, shell=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / 'scripts/delivery/auth-pipeline.py'
@@ -88,7 +90,8 @@ class AuthPipelineCliTests(unittest.TestCase):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('# Contract fixture only; not a service implementation.\n')
-            (root / SOURCE_FILES[0]).write_text(json.dumps(dict(sdk=dict(version=sdk))))
+            for name, version in [('service/auth/global.json', sdk), ('global.json', root_sdk if root_sdk is not None else sdk)]:
+                (root / name).write_text(json.dumps(dict(sdk=dict(version=version, rollForward='disable', allowPrerelease=True))))
             provider = root / 'infra-double.py'
             provider.write_text(DOUBLE)
             (root / 'infra/auth/deploy.sh').write_text(f'exec {sys.executable} "{provider}" "$@"\n')
@@ -130,18 +133,24 @@ class AuthPipelineCliTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn('Missing ' + missing, result.stderr)
                 self.assertEqual((calls, output), ([], 'existing=value\n'))
-        for sdk in ['11.0.100', '10.0.100-preview.1', '']:
+        for sdk in ['10.0.100', '12.0.100-preview.1', '']:
             with self.subTest(sdk=sdk):
                 result, calls, output, _ = self.invoke('source', sdk=sdk)
 
                 self.assertEqual(result.returncode, 1)
-                self.assertIn('must pin a stable .NET 10 SDK', result.stderr)
+                self.assertIn('must pin the reviewed .NET 11 SDK', result.stderr)
                 self.assertEqual((calls, output), ([], 'existing=value\n'))
 
-    def test_stable_dotnet10_source_contract_is_accepted_without_publication(self):
+    def test_reviewed_dotnet11_source_contract_is_accepted_without_publication(self):
         result, calls, output, _ = self.invoke('source')
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((calls, output), ([], 'existing=value\n'))
+
+    def test_broker_sdk_drift_fails_before_provider_calls(self):
+        result, calls, output, _ = self.invoke('publish', root_sdk='11.0.100-rc.2.26504.105')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('SDK policies must match exactly', result.stderr)
         self.assertEqual((calls, output), ([], 'existing=value\n'))
 
     def test_publication_requires_the_dedicated_repository(self):

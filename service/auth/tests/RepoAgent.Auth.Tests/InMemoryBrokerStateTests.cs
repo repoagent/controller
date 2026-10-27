@@ -90,7 +90,7 @@ public sealed class InMemoryBrokerStateTests
     public async Task Listing_is_ordinal_within_its_range_in_pages_of_at_most_32()
     {
         state.PageSize = 100;
-        var names = Enumerable.Range(0, 34).Select(i => "e" + i.ToString("D2")).Concat(["E", "F", "a", "_"]).ToList();
+        var names = Enumerable.Range(0, 34).Select(i => "e" + i.ToString("D2", System.Globalization.CultureInfo.InvariantCulture)).Concat(["E", "F", "a", "_"]).ToList();
         foreach (var name in names) state.Seed(Receipt(name), new RevocationReceipt { EnrollmentId = name });
         state.Seed(Gate, NewGate());
         state.Seed(RevocationReceipt.Key("2", "other"), new RevocationReceipt());

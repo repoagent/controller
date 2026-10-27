@@ -29,7 +29,14 @@ internal sealed class InMemoryBroker
         State.Seed(EnrollmentQuota.Key, new() { RetentionSchemaVersion = 1, CandidateCount = 0, RetainedEnrollmentCount = 0, Count = 0 });
         State.Seed(IssuanceQuota.Key, new()
         {
-            RetentionSchemaVersion = 1, RetainedIssuanceCount = 0, Window = 0, Admissions = 0, Reads = 0, Signs = 0, Mints = 0, Slots = 0
+            RetentionSchemaVersion = 1,
+            RetainedIssuanceCount = 0,
+            Window = 0,
+            Admissions = 0,
+            Reads = 0,
+            Signs = 0,
+            Mints = 0,
+            Slots = 0
         });
     }
 

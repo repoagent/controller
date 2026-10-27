@@ -24,7 +24,8 @@ public sealed class GitHubAppCredentials : IDisposable
     public GitHubAppCredentials(HttpClient http, string appId, string privateKeyPath, string repository,
         string credentialDirectory, TimeProvider? clock = null, RuntimeProfile profile = default)
         : this(credentialDirectory, clock ?? TimeProvider.System,
-            time => new DirectAppTokenSource(http, appId, privateKeyPath, repository, time, profile)) { }
+            time => new DirectAppTokenSource(http, appId, privateKeyPath, repository, time, profile))
+    { }
 
     GitHubAppCredentials(string credentialDirectory, TimeProvider clock, Func<TimeProvider, IInstallationTokenSource> createSource)
     {

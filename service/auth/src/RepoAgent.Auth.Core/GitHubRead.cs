@@ -20,6 +20,7 @@ public abstract record GitHubRead<T>
 }
 
 // GitHub could not be reached or did not answer in time. Callers treat it like any answer that proves nothing.
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1710:Identifiers should have correct suffix", Justification = "Preserve the established core exception contract; renaming is outside the analyzer rollout.")]
 public sealed class GitHubUnavailable(string message, Exception? cause = null) : Exception(message, cause);
 
 public static class GitHubRead

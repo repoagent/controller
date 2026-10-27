@@ -196,7 +196,7 @@ public sealed partial class BrokerCleanupTests
         var keys = new List<StateKey<EnrollmentLedger>>();
         for (var i = 1; i <= 35; i++)
         {
-            var id = i.ToString("x32");
+            var id = i.ToString("x32", System.Globalization.CultureInfo.InvariantCulture);
             Assert.Equal(HttpStatusCode.OK, (await f.Start(Retained.AgentRequest(id), 2)).StatusCode);
             keys.Add(EnrollmentLedger.Key(id));
             // Real prior capacity release leaves retained audit and due payload behind.

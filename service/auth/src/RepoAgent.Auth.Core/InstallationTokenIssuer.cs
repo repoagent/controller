@@ -87,9 +87,15 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
     {
         var response = new Dictionary<string, object>
         {
-            ["protocolVersion"] = grant.Approval.RuntimeVersion, ["appId"] = AppId, ["appSlug"] = AppSlug,
-            ["installationId"] = grant.InstallationId, ["repositoryId"] = Id(grant.RepositoryId), ["repository"] = grant.Repository,
-            ["permissions"] = RuntimeAuthority.For(grant.Approval, grant.Profile).Permissions, ["token"] = token.Value, ["expiresAt"] = token.ExpiresAt
+            ["protocolVersion"] = grant.Approval.RuntimeVersion,
+            ["appId"] = AppId,
+            ["appSlug"] = AppSlug,
+            ["installationId"] = grant.InstallationId,
+            ["repositoryId"] = Id(grant.RepositoryId),
+            ["repository"] = grant.Repository,
+            ["permissions"] = RuntimeAuthority.For(grant.Approval, grant.Profile).Permissions,
+            ["token"] = token.Value,
+            ["expiresAt"] = token.ExpiresAt
         };
         if (grant.Approval.NamesProfile)
         {

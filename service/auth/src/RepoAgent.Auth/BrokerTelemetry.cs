@@ -59,9 +59,14 @@ public static class BrokerTelemetry
             ConnectionString = monitoring.Connection,
             Credential = new ManagedIdentityCredential(new ManagedIdentityCredentialOptions(ManagedIdentityId.FromUserAssignedClientId(monitoring.ClientId))
             { Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(1) } }),
-            SamplingRatio = 0.01F, TracesPerSecond = null, EnableTraceBasedLogsSampler = false,
-            EnableLiveMetrics = false, EnableStandardMetrics = false, EnablePerformanceCounters = false,
-            DisableOfflineStorage = true, Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(1) }
+            SamplingRatio = 0.01F,
+            TracesPerSecond = null,
+            EnableTraceBasedLogsSampler = false,
+            EnableLiveMetrics = false,
+            EnableStandardMetrics = false,
+            EnablePerformanceCounters = false,
+            DisableOfflineStorage = true,
+            Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(1) }
         };
     }
 
@@ -79,6 +84,7 @@ public static class BrokerTelemetry
     }
 
     /// <summary>One completed invocation, including failures. SDK options are supplied by the trusted composition.</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "MeterProvider owns its reader, which owns the exporter; disposing them independently would duplicate ownership.")]
     public static void ExportCleanupOnce(IReadOnlyList<CleanupObservation> observations, AzureMonitorExporterOptions options)
     {
         try

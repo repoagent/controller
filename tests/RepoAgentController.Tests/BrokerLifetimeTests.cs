@@ -44,9 +44,12 @@ public sealed class BrokerLifetimeTests
         Directory.CreateDirectory(tools);
         var settings = new JsonObject
         {
-            ["port"] = ((IPEndPoint)ready.LocalEndpoint).Port, ["stage"] = stage,
-            ["history"] = history, ["requests"] = requests,
-            ["eof"] = eof, ["graceful"] = userCancellation
+            ["port"] = ((IPEndPoint)ready.LocalEndpoint).Port,
+            ["stage"] = stage,
+            ["history"] = history,
+            ["requests"] = requests,
+            ["eof"] = eof,
+            ["graceful"] = userCancellation
         };
         File.WriteAllText(settingsPath, settings.ToJsonString());
         WriteExecutable(Path.Combine(tools, "codex"), Native);
@@ -70,12 +73,12 @@ public sealed class BrokerLifetimeTests
             {
                 "--repo", "owner/repository", "--app-id", "123", "--state", fixture.State,
                 "--broker-url", "https://credentials.example.org", "--enrollment-file", fixture.EnrollmentFile,
-                "--workspace", fixture.Directory, "--interval", "3600", "--status-port", statusPort.ToString()
+                "--workspace", fixture.Directory, "--interval", "3600", "--status-port", statusPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
             };
             if (stage == "teardown") args.Add("--once");
             if (webhooks)
                 args.AddRange(["--webhook-url", "https://controller.example.org", "--listen-port",
-                    ControllerHarness.FreePort(statusPort).ToString()]);
+                    ControllerHarness.FreePort(statusPort).ToString(System.Globalization.CultureInfo.InvariantCulture)]);
             run = BridgeCommand.Run(args.ToArray(), fixture.Http, fixture.Gh, fixture.Clock, shutdown.Token);
             using var connection = await ready.AcceptTcpClientAsync(TestContext.Current.CancellationToken)
                 .AsTask().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);

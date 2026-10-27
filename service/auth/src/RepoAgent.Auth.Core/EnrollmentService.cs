@@ -117,13 +117,28 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
             var approval = s.Approval;
             var record = new ControllerEnrollment
             {
-                RepositoryId = p.RepositoryId, Repository = p.Repository, EnrollmentId = p.EnrollmentId, Epoch = p.Epoch,
-                InstallationId = p.InstallationId, Variable = p.Variable, Profile = p.Profile, Challenge = p.Challenge, Marker = p.Marker,
-                ApprovalKind = approval.Kind, SetupVersion = approval.SetupVersion, PolicyVersion = approval.Policy,
-                AppId = AppId, AppSlug = AppSlug, GitHubHost = "github.com",
+                RepositoryId = p.RepositoryId,
+                Repository = p.Repository,
+                EnrollmentId = p.EnrollmentId,
+                Epoch = p.Epoch,
+                InstallationId = p.InstallationId,
+                Variable = p.Variable,
+                Profile = p.Profile,
+                Challenge = p.Challenge,
+                Marker = p.Marker,
+                ApprovalKind = approval.Kind,
+                SetupVersion = approval.SetupVersion,
+                PolicyVersion = approval.Policy,
+                AppId = AppId,
+                AppSlug = AppSlug,
+                GitHubHost = "github.com",
                 ControllerSecretHash = Convert.ToHexString(DeviceSecret.Hash(controllerSecret)!),
-                Acknowledged = false, State = "unacknowledged", ExpiresAt = Date(p.Deadline), OutstandingTokenCount = 0,
-                CompletionId = completion, PendingId = s.Id
+                Acknowledged = false,
+                State = "unacknowledged",
+                ExpiresAt = Date(p.Deadline),
+                OutstandingTokenCount = 0,
+                CompletionId = completion,
+                PendingId = s.Id
             };
             if (approval == ApprovalContract.Legacy)
             {
@@ -133,10 +148,17 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
             enrollment = new(ControllerEnrollment.Key(s.PartitionRepositoryId, s.EnrollmentId), record, null);
             var envelopeFields = new Dictionary<string, object>
             {
-                ["protocolVersion"] = approval.RuntimeVersion, ["brokerOrigin"] = brokerOrigin!.GetLeftPart(UriPartial.Authority), ["githubHost"] = "github.com",
-                ["deviceId"] = s.EnrollmentId, ["deviceSecret"] = controllerSecret, ["appId"] = AppId, ["appSlug"] = AppSlug,
-                ["installationId"] = Number(p.InstallationId), ["repositoryId"] = Id(s.RepositoryId),
-                ["repository"] = Text(p.Repository), ["permissions"] = RuntimeAuthority.For(approval, Text(p.Profile)).Permissions
+                ["protocolVersion"] = approval.RuntimeVersion,
+                ["brokerOrigin"] = brokerOrigin!.GetLeftPart(UriPartial.Authority),
+                ["githubHost"] = "github.com",
+                ["deviceId"] = s.EnrollmentId,
+                ["deviceSecret"] = controllerSecret,
+                ["appId"] = AppId,
+                ["appSlug"] = AppSlug,
+                ["installationId"] = Number(p.InstallationId),
+                ["repositoryId"] = Id(s.RepositoryId),
+                ["repository"] = Text(p.Repository),
+                ["permissions"] = RuntimeAuthority.For(approval, Text(p.Profile)).Permissions
             };
             if (approval.NamesProfile)
             {
@@ -235,7 +257,10 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
             extra.Add(enrollment);
             extra.Add(new Tracked<RevocationReceipt>(RevocationReceipt.Key(s.PartitionRepositoryId, s.EnrollmentId), new()
             {
-                RepositoryId = s.RepositoryId, EnrollmentId = s.EnrollmentId, Epoch = store.Epoch, RevokedAt = clock.GetUtcNow()
+                RepositoryId = s.RepositoryId,
+                EnrollmentId = s.EnrollmentId,
+                Epoch = store.Epoch,
+                RevokedAt = clock.GetUtcNow()
             }, null));
         }
         s.Pending.State = "closed";
@@ -274,8 +299,10 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
 
     private IssuanceResult Status(PendingSnapshot s) => new(200, new
     {
-        pendingId = s.Id, state = Date(s.Pending.Deadline) <= clock.GetUtcNow() && Text(s.Pending.State) != "active" ? "expired" : Text(s.Pending.State),
-        marker = s.Pending.Marker, deadline = Date(s.Pending.Deadline)
+        pendingId = s.Id,
+        state = Date(s.Pending.Deadline) <= clock.GetUtcNow() && Text(s.Pending.State) != "active" ? "expired" : Text(s.Pending.State),
+        marker = s.Pending.Marker,
+        deadline = Date(s.Pending.Deadline)
     });
 
     private async Task RevokeKnownAsync(PendingSnapshot s, Tracked<IssuanceAttempt> attempt, GitHubToken token)

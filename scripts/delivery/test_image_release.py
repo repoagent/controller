@@ -29,7 +29,7 @@ CANARY = 'ghs_TOKEN-MUST-NOT-APPEAR'
 MARKER = '<!-- repoagent.baseline-release/v1 -->'
 # Shape of the shipping image's `versions` command output.
 VERSIONS = f'''RepoAgent container; uid=1000
-RepoAgentController: Native AOT, built with .NET SDK 11.0.100-rc.2
+RepoAgentController: Native AOT, built with .NET SDK 11.0.100-rc.3
 Python 3.14.4
 gh version {GH} (2026-09-30)
 https://github.com/cli/cli/releases/tag/v{GH}

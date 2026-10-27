@@ -46,7 +46,11 @@ sealed class RefreshJournalFile(string statePath) : IRefreshJournal
         var result = new RefreshJournal(root, owner, repositoryId)
         {
             // Running before RunningUnreadable, which setting Running clears.
-            Requested = requested, Completed = completed, Blocked = blocked, Running = running ?? 0, RunningUnreadable = running is null,
+            Requested = requested,
+            Completed = completed,
+            Blocked = blocked,
+            Running = running ?? 0,
+            RunningUnreadable = running is null,
             Unknown = [.. journal.Where(key => !Keys.Contains(key.Key)).Select(key => new UnknownKey(key.Key, Encode(key.Value)))]
         };
         if (journal.ContainsKey("reason"))
@@ -85,7 +89,10 @@ sealed class RefreshJournalFile(string statePath) : IRefreshJournal
             if (thread is not null && turn is not null && since is { } order && confirmed is { } held && (unconfirmed || !admission.ContainsKey("unconfirmed")))
                 return new(order)
                 {
-                    Thread = thread, Turn = turn, Confirmed = held, Unconfirmed = unconfirmed,
+                    Thread = thread,
+                    Turn = turn,
+                    Confirmed = held,
+                    Unconfirmed = unconfirmed,
                     Unknown = [.. admission.Where(key => !AdmissionKeys.Contains(key.Key)).Select(key => new UnknownKey(key.Key, Encode(key.Value)))]
                 };
             return new(since ?? 0) { AsRead = asRead, Thread = thread ?? "", Turn = turn ?? "", Confirmed = confirmed == true, Unconfirmed = unconfirmed };

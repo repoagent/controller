@@ -8,6 +8,8 @@ namespace RepoAgent.Auth.Tests;
 // It can neither replace a tombstone nor restore a removed payload, and a late locator routes only.
 public sealed partial class PayloadRedactionTests
 {
+    static readonly string[] LocatorFields = ["DeviceId", "PendingId", "RepositoryId"];
+
     [Theory]
     [InlineData("pending")]
     [InlineData("enrollment-attempt")]
@@ -149,7 +151,7 @@ public sealed partial class PayloadRedactionTests
             Assert.Equal(ledger.EnrollmentId, route.EnrollmentId);
             Assert.Equal(ledger.PendingId, route.PendingId);
             Assert.Equal(ledger.RepositoryId, route.RepositoryId);
-            Assert.Equal(new[] { "DeviceId", "PendingId", "RepositoryId" }, locator.Row.Keys.Order(StringComparer.Ordinal));
+            Assert.Equal(LocatorFields, locator.Row.Keys.Order(StringComparer.Ordinal));
             AssertCharges(before, [.. after.Where(r => r.Scope != locator.Scope)]);
             Assert.False(f.State.Row(PendingKey(start.Id))!.ContainsKey("ProtectedCompletion"));
             Assert.False(f.State.Row(EnrollmentKey(ledger.EnrollmentId!))!.ContainsKey("SecretHash"));

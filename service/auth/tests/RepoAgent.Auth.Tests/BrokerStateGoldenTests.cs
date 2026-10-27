@@ -63,8 +63,9 @@ public sealed class BrokerStateGoldenTests
     private static async Task<((JsonObject Entity, string? IfMatch) Recorded, (JsonObject Entity, string? IfMatch) Written)> RoundTripAsync<T>(
         StateKey<T> key, string recorded) where T : BrokerRecord, new()
     {
-        var handler = new RecordedTable(recorded);
-        var state = new TableBrokerState(Client(handler));
+        using var handler = new RecordedTable(recorded);
+        using var http = new HttpClient(handler, disposeHandler: false);
+        var state = new TableBrokerState(Client(http));
         var read = (await state.ReadAsync(key, Token))!;
         await state.CommitAsync(new StateTransaction().Replace(key, read.Value, read.Version), Token);
         var lines = Assert.Single(handler.Batches).Split("\r\n");
@@ -92,9 +93,9 @@ public sealed class BrokerStateGoldenTests
         return stored;
     }
 
-    private static TableClient Client(HttpMessageHandler handler) => new(new Uri("https://golden.table.core.windows.net"), "brokerstate",
+    private static TableClient Client(HttpClient http) => new(new Uri("https://golden.table.core.windows.net"), "brokerstate",
         new TableSharedKeyCredential("golden", Convert.ToBase64String(new byte[32])),
-        new TableClientOptions { Transport = new HttpClientTransport(new HttpClient(handler)), Retry = { MaxRetries = 0 } });
+        new TableClientOptions { Transport = new HttpClientTransport(http), Retry = { MaxRetries = 0 } });
 
     // Answers every read with the recorded row and every transaction with success, keeping each transaction's body.
     private sealed class RecordedTable(string row) : HttpMessageHandler

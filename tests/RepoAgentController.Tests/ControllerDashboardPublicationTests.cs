@@ -9,7 +9,7 @@ namespace RepoAgentController.Tests;
 // record, Discussion state, settings and checkout fakes. GitHub is the Discussions fake. The baseline release check completes
 // only where its outcome must reach the dashboard; ControllerDashboardUpdatesTests owns that section's text and
 // ControllerDashboardGoldenTests the whole body's bytes.
-public sealed class ControllerDashboardPublicationTests : IDisposable
+public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
 {
     const string Category = "Controller status", Title = "RepoAgent controller status", Attention = "Attention: RepoAgent controller authentication failed";
     const string First = "https://github.com/owner/repository/discussions/1";
@@ -40,9 +40,10 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "ControllerDashboard owns and asynchronously disposes its BaselineReleases.")]
     ControllerDashboard Dashboard(BaselineReleases? releases = null, IControllerLog? reported = null) => new(Category, status, outbox,
-        releases ?? new BaselineReleases(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, new RecordingLog(), text => text),
-        clock, reported ?? log, Redact);
+            releases ?? new BaselineReleases(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, new RecordingLog(), text => text),
+            clock, reported ?? log, Redact);
 
     // As the controller's redaction removes the secrets it knows.
     static string Redact(string text) => text.Replace("ghs_secret", "<redacted>", StringComparison.Ordinal);
@@ -124,6 +125,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
 
     // The controller's options reaching the check is the composition's; BaselineReleaseCheckTests owns the check's decisions.
     [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "The dashboard takes ownership of releases and disposes it after its worker ends.")]
     public async Task Newer_baseline_release_reaches_the_dashboard_after_a_later_hourly_check()
     {
         var published = new InMemoryBaselineReleases();
@@ -348,6 +350,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     }
 
     [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The dashboard owns and asynchronously disposes the inline BaselineReleases after its worker ends.")]
     public async Task Before_the_lifetime_is_ready_its_state_and_mode_are_published_and_a_turn_without_waiting_input_is_listed()
     {
         Store(("D1", new(Url(1)) { SessionId = "s1", Running = new("t1", Start.AddMinutes(-30)) }));
@@ -401,6 +404,7 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
     [InlineData("""{"failures":[{"url":"https://github.com/owner/repository/discussions/1"}]}""", "none recorded", "- an unknown time (none): (none)")]
     [InlineData("""{"failures":[5]}""", "none recorded", "None recorded.")]
     [InlineData("""{"latestActivity":{}}""", "input delivered from an unlinked Discussion at an unknown time", "None recorded.")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The dashboard owns and asynchronously disposes the inline BaselineReleases after its worker ends.")]
     public async Task Damaged_failures_and_latest_activity_carried_from_an_earlier_lifetime_are_shown_from_what_reads_from_them(string record, string activity, string failures)
     {
         var json = System.Text.Json.Nodes.JsonNode.Parse(record)!.AsObject();
@@ -447,5 +451,9 @@ public sealed class ControllerDashboardPublicationTests : IDisposable
 
     void Record(string kind, string message) => status.Record(new(clock.GetUtcNow(), kind, message));
 
-    public void Dispose() => status.Dispose();
+    public async ValueTask DisposeAsync()
+    {
+        await outbox.DisposeAsync();
+        status.Dispose();
+    }
 }

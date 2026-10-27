@@ -34,8 +34,8 @@ sealed class GitHubBaselineReleases(GitHub github) : IBaselineReleases
         var tag = Regex.Match(Field(release, "tag_name"), @"\Abaseline-([0-9]{1,18})\.([0-9]{1,9})\z");
         if (!tag.Success || !IsFalse(release, "draft") || !IsFalse(release, "prerelease")) return null;
         var block = Regex.Match(Field(release, "body"), "^" + Regex.Escape(Marker) + @"\r?\n```json\r?\n(.*?)\r?\n```", RegexOptions.Multiline | RegexOptions.Singleline);
-        JsonObject? metadata = null;
-        JsonNode? versions = null;
+        JsonObject? metadata;
+        JsonNode? versions;
         try
         {
             metadata = block.Success ? JsonNode.Parse(block.Groups[1].Value) as JsonObject : null;

@@ -1,15 +1,17 @@
 # syntax=docker/dockerfile:1
-FROM mcr.microsoft.com/dotnet/sdk:10.0.402 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0.100-rc.3-resolute@sha256:3a9175b6c54b2f076817af1360f691c9994447b192faa48a1a1f112a516844c7 AS build
 WORKDIR /source
-COPY global.json ./
-COPY src/RepoAgent.Auth.Core/RepoAgent.Auth.Core.csproj src/RepoAgent.Auth.Core/
-COPY src/RepoAgent.Auth/RepoAgent.Auth.csproj src/RepoAgent.Auth/
+COPY global.json Directory.Build.props .editorconfig ./
+COPY service/auth/global.json service/auth/
+WORKDIR /source/service/auth
+COPY service/auth/src/RepoAgent.Auth.Core/RepoAgent.Auth.Core.csproj src/RepoAgent.Auth.Core/
+COPY service/auth/src/RepoAgent.Auth/RepoAgent.Auth.csproj src/RepoAgent.Auth/
 RUN dotnet restore src/RepoAgent.Auth/RepoAgent.Auth.csproj
-COPY src/ src/
+COPY service/auth/src/ src/
 RUN dotnet publish src/RepoAgent.Auth/RepoAgent.Auth.csproj --configuration Release \
     --no-restore --output /publish /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.13
+FROM mcr.microsoft.com/dotnet/aspnet:11.0.0-rc.3@sha256:bae0269049d5061ab7f49995cc1acebf54b75471c096c4a1f874e27661d44045
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl jq \
     && rm -rf /var/lib/apt/lists/*
