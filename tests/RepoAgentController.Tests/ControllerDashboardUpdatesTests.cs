@@ -59,16 +59,14 @@ public sealed class ControllerDashboardUpdatesTests
     public void Without_a_published_baseline_release_none_is_claimed() =>
         Assert.Equal($"### Updates\nNo published baseline release was found at {Checked}.\n", Updates(new(At, null, null, 0, "its image inventory matches none")));
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void Uncertain_identity_names_its_reason_and_the_newest_release_without_suggesting_a_replacement(bool matched)
+    [Fact]
+    public void Uncertain_identity_names_its_reason_and_the_newest_release_without_suggesting_a_replacement()
     {
-        var text = Updates(new(At, matched ? Current : null, Newest, matched ? 2 : 0, "startup tool updates replace the image's gh and Codex"));
+        var text = Updates(new(At, null, Newest, 0, "the image cannot be identified"));
 
         Assert.Equal($"""
             ### Updates
-            **Release identity uncertain** (checked at {Checked}): startup tool updates replace the image's gh and Codex{(matched ? $"; its image inventory matches {Link(Current)}" : "")}. No replacement is suggested.
+            **Release identity uncertain** (checked at {Checked}): the image cannot be identified. No replacement is suggested.
             - Newest published baseline release: {Link(Newest)}, image `{Newest.Image}` ([package](https://github.com/repoagent/controller/pkgs/container/controller)) with gh `2.103.1` and Codex `0.164.0`. Compare it with this controller's image before deciding whether to rebuild or recreate it.
 
             """, text);

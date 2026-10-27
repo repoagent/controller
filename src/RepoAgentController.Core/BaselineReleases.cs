@@ -21,7 +21,7 @@ public sealed record ReleaseNotice(DateTimeOffset CheckedAt, BaselineRelease? Ru
 /// controller was started without one. A delegate rather than a port: it is one local file read, not a provider.</param>
 /// <param name="redact">Removes the secrets the controller knows from a failure's message. A failure is kept redacted, so
 /// failures that differ only in a secret are the same outcome.</param>
-public sealed class BaselineReleases(IBaselineReleases published, Func<CancellationToken, Task<string?>> inventorySha256, bool startupToolUpdates,
+public sealed class BaselineReleases(IBaselineReleases published, Func<CancellationToken, Task<string?>> inventorySha256,
     TimeProvider clock, IControllerLog log, Func<string, string> redact) : IAsyncDisposable
 {
     public const string Repository = "repoagent/controller";
@@ -78,7 +78,7 @@ public sealed class BaselineReleases(IBaselineReleases published, Func<Cancellat
         var matched = Array.FindIndex(releases, release => release.InventorySha256 == identity);
         var uncertainty = identity is null ? "this controller was not started with a baseline image inventory, for example in a native or development run"
             : matched < 0 ? "its image inventory matches none of the newest published baseline releases, so it is a derived, local, unreleased or much older image"
-            : startupToolUpdates ? "startup tool updates replace the image's gh and Codex, possibly with versions that no release records" : null;
+            : null;
         return new(clock.GetUtcNow(), matched < 0 ? null : releases[matched], releases.FirstOrDefault(), Math.Max(matched, 0), uncertainty);
     }
 

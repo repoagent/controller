@@ -17,7 +17,7 @@ The controller currently supports **GitHub Discussions with Codex**, with one co
 - **GitHub App identity.** Controller and agent GitHub access use the installed App's repository-scoped permissions. Shared-App setup uses revocable repository approval without distributing the App's signing key; using your own App is also supported.
 - **Separate Codex credentials.** Supply Codex credentials independently of GitHub authentication and replace them while the controller stays running. The change waits for active work to finish and preserves session history.
 - **Status and troubleshooting.** Inspect active and queued sessions, authentication health and recent failures through status commands and retained logs. An optional Discussion dashboard adds a heartbeat and image update notices.
-- **Container distribution.** Run locally with Docker or behind your own HTTPS hosting. Public GHCR baseline images record their bundled tool versions; you can extend an image with your own tools and adopt updates deliberately.
+- **Container distribution.** Run locally with Docker or behind your own HTTPS hosting. Containers run pinned image tools, including with older saved settings. Public GHCR baseline images record their bundled tool versions; you can extend an image with your own tools and adopt updates deliberately.
 
 Category enrollment, repository model defaults and concurrency changes require [repository settings](docs/repository-settings.md) to be enabled. Broker installations opt in with `-RepositorySettings` during a fresh installation. Per-Discussion model labels work without repository settings; model availability depends on the signed-in Codex account.
 

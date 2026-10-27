@@ -95,7 +95,7 @@ Each tool has its own refresh (`refresh-baseline-tool.yml`, called once for gh a
 
 An incompatible update fails at selection or verification. It changes nothing on `main`, publishes nothing, and leaves existing baseline releases and images usable. Only that tool is held back: the other tool's refresh still selects, verifies, pins and publishes a supported update on its own. The run then shows as failed, and the daily run retries the same latest version until upstream publishes a fix or a maintainer intervenes, for example with a reviewed pull request that pins another version. If `main` moved after verification, the pin is refused and the next run selects and verifies again on the new `main`. If dispatch fails after the pin, the job fails and names the manual recovery: `gh workflow run controller.yml --ref main`.
 
-Cloudflared, base images and the Ubuntu snapshot still change only through review. Containers use the bundled tools by default; operators adopt refreshed tools by updating to the new baseline image. The opt-in `--tool-updates latest` startup update instead runs versions that no release records.
+Cloudflared, base images and the Ubuntu snapshot still change only through review. Containers always use the image's pinned tools, including with older saved settings; operators adopt refreshed tools by updating to the new baseline image. Startup never updates tools.
 
 ## Automatic broker delivery
 

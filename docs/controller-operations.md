@@ -61,8 +61,7 @@ The body shows the controller state with its start time, or the time of a handle
 An **Updates** section compares the controller's image with the [baseline releases](ci-cd.md#baseline-releases) published in `repoagent/controller`. The controller reads them with its App credential at startup and about hourly; GitHub's **Latest** badge is ignored. `--image-inventory FILE` names the running image's inventory: the container runtime passes `/opt/repoagent/image-inventory.json`, and its SHA-256 identifies the release that published the image. When a newer release exists, the section shows one **Update available** notice for the newest release only, with the number of newer releases, links to the release and the GHCR package, the immutable image reference and its gh and Codex versions. Publication is not deployment. The controller never replaces itself and has no Docker host access, so an operator recreates the controller from that image, or rebuilds a derived image on it; external configuration, credentials and session volumes are kept. The section instead reports **Release identity uncertain**, and suggests no replacement, when:
 
 - no inventory is given (a native or development run);
-- the inventory matches none of the 100 newest published releases (a derived, local, unreleased or much older image);
-- `--startup-tool-updates` is set. The runtime passes this flag for `--tool-updates latest`, because tools updated at startup may differ from every release.
+- the inventory matches none of the 100 newest published releases (a derived, local, unreleased or much older image).
 
 An image built `FROM` a baseline image without changing its inventory still matches that release. A failed release read is shown with its time and error, and claims neither "current" nor "update available" until a later check succeeds.
 

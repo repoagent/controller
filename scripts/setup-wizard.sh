@@ -218,7 +218,6 @@ when available (otherwise offers device sign-in), verifies access and starts Doc
   --public-url HTTPS_ORIGIN     Required for fixed-url
   --listen-port PORT            Default: 8080
   --reconcile-interval SECONDS  Default: 300
-  --tool-updates latest|pinned  Default: saved choice; pinned (image tools) for a new instance
   --web-search live|cached|disabled  Default: live
   --image-manifest PATH         Versioned nonsecret image manifest
   --derived-dockerfile PATH     Optional user-owned image extension
@@ -243,7 +242,7 @@ USAGE
       --instance) variable=REPOAGENT_INSTANCE ;; --installation-id) variable=INSTALLATION_ID ;;
       --mention-user) variable=MENTION_USER ;; --model) variable=MODEL ;; --mode) variable=MODE ;;
       --public-url) variable=PUBLIC_URL ;; --listen-port) variable=LISTEN_PORT ;;
-      --reconcile-interval) variable=RECONCILE_INTERVAL ;; --tool-updates) variable=TOOL_UPDATES ;;
+      --reconcile-interval) variable=RECONCILE_INTERVAL ;;
       --web-search) variable=WEB_SEARCH ;;
       *) echo "Unknown option: $1. Run ./install.sh --help." >&2; return 1 ;;
     esac
@@ -264,9 +263,6 @@ USAGE
       MODEL) field=model; default=gpt-6.1-sol ;; MODE) field=mode; default=polling ;;
       PUBLIC_URL) field=publicUrl ;; LISTEN_PORT) field=listenPort; default=8080 ;;
       RECONCILE_INTERVAL) field=reconcileInterval; default=300 ;;
-      TOOL_UPDATES) field=toolUpdates; default=pinned
-        # Settings saved before this choice existed always updated tools at startup; they keep doing so.
-        [[ -z $("$cli" get repository 2>/dev/null || true) ]] || default=latest ;;
       WEB_SEARCH) field=webSearch; default=live ;;
       CODEX_AUTH_PATH)
         local auth=${CODEX_HOME:-$HOME/.codex}/auth.json
@@ -323,7 +319,6 @@ USAGE
   collect MENTION_USER 'Dedicated mention user without @ (optional; empty uses the App bot)'
   collect MODEL 'Codex model'
   collect MODE 'Mode: polling, fixed-url or quick-tunnel'
-  collect TOOL_UPDATES 'Tool updates: latest or pinned'
   collect WEB_SEARCH 'Web search: live, cached or disabled'
   [[ -n "$REPOSITORY" && -n "$APP_ID" && -n "$KEY_PATH" ]] || {
     echo 'Repository, App ID and key path are required. Supply --repository, --app-id and --key-path.' >&2; return 1;
@@ -335,7 +330,7 @@ USAGE
   }
   local args=(configure --repository "$REPOSITORY" --app-id "$APP_ID" --key-path "$KEY_PATH"
     "--mention-user=$MENTION_USER" --model "$MODEL" --mode "$MODE"
-    --tool-updates "$TOOL_UPDATES" --web-search "$WEB_SEARCH")
+    --web-search "$WEB_SEARCH")
   if [[ "$MODE" != polling ]]; then
     say 'Webhook modes also require repository Webhooks: read and write; approve the installation permissions.'
     collect LISTEN_PORT 'Listener port'
@@ -388,7 +383,7 @@ USAGE
   say 'Mention the actor login printed above, including [bot], in a Discussion body/comment to start a conversation.'
   say 'Or, while stopped: ./repoagent enroll https://github.com/OWNER/REPO/discussions/NUMBER'
   say 'This installation handles Discussions. Its token does not grant repository code pushes or PR creation.'
-  say 'Configuration, Codex credentials, workspace, history, state and updated tools persist in Docker volumes.'
+  say 'Configuration, Codex credentials, workspace, history, state and retained tools storage persist in Docker volumes.'
 }
 
 run_wizard "$@"; exit

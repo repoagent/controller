@@ -190,8 +190,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
         if (notice.Newest is not { } newest) { text.AppendLine($"No published baseline release was found at {at}."); return; }
         if (notice.Uncertainty is not null || notice.Running is not { } running)
         {
-            text.AppendLine($"**Release identity uncertain** (checked at {at}): {notice.Uncertainty}" +
-                (notice.Running is { } matched ? $"; its image inventory matches {Release(matched)}" : "") + ". No replacement is suggested.");
+            text.AppendLine($"**Release identity uncertain** (checked at {at}): {notice.Uncertainty}. No replacement is suggested.");
             text.AppendLine($"- Newest published baseline release: {Release(newest)}, image {Image(newest)} with gh {Code(newest.Gh)} and Codex {Code(newest.Codex)}. " +
                 "Compare it with this controller's image before deciding whether to rebuild or recreate it.");
             return;

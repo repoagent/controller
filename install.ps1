@@ -58,7 +58,6 @@ param(
     [string]$PublicUrl,
     [string]$ListenPort,
     [string]$ReconcileInterval,
-    [ValidateSet('latest', 'pinned')][string]$ToolUpdates,
     [ValidateSet('live', 'cached', 'disabled')][string]$WebSearch,
     [switch]$DeviceLogin,
     [switch]$SkipBuild,
@@ -193,8 +192,10 @@ try {
     $saved = if (Test-Path -LiteralPath $launchPath) { Read-Document $launchPath } else { $null }
     $fields = @('schemaVersion','instance','stateDirectory','authentication','repository','brokerOrigin','approvalVariable','enrollmentProfile',
         'imageManifest','imageManifestSha256','derivedDockerfile','derivedDockerfileSha256','runtimeImageId','appId','keyPath','installationId',
-        'mentionUser','model','mode','publicUrl','listenPort','reconcileInterval','toolUpdates','webSearch','codexAuthPath')
+        'mentionUser','model','mode','publicUrl','listenPort','reconcileInterval','webSearch','codexAuthPath')
     if ($saved) {
+        # Old launch records remain loadable; their tool-update choice is ignored.
+        if ($saved.Contains('toolUpdates')) { $fields += 'toolUpdates' }
         if ($saved.Contains('clone')) { $fields += 'clone' }
         if ($saved.Contains('repositorySettings')) { $fields += 'repositorySettings' }
         if ($saved.Contains('launchState')) { $fields += 'launchState' }
@@ -238,14 +239,12 @@ try {
     $InstallationId = Setting InstallationId
     $MentionUser = Setting MentionUser
     $Model = Setting Model 'gpt-6.1-sol'
-    # A new install runs the image's tools. Launch records always carry their saved choice (every field is required).
-    $ToolUpdates = Setting ToolUpdates 'pinned'
     $WebSearch = Setting WebSearch 'live'
     $PublicUrl = Setting PublicUrl
     $ListenPort = Setting ListenPort '8080'
     $ReconcileInterval = Setting ReconcileInterval '300'
     if ($Repository -cnotmatch '^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$' -or @($Repository.Split('/') | Where-Object { $_ -in @('.','..') }).Count) { Stop-Install 'Repository must be OWNER/REPO.' }
-    if ($Mode -notin @('polling','fixed-url','quick-tunnel') -or $ToolUpdates -notin @('latest','pinned') -or $WebSearch -notin @('live','cached','disabled')) { Stop-Install 'Invalid runtime mode, tool update or web search choice.' }
+    if ($Mode -notin @('polling','fixed-url','quick-tunnel') -or $WebSearch -notin @('live','cached','disabled')) { Stop-Install 'Invalid runtime mode or web search choice.' }
     if (-not $Model -or ($MentionUser -and $MentionUser -cnotmatch '^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$')) { Stop-Install 'Supply a model and a valid optional mention login without @.' }
     [long]$parsedInstallation = 0
     if ($InstallationId -and ($InstallationId -notmatch '^[1-9][0-9]*$' -or -not [long]::TryParse($InstallationId, [ref]$parsedInstallation))) { Stop-Install 'InstallationId must be a positive integer.' }
@@ -339,7 +338,7 @@ try {
         brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; enrollmentProfile=$resolvedProfile; imageManifest=$ImageManifest;
         imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
-        listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; toolUpdates=$ToolUpdates; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath }
+        listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath }
     if ($saved.launchState) {
         if ($Apply) { Assert-LocalRuntimeAction Install @() $plan }
         $plan['launchState'] = $saved.launchState
@@ -357,7 +356,7 @@ try {
     Write-Host "Image: $(if ($runtimeImageId) { $runtimeImageId } else { 'pending build' }); base: $baseImage; platform: linux/amd64; maintained compatibility: Ubuntu 26.04."
     Write-Host "Manifest: $ImageManifest; SHA256: $manifestHash; controller source: $($software.controller.source)."
     if ($DerivedDockerfile) { Write-Host "Derived Dockerfile: $DerivedDockerfile; SHA256: $derivedHash." }
-    Write-Host "Software: Codex $($software.agent.version), gh $($software.githubCli.version); tools: $($software.tools | ConvertTo-Json -Compress); model: $Model; updates: $ToolUpdates."
+    Write-Host "Software: Codex $($software.agent.version), gh $($software.githubCli.version); tools: $($software.tools | ConvertTo-Json -Compress); model: $Model; tools stay pinned to the image."
     Write-Host 'Download/build size and duration are unknown; depend on cache, selected base and tools. Full source/ABI build validation occurs on Apply.'
     Write-Host "Container: repoagent-$Instance. Retain config, credentials, workspace, history, state and tools volumes; broker enrollment volume is read-only at runtime."
     foreach ($storage in @('config','credentials','workspace','history','state','tools') + $(if ($Authentication -eq 'Broker') { @('enrollment') } else { @() })) {
@@ -408,7 +407,7 @@ try {
     $plan.runtimeImageId = $runtimeImageId
     Write-PrivateJson $launchPath $plan
     $stage = 'configure and privately import enrollment'
-    $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--tool-updates', $ToolUpdates, '--web-search', $WebSearch)
+    $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--web-search', $WebSearch)
     if ($resolvedClone) { $configuration += '--clone' }
     if ($resolvedSettings) { $configuration += '--repository-settings' }
     if ($InstallationId) { $configuration += @('--installation-id', $InstallationId) }

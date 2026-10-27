@@ -45,7 +45,6 @@ RUN dpkg-query -W > /opt/repoagent/os-packages.txt
 COPY container/runtime.py /opt/repoagent/runtime.py
 COPY container/quick_tunnel.py /opt/repoagent/quick_tunnel.py
 COPY container/control.py /opt/repoagent/control.py
-COPY container/update_tools.py /opt/repoagent/update_tools.py
 LABEL io.repoagent.role="controller"
 ENV HOME=/home/agent CODEX_HOME=/data/credentials/codex BROWSER=echo
 ENV PATH="/opt/repoagent/controller:/opt/repoagent/tools/bin:${PATH}"

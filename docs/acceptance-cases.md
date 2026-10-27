@@ -8,7 +8,7 @@ Use a disposable repository or explicitly authorized disposable Discussions. App
 export REPOAGENT_INSTANCE=acceptance
 ./repoagent build
 ./repoagent configure --repository OWNER/REPO --app-id APP_ID \
-  --key-path /absolute/path/key.pem --mention-user '' --tool-updates pinned
+  --key-path /absolute/path/key.pem --mention-user ''
 ./repoagent login
 ./repoagent participant-login
 ./repoagent skills install /absolute/path/acceptance-skills.json /optional/source-token
@@ -17,7 +17,7 @@ REPOAGENT_LIVE=1 ./repoagent live-test
 
 For C06/C07 install the skill at `tests/fixtures/acceptance-marker` from this repository, pinned to a full commit SHA containing that fixture. Public source credentials are unnecessary; a private source requires the explicitly authorized source-read token. The fixture computes a correlated result using its own script and supports a bounded gate for observing input while agent work is active. C07 checks its unexpired active lease while the additional input waits unaccepted; the skill removes the lease on completion or timeout.
 
-The main journey uses explicit `--tool-updates pinned` for reproducibility. Normal agent setup also defaults to the image's pinned tools. Record separate opt-in startup-update evidence using `--tool-updates latest`, including actual before/after versions and a container restart.
+The journey and normal agent setup both run the image's pinned tools. Record the image and its versions when reporting acceptance; startup and restart do not update tools.
 
 The xUnit suite runs in its own container, with the human `gh` sign-in mounted only there. It operates through real GraphQL mutations and observations. Its mailbox asks the host wrapper for replacement, logs, the documented rejected-session fixture or the credential-revocation fixture; neither the runner nor agent receives a Docker socket. The agent uses its App installation and container-owned Codex account. No provider mocks are used.
 

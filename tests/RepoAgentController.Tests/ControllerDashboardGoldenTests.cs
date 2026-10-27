@@ -60,7 +60,7 @@ public sealed class ControllerDashboardGoldenTests
     ControllerStatus Open(string mode) => new(Repository, mode, record, discussions, state, checkout, clock);
 
     ControllerDashboard Dashboard(ControllerStatus status, GitHubOutbox outbox) => new(Category, status, outbox,
-        new BaselineReleases(published, _ => Task.FromResult<string?>(Inventory("running")), false, clock, new RecordingLog(), text => text), clock, new RecordingLog(), text => text);
+        new BaselineReleases(published, _ => Task.FromResult<string?>(Inventory("running")), clock, new RecordingLog(), text => text), clock, new RecordingLog(), text => text);
 
     // The last publication handed to the outbox, once it names the newest release; each publication arms the next heartbeat.
     async Task<DashboardOperation> Publication(string release)

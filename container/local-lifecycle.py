@@ -107,6 +107,7 @@ def marker(value):
 def verify_binding(expected, config=None):
     binding = expected['binding']
     config = read(Path('/data/config/settings.json')) if config is None else config
+    # Accept the legacy toolUpdates field when inspecting old instances; it no longer selects tools.
     fields = {'repository', 'appId', 'installationId', 'brokerUrl', 'keyPath', 'mentionUser', 'model', 'mode',
               'publicUrl', 'listenPort', 'reconcileInterval', 'toolUpdates', 'webSearch', 'clone', 'enroll', 'repositoryId',
               'repositorySettings', 'dashboardCategory'}
@@ -116,7 +117,7 @@ def verify_binding(expected, config=None):
     for key, value in config.items():
         if value is not None and type(value) is not types.get(key, int if key == 'installationId' else str):
             raise ValueError('Invalid runtime setting type')
-    if config['mode'] not in ('polling', 'fixed-url', 'quick-tunnel') or config.get('toolUpdates', 'latest') not in ('latest', 'pinned') or config.get('webSearch', 'live') not in ('live', 'cached', 'disabled'):
+    if config['mode'] not in ('polling', 'fixed-url', 'quick-tunnel') or config.get('webSearch', 'live') not in ('live', 'cached', 'disabled'):
         raise ValueError('Invalid runtime setting choice')
     if any(not isinstance(value, str) for value in config.get('enroll', [])):
         raise ValueError('Invalid discussion enrollment list')
