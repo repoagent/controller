@@ -20,7 +20,7 @@ public sealed class RetainedEnrollmentAdmissionTests
 
         // Remove the independent per-minute mint ceiling as a reason for denial.
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var second = await f.Start(new RepositoryVariableEnrollmentRequest(Guid.NewGuid().ToString("N"), 123456, "owner/project", "APPROVAL_SECOND", "polling"), 2);
+        var second = await Retained.HistoricalDiscovery(f, () => f.Start(new RepositoryVariableEnrollmentRequest(Guid.NewGuid().ToString("N"), 123456, "owner/project", "APPROVAL_SECOND", "polling"), 2));
         Assert.Equal(HttpStatusCode.TooManyRequests, second.StatusCode);
 
         // Fresh reads expose any leaked reservation or repository publication on denial.

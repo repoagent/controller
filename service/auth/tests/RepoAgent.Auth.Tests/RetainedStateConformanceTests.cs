@@ -12,7 +12,7 @@ public sealed class RetainedStateConformanceTests
         AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
         Assert.Equal(HttpStatusCode.OK, (await f.Start(Request(), 2)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Start(Request("APPROVAL_SECOND"), 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await Retained.HistoricalDiscovery(f, () => f.Start(Request("APPROVAL_SECOND"), 2))).StatusCode);
         var rows = f.Rows();
         Assert.Equal(2, rows.Count(r => r.Scope == "global:enrollment-v1" && r.Name.StartsWith("pending:", StringComparison.Ordinal)));
         Assert.Equal(1, f.GitHub.VerifierMints);

@@ -95,7 +95,11 @@ public sealed class AgentVariableConformanceTests
         var before = f.Rows().Single(r => r.Name.StartsWith("attempt:", StringComparison.Ordinal));
         f.GitHub.BeforeMint = agentHandler;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var pending = await Start(f);
+        var historical = await Retained.HistoricalDiscovery(f, () => f.Start(Request(), 2));
+        Assert.Equal(HttpStatusCode.OK, historical.StatusCode);
+        var pending = historical.Json.GetProperty("pendingId").GetString()!;
+        f.GitHub.Marker = historical.Json.GetProperty("marker").GetString()!;
+        f.Clock.Advance(TimeSpan.FromMinutes(1));
         var reads = f.GitHub.Reads;
         var completion = await f.Complete(pending, 2);
         Assert.Equal(HttpStatusCode.Conflict, completion.StatusCode);
@@ -128,7 +132,8 @@ public sealed class AgentVariableConformanceTests
         };
         var start = await f.Start(Request(), 2);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, start.StatusCode);
-        Assert.Equal("", start.Text);
+        Assert.Equal("enrollment_settlement_unconfirmed", start.Json.GetProperty("code").GetString());
+        Assert.Equal(["code"], start.Json.EnumerateObject().Select(field => field.Name));
         var attempt = Assert.Single(f.Rows(), r => r.Name.StartsWith("attempt:", StringComparison.Ordinal)).Read<IssuanceAttempt>();
         Assert.DoesNotContain(f.Rows(), r => r.Name.StartsWith("device:", StringComparison.Ordinal));
         if (fault != "independent-name")

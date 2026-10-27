@@ -52,9 +52,9 @@ public sealed class EnrollmentTests
         for (var i = 0; i < 3; i++)
         {
             f.Clock.Advance(TimeSpan.FromMinutes(1));
-            Assert.Equal(HttpStatusCode.OK, (await f.Start(InMemoryBroker.Request())).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await Retained.HistoricalDiscovery(f, () => f.Start(InMemoryBroker.Request()))).StatusCode);
         }
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Start(InMemoryBroker.Request())).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await Retained.HistoricalDiscovery(f, () => f.Start(InMemoryBroker.Request()))).StatusCode);
         Assert.Equal(4, f.GitHub.VerifierMints);
     }
 }

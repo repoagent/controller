@@ -75,7 +75,7 @@ public sealed class CapacityReclamationTests
         Assert.Equal(0L, f.Gate.PendingCount);
         Assert.Equal(1L, quota.RetainedEnrollmentCount);
         Assert.Equal(1L, f.Gate.OutstandingTokenCount);
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await Retained.HistoricalDiscovery(f, () => f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2))).StatusCode);
         Assert.Equal(1, f.GitHub.Mints);
     }
 }

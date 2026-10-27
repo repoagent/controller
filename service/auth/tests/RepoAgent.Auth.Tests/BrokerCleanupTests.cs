@@ -163,7 +163,7 @@ public sealed partial class BrokerCleanupTests
         string[] ids = [1.ToString("x32", System.Globalization.CultureInfo.InvariantCulture), 2.ToString("x32", System.Globalization.CultureInfo.InvariantCulture), 3.ToString("x32", System.Globalization.CultureInfo.InvariantCulture)];
         foreach (var id in ids)
         {
-            Assert.Equal(HttpStatusCode.OK, (await f.Start(Retained.AgentRequest(id), 2)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await Retained.HistoricalDiscovery(f, () => f.Start(Retained.AgentRequest(id), 2))).StatusCode);
             f.Clock.Advance(TimeSpan.FromMinutes(1));
         }
         var operations = Retained.IssuanceLedgers(f).Select(ledger => ledger.Value).ToList();
@@ -294,7 +294,7 @@ public sealed partial class BrokerCleanupTests
         string[] ids = [1.ToString("x32", System.Globalization.CultureInfo.InvariantCulture), 2.ToString("x32", System.Globalization.CultureInfo.InvariantCulture), 3.ToString("x32", System.Globalization.CultureInfo.InvariantCulture)];
         foreach (var id in ids)
         {
-            Assert.Equal(HttpStatusCode.OK, (await f.Start(Retained.AgentRequest(id), 2)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await Retained.HistoricalDiscovery(f, () => f.Start(Retained.AgentRequest(id), 2))).StatusCode);
             f.Clock.Advance(TimeSpan.FromMinutes(1));
         }
         f.Clock.Advance(TimeSpan.FromDays(2));

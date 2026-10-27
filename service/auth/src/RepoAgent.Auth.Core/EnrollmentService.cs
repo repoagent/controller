@@ -5,7 +5,7 @@ using static RepoAgent.Auth.IssuanceValues;
 namespace RepoAgent.Auth;
 
 // Public controller enrollment: start (admission, the verifier's GitHub token and discovery), status, completion once
-// GitHub shows the approval, and the controller's acknowledgment. Each answer is the HTTP status and, for 200, the body.
+// GitHub shows the approval, and the controller's acknowledgment. Starts may carry a bounded readiness diagnostic.
 public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens tokens, IAppInstallations installations,
     IControllerApprovals approvals, Uri? brokerOrigin, TimeProvider clock)
 {
@@ -38,6 +38,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
         // A definitely unsent reservation can resume. A sending/unknown outcome never retries POST.
         var unsent = existing is not null && Text(existing.Value.State) == "reserved";
         if (unsent && Date(existing!.Value.JwtExpiresAt) <= clock.GetUtcNow()) throw new IssuanceDenied();
+        if (unsent) store.RequireUnsentReady(s);
         var reserved = await store.ReserveWorkAsync(s, existing is null, work);
         // Retry admission pays for new work, but an unsent mint keeps its original signed authority.
         var reservation = unsent ? existing : reserved.Attempt;
@@ -87,7 +88,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
         work.Fresh(started);
         await store.FinishAsync(s, [existing!], work.Cancellation);
         return Status(s);
-    });
+    }, start: true);
 
     public Task<IssuanceResult> StatusAsync(string id, string? secret, CancellationToken caller, int setupVersion = 1) => Run(async work =>
     {
@@ -322,10 +323,17 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
         catch (Exception ex) when (Answerable(ex)) { /* Retain unresolved evidence; never compensate counters. */ }
     }
 
-    private async Task<IssuanceResult> Run(Func<IssuanceWork, Task<IssuanceResult>> action)
+    private async Task<IssuanceResult> Run(Func<IssuanceWork, Task<IssuanceResult>> action, bool start = false)
     {
         using var work = new IssuanceWork(clock);
         try { return await action(work); }
-        catch (Exception ex) when (Answerable(ex)) { return new(ex is IssuanceDenied denied ? denied.Status : 503); }
+        catch (EnrollmentNotReady) { return new(409, new { code = "enrollment_not_ready", retryAfterSeconds = 60 }); }
+        catch (Exception ex) when (Answerable(ex))
+        {
+            var status = ex is IssuanceDenied denied ? denied.Status : 503;
+            return start && status == 503
+                ? new(503, new { code = "enrollment_settlement_unconfirmed" })
+                : new(status);
+        }
     }
 }

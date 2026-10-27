@@ -25,9 +25,11 @@ public sealed class RevokedOwnerRecoveryTests
         await Retained.ReclaimEnrollment(f, old.Id);
         await Retained.ReclaimEnrollment(f, old.Id);
         Assert.Equal(old.Device, f.Gate.OwnerEnrollmentId);
-        var (_, blocked) = await Retained.StartAgent(f);
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.Conflict, (await f.Complete(blocked, 2)).StatusCode);
+        var before = f.Rows().Select(row => (row.Key, row.Version)).ToList();
+        var mints = f.GitHub.Mints;
+        Assert.Equal(HttpStatusCode.Conflict, (await f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2)).StatusCode);
+        Assert.Equal(before, f.Rows().Select(row => (row.Key, row.Version)));
+        Assert.Equal(mints, f.GitHub.Mints);
         await SettleOwnerCapabilities(f);
 
         await Retained.ReclaimEnrollment(f, old.Id);
@@ -46,7 +48,7 @@ public sealed class RevokedOwnerRecoveryTests
         Assert.Equal(receipt.RevokedAt, audit.RevokedAt);
         Assert.Equal("revoked-acknowledged", audit.Reason);
         Assert.NotNull(audit.OwnerReleasedAt);
-        Assert.Equal(3L, f.State.Get(EnrollmentQuota.Key)!.RetainedEnrollmentCount);
+        Assert.Equal(2L, f.State.Get(EnrollmentQuota.Key)!.RetainedEnrollmentCount);
     }
 
     [Theory]
@@ -103,9 +105,11 @@ public sealed class RevokedOwnerRecoveryTests
         var receipt = f.State.Row(ReceiptKey(old));
         Assert.NotNull(receipt);
         Assert.False(receipt.ContainsKey("OwnerReleasedAt"));
-        var (_, replacement) = await Retained.StartAgent(f);
-        f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.Conflict, (await f.Complete(replacement, 2)).StatusCode);
+        var before = f.Rows().Select(row => (row.Key, row.Version)).ToList();
+        var mints = f.GitHub.Mints;
+        Assert.Equal(HttpStatusCode.Conflict, (await f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2)).StatusCode);
+        Assert.Equal(before, f.Rows().Select(row => (row.Key, row.Version)));
+        Assert.Equal(mints, f.GitHub.Mints);
     }
 
     [Fact]
