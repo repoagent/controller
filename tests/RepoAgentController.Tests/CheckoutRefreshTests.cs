@@ -140,15 +140,16 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
 
     public static TheoryData<string> Uncertainties() =>
     [
-        "earlier sessions without a journal", "a pending Discussion delivery", "a recorded block", "a recorded admission",
-        "a recorded running turn", "a recorded refresh applying"
+        "earlier sessions without a journal", "a pending create without a journal", "a pending Discussion delivery",
+        "a recorded block", "a recorded admission", "a recorded running turn", "a recorded refresh applying"
     ];
 
     [Theory]
     [MemberData(nameof(Uncertainties))]
     public async Task A_start_that_cannot_rule_out_agent_work_or_a_checkout_change_blocks_admission(string form)
     {
-        if (form != "earlier sessions without a journal") journal.Saved = Recorded(saved =>
+        var missingJournal = form is "earlier sessions without a journal" or "a pending create without a journal";
+        if (!missingJournal) journal.Saved = Recorded(saved =>
         {
             if (form == "a recorded block") saved.Blocked = true;
             if (form == "a recorded admission") saved.Active["a"] = new(1) { Thread = "S1" };
@@ -156,13 +157,27 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
             if (form == "a recorded refresh applying") saved.Applying = new("C1", "C2", 2);
         });
 
-        var opened = Open(priorSessions: form == "earlier sessions without a journal", pendingDiscussion: form == "a pending Discussion delivery");
+        var opened = Open(priorSessions: form == "earlier sessions without a journal",
+            pendingDiscussion: form is "a pending Discussion delivery" or "a pending create without a journal");
+
+        await Start(opened, Token);
 
         Assert.True(opened.AdmissionBlocked);
-        if (form == "earlier sessions without a journal") Assert.Null(journal.Saved);
-        else Assert.Equal((true, "Native activity or checkout update is uncertain; inspect state before recovery"), (Saved.Blocked, Saved.Reason));
+        Assert.Contains(log.Entries, entry => entry.Kind == "refresh-blocked");
         Assert.Equal(Uncertain, (await Assert.ThrowsAsync<IOException>(() => opened.Admit(Token))).Message);
         Assert.False(await opened.CommitAtIdle(_ => throw new InvalidOperationException("A blocked checkout must not commit"), Token));
+        Assert.Equal(0, checkout.Refreshes);
+        Assert.Equal(1, runtime.Epoch);
+        Assert.Equal((0, 0), runtime.Counts);
+        Assert.Empty(runtime.Resumed);
+        if (missingJournal)
+        {
+            Assert.Null(journal.Read());
+            Assert.Throws<IOException>(opened.Request);
+            Assert.Null(journal.Read());
+            Assert.True(opened.AdmissionBlocked);
+        }
+        else Assert.Equal((true, "Native activity or checkout update is uncertain; inspect state before recovery"), (Saved.Blocked, Saved.Reason));
     }
 
     public static TheoryData<string> BlocksBeforeTheRunningCount() => ["a recorded block", "a recorded admission", "a recorded refresh applying"];
