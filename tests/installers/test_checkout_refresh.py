@@ -759,12 +759,36 @@ class CheckoutRefreshTests(unittest.TestCase):
                         self.assertEqual(f.journal.read_bytes(), original)
                         f.owner.chmod(0o700)
                         before = self.local_state(f)
-                        settled = subprocess.run(recovery, env=f.environment, capture_output=True, text=True, timeout=20)
+                        original_state = f.state.read_bytes()
+                        original_journal = f.journal.read_bytes()
+                        evidence = Path(str(f.state) + '.checkout-evidence')
+                        snapshots = set(evidence.iterdir())
+                        # Isolate the ordinary Unix creation mask to this recovery child, including threaded fixtures.
+                        settled = subprocess.run(['/bin/sh', '-c', 'umask 022; exec "$@"', 'recovery', *recovery],
+                                                 env=f.environment, capture_output=True, text=True, timeout=20)
                         self.assertEqual(settled.returncode, 0, settled.stdout + settled.stderr)
                         self.assertIn('explicitly settled', settled.stdout)
-                        self.assertFalse(json.loads(f.journal.read_text())['blocked'])
-                        self.assertEqual(json.loads(f.journal.read_text())['active'], {})
+                        journal = json.loads(f.journal.read_text())
+                        self.assertFalse(journal['blocked'])
+                        self.assertEqual(journal['active'], {})
                         self.assertEqual(self.local_state(f), before, 'Offline settlement changed the checkout')
+                        added = set(evidence.iterdir()) - snapshots
+                        self.assertEqual(len(added), 1, 'Recovery must retain the original private evidence')
+                        archive = added.pop()
+                        self.assertEqual((archive / 'state.json').read_bytes(), original_state)
+                        self.assertEqual((archive / 'refresh.json').read_bytes(), original_journal)
+                        self.assertTrue((archive / 'complete').is_file())
+                        for directory in (evidence, archive):
+                            self.assertEqual(oct(directory.stat().st_mode & 0o777), '0o700')
+                        for name in ('state.json', 'refresh.json', 'complete'):
+                            self.assertEqual(oct((archive / name).stat().st_mode & 0o777), '0o600')
+                        recovered = json.loads(f.state.read_text())['discussions']
+                        for key, record in json.loads(original_state)['discussions'].items():
+                            self.assertEqual(recovered[key]['sessionId'], record['sessionId'])
+                            self.assertNotIn('running', recovered[key])
+                            self.assertNotIn('pending', recovered[key])
+                        self.assertEqual(oct(f.state.stat().st_mode & 0o777), '0o600',
+                                         'Recovery must keep private Discussion state under umask 022')
                         print('GAP clean-active restart=blocked persisted-active=true', flush=True)
                         continue
                 f.provider.ref_status = 404
