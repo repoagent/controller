@@ -1,18 +1,18 @@
-name: Auth service CI
+name: Broker
 on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Select normal delivery, image bootstrap or a guarded first-activation operation
+        description: Select broker delivery, rollback, access check or guarded recovery
         type: choice
-        options: [access-check, deploy, bootstrap-publish, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume, cleanup-identity-plan, cleanup-identity-apply, cleanup-plan, cleanup-apply]
+        options: [access-check, deploy, deploy-image, bootstrap-publish, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume, cleanup-identity-plan, cleanup-identity-apply, cleanup-plan, cleanup-apply]
         default: access-check
         required: true
       expected-source-sha:
         description: Exact accepted current main commit (required for bootstrap and activation operations)
         type: string
       image:
-        description: Accepted immutable GHCR digest (runtime operations only)
+        description: Accepted immutable broker image digest (deploy-image or runtime recovery)
         type: string
       revision:
         description: Exact accepted staging revision (stop/resume only)
@@ -24,8 +24,7 @@ on:
       - 'infra/auth/**'
       - 'scripts/delivery/auth-pipeline.py'
       - 'scripts/delivery/test_*auth*.py'
-      - '.github/workflows/ci-auth-service.yml'
-      - '.github/workflows/deploy-auth.yml'
+      - '.github/workflows/broker.yml'
       - 'Directory.Build.*'
       - 'Directory.Packages.props'
       - 'NuGet.Config'
@@ -35,8 +34,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: auth-service-${{ github.event_name == 'pull_request' && github.ref || 'delivery' }}
-  cancel-in-progress: false
+  group: broker-${{ github.event_name == 'pull_request' && github.ref || 'delivery' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   BICEP_VERSION: v0.48.1
   AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
@@ -146,7 +145,7 @@ jobs:
         run: docker logout ghcr.io
   deploy:
     needs: publish
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy'))
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (needs.publish.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy-image')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -154,7 +153,7 @@ jobs:
       id-token: write
     env:
       AZURE_CORE_OUTPUT: none
-      AUTH_IMAGE: ${{ needs.publish.outputs.image }}
+      AUTH_IMAGE: ${{ inputs.operation == 'deploy-image' && inputs.image || needs.publish.outputs.image }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:

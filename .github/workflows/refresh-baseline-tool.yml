@@ -101,7 +101,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           python3 scripts/delivery/tool-refresh.py commit "$RUNNER_TEMP/tool-selection/selection.json"
-          gh workflow run publish-controller-image.yml --ref main || {
-            echo '::error::The verified pin is on main, but publication was not dispatched. Run: gh workflow run publish-controller-image.yml --ref main' >&2
+          gh workflow run controller.yml --ref main || {
+            echo '::error::The verified pin is on main, but publication was not dispatched. Run: gh workflow run controller.yml --ref main' >&2
             exit 1
           }

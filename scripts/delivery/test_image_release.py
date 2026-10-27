@@ -16,7 +16,7 @@ import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / '.github/workflows/publish-controller-image.yml'
+WORKFLOW = ROOT / '.github/workflows/controller.yml'
 DEFAULT = json.loads((ROOT / 'image/default.json').read_text())
 GH, CODEX = DEFAULT['githubCli']['version'], DEFAULT['agent']['version']
 SHA = 'b' * 40
@@ -79,13 +79,14 @@ def job(name):
     return re.split(r'(?m)^  (?=[a-z-]+:\n)', body, maxsplit=1)[0]
 
 
-def runs(name, *, event, ref='refs/heads/main', repository='repoagent/controller'):
+def runs(name, *, event, ref='refs/heads/main', repository='repoagent/controller', tag=''):
     """Evaluate a job's if: expression for one GitHub context (the subset this workflow uses)."""
     condition = re.search(r'^    if: (.+)$', job(name), re.M)
     if condition is None:
         return True
     context = {'event_name': event, 'ref': ref, 'repository': repository}
     expression = re.sub(r'github\.([a-z_]+)', lambda match: repr(context[match[1]]), condition[1])
+    expression = expression.replace('inputs.tag', repr(tag))
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     if not re.fullmatch(r'(?:\s|\(|\)|==|!=|and|or)*', re.sub(r"'[^']*'", '', expression)):
         raise AssertionError('Unsupported workflow expression: ' + condition[1])
@@ -133,9 +134,34 @@ class AutomaticPublicationTests(unittest.TestCase):
                 self.assertFalse(runs(name, event='push', ref='refs/heads/feature'))
                 self.assertFalse(runs(name, event='push', repository='someone/controller'))
         self.assertTrue(runs('build', event='pull_request', ref='refs/pull/7/merge'))
-        self.assertFalse(runs('verify', event='pull_request', ref='refs/pull/7/merge'),
-                         'Verify controller already gates pull requests')
+        self.assertTrue(runs('verify', event='pull_request', ref='refs/pull/7/merge'),
+                        'The Controller workflow must verify PRs itself')
         self.assertTrue(runs('verify', event='push'))
+
+    def test_tagged_native_release_is_an_explicit_main_only_alternative_to_baseline_delivery(self):
+        for event, ref, tag, repository, expected in [
+            ('workflow_dispatch', 'refs/heads/main', 'v1.2.3', 'repoagent/controller', True),
+            ('workflow_dispatch', 'refs/heads/feature', 'v1.2.3', 'repoagent/controller', False),
+            ('pull_request', 'refs/pull/7/merge', 'v1.2.3', 'repoagent/controller', False),
+            ('push', 'refs/heads/main', 'v1.2.3', 'repoagent/controller', False),
+            ('workflow_dispatch', 'refs/heads/main', '', 'repoagent/controller', False),
+            ('workflow_dispatch', 'refs/heads/main', 'v1.2.3', 'someone/controller', False),
+        ]:
+            with self.subTest(event=event, ref=ref, tag=tag, repository=repository):
+                self.assertEqual(runs('native-release', event=event, ref=ref, tag=tag, repository=repository), expected)
+        for name in ['build', 'verify', 'compile', 'publish', 'release']:
+            self.assertFalse(runs(name, event='workflow_dispatch', tag='v1.2.3'), name)
+        self.assertIn('environment: controller-release', job('native-release'))
+        self.assertIn('contents: write', job('native-release'))
+
+    def test_superseded_read_jobs_cancel_per_ref_but_active_writes_finish(self):
+        for name in ['build', 'verify-artifact', 'verify', 'compile']:
+            with self.subTest(job=name):
+                self.assertIn('cancel-in-progress: true', job(name))
+                self.assertIn('${{ github.ref }}', job(name))
+        for name in ['publish', 'release', 'native-release']:
+            self.assertIn('cancel-in-progress: false', job(name))
+
 
     def test_publication_waits_for_full_verification_and_release_for_publication(self):
         self.assertGreaterEqual(needs('publish'), {'build', 'verify-artifact', 'verify'})

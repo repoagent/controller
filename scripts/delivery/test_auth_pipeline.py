@@ -14,7 +14,7 @@ import textwrap
 
 
 SCRIPT = Path(__file__).with_name('auth-pipeline.py')
-WORKFLOW = SCRIPT.parents[2] / '.github/workflows/ci-auth-service.yml'
+WORKFLOW = SCRIPT.parents[2] / '.github/workflows/broker.yml'
 REPOSITORY = 'ghcr.io/repoagent/controller-auth'
 SHA = 'b' * 40
 TAG = REPOSITORY + ':sha-' + SHA

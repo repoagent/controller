@@ -1,6 +1,6 @@
-# Verification, controller releases and auth-service delivery
+# Controller and broker delivery workflows
 
-`Verify controller` runs on pull requests and pushes to `main`, with read-only permissions and no persisted checkout credentials. It uses the root `global.json` (.NET 11 RC), executes the actual xUnit runner, checks nonzero discovery, runs the controller process tests in `tests/installers` and the delivery tests, then builds Native AOT and executes native help plus NativeSmoke. The controller project runs the trim and AOT analyzers on every build and treats all warnings as errors, and the Native AOT packaging uses the same warning policy as the image build, so code that would fail image publication (for example IL2026/IL3050) fails this gate first. The controller core (`src/RepoAgentController.Core`, [ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)) also runs the banned-API analyzer: its `BannedSymbols.txt` rejects the common file, network, process, environment and wall-clock APIs and `JsonNode`, and review catches the rest. The broker independently pins .NET 10 LTS.
+The **Controller** workflow (`controller.yml`) verifies controller changes on pull requests and pushes to `main`, with read-only permissions and no persisted checkout credentials. It uses the root `global.json` (.NET 11 RC), executes the actual xUnit runner, checks nonzero discovery, runs the controller process tests in `tests/installers` and the delivery tests, then builds Native AOT and executes native help plus NativeSmoke. The controller project runs the trim and AOT analyzers on every build and treats all warnings as errors, and the Native AOT packaging uses the same warning policy as the image build, so code that would fail image publication (for example IL2026/IL3050) fails this gate first. The controller core (`src/RepoAgentController.Core`, [ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)) also runs the banned-API analyzer: its `BannedSymbols.txt` rejects the common file, network, process, environment and wall-clock APIs and `JsonNode`, and review catches the rest. The broker independently pins .NET 10 LTS.
 
 ```sh
 bash scripts/delivery/verify.sh /tmp/controller-verification
@@ -9,6 +9,8 @@ bash scripts/delivery/verify.sh /tmp/controller-verification
 Local prerequisites are the pinned SDK, Python 3, clang and zlib development headers.
 
 The installer (`install.*`, `repoagent*`, `scripts/*.ps1`) and the container runtime (`container/`) have no automated tests ([ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)). They are tested manually against the local AppHost ([#204](https://github.com/repoagent/controller/issues/204), not built yet) when they change.
+
+The repository has three workflow entry points: **Controller**, **Broker**, and the scheduled **Baseline tool refresh** (with a reusable per-tool helper). Controller owns verification, infrastructure compilation, image publication and native tagged releases. Broker owns verification, deployment and recovery operations. Superseded read-only checks are cancelled; publication and deployment writes finish once started.
 
 ## Controller releases
 
@@ -19,7 +21,7 @@ Before publication, create the `controller-release` GitHub environment and restr
 Create an immutable version tag on a reviewed main commit containing the delivery scripts, then dispatch from main:
 
 ```sh
-gh workflow run release-controller.yml --ref main -f tag=v1.2.3
+gh workflow run controller.yml --ref main -f tag=v1.2.3
 ```
 
 The job validates the tag, checks its commit belongs to main, checks out that source, verifies it and packages it. Pull requests publish nothing, and ordinary pushes to main publish only [baseline image releases](#baseline-releases), never a native distribution. An existing release, including a partial upload, is refused to preserve assets; inspect and resolve a partial release explicitly.
@@ -45,13 +47,13 @@ Verify the archive checksum before extraction, then run `sha256sum -c SHA256SUMS
 
 ## Public controller container image
 
-`Publish controller image` builds and smokes the real default Linux amd64 image on relevant pull requests with read-only permissions, then uploads and downloads the exact artifact ID into a second job to verify its checksum and loaded image identity. It records the image's own `versions` output and embedded `image-inventory.json` in the checksummed artifact and checks that the reported gh and Codex versions match the inventory. It uses the existing explicit source inventory; no enrollment, Codex sign-in or host GitHub credential enters the build. Pull requests never publish.
+The same **Controller** workflow builds and smokes the real default Linux amd64 image on relevant pull requests with read-only permissions, then uploads and downloads the exact artifact ID into a second job to verify its checksum and loaded image identity. It records the image's own `versions` output and embedded `image-inventory.json` in the checksummed artifact and checks that the reported gh and Codex versions match the inventory. It uses the existing explicit source inventory; no enrollment, Codex sign-in or host GitHub credential enters the build. Pull requests never publish.
 
-A push to `main` that changes the same image inputs (controller source, container, image manifest, bundled skill, composition or release scripts, or this workflow) publishes automatically. Main runs also execute the full `scripts/delivery/verify.sh` gate, because `main` has no required status checks; publication waits for it and for the artifact verification. One `main` publication runs at a time; a newer pending `main` run replaces an older pending one, so a burst of merges publishes the newest commit. Documentation-only and auth-service changes do not publish a controller image. A verified [tool refresh](#tool-refresh) pins newer gh/Codex versions on `main` and dispatches this publication.
+A push to `main` that changes the same image inputs (controller source, container, image manifest, bundled skill, composition or release scripts, or this workflow) publishes automatically. Both PR and main runs execute the full `scripts/delivery/verify.sh` gate, because `main` has no required status checks; publication waits for it and for the artifact verification. Read-only build and verification jobs cancel superseded runs on the same ref. Publication and release jobs are serialized independently and never cancel an active write. Documentation-only changes and service code changes under `service/auth` do not publish a controller image. A verified [tool refresh](#tool-refresh) pins newer gh/Codex versions on `main` and dispatches this publication.
 
 The build uploads its Docker archive, build metadata, versions output, inventory and checksums for seven days before publication proceeds through the main-only `controller-release` environment. The publish job loads that same artifact, checks its checksum/platform/UID/controller role/source revision, and receives `packages: write` only in that job. It publishes `ghcr.io/repoagent/controller:sha-FULL_SOURCE_SHA-RUN_ID-ATTEMPT`; reruns use fresh coordinates, and no `latest` tag is changed. A separate release job with only `contents: write` then creates the [baseline release](#baseline-releases).
 
-Manual recovery stays available: `gh workflow run publish-controller-image.yml --ref main` rebuilds, verifies and publishes current `main` with a new release. If only the release job failed, re-run that failed job in the same workflow run; it reuses the already published image coordinates.
+Manual recovery stays available: `gh workflow run controller.yml --ref main` rebuilds, verifies and publishes current `main` with a new release. If only the release job failed, re-run that failed job in the same workflow run; it reuses the already published image coordinates.
 
 Initial GHCR packages are private by default. An account with package administration rights must make `repoagent/controller` public under package **Settings > Danger Zone > Change visibility**, and grant this repository **Write** under **Manage Actions access** if access was not inherited. The workflow cannot report success until a clean anonymous registry client downloads the immutable image and all its layers into empty storage and confirms that its image config matches the approved build. A visibility failure can therefore leave a published private image; inspect the package and rerun deliberately after fixing access. No personal registry token or ACR is required. Use the public `ghcr.io/repoagent/controller@sha256:...` reference from the release or run summary for Azure; publication does not deploy or prove storage/ownership compatibility.
 
@@ -82,22 +84,22 @@ The controller's [Discussion dashboard](controller-operations.md#discussion-stat
 
 ### Tool refresh
 
-`Refresh baseline tools` checks for newer GitHub CLI and Codex CLI versions daily at 05:41 UTC, and on demand with `gh workflow run refresh-baseline-tools.yml --ref main`. It feeds a verified update through the normal baseline publication; it never changes a running controller.
+`Baseline tool refresh` checks for newer GitHub CLI and Codex CLI versions daily at 05:41 UTC, and on demand with `gh workflow run refresh-baseline-tools.yml --ref main`. It feeds a verified update through the normal baseline publication; it never changes a running controller.
 
 Each tool has its own refresh (`refresh-baseline-tool.yml`, called once for gh and once for Codex). The two refreshes run one after the other, and a failure in one does not cancel the other. Each refresh selects from the current `main`, so the second one builds on a pin the first one made in the same run. Every refresh runs these steps for its own tool:
 
 1. **Select.** `scripts/delivery/tool-refresh.py select TOOL` reads the latest stable GitHub release of `cli/cli` (gh) or `openai/codex` (Codex, `rust-v` tags) with the workflow token. A version is selected only if it is newer than the pin in `image/default.json` and the release publishes the exact Linux amd64 assets the image installs, with SHA-256 digests: `gh_VERSION_linux_amd64.tar.gz` for gh, or `codex-x86_64-unknown-linux-musl.tar.gz` and `codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz` for Codex. An older upstream release never downgrades a pin. A newer release that is a draft, prerelease or other tag form, or that lacks one of these assets or digests, fails that tool's refresh visibly. Nothing newer ends the refresh successfully without changes. The selection records the `main` commit it was made from.
 2. **Verify.** A read-only job checks out exactly that commit, pins the selected version in it and then runs the full `scripts/delivery/verify.sh` gate, whose native tests use the selected Codex. It then builds the default image with the selected tools, runs `versions` and NativeSmoke inside it and requires the versions the image reports to equal its inventory.
 3. **Pin.** Only after verification succeeds, a job in the `controller-release` environment with `contents: write` and `actions: write` commits the new catalog lines for that tool in `scripts/compose-image.py` and `image/default.json` to `main`. Every other pin stays as reviewed. The commit is one GitHub API call that applies only if `main` is still the verified commit. It is signed by GitHub and its message names the tool, both versions and the verification run.
-4. **Publish.** A commit made with the workflow token starts no push workflow, so the same job dispatches `Publish controller image` on `main`. That run verifies again and creates the baseline release, which records the exact gh and Codex versions. When both tools are pinned in one run, each pin dispatches its own publication.
+4. **Publish.** A commit made with the workflow token starts no push workflow, so the same job dispatches **Controller** on `main`. That run verifies again and creates the baseline release, which records the exact gh and Codex versions. When both tools are pinned in one run, each pin dispatches its own publication.
 
-An incompatible update fails at selection or verification. It changes nothing on `main`, publishes nothing, and leaves existing baseline releases and images usable. Only that tool is held back: the other tool's refresh still selects, verifies, pins and publishes a supported update on its own. The run then shows as failed, and the daily run retries the same latest version until upstream publishes a fix or a maintainer intervenes, for example with a reviewed pull request that pins another version. If `main` moved after verification, the pin is refused and the next run selects and verifies again on the new `main`. If dispatch fails after the pin, the job fails and names the manual recovery: `gh workflow run publish-controller-image.yml --ref main`.
+An incompatible update fails at selection or verification. It changes nothing on `main`, publishes nothing, and leaves existing baseline releases and images usable. Only that tool is held back: the other tool's refresh still selects, verifies, pins and publishes a supported update on its own. The run then shows as failed, and the daily run retries the same latest version until upstream publishes a fix or a maintainer intervenes, for example with a reviewed pull request that pins another version. If `main` moved after verification, the pin is refused and the next run selects and verifies again on the new `main`. If dispatch fails after the pin, the job fails and names the manual recovery: `gh workflow run controller.yml --ref main`.
 
 Cloudflared, base images and the Ubuntu snapshot still change only through review. Containers use the bundled tools by default; operators adopt refreshed tools by updating to the new baseline image. The opt-in `--tool-updates latest` startup update instead runs versions that no release records.
 
-## Automatic auth-service delivery
+## Automatic broker delivery
 
-Changes merged to `main` under `service/auth`, `infra/auth`, the auth delivery scripts/workflows or shared MSBuild/NuGet files trigger `Auth service CI`. Controller-only changes do not deploy auth. Pull requests run verification without publication or Azure credentials.
+Changes merged to `main` under `service/auth`, `infra/auth`, the auth delivery scripts/workflows or shared MSBuild/NuGet files trigger **Broker**. Controller-only changes do not deploy the broker. Pull requests run verification without publication or Azure credentials.
 
 Delivery runs the .NET service tests and compiles Bicep, then builds one Linux amd64 image with the auth role, numeric nonroot user and full source-revision label. It publishes to the existing public GHCR package and anonymously verifies the resolved immutable digest. Publication has `packages: write` and no Azure token; deployment has `id-token: write` and no package write.
 
@@ -131,11 +133,11 @@ For infrastructure changes, read current resource/module documentation, use late
 
 ```sh
 # Retry normal verification, publication and deployment from main.
-gh workflow run ci-auth-service.yml --ref main -f operation=deploy
+gh workflow run broker.yml --ref main -f operation=deploy
 # Deploy or roll back both modes to a previously approved immutable image.
-gh workflow run deploy-auth.yml --ref main -f image=ghcr.io/repoagent/controller-auth@sha256:APPROVED_DIGEST
+gh workflow run broker.yml --ref main -f operation=deploy-image -f image=ghcr.io/repoagent/controller-auth@sha256:APPROVED_DIGEST
 # Existing outputs-only OIDC access check.
-gh workflow run ci-auth-service.yml --ref main -f operation=access-check
+gh workflow run broker.yml --ref main -f operation=access-check
 ```
 
 Automatic deployment and manual rollback share noncanceling delivery concurrency and the same Bicep/app health path. Deployment across the two resources is not atomic. On failure, inspect Azure's deployment and actual resource state before retrying; do not infer that a failed workflow made no changes. Rollback is explicit and re-applies current Bicep configuration with the selected older image.

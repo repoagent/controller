@@ -42,19 +42,19 @@ Azure Login exchanges the GitHub token for Azure access; this setup stores no Az
 
 ## Verification and delivery workflow
 
-[`ci-auth-service.yml`](../.github/workflows/ci-auth-service.yml), **Auth service CI**, verifies service and infrastructure changes on pull requests and `main`. When broker, infrastructure or delivery sources are merged to `main`, it runs the service tests, compiles Bicep, publishes one immutable public auth image, and applies Bicep to deploy **both the HTTP API and scheduled cleanup Job from that digest**. It checks both deployed images, the ready API revision, and public live/ready HTTP responses. Pull requests verify without publishing or deploying. Hosted lifecycle acceptance stays tracked in issues; manual `AUTH_*_READY` assertions do not block normal deployment. Publication and deployment run only on `main`; deployment uses the existing branch OIDC identity with `contents: read` and `id-token: write`. No GitHub environment is introduced.
+[`broker.yml`](../.github/workflows/broker.yml), **Broker**, verifies service and infrastructure changes on pull requests and `main`. When broker, infrastructure or delivery sources are merged to `main`, it runs the service tests, compiles Bicep, publishes one immutable public auth image, and applies Bicep to deploy **both the HTTP API and scheduled cleanup Job from that digest**. It checks both deployed images, the ready API revision, and public live/ready HTTP responses. Pull requests verify without publishing or deploying. Hosted lifecycle acceptance stays tracked in issues; manual `AUTH_*_READY` assertions do not block normal deployment. Publication and deployment run only on `main`; deployment uses the existing branch OIDC identity with `contents: read` and `id-token: write`. No GitHub environment is introduced.
 
 For infrastructure changes, read the current resource/module documentation, use the latest released registry module versions, and compile locally before pushing. These templates use direct resource declarations. GitHub jobs select the installed Bicep v0.48.1 executable explicitly. Verify infrastructure by deploying to Azure and inspecting the actual resources. Before an environment becomes mission critical, establish a separate staging or test environment in a real Azure region.
 
 Resource settings and references live in Bicep. `main.bicep` includes the local cleanup module for public deployment; staged and foundation deployments retain their existing scope. `deploy.sh` compiles and applies the selected template, then inspects Azure and checks HTTP health for a public deployment. The image publication helper handles Docker/OCI operations only; there is no separate imperative Python Azure deployer.
 
-Manual `operation=access-check` retains the original outputs-only [`verify-access.bicep`](../infra/auth/verify-access.bicep) check. It verifies the resource-group location and records an incremental deployment named `github-oidc-<run-id>-<attempt>`. Its success proves OIDC login and deployment access, not service provisioning or broker acceptance. Manual `operation=deploy` selects full delivery. [`deploy-auth.yml`](../.github/workflows/deploy-auth.yml) applies the same Bicep path to both modes using an approved immutable digest for deployment or rollback. Both workflows share noncanceling delivery concurrency.
+Manual `operation=access-check` retains the original outputs-only [`verify-access.bicep`](../infra/auth/verify-access.bicep) check. It verifies the resource-group location and records an incremental deployment named `github-oidc-<run-id>-<attempt>`. Its success proves OIDC login and deployment access, not service provisioning or broker acceptance. Manual `operation=deploy` selects full delivery. Manual `operation=deploy-image` in the same Broker workflow applies the same Bicep path to both modes using an approved immutable digest for deployment or rollback. All broker delivery operations share noncanceling concurrency; superseded PR verification runs are cancelled.
 
 For a separately authorized access check:
 
 ```sh
-gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main -f operation=access-check
-gh run list --repo repoagent/controller --workflow ci-auth-service.yml --limit 5
+gh workflow run broker.yml --repo repoagent/controller --ref main -f operation=access-check
+gh run list --repo repoagent/controller --workflow broker.yml --limit 5
 gh run watch <run-id> --repo repoagent/controller --exit-status
 ```
 
@@ -105,10 +105,10 @@ The activation job has a 40-minute timeout. Azure CLI runs the actual Incrementa
 2. Plan/apply foundation through the working OIDC route:
 
    ```sh
-   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+   gh workflow run broker.yml --repo repoagent/controller --ref main \
      -f operation=foundation-plan -f expected-source-sha="$accepted_source"
    # Inspect the plan/run output before separately authorized apply.
-   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+   gh workflow run broker.yml --repo repoagent/controller --ref main \
      -f operation=foundation-apply -f expected-source-sha="$accepted_source"
    ```
 
@@ -118,7 +118,7 @@ The activation job has a 40-minute timeout. Azure CLI runs the actual Incrementa
 5. For an authorized first publication, dispatch the accepted current-main commit using the isolated Actions job token:
 
    ```sh
-   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+   gh workflow run broker.yml --repo repoagent/controller --ref main \
      -f operation=bootstrap-publish -f expected-source-sha="$accepted_source"
    ```
 
@@ -138,9 +138,9 @@ The activation job has a 40-minute timeout. Azure CLI runs the actual Incrementa
 6. Supply real nonsecret runtime configuration using the existing Actions variables (pinned distinct keys, epoch, stable app/Table configuration). For optional isolated acceptance, review stage-plan and apply stage-apply:
 
    ```sh
-   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+   gh workflow run broker.yml --repo repoagent/controller --ref main \
      -f operation=stage-plan -f expected-source-sha="$accepted_source" -f image="$accepted_image"
-   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+   gh workflow run broker.yml --repo repoagent/controller --ref main \
      -f operation=stage-apply -f expected-source-sha="$accepted_source" -f image="$accepted_image"
    ```
 
@@ -149,7 +149,7 @@ The activation job has a 40-minute timeout. Azure CLI runs the actual Incrementa
 8. To expose the optional staged deployment, promote the *same digest*. This deploys the API and cleanup together; deployment health does not establish the remaining lifecycle evidence:
 
    ```sh
-   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+   gh workflow run broker.yml --repo repoagent/controller --ref main \
      -f operation=promote-staged -f expected-source-sha="$accepted_source" -f image="$accepted_image"
    ```
 
@@ -178,11 +178,11 @@ Prove Table access/ETags and denial outside the dedicated table; encrypted Blob 
 Close acceptance/debug sessions. Both operations require the accepted source and recorded revision. Inspect that revision's digest before operating:
 
 ```sh
-gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+gh workflow run broker.yml --repo repoagent/controller --ref main \
   -f operation=stage-stop -f expected-source-sha="$accepted_source" \
   -f image="$accepted_image" -f revision="$staging_revision"
 # Resume only when continuing acceptance:
-gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+gh workflow run broker.yml --repo repoagent/controller --ref main \
   -f operation=stage-resume -f expected-source-sha="$accepted_source" \
   -f image="$accepted_image" -f revision="$staging_revision"
 ```
@@ -204,10 +204,10 @@ These source routes preserve the exact main-only OIDC subject, Contributor scope
 1. With the owned foundation already present, inspect `cleanup-identity-plan`, then separately authorize `cleanup-identity-apply` using the existing workflow:
 
    ```sh
-   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+   gh workflow run broker.yml --repo repoagent/controller --ref main \
      -f operation=cleanup-identity-plan -f expected-source-sha="$accepted_source"
    # Only after reviewing this plan and authorizing the identity write:
-   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+   gh workflow run broker.yml --repo repoagent/controller --ref main \
      -f operation=cleanup-identity-apply -f expected-source-sha="$accepted_source"
    ```
 
@@ -215,10 +215,10 @@ These source routes preserve the exact main-only OIDC subject, Contributor scope
 3. Keep the external epoch and existing app/Table names stable. Inspect `cleanup-plan`, then separately authorize `cleanup-apply`:
 
    ```sh
-   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+   gh workflow run broker.yml --repo repoagent/controller --ref main \
      -f operation=cleanup-plan -f expected-source-sha="$accepted_source" -f image="$accepted_image"
    # Apply immediately activates minute scheduling; review that cost and access first.
-   gh workflow run ci-auth-service.yml --repo repoagent/controller --ref main \
+   gh workflow run broker.yml --repo repoagent/controller --ref main \
      -f operation=cleanup-apply -f expected-source-sha="$accepted_source" -f image="$accepted_image"
    ```
 

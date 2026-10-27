@@ -1,4 +1,4 @@
-name: Refresh baseline tools
+name: Baseline tool refresh
 # Daily check for newer stable gh and Codex releases. Each tool is refreshed on its own
 # (refresh-baseline-tool.yml): a supported update is verified with the selected version before it
 # is pinned on main and published as a new baseline image, and an unusable or incompatible release
