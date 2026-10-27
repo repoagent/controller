@@ -13,7 +13,7 @@ The controller currently supports **GitHub Discussions with Codex**, with one co
 - **Queued work and concurrency limits.** Follow-ups wait while the agent is busy. A configurable limit controls how many Discussions run at once; the default is four.
 - **Delivery recovery.** Waiting input survives restarts, uncertain deliveries are retried, and controller receipts and dashboard updates recover from temporary GitHub failures and rate limits.
 - **Optional repository context.** Give the agent a checkout of your repository's default branch, including its instructions and skills. The controller refreshes it between completed turns.
-- **Repository settings.** Manage model defaults, concurrency and automatic category enrollment through nonsecret `REPOAGENT_*` Actions variables.
+- **Repository settings.** Manage model defaults, concurrency and automatic category enrollment through nonsecret `REPOAGENT_*` repository Agent variables.
 - **GitHub App identity.** Controller and agent GitHub access use the installed App's repository-scoped permissions. Shared-App setup uses revocable repository approval without distributing the App's signing key; using your own App is also supported.
 - **Separate Codex credentials.** Supply Codex credentials independently of GitHub authentication and replace them while the controller stays running. The change waits for active work to finish and preserves session history.
 - **Status and troubleshooting.** Inspect active and queued sessions, authentication health and recent failures through status commands and retained logs. An optional Discussion dashboard adds a heartbeat and image update notices.
@@ -52,6 +52,6 @@ Keep the controller and its host running to receive activity. Preserve its state
 - [Image updates and rollback](docs/local-runtime.md#update-an-immutable-image-or-restore-the-prior-image): replace the selected image while retaining your data.
 - [Azure hosting](infra/controller/README.md): deployment and persistent storage. The host must keep the controller alive while it is busy; automatic scale-to-zero protection is not built in.
 
-When repository settings are enabled, the controller and its agent can read **all direct repository Actions variables**. Keep secrets in GitHub Secrets or private runtime storage. See the [settings permission details](docs/repository-settings.md#broker-enrollments).
+When repository settings are enabled, the controller and its agent can read **all direct repository Agent variables**, and GitHub also gives them to Copilot cloud agent sessions. Keep secrets in GitHub Secrets or private runtime storage. See the [settings permission details](docs/repository-settings.md#broker-enrollments). Settings kept in Actions variables by an earlier version must be [moved](docs/repository-settings.md#move-settings-from-actions-variables) once.
 
 For implementation and design, see the [architecture decisions](docs/adr/), [domain glossary](GLOSSARY.md), [credential broker documentation](service/auth/README.md) and [image release process](docs/ci-cd.md).

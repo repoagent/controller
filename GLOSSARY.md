@@ -57,7 +57,7 @@ The permissions a GitHub token carries, fixed by its controller enrollment's pro
 _Avoid_: runtime scope, token permissions
 
 **Repository-settings profile**:
-A controller enrollment profile, chosen explicitly at controller enrollment, whose runtime authority adds read-only access to direct repository Actions variables, and so to repository settings. Other profiles are frozen and never gain it.
+A controller enrollment profile, chosen explicitly at controller enrollment, whose runtime authority adds read-only access to direct repository Agent variables, and so to repository settings. Other profiles are frozen and never gain it.
 _Avoid_: repository-settings family, settings enrollment, settings upgrade, widened profile
 
 ### Agent
@@ -81,7 +81,7 @@ _Avoid_: native turn, native work
 ### Repository configuration
 
 **Repository setting**:
-A nonsecret controller setting held in a direct repository Actions variable named `REPOAGENT_*`. Admin authority writes it; the controller's GitHub token may only read it. Absence, an invalid value and a failed read are distinct states.
+A nonsecret controller setting held in a direct repository Agent variable named `REPOAGENT_*`. Admin authority writes it; the controller's GitHub token may only read it. Absence, an invalid value and a failed read are distinct states.
 
 **Active-session limit**:
 The most agent turns one controller runs at the same time, set by the `REPOAGENT_MAX_ACTIVE_SESSIONS` repository setting. Only running turns count; idle stored sessions do not. Input beyond the limit waits in the controller.

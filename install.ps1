@@ -17,6 +17,8 @@ Existing own-App options remain available with -Authentication OwnApp.
 .\install.ps1 -Authentication OwnApp -Repository owner/repo -AppId 123 -KeyPath C:\keys\app.pem -Apply
 .EXAMPLE
 .\install.ps1 -Action Settings -Repository owner/repo -Setting REPOAGENT_MAX_ACTIVE_SESSIONS=4 -Apply
+.EXAMPLE
+.\install.ps1 -Action Settings -Repository owner/repo -MoveSettings -Apply
 #>
 [CmdletBinding()]
 param(
@@ -63,6 +65,8 @@ param(
     [switch]$NoStart,
     [string[]]$Setting = @(),
     [string[]]$ClearSetting = @(),
+    # Moves REPOAGENT_ settings from Actions variables to Agent variables (ADR 0012).
+    [switch]$MoveSettings,
     [switch]$NonInteractive
 )
 
@@ -79,10 +83,10 @@ if ($Image -or $Rollback) { throw 'Image and Rollback require Action Update.' }
 if ($Action -eq 'Settings') {
     # Post-installation repository configuration through host gh; no instance, Docker or enrollment state is used.
     & "$PSScriptRoot/scripts/repository-settings.ps1" -Repository $Repository -Setting $Setting -ClearSetting $ClearSetting `
-        -Apply:$Apply -NonInteractive:$NonInteractive
+        -Move:$MoveSettings -Apply:$Apply -NonInteractive:$NonInteractive
     exit $LASTEXITCODE
 }
-if ($Setting.Count -or $ClearSetting.Count) { throw 'Setting and ClearSetting require Action Settings.' }
+if ($Setting.Count -or $ClearSetting.Count -or $MoveSettings) { throw 'Setting, ClearSetting and MoveSettings require Action Settings.' }
 if ($Action -in @('Install','Enroll')) {
     $selectedState = if ($StateDirectory) { $StateDirectory } else { Join-Path ([Environment]::GetFolderPath('UserProfile')) ".repoagent/instances/$Instance" }
     if (Test-Path -LiteralPath (Join-Path $selectedState 'lifecycle.json')) { throw 'Selected instance is disabled or has unresolved lifecycle intent; use inspection or Uninstall retry.' }
@@ -347,7 +351,7 @@ try {
     }
     if ($resolvedSettings) {
         if ($Authentication -eq 'Broker') { Write-Host "Repository settings: $resolvedProfile adds Actions variables read for REPOAGENT_ settings (runtime v3). Fresh instance and approval required." }
-        else { Write-Host 'Repository settings: the runtime token adds Actions variables read for REPOAGENT_ settings; the App installation must grant Variables: read.' }
+        else { Write-Host 'Repository settings: the runtime token adds Agent variables read for REPOAGENT_ settings; the App installation must grant Agent variables: read.' }
     }
     Write-Host "Host launch/recovery state: $StateDirectory"
     Write-Host "Image: $(if ($runtimeImageId) { $runtimeImageId } else { 'pending build' }); base: $baseImage; platform: linux/amd64; maintained compatibility: Ubuntu 26.04."

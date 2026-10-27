@@ -123,7 +123,7 @@ function Get-ApprovalStateKind($State) {
     } elseif ($State.expectedValueSha256 -or $State.approvalObserved -or $State.approvalWriteAttempted) { throw 'Missing saved marker.' }
     return $kind
 }
-# scripts/repository-settings.ps1 writes REPOAGENT_ direct repository Actions variables. An Actions-variable
+# scripts/repository-settings.ps1 writes REPOAGENT_ direct repository Agent variables. A variable-held
 # approval may use that prefix only under a name the shared settings catalogue reserves for approval, so
 # settings changes can never overwrite or delete an approval marker.
 function Test-ActionsApprovalName([string]$Name) {

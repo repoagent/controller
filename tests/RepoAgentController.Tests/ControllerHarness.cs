@@ -383,7 +383,7 @@ static class ControllerHarness
             def reply(body,status=200):
              if '--include' in a:sys.stdout.write('HTTP/2.0 %d Fixture\r\nContent-Type: application/json\r\n\r\n'%status)
              sys.stdout.write(json.dumps(body));sys.exit(0 if status<400 else 1)
-            prefix='repos/owner/repository/actions/variables/'
+            prefix='repos/owner/repository/agents/variables/'
             if endpoint.startswith('repos/owner/repository/hooks'):
              body=json.load(sys.stdin)
              with open(WORLD+'.hooks','a') as hooks:hooks.write(json.dumps({'method':a[a.index('--method')+1],'resource':endpoint,'input':body})+'\n')

@@ -10,6 +10,14 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
 {
     const int MaximumBytes = 64 * 1024;
     const string VariableName = @"\A[A-Za-z_][A-Za-z0-9_]{0,127}\z";
+    // Setup v4 Agent-variable approval; its settings profiles read Agent variables (ADR 0012).
+    const string SettingsPolicy = "repository-agent-settings-approval-v4";
+    // Setup v3 Actions-variable policies, retired by ADR 0012.
+    const string ClonePolicy = "repository-agent-clone-approval-v4";
+    // Setup v2 Agent-variable clone grants keep renewing.
+    const string LegacyClonePolicy = "repository-agent-clone-approval-v2";
+    const string RetiredClonePolicy = "repository-actions-clone-approval-v3";
+    const string RetiredSettingsPolicy = "repository-actions-settings-approval-v3";
     static readonly string[] BindingFields = ["protocolVersion", "appId", "appSlug", "installationId", "repositoryId", "repository", "permissions"];
     readonly HttpClient http;
     readonly Uri origin;
@@ -44,6 +52,11 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         {
             var root = enrollment.RootElement;
             version = checked((int)Id(root, "protocolVersion"));
+            // ADR 0012 retires setup v3 (Actions-variable approval). Its clone and settings files name their policy; a v3
+            // polling or webhook file names none and cannot be told apart from setup v2.
+            if (root.TryGetProperty("policyVersion", out var policy) && policy.ValueKind == JsonValueKind.String &&
+                policy.GetString() is RetiredClonePolicy or RetiredSettingsPolicy)
+                throw Invalid("this setup v3 (Actions-variable) enrollment is retired because approval and settings moved to Agent variables; revoke it and enroll afresh");
             // A repository-settings profile is explicit on both sides: frozen profiles are never widened, and a
             // repository-settings profile is never consumed as a frozen one.
             if (settings && version != 3) throw Invalid("--repository-settings requires a controller enrollment with a repository-settings profile (runtime v3); frozen profiles are not widened");
@@ -188,10 +201,10 @@ internal sealed class BrokerTokenSource : IInstallationTokenSource
         var parts = Text(value, "repository").Split('/');
         if (parts.Length != 2 || !parts.All(Name)) throw Invalid("invalid repository name");
         if (settings && (Text(value, "profile") != profile.Name ||
-            Text(value, "policyVersion") != "repository-actions-settings-approval-v3"))
+            Text(value, "policyVersion") != SettingsPolicy))
             throw Invalid("repository-settings policy differs");
         if (clone && !settings && (Text(value, "profile") != profile.Name ||
-            Text(value, "policyVersion") is not ("repository-actions-clone-approval-v3" or "repository-agent-clone-approval-v2")))
+            Text(value, "policyVersion") is not (ClonePolicy or LegacyClonePolicy)))
             throw Invalid("clone policy differs");
         var permissions = value.GetProperty("permissions");
         var required = profile.Permissions();

@@ -33,8 +33,8 @@ public sealed record RepositorySetting(string Name, string Type, long Minimum, l
     }
 }
 
-/// <summary>Reads validated controller settings from direct repository Actions variables with bounded refresh.</summary>
-/// <remarks>Without a GitHub adapter the runtime has no explicit Variables: read permission; every setting stays disabled.
+/// <summary>Reads validated controller settings from direct repository Agent variables with bounded refresh.</summary>
+/// <remarks>Without a GitHub adapter the runtime has no explicit Agent variables: read permission; every setting stays disabled.
 /// Each refresh records the observed settings in the controller state for status, and a later lifetime starts from the
 /// effective values recorded there, so a failed or invalid read never discards a known value.</remarks>
 public sealed class RepositorySettings
@@ -68,7 +68,7 @@ public sealed class RepositorySettings
     {
         if (variables is null)
         {
-            log.Write("repository-settings", "state=disabled reason=\"start with --repository-settings and Variables: read to use REPOAGENT_ variables\"");
+            log.Write("repository-settings", "state=disabled reason=\"start with --repository-settings and Agent variables: read to use REPOAGENT_ variables\"");
             Record(values);
             return false;
         }
@@ -88,7 +88,12 @@ public sealed class RepositorySettings
             }
             catch (Exception error) when (!ct.IsCancellationRequested)
             {
-                observed = new(SettingState.ReadFailed, retained, error is RepositorySettingRejectedException { Status: var status } ? $"HTTP {status}" : "GitHub read failed");
+                observed = new(SettingState.ReadFailed, retained, error switch
+                {
+                    RepositorySettingRejectedException { Status: var status } => $"HTTP {status}",
+                    RepositorySettingsUnreadableException unreadable => unreadable.Reason,
+                    _ => "GitHub read failed"
+                });
             }
             observed = observed with { Since = observed.Value == previous[setting.Name].Value ? previous[setting.Name].Since : clock.GetUtcNow() };
             next[setting.Name] = observed;

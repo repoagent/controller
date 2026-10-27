@@ -34,7 +34,7 @@ public static class BridgeCommand
         var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (native work may still be running)" };
         var clone = new Option<bool>("--clone") { Description = "Use explicitly approved clone-capable credentials" };
         var checkAuth = new Option<bool>("--check-auth") { Description = "Verify App installation identity and prepare authenticated gh, then exit without starting Codex" };
-        var repositorySettings = new Option<bool>("--repository-settings") { Description = "Read REPOAGENT_ repository Actions variables with an explicit Variables: read runtime permission (direct App, or a repository-settings v3 broker enrollment)" };
+        var repositorySettings = new Option<bool>("--repository-settings") { Description = "Read REPOAGENT_ repository Agent variables with an explicit Agent variables: read runtime permission (direct App, or a broker enrollment with a repository-settings profile)" };
         var logFileBytes = new Option<long>("--log-file-bytes") { DefaultValueFactory = _ => RetainedLog.DefaultFileBytes, Description = $"Maximum bytes per retained log file beside --state ({RetainedLog.MinimumFileBytes}..{RetainedLog.MaximumFileBytes}); retained logs never exceed --log-files × this size" };
         var logFiles = new Option<int>("--log-files") { DefaultValueFactory = _ => RetainedLog.DefaultFiles, Description = $"Retained log files, including the active file (1..{RetainedLog.MaximumFiles}); the oldest file is deleted on rotation" };
         var dashboardCategory = new Option<string?>("--dashboard-category") { Description = "Existing Discussion category for the controller-owned status dashboard; omit to publish no dashboard" };
@@ -146,7 +146,8 @@ public static class BridgeCommand
                         return await new GitHubWebhookRegistration(github, statePath).Deactivate() ? 0 : 1;
                     if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentialDirectory);
                     var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentialDirectory);
-                    var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, result.GetValue(repositorySettings) ? new GitHubRepositorySettings(github) : null, new ControllerStateFiles(statePath), time, new ControllerLog());
+                    var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, !result.GetValue(repositorySettings) ? null
+                        : credentials.SettingsUnreadable is { } unreadable ? new UnreadableRepositorySettings(unreadable) : new GitHubRepositorySettings(github), new ControllerStateFiles(statePath), time, new ControllerLog());
                     await settings.Refresh(cancellationToken);
                     if (result.GetValue(checkAuth)) return 0;
                     agentCredentials?.Install(); // Before any owned native process starts.

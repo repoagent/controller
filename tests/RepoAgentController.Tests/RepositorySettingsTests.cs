@@ -25,9 +25,9 @@ public sealed class RepositorySettingsTests
 
         Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=configured value=4"));
         var token = Assert.Single(fixture.Provider.TokenRequests);
-        Assert.Equal("read", token["permissions"]!["actions_variables"]!.GetValue<string>());
+        Assert.Equal("read", token["permissions"]!["agent_variables"]!.GetValue<string>());
         var read = Assert.Single(fixture.GitHubRequests(), request => request.Endpoint.EndsWith("/" + Setting, StringComparison.Ordinal));
-        Assert.Equal(("GET", "repos/owner/repository/actions/variables/" + Setting, "installation-token-1"),
+        Assert.Equal(("GET", "repos/owner/repository/agents/variables/" + Setting, "installation-token-1"),
             (read.Method, read.Endpoint, read.Token));
     }
 
@@ -41,7 +41,7 @@ public sealed class RepositorySettingsTests
 
         var token = Assert.Single(fixture.Provider.TokenRequests);
         Assert.Equal(["discussions"], token["permissions"]!.AsObject().Select(permission => permission.Key));
-        Assert.DoesNotContain(fixture.GitHubRequests(), request => request.Endpoint.Contains("/actions/variables"));
+        Assert.DoesNotContain(fixture.GitHubRequests(), request => request.Endpoint.Contains("/variables"));
         Assert.Contains(fixture.Log, line => line.Contains(" repository-settings state=disabled "));
         Assert.DoesNotContain(fixture.Log, line => line.Contains(" repository-setting name="));
     }
@@ -49,7 +49,7 @@ public sealed class RepositorySettingsTests
     [Theory]
     [InlineData("write")]
     [InlineData("read")]
-    public async Task The_runtime_requests_only_Variables_read_even_when_the_installation_can_write(string granted)
+    public async Task The_runtime_requests_only_Agent_variables_read_even_when_the_installation_can_write(string granted)
     {
         using var fixture = new Fixture();
         fixture.Provider.VariablesPermission = granted;
@@ -57,23 +57,30 @@ public sealed class RepositorySettingsTests
         Assert.Equal(0, await fixture.Check("--repository-settings"));
 
         var permissions = Assert.Single(fixture.Provider.TokenRequests)["permissions"]!.AsObject();
-        Assert.Equal(new Dictionary<string, string> { ["discussions"] = "write", ["actions_variables"] = "read" },
+        Assert.Equal(new Dictionary<string, string> { ["discussions"] = "write", ["agent_variables"] = "read" },
             permissions.ToDictionary(permission => permission.Key, permission => permission.Value!.GetValue<string>()));
         Assert.All(fixture.GitHubRequests(), request => Assert.Contains(request.Method, new[] { "GET", "POST" }));
         Assert.DoesNotContain(fixture.GitHubRequests(), request => request.Method == "POST" && request.Endpoint != "graphql");
     }
 
     [Fact]
-    public async Task An_installation_without_Variables_read_cannot_enable_settings_or_mint_a_token()
+    public async Task An_installation_without_Agent_variables_read_still_starts_and_keeps_the_last_settings()
     {
         using var fixture = new Fixture();
+        fixture.Variables[Setting] = "4";
+        Assert.Equal(0, await fixture.Check("--repository-settings"));
+
+        // Actions-variables (Variables: read) access is not Agent-variables access.
         fixture.Provider.VariablesPermission = null;
+        fixture.Provider.ActionsVariablesPermission = "read";
+        fixture.Variables[Setting] = "8";
+        Assert.Equal(0, await fixture.Check("--repository-settings"));
 
-        Assert.Equal(1, await fixture.Check("--repository-settings"));
-
-        Assert.Empty(fixture.Provider.TokenRequests);
-        Assert.Empty(fixture.GitHubRequests());
-        Assert.Contains(fixture.Log, line => line.Contains(" fatal ") && line.Contains("Variables: read"));
+        // The token is not widened past the installation, and nothing reads variables it cannot read.
+        Assert.Equal(["discussions"], fixture.Provider.TokenRequests[1]["permissions"]!.AsObject().Select(permission => permission.Key));
+        Assert.Single(fixture.GitHubRequests(), request => request.Endpoint.Contains("/variables/" + Setting));
+        Assert.Contains(fixture.Log, line => line.EndsWith(
+            $" repository-setting name={Setting} state=read-failed value=4 reason=\"the App installation does not grant Agent variables: read\""));
     }
 
     [Theory]
@@ -89,13 +96,13 @@ public sealed class RepositorySettingsTests
 
         Assert.Contains(fixture.Log, line => line.EndsWith($" repository-setting name={Setting} state=configured value=4"));
         Assert.Equal("/v3/devices/device-1/installation-token", Assert.Single(broker.Transport.Requests).AbsolutePath);
-        // Every catalogue read is a direct Actions-variable GET with the brokered lease.
+        // Every catalogue read is a direct Agent-variable GET with the brokered lease.
         var reads = fixture.GitHubRequests().Where(request => request.Endpoint != "graphql").ToArray();
-        Assert.Contains(reads, read => read.Endpoint == "repos/owner/repository/actions/variables/" + Setting);
+        Assert.Contains(reads, read => read.Endpoint == "repos/owner/repository/agents/variables/" + Setting);
         Assert.All(reads, read =>
         {
             Assert.Equal(("GET", "opaque-token-1"), (read.Method, read.Token));
-            Assert.StartsWith("repos/owner/repository/actions/variables/REPOAGENT_", read.Endpoint);
+            Assert.StartsWith("repos/owner/repository/agents/variables/REPOAGENT_", read.Endpoint);
         });
         Assert.Empty(fixture.Provider.TokenRequests); // No App key or direct token request exists in broker mode.
     }
@@ -187,7 +194,7 @@ public sealed class RepositorySettingsTests
          page={'nodes':[],'pageInfo':{'hasNextPage':False,'endCursor':None}}
          data={'viewer':{'login':'test-app[bot]'}} if 'query { viewer' in query else {'repository':{'discussions':page}}
          print(json.dumps({'data':data}));sys.exit(0)
-        prefix='repos/owner/repository/actions/variables/'
+        prefix='repos/owner/repository/agents/variables/'
         if method=='GET' and endpoint.startswith(prefix):
          name=endpoint[len(prefix):]
          status=200 if name in model['variables'] else 404
@@ -203,7 +210,10 @@ public sealed class RepositorySettingsTests
     internal sealed class Provider : HttpMessageHandler
     {
         public List<JsonNode> TokenRequests { get; } = [];
+        /// <summary>The installation's Agent variables permission, which repository settings need.</summary>
         public string? VariablesPermission { get; set; } = "read";
+        /// <summary>The installation's Actions variables (Variables) permission, which repository settings never use.</summary>
+        public string? ActionsVariablesPermission { get; set; }
         /// <summary>The installation's Webhooks permission; webhook mode requires write.</summary>
         public string? HooksPermission { get; set; }
 
@@ -216,7 +226,8 @@ public sealed class RepositorySettingsTests
                 case "/app": result = new { id = 123, slug = "test-app" }; break;
                 case "/repos/owner/repository/installation":
                     var permissions = new Dictionary<string, string> { ["discussions"] = "write" };
-                    if (VariablesPermission is not null) permissions["actions_variables"] = VariablesPermission;
+                    if (VariablesPermission is not null) permissions["agent_variables"] = VariablesPermission;
+                    if (ActionsVariablesPermission is not null) permissions["actions_variables"] = ActionsVariablesPermission;
                     if (HooksPermission is not null) permissions["repository_hooks"] = HooksPermission;
                     result = new { id = 42, app_id = 123, permissions }; break;
                 case "/app/installations/42/access_tokens":

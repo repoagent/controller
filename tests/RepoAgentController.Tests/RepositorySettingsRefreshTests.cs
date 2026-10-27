@@ -52,6 +52,21 @@ public sealed class RepositorySettingsRefreshTests
         Assert.Equal(SettingState.ReadFailed, settings[Setting].State);
     }
 
+    [Fact]
+    public async Task Settings_the_runtime_cannot_read_keep_the_recorded_value_and_report_why()
+    {
+        state.WriteSettings(new(new Dictionary<string, SettingValue> { [Setting] = new(SettingState.Configured, "6") { Since = Start } }));
+        github.Set(Setting, "4");
+        github.Fail(Setting, new RepositorySettingsUnreadableException("the App installation does not grant Agent variables: read"));
+        var settings = Lifetime();
+
+        await settings.Refresh(TestContext.Current.CancellationToken);
+
+        Assert.Equal([$"name={Setting} state=read-failed value=6 reason=\"the App installation does not grant Agent variables: read\""], Reported());
+        Assert.Equal(new SettingValue(SettingState.ReadFailed, "6", "the App installation does not grant Agent variables: read") { Since = Start },
+            settings[Setting]);
+    }
+
     [Theory]
     [InlineData("0")]
     [InlineData("65")]
@@ -239,7 +254,7 @@ public sealed class RepositorySettingsRefreshTests
 
         Assert.False(await settings.Refresh(TestContext.Current.CancellationToken));
 
-        Assert.Equal([("repository-settings", "state=disabled reason=\"start with --repository-settings and Variables: read to use REPOAGENT_ variables\"")],
+        Assert.Equal([("repository-settings", "state=disabled reason=\"start with --repository-settings and Agent variables: read to use REPOAGENT_ variables\"")],
             log.Entries);
         Assert.Empty(github.Reads);
         Assert.All(RepositorySettingsCatalogue.Settings, setting => Assert.Equal(new SettingValue(SettingState.Disabled, null), settings[setting.Name]));
