@@ -87,10 +87,11 @@ def marker(value):
     for name, pattern in patterns.items():
         if not isinstance(binding[name], str) or not re.fullmatch(pattern, binding[name]):
             raise ValueError('Invalid binding')
-    # Repository-settings profiles exist only with Actions-variable approval (setup v3, ADR 0008).
-    if binding['profile'].endswith('-settings') and binding['approvalKind'] != 'repository-actions-variable':
+    # Settings use Agent approval under v4 or the original Actions contract under v3.
+    # The credential below must carry that store's exact settings policy and grants.
+    if binding['profile'].endswith('-settings') and binding['approvalKind'] not in ('repository-agent-variable', 'repository-actions-variable'):
         raise ValueError('Invalid settings binding')
-    # Actions variables (setup v3) and legacy Agent variables (setup v2) are distinct
+    # Actions variables (setup v3) and Agent variables (setup v2/v4) are distinct
     # direct repository locations without Environment identity.
     if binding['approvalKind'] in ('repository-actions-variable', 'repository-agent-variable'):
         if binding['githubEnvironment'] is not None or binding['environmentId'] is not None:
@@ -154,15 +155,18 @@ def verify_binding(expected, config=None):
         if config.get('clone'):
             permissions['contents'] = 'read'
         if settings:
-            permissions['actions_variables'] = 'read'
+            permissions['agent_variables' if binding['approvalKind'] == 'repository-agent-variable' else 'actions_variables'] = 'read'
         if credential['protocolVersion'] > 1 and 'metadata' in credential['permissions']:
             permissions['metadata'] = 'read'
         if credential['permissions'] != permissions:
             raise ValueError('Enrollment permissions differ')
-        policy = {'repository-actions-variable': 'repository-actions-settings-approval-v3'}.get(binding['approvalKind']) if settings else \
-            {'repository-actions-variable': 'repository-actions-clone-approval-v3',
-             'repository-agent-variable': 'repository-agent-clone-approval-v2'}.get(binding['approvalKind'])
-        if credential['protocolVersion'] > 1 and credential['policyVersion'] != policy:
+        # Existing lifecycle bindings have no setup version. Agent clone credentials
+        # may name either exact v2/v4 clone policy; neither changes the frozen grant.
+        policies = {'repository-actions-variable': ('repository-actions-settings-approval-v3',),
+                    'repository-agent-variable': ('repository-agent-settings-approval-v4',)} if settings else \
+            {'repository-actions-variable': ('repository-actions-clone-approval-v3',),
+             'repository-agent-variable': ('repository-agent-clone-approval-v2', 'repository-agent-clone-approval-v4')}
+        if credential['protocolVersion'] > 1 and credential['policyVersion'] not in policies.get(binding['approvalKind'], ()):
             raise ValueError('Enrollment policy differs')
         for key in ('repository', 'repositoryId', 'deviceId', 'appId', 'installationId', 'brokerOrigin'):
             if credential[key] != binding[key]:
