@@ -124,8 +124,6 @@ Fill in the **Test kind** column. Suggested values:
 | 3.10 | Rerun keeps saved model, hosting and update choices | | |
 | 3.11 | Write repository settings (`repository-settings.ps1`) | | |
 | 3.12 | Revoke approval: delete only a matching marker, and report unresolved results honestly | | |
-| 3.13 | Azure plan: discovery and read-only preview | | |
-| 3.14 | Azure update and rollback of the hosted controller image | | |
 | 3.15 | Build the image locally, and publish it | | |
 | 3.16 | No secret appears in any CLI output | | |
 | 3.17 | Same behavior on Windows and Linux operator machines | | |
@@ -147,8 +145,6 @@ Fill in the **Test kind** column. Suggested values:
 
 | # | Flow | Test kind | Notes |
 |---|---|---|---|
-| 5.1 | Controller Bicep deploys the lean profile with queue and credential access | | |
-| 5.2 | `controller-runtime.py` initializes private state on the Azure file share | | |
 | 5.3 | Broker Bicep, RBAC and monitoring deploy | | |
 | 5.4 | Bicep templates compile and their parameters validate | | |
 

@@ -9,7 +9,6 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
-      - 'infra/controller/**'
       - 'install*'
       - 'repoagent*'
       - 'Directory.*'
@@ -32,7 +31,6 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
-      - 'infra/controller/**'
       - 'install*'
       - 'repoagent*'
       - 'Directory.*'
@@ -220,23 +218,6 @@ jobs:
           set -euo pipefail
           (cd "$RUNNER_TEMP/controller-image" && sha256sum --check SHA256SUMS)
           python3 scripts/delivery/image-release.py publish "$RUNNER_TEMP/controller-image"
-
-  compile:
-    if: (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && inputs.tag == ''
-    concurrency:
-      group: controller-infrastructure-${{ github.ref }}
-      cancel-in-progress: true
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - run: az bicep install --version v0.48.1
-      - run: |
-          for template in infra/controller/*.bicep; do
-            "$HOME/.azure/bin/bicep" build "$template" --outfile "$RUNNER_TEMP/$(basename "$template" .bicep).json"
-          done
 
   native-release:
     concurrency:

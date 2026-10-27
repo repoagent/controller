@@ -203,10 +203,6 @@ class RefreshStepTests(unittest.TestCase):
                 self.assertEqual(inventory['artifacts'][artifact], dict(zip(('version', 'url', 'sha256'), expected)))
                 # verify.sh downloads the native-test Codex from this same catalog.
                 self.assertEqual(catalog[artifact], expected)
-        # The Azure planner reads catalog lines directly (scripts/azure/image-input.ps1).
-        text = (copy / 'scripts/compose-image.py').read_text()
-        for artifact in ('gh', 'codex', 'cloudflared'):
-            self.assertEqual(re.search(rf"(?m)^    '{artifact}': \('([^']+)',", text)[1], catalog[artifact][0])
 
     def test_a_newer_supported_release_is_selected_and_pinned_for_verification_of_that_tool_alone(self):
         for tool, (repository, _, version, current) in TOOLS.items():

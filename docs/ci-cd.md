@@ -10,7 +10,7 @@ Local prerequisites are the pinned SDK, Python 3, clang and zlib development hea
 
 The installer (`install.*`, `repoagent*`, `scripts/*.ps1`) and the container runtime (`container/`) have no automated tests ([ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)). They are tested manually against the local AppHost ([#204](https://github.com/repoagent/controller/issues/204), not built yet) when they change.
 
-The repository has three workflow entry points: **Controller**, **Broker**, and the scheduled **Baseline tool refresh** (with a reusable per-tool helper). Controller owns verification, infrastructure compilation, image publication and native tagged releases. Broker owns verification, deployment and recovery operations. Superseded read-only checks are cancelled; publication and deployment writes finish once started.
+The repository has three workflow entry points: **Controller**, **Broker**, and the scheduled **Baseline tool refresh** (with a reusable per-tool helper). Controller owns verification, image publication and native tagged releases. Broker owns verification, deployment and recovery operations. Superseded read-only checks are cancelled; publication and deployment writes finish once started.
 
 ## Controller releases
 
@@ -55,13 +55,13 @@ The build uploads its Docker archive, build metadata, versions output, inventory
 
 Manual recovery stays available: `gh workflow run controller.yml --ref main` rebuilds, verifies and publishes current `main` with a new release. If only the release job failed, re-run that failed job in the same workflow run; it reuses the already published image coordinates.
 
-Initial GHCR packages are private by default. An account with package administration rights must make `repoagent/controller` public under package **Settings > Danger Zone > Change visibility**, and grant this repository **Write** under **Manage Actions access** if access was not inherited. The workflow cannot report success until a clean anonymous registry client downloads the immutable image and all its layers into empty storage and confirms that its image config matches the approved build. A visibility failure can therefore leave a published private image; inspect the package and rerun deliberately after fixing access. No personal registry token or ACR is required. Use the public `ghcr.io/repoagent/controller@sha256:...` reference from the release or run summary for Azure; publication does not deploy or prove storage/ownership compatibility.
+Initial GHCR packages are private by default. An account with package administration rights must make `repoagent/controller` public under package **Settings > Danger Zone > Change visibility**, and grant this repository **Write** under **Manage Actions access** if access was not inherited. The workflow cannot report success until a clean anonymous registry client downloads the immutable image and all its layers into empty storage and confirms that its image config matches the approved build. A visibility failure can therefore leave a published private image; inspect the package and rerun deliberately after fixing access. No personal registry token or ACR is required. Use the public `ghcr.io/repoagent/controller@sha256:...` reference from the release or run summary; publication does not deploy a controller.
 
 Action versions are pinned to current release commits. See [GitHub's image publication guidance](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images), [artifact upload](https://github.com/actions/upload-artifact) and [download](https://github.com/actions/download-artifact) documentation.
 
 ### Baseline releases
 
-Each successful publication creates one GitHub Release for the anonymously verified image. Publication never updates a running controller; operators adopt a release deliberately through [local image update](local-runtime.md#update-an-immutable-image-or-restore-the-prior-image) or the [Azure controller image update](../infra/controller/README.md).
+Each successful publication creates one GitHub Release for the anonymously verified image. Publication never updates a running controller; operators adopt a release deliberately through [local image update](local-runtime.md#update-an-immutable-image-or-restore-the-prior-image). Hosting lifecycle is outside the controller ([ADR 0009](adr/0009-keep-hosting-lifecycle-out-of-the-controller.md)); hosted operation will be redesigned around the status endpoint.
 
 - Tag `baseline-RUN_ID.ATTEMPT`, created on the published source commit. It corresponds one-to-one with the GHCR tag `sha-FULL_SOURCE_SHA-RUN_ID-ATTEMPT`. Run IDs increase across the repository, so a larger `RUN_ID` (then `ATTEMPT`) is a later publication.
 - Title `Controller baseline SHORT_SHA (gh GH_VERSION, Codex CODEX_VERSION)`, and a body with the `docker pull` immutable reference and a version table.

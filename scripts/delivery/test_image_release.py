@@ -149,13 +149,13 @@ class AutomaticPublicationTests(unittest.TestCase):
         ]:
             with self.subTest(event=event, ref=ref, tag=tag, repository=repository):
                 self.assertEqual(runs('native-release', event=event, ref=ref, tag=tag, repository=repository), expected)
-        for name in ['build', 'verify', 'compile', 'publish', 'release']:
+        for name in ['build', 'verify', 'publish', 'release']:
             self.assertFalse(runs(name, event='workflow_dispatch', tag='v1.2.3'), name)
         self.assertIn('environment: controller-release', job('native-release'))
         self.assertIn('contents: write', job('native-release'))
 
     def test_superseded_read_jobs_cancel_per_ref_but_active_writes_finish(self):
-        for name in ['build', 'verify-artifact', 'verify', 'compile']:
+        for name in ['build', 'verify-artifact', 'verify']:
             with self.subTest(job=name):
                 self.assertIn('cancel-in-progress: true', job(name))
                 self.assertIn('${{ github.ref }}', job(name))

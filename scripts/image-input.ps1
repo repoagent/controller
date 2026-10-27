@@ -28,8 +28,8 @@ function Read-ImageInput([string]$Path) {
     Assert-Keys $value.tools @() @('cloudflared','developerUtilities')
     if ($value.agent.profile -isnot [string] -or $value.agent.profile -cne 'codex') { throw 'Only the delivered Codex profile is supported.' }
     if ($value.tools.Contains('developerUtilities') -and $value.tools.developerUtilities -isnot [bool]) { throw 'Invalid developerUtilities selection.' }
-    # Consume the existing reviewed catalog; this planner has no software version catalog.
-    $catalog = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../compose-image.py') -Raw
+    # Consume the existing reviewed catalog; the installer has no separate software version catalog.
+    $catalog = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'compose-image.py') -Raw
     $selected = @{ codex = $value.agent.version; gh = $value.githubCli.version }
     if ($value.tools.Contains('cloudflared')) { $selected.cloudflared = $value.tools.cloudflared }
     foreach ($name in $selected.Keys) {
