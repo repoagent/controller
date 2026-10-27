@@ -50,7 +50,7 @@ Keep the controller and its host running to receive activity. Preserve its state
 - [Controller operations](docs/controller-operations.md): status, dashboard, logs, credential replacement and recovery.
 - [Enrollment and revocation](docs/host-enrollment.md): repository approval and controller access.
 - [Image updates and rollback](docs/local-runtime.md#update-an-immutable-image-or-restore-the-prior-image): replace the selected image while retaining your data.
-- [Azure hosting](infra/controller/README.md): deployment and persistent storage. The host must keep the controller alive while it is busy; automatic scale-to-zero protection is not built in.
+- Hosting lifecycle is outside the controller ([ADR 0009](docs/adr/0009-keep-hosting-lifecycle-out-of-the-controller.md)). Hosted operation will be redesigned around the status endpoint.
 
 When repository settings are enabled, the controller and its agent can read **all direct repository Agent variables**, and GitHub also gives them to Copilot cloud agent sessions. Keep secrets in GitHub Secrets or private runtime storage. See the [settings permission details](docs/repository-settings.md#broker-enrollments). Settings kept in Actions variables by an earlier version must be [moved](docs/repository-settings.md#move-settings-from-actions-variables) once.
 

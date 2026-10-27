@@ -184,7 +184,7 @@ try {
     if ($GitHubEnvironment -or $ExpectedEnvironmentId -or $EnrollmentFile -or $ApprovalStatePath) { Stop-Install 'Install uses its selected state directory. Use Enroll/Revoke or the supplied-enrollment runtime commands for those inputs.' }
     Import-Module "$PSScriptRoot/scripts/host-enrollment.psm1" -DisableNameChecking
     Import-Module "$PSScriptRoot/scripts/private-file.psm1"
-    . "$PSScriptRoot/scripts/azure/image-input.ps1"
+    . "$PSScriptRoot/scripts/image-input.ps1"
     if (-not $StateDirectory) { $StateDirectory = Join-Path ([Environment]::GetFolderPath('UserProfile')) ".repoagent/instances/$Instance" }
     $StateDirectory = [IO.Path]::GetFullPath($StateDirectory)
     if ($StateDirectory -match '[,\p{Cc}]') { Stop-Install 'State directory cannot contain commas or control characters.' }
@@ -438,7 +438,7 @@ try {
     else { $stage = 'start the selected runtime'; Invoke-Runtime @('start'); Write-Host 'Selected runtime is ready.' }
     Write-Host "Resume: ./install.ps1 -Instance '$Instance' -StateDirectory '$($StateDirectory.Replace("'", "''"))' -NonInteractive -Apply"
     Write-Host "Lifecycle: set REPOAGENT_INSTANCE=$Instance and REPOAGENT_IMAGE=$runtimeImageId; use ./repoagent.ps1 logs --follow, stop, start or restart."
-    Write-Host 'Image publication is separate: scripts/publish-image.ps1. Azure planning is read-only: scripts/plan-azure.ps1. This result establishes local readiness only.'
+    Write-Host 'Image publication is separate: scripts/publish-image.ps1. This result establishes local readiness only.'
 } catch {
     Write-Warning "Could not $stage. $diagnostic"
     Write-Host "Selected instance: $Instance. Retain the original state directory and rerun the same inputs with -Apply."
