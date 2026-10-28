@@ -87,7 +87,7 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         "a1":{"thread":"S1","turn":"T1","since":3,"confirmed":true,"later":1},
         "a2":{"thread":"S2","turn":"","since":5,"confirmed":false,"unconfirmed":true},
         "a3":{"thread":"","turn":"","since":6,"confirmed":false}},
-        "blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery",
+        "blocked":true,"running":0,"reason":"Agent activity or checkout update is uncertain; inspect state before recovery",
         "applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":4,"later":1},
         "later":{"version":2}}
         """;
@@ -108,6 +108,19 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         await using (Open()) { }
 
         Assert.Equal(Canonical(JsonNode.Parse(recorded)), Canonical(JsonNode.Parse(File.ReadAllText(JournalPath))));
+    }
+
+    [Fact]
+    public async Task A_legacy_blocked_journal_keeps_its_active_work_and_unknown_fields_when_diagnostics_adopt_agent_names()
+    {
+        Record(RecordedBlocked.Replace("Agent activity", "Native activity", StringComparison.Ordinal));
+        await using (Open()) { }
+        var saved = JsonNode.Parse(File.ReadAllText(JournalPath))!;
+        Assert.True(saved["blocked"]!.GetValue<bool>());
+        Assert.Equal("T1", saved["active"]!["a1"]!["turn"]!.GetValue<string>());
+        Assert.True(saved["active"]!["a2"]!["unconfirmed"]!.GetValue<bool>());
+        Assert.Equal(2, saved["later"]!["version"]!.GetValue<int>());
+        Assert.Equal("Agent activity or checkout update is uncertain; inspect state before recovery", saved["reason"]!.GetValue<string>());
     }
 
     [Fact]
@@ -307,7 +320,7 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         Assert.Equal(expected, outcome);
     }
 
-    // Journals the controller's own writers leave, whose bytes differ from what f742e2b wrote for the same path: the fixed key
+    // Journals the controller's own writers leave. The f742e2b structural fixtures below use current glossary wording; legacy reason text remains covered by the dedicated blocked-journal case. The fixed key
     // order moves the reason, after "blocked" and "running" and before "applying". Each is the same JSON as f742e2b wrote. The
     // f742e2b bytes are what f742e2b's writers left on the same path, each start over the journal the rest of the path left. The
     // last two rows start over a journal f742e2b left; f742e2b's own next start kept its order.
@@ -318,7 +331,7 @@ public sealed class RefreshJournalGoldenTests : IDisposable
     const string LeftByStartOverApplying = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Agent activity or checkout update is uncertain; inspect state before recovery"}""";
     // What this controller writes at the same two starts.
     const string WrittenByBlockedStart = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Agent activity or checkout update is uncertain; inspect state before recovery"}""";
-    const string WrittenByStartOverApplying = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""";
+    const string WrittenByStartOverApplying = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Agent activity or checkout update is uncertain; inspect state before recovery","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""";
     const string ThenAStart = ", then a start", ThenARequest = ", then a request";
 
     public static TheoryData<string, string, string> Written() => new()
@@ -370,7 +383,7 @@ public sealed class RefreshJournalGoldenTests : IDisposable
 
     [Theory]
     [MemberData(nameof(Written))]
-    public async Task A_journal_a_writer_leaves_holds_what_f742e2b_wrote_in_the_fixed_key_order(string path, string f742e2b, string written)
+    public async Task A_journal_a_writer_leaves_preserves_the_fixed_key_order_and_current_agent_diagnostics(string path, string f742e2b, string written)
     {
         Assert.Equal(written, await Write(path));
         Assert.Equal(Canonical(JsonNode.Parse(f742e2b)), Canonical(JsonNode.Parse(written)));
