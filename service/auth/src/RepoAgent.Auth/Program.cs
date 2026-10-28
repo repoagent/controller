@@ -9,6 +9,12 @@ if (args is ["--version"] or ["--version", "--json"])
     return;
 }
 
+if (args.FirstOrDefault() == "--inspect-retained-authority")
+{
+    Environment.ExitCode = await BrokerAuthorityObservationCommand.RunAsync(args);
+    return;
+}
+
 if (args.FirstOrDefault() == "cleanup")
 {
     Environment.ExitCode = await BrokerCleanupCommand.RunAsync(args);

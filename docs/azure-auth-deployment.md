@@ -189,6 +189,14 @@ The seven-day `broker-version-probe-RUN-ATTEMPT` artifact contains only the stri
 
 Primary shapes: [stable revision and replica GET schema](https://github.com/Azure/azure-rest-api-specs/blob/7aa1ea88a08c6b12cabd943ad441fcebc26988a4/specification/app/resource-manager/Microsoft.App/ContainerApps/stable/2025-01-01/ContainerAppsRevisions.json), [Azure CLI selected-console driver](https://github.com/Azure/azure-cli/blob/azure-cli-2.91.0/src/azure-cli/azure/cli/command_modules/containerapp/custom.py), and [token/session/PTY handling](https://github.com/Azure/azure-cli/blob/azure-cli-2.91.0/src/azure-cli/azure/cli/command_modules/containerapp/_ssh_utils.py). Revision and replica GETs use `2025-01-01`; the CLI's console operation is not a GET-only diagnostic read.
 
+## Internal retained-authority observation
+
+The [internal source command](../service/auth/README.md#internal-retained-authority-observation) is fixed to operational test repository `1432194081`. It is not a public HTTP endpoint or a general Table inspector. It must be published in a reviewed broker release and deliberately adopted before use; broker 1.0.0 does not contain it. No workflow inspection operation is introduced here. Actual selected-container transport, Table read authority and retained-state acceptance require their own runtime evidence.
+
+Its production pins come from successful [deployment40749418629](https://github.com/repoagent/controller/actions/runs/40749418629), source `4b7e9eb094209384484cb297019b7a022314e224`, observed Bicep outputs at2026-10-28T19:05:50Z: Table origin `https://repoagentauth.table.core.windows.net/`, Table `brokerstate`, runtime identity `repoagent-auth-runtime` with client ID `8016ef66-b1b7-4118-8de4-07814ebc9896`. This is the runtime identity, distinct from the deployment OIDC identity. `Broker__ManagedIdentityClientId` must match that accepted client ID, and `AZURE_CLIENT_ID`, when present, must agree. Rotation or a different target requires a reviewed source change; the command does not grant itself authority or select another credential.
+
+The current configured deployment epoch is compared internally with each encountered row; old/missing/invalid epochs remain explicit mismatches/unknowns and are never substituted or exported. Only gate→owner/receipt, owner→runtime attempt and gate→verifier attempt references are followed, with one gate reread. Reports cover these referenced rows only, not private global accounting or every outstanding attempt. They never authorize replacement, revocation, reclamation or epoch changes. Keep raw runtime/provider material private and retain only the bounded command projection.
+
 ## Selected console and private runtime evidence
 
 Use the returned app/revision and inspect replicas to select the exact `auth-service` container. Use Azure's existing selected-container exec or ephemeral debug console. An authorized CLI session can open:
