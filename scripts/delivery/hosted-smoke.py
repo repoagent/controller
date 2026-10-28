@@ -97,6 +97,20 @@ def outcomes(path, name, value):
     private_write(evidence / (name + '.json'), value)
 
 
+def install_failure(path, result):
+    # Retain only a short diagnostic, never the private installer log or credential supplies.
+    text = re.sub(r'\x1b\[[0-9;]*m', '', result.stdout + result.stderr)
+    for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY'):
+        if value := os.environ.get(name):
+            text = text.replace(value, '<redacted>')
+    # Enrollment/setup secrets, bearer tokens and hashes are opaque long strings.
+    text = re.sub(r'[A-Za-z0-9_+/=\-]{32,}', '<redacted>', text)
+    text = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', '', text)
+    diagnostic = '\n'.join(line[:300] for line in text.splitlines() if line.strip())
+    outcomes(path, 'install-failure', {'stage': 'fresh-install', 'exitCode': result.returncode,
+                                      'diagnostic': diagnostic[-4000:]})
+
+
 def tools(path):
     path = Path(path)
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -268,8 +282,10 @@ def install(path):
         elif 'Broker discovery is still pending. Rerun the same request after at least five seconds.' in text:
             delay = 5
         else:
+            install_failure(path, result)
             raise Refused('Fresh installation failed; preserve private state and inspect the bounded installer diagnostic')
         if time.monotonic() + delay >= deadline:
+            install_failure(path, result)
             raise Refused('Replacement is still not ready after the bounded wait; no new request identity is selected')
         print('Rechecking the same private enrollment request after the required interval; readiness is not promised.')
         time.sleep(delay)

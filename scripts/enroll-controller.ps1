@@ -251,14 +251,17 @@ try {
     $variablesPath = $repoPath + '/' + $location.Path
     $varPath = $variablesPath + '/' + [Uri]::EscapeDataString($ApprovalVariable)
     $brokerSetup = "/v$setupVersion"
-    $script:Diagnostic = 'Enrollment transport or document validation failed. Check host gh authentication, broker availability and the saved binding; no automatic repair was attempted.'
+    $script:Diagnostic = 'Repository identity could not be read or validated through host gh; no broker enrollment was started.'
     $config.repositoryId = Read-Repository
+    $script:Diagnostic = 'Repository approval-variable access could not be read or validated through host gh; no broker enrollment was started.'
     $null = Read-VariableAccess
+    $script:Diagnostic = 'Private enrollment binding could not be saved; preserve the selected state directory.'
     Write-PrivateJson $configPath $config
     if ($null -eq $recovery) {
         $recovery = [ordered]@{ version=$setupVersion; setupVersion=$setupVersion; approvalKind=$approvalKind; request=[ordered]@{ idempotencyId=[Guid]::NewGuid().ToString('N'); repositoryId=$config.repositoryId; repository=$Repository; variable=$ApprovalVariable; profile=$Profile }; secret=[Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).TrimEnd('=').Replace('+','-').Replace('/','_'); completionId=$null; lastWorkAt=$null; acknowledged=$false; ackAttempted=$false }
         Write-PrivateJson $recoveryPath $recovery
     }
+    $script:Diagnostic = 'Enrollment transport or document validation failed. Check broker availability and the saved binding; no automatic repair was attempted.'
     if ((Test-Path -LiteralPath $enrollmentPath) -and $recovery.completionId) {
         $marker = Check-Marker $config.marker
         $enrollment = Read-PrivateJson $enrollmentPath
@@ -327,6 +330,13 @@ try {
     [ordered]@{ state='active'; enrollmentFile=$enrollmentPath; approvalFile=$configPath; brokerClosure='not-requested'; outstandingTokens='unsettled' } | ConvertTo-Json -Compress
     exit 0
 } catch {
-    Write-Warning $script:Diagnostic
+    # Static source coordinates and exception type help diagnose a failed boundary without reflecting provider bodies,
+    # credentials, full host paths or private document contents.
+    $location = 'unknown'
+    if ($_.InvocationInfo -and $_.InvocationInfo.ScriptName) {
+        $location = [IO.Path]::GetFileName($_.InvocationInfo.ScriptName) + ':' + $_.InvocationInfo.ScriptLineNumber
+    }
+    $errorType = $_.Exception.GetBaseException().GetType().Name
+    Write-Warning "$script:Diagnostic Failure location: $location; error type: $errorType."
     exit 1
 }
