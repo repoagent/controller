@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.11.2/schemas/config.json",
+  "bootstrap-sha": "c88d5ea2987f34675e32bf7f1ba8b6063bf1189e",
+  "release-type": "simple",
+  "initial-version": "1.0.0",
+  "include-component-in-tag": true,
+  "separate-pull-requests": true,
+  "packages": {
+    "releases/controller": { "component": "controller" },
+    "service/auth": { "component": "broker" }
+  }
+}

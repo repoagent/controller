@@ -46,6 +46,8 @@ A normal SIGTERM or Ctrl+C stop of a long-running controller holds new input and
 
 Keep the controller and its host running to receive activity. Preserve its state and Codex storage across restarts. If you enable repository context, the managed checkout is disposable; the agent uses separate worktrees for edits. The supplied GitHub permission profiles support Discussions and optional code reading; they do not grant code pushes or pull request creation. Issues and pull requests are not conversation entry points.
 
+Controller and credential broker versions are proposed independently through reviewable Release Please PRs. See the [component release policy](docs/releases.md) for compatibility, source attribution and tag protection.
+
 ## Configuration and operations
 
 - [Repository settings](docs/repository-settings.md): model defaults, model labels, concurrency and category enrollment.
@@ -58,6 +60,8 @@ Keep the controller and its host running to receive activity. Preserve its state
 When repository settings are enabled, the controller and its agent can read **all direct repository Agent variables**, and GitHub also gives them to Copilot cloud agent sessions. Keep secrets in GitHub Secrets or private runtime storage. See the [settings permission details](docs/repository-settings.md#broker-enrollments). Settings kept in Actions variables by an earlier version must be [moved](docs/repository-settings.md#move-settings-from-actions-variables) once.
 
 The broker and guided PowerShell installer support [setup v4](service/auth/README.md#repository-agent-variable-enrollment-v4) with `REPOAGENT_APPROVAL` in Agent variables, including repository-settings profiles. Existing grants keep their original contracts: migration requires revocation, broker closure, token settlement and a fresh enrollment. Revocation can resume failed broker closure with the original saved files after approval withdrawal. [Installation acceptance and the settlement-preflight limitation](docs/host-enrollment.md#verification-boundary) remain explicit; a device DELETE acknowledgment alone does not make replacement safe.
+
+The broker's `--version --json` command reports its compiled service version and source revision without loading credentials. [Broker releases](docs/broker-releases.md) use independent semantic versions and verified immutable images for deliberate deployment and rollback; service versions remain separate from enrollment protocol and storage schema versions.
 
 For implementation and design, see the [architecture decisions](docs/adr/), [domain glossary](GLOSSARY.md), [credential broker documentation](service/auth/README.md) and [Controller and Broker delivery workflows](docs/ci-cd.md).
 

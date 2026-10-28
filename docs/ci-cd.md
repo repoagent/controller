@@ -128,9 +128,9 @@ Implementation and local workflow checks do not establish hosted provider accept
 
 ## Automatic broker delivery
 
-Changes merged to `main` under `service/auth`, `infra/auth`, the auth delivery scripts/workflows or shared MSBuild/NuGet files trigger **Broker**. Controller-only changes do not deploy the broker. Pull requests run verification without publication or Azure credentials.
+Changes under `service/auth`, `infra/auth`, the broker delivery scripts/workflows or shared MSBuild/NuGet files trigger **Broker** verification. [Independent broker releases](broker-releases.md) begin at 1.0.0 and are proposed by Release Please; controller-only changes do not release or deploy the broker. A source push with no new approved release is verified without rebuilding or redeploying the previous version. Pull requests and explicit `operation=verify` branch runs use no publication or Azure authority. The explicit branch route covers release PRs created with `GITHUB_TOKEN`, whose normal PR events are suppressed.
 
-Delivery runs the .NET service tests and compiles Bicep, then builds one Linux amd64 image with the auth role, numeric nonroot user and full source-revision label. It publishes to the existing public GHCR package and anonymously verifies the resolved immutable digest. Publication has `packages: write` and no Azure token; deployment has `id-token: write` and no package write.
+After Release Please creates an approved `broker-v...` release, the release orchestrator explicitly dispatches delivery from `main`. The Broker workflow verifies the exact selected source and compiles Bicep, then checks one Linux amd64 image's role, numeric nonroot user, compiled version/source diagnostic and OCI labels. It anonymously verifies the immutable GHCR digest before creating a semantic tag. A separate release-metadata job confirms the non-clobbered `broker-release.json` version/source/digest mapping without modifying approved notes. Publication has `packages: write` and no Azure token; the metadata writer has only `contents: write`; deployment has `id-token: write` and no package write. Retries reuse recorded verified content and reject conflicting version tags or assets.
 
 The Azure job applies `main.bicep` in the existing resource group. Public deployment includes `cleanup.bicep`, so the API and scheduled cleanup Job receive the **same digest**. The script inspects both images, waits for the ready API revision and requests public `/health/live` and `/health/ready`. Cleanup runs independently so it can process expired records while HTTP scales to zero; it retains its separate Table-only identity.
 
@@ -161,8 +161,11 @@ For infrastructure changes, read current resource/module documentation, use late
 ## Manual retry and rollback
 
 ```sh
-# Retry normal verification, publication and deployment from main.
+# Retry the current approved release from main (unreleased source is not published).
 gh workflow run broker.yml --ref main -f operation=deploy
+# Publish/deploy an exact approved semantic release, or resolve one for rollback.
+gh workflow run broker.yml --ref main -f operation=release -f release-tag=broker-v1.0.0
+gh workflow run broker.yml --ref main -f operation=deploy-release -f release-tag=broker-v1.0.0
 # Deploy or roll back both modes to a previously approved immutable image.
 gh workflow run broker.yml --ref main -f operation=deploy-image -f image=ghcr.io/repoagent/controller-auth@sha256:APPROVED_DIGEST
 # Existing outputs-only OIDC access check.

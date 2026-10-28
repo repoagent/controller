@@ -6,6 +6,8 @@
 !service/
 !service/auth/
 !service/auth/global.json
+!service/auth/Directory.Build.props
+!service/auth/version.txt
 !service/auth/src/
 !service/auth/src/**
 **/bin
