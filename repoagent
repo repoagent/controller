@@ -94,8 +94,8 @@ case "${1:-help}" in
   import-codex-auth)
     stopped
     [[ ${2:-} = /* && -f "$2" ]] || { echo 'Supply an explicit absolute auth.json file path.' >&2; exit 1; }
-    "${base[@]}" --mount "type=bind,src=$2,dst=/run/secrets/codex-auth.json,readonly" --entrypoint /usr/bin/python3 "$image" -c \
-      'import json,pathlib; p=pathlib.Path("/run/secrets/codex-auth.json"); json.loads(p.read_text()); d=pathlib.Path("/data/credentials/codex/auth.json"); d.write_bytes(p.read_bytes()); d.chmod(0o600)' ;;
+    docker run --rm --init -i --network none --user 1000 --mount "type=volume,src=$name-credentials,dst=/data/credentials" --entrypoint /usr/bin/python3 "$image" -c \
+      'import json,os,pathlib,sys,tempfile; b=sys.stdin.buffer.read(); json.loads(b); d=pathlib.Path("/data/credentials/codex"); d.mkdir(parents=True,exist_ok=True); f,p=tempfile.mkstemp(dir=d); s=os.fdopen(f,"wb"); s.write(b); s.close(); os.replace(p,d/"auth.json")' < "$2" ;;
   skills)
     if [[ ${2:-} == install ]]; then
       stopped

@@ -3,6 +3,12 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using RepoAgent.Auth;
 
+if (args is ["--version"] or ["--version", "--json"])
+{
+    BrokerVersion.Write(args.Length == 2);
+    return;
+}
+
 if (args.FirstOrDefault() == "cleanup")
 {
     Environment.ExitCode = await BrokerCleanupCommand.RunAsync(args);
@@ -31,6 +37,7 @@ RequestProtection.Add(builder);
 var ready = BrokerSettings.Ready(IssuanceServices.Add(builder));
 builder.Services.AddHealthChecks().AddCheck("composition", () => ready ? HealthCheckResult.Healthy() : HealthCheckResult.Unhealthy());
 var app = builder.Build();
+BrokerVersion.Log(app.Logger, BrokerVersion.Version, BrokerVersion.Source);
 _ = app.Services.GetRequiredService<BrokerOptions>(); // Fail startup on invalid security/budget configuration.
 app.UseRouting();
 app.UseRateLimiter();
