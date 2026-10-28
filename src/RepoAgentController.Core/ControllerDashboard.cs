@@ -116,6 +116,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
         var authentication = snapshot.Authentication;
         text.AppendLine("- **GitHub authentication:** " + authentication.State switch
         {
+            "degraded" => $"temporarily throttled at {Time(authentication.UpdatedAt ?? "")}: {Code(authentication.Error ?? "")}. Renewal retries automatically; an existing token is used only while valid.",
             "failed" => $"failed at {Time(authentication.UpdatedAt ?? "")}: {Code(authentication.Error ?? "")}. Check the controller's approval and credentials, then restart it.",
             "" => "unknown",
             var state => state

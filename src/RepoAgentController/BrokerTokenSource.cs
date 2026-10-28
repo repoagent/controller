@@ -161,6 +161,14 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
         catch (HttpRequestException) { throw Invalid("broker transport failed"); }
         using (response)
         {
+            if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            {
+                TimeSpan? delay = null;
+                if (response.Headers.TryGetValues("Retry-After", out var values) && values.ToArray() is [var value] &&
+                    RetryConditionHeaderValue.TryParse(value, out var retry))
+                    delay = retry.Delta ?? (retry.Date is { } date ? date - clock.GetUtcNow() : null);
+                throw new GitHubTokenThrottledException(delay);
+            }
             if (!response.IsSuccessStatusCode) throw Invalid($"broker request failed (HTTP {(int)response.StatusCode})");
             if (response.Content.Headers.ContentLength > MaximumBytes) throw Invalid("response exceeds 64 KiB");
             await using var stream = await response.Content.ReadAsStreamAsync(ct);
