@@ -278,7 +278,7 @@ public sealed class DiscussionJourney
         Assert.Contains("Refreshed about every 30 seconds", body, StringComparison.Ordinal);
         Assert.Contains("Treat more than two minutes without a heartbeat as offline", body, StringComparison.Ordinal);
         Assert.Contains("### Agent account usage", body, StringComparison.Ordinal);
-        Assert.DoesNotContain((await Logs()).Split('\n'), line => IsEvent(line, "native-accepted"));
+        Assert.DoesNotContain((await Logs()).Split('\n'), line => IsEvent(line, "agent-accepted"));
         Pass("HOSTED_DASHBOARD", new
         {
             discussion = dashboard["url"]!.ToString(),
