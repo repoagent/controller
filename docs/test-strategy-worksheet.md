@@ -93,7 +93,7 @@ Fill in the **Test kind** column. Suggested values:
 | # | Flow | Test kind | Notes |
 |---|---|---|---|
 | 2.1 | `POST /enrollments`: validate the request, run discovery, return the marker. A replay is idempotent | | |
-| 2.2 | Approval check: the repository-held approval exists and matches the marker | | |
+| 2.2 | Approval check: the controller approval exists and matches the marker | | |
 | 2.3 | `POST /enrollments/{id}/completion`: release the controller secret once, and replay the same completion | | |
 | 2.4 | `POST /devices/{id}/acknowledgment` | | |
 | 2.5 | `POST /devices/{id}/installation-token`: authenticate the controller secret, recheck the controller approval, mint a GitHub token with the profile's runtime authority | | |
