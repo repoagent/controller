@@ -17,8 +17,9 @@ def condition(name):
 
 
 def selected(name, *, event='push', operation='', ref='refs/heads/main', published='success', cancelled=False,
-             approved=True, verified='success', recorded='success'):
+             approved=True, verified='success', recorded='success', repository='repoagent/controller'):
     context = {'github.event_name': event, 'github.ref': ref, 'inputs.operation': operation,
+               'github.repository': repository,
                'needs.publish.result': published, 'needs.verify-service.result': verified,
                'needs.release-metadata.result': recorded, 'needs.select-release.outputs.release': 'true' if approved else 'false'}
     expression = condition(name).replace('!cancelled()', repr(not cancelled))
@@ -30,6 +31,15 @@ def selected(name, *, event='push', operation='', ref='refs/heads/main', publish
 
 
 class BrokerWorkflowTests(unittest.TestCase):
+    def test_diagnostics_only_selects_fixed_repository_main_dispatch_and_never_deploys(self):
+        context = dict(event='workflow_dispatch', operation='diagnostics', published='skipped', recorded='skipped')
+        self.assertTrue(selected('diagnostics', **context))
+        self.assertFalse(selected('diagnostics', **context, ref='refs/heads/other'))
+        self.assertFalse(selected('diagnostics', **context, repository='other/controller'))
+        self.assertFalse(selected('diagnostics'))
+        for name in ('verify-service', 'publish', 'deploy'):
+            self.assertFalse(selected(name, **context), name)
+
     def test_release_pr_explicit_verification_is_read_only_on_its_branch(self):
         context = dict(event='workflow_dispatch', operation='verify', ref='refs/heads/release-please--branches--main',
                        published='skipped', recorded='skipped', approved=False)
@@ -83,7 +93,7 @@ class BrokerWorkflowTests(unittest.TestCase):
             self.assertTrue(selected(name, **context), name)
 
     def test_access_and_guarded_recovery_do_not_accidentally_deploy(self):
-        for operation in ['access-check', 'bootstrap-publish', 'foundation-plan', 'foundation-apply',
+        for operation in ['access-check', 'diagnostics', 'bootstrap-publish', 'foundation-plan', 'foundation-apply',
                           'stage-plan', 'stage-apply', 'promote-staged', 'stage-stop', 'stage-resume',
                           'cleanup-identity-plan', 'cleanup-identity-apply', 'cleanup-plan', 'cleanup-apply']:
             context = dict(event='workflow_dispatch', operation=operation, published='skipped')

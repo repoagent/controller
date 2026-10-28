@@ -63,6 +63,7 @@
     "infra/auth/",
     "scripts/delivery/auth-pipeline.py",
     "scripts/delivery/broker-release.py",
+    "scripts/delivery/broker-diagnostics.py",
     ".github/workflows/broker.yml"
   ]
 }
