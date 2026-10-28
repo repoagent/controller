@@ -5,7 +5,7 @@ namespace RepoAgentController.Tests;
 
 // The dashboard Discussion's title and body, byte for byte, as each publication hands them to the outbox: a running controller
 // with every section filled, then its graceful stop, then a later lifetime's stop after a failure. The status reads the status
-// record, Discussion state, settings and checkout fakes. ControllerDashboardGolden.txt holds what e03e391 produced.
+// record, Discussion state, settings and checkout fakes. ControllerDashboardGolden.txt holds representative complete publications.
 public sealed class ControllerDashboardGoldenTests
 {
     const string Category = "Controller status", Repository = "owner/repository", Url = "https://github.com/owner/repository/discussions/";
@@ -78,7 +78,7 @@ public sealed class ControllerDashboardGoldenTests
     static void Log(ControllerStatus status, int seconds, string kind, string message) => status.Record(new(Start.AddSeconds(seconds), kind, message));
 
     [Fact]
-    public async Task The_dashboard_title_and_body_are_the_bytes_e03e391_published_while_running_and_at_each_kind_of_stop()
+    public async Task The_dashboard_title_and_body_present_a_heartbeat_overview_while_running_and_at_each_kind_of_stop()
     {
         Save();
         var current = Release(101, image: "running");

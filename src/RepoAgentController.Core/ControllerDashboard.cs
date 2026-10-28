@@ -15,7 +15,6 @@ public sealed class ControllerDashboard : IAsyncDisposable
     // Bounded so shutdown cannot hang on GitHub; an undelivered stop stays retained and the next lifetime supersedes it.
     static readonly TimeSpan StopBudget = TimeSpan.FromSeconds(10);
     const int MaximumSessions = 20, MaximumFailures = 10, MaximumText = 300;
-    const string Title = "RepoAgent controller status", AttentionTitle = "Attention: RepoAgent controller authentication failed";
     readonly string category;
     readonly ControllerStatus status;
     readonly GitHubOutbox outbox;
@@ -65,9 +64,8 @@ public sealed class ControllerDashboard : IAsyncDisposable
         try
         {
             var snapshot = status.Snapshot();
-            // Either credential failing needs the operator: the App's stops GitHub work, the Codex account's holds every turn.
-            var attention = snapshot.Authentication.State == "failed" || snapshot.CodexAuthentication.State == "failed";
-            outbox.Dashboard(category, attention ? AttentionTitle : Title, Render(snapshot, clock.GetUtcNow(), stopped, releases.Current));
+            var now = clock.GetUtcNow();
+            outbox.Dashboard(category, Title(snapshot, now, stopped), Render(snapshot, now, stopped, releases.Current));
             return true;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -77,25 +75,46 @@ public sealed class ControllerDashboard : IAsyncDisposable
         }
     }
 
+    // Year is always present so a frozen title remains unambiguous across year boundaries.
+    static string Title(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped)
+    {
+        var heartbeat = "💓 " + now.UtcDateTime.ToString("dd MMM yyyy HH:mm 'UTC'", CultureInfo.InvariantCulture);
+        var summary = stopped is { Failure: not null } ? "🔴 Stopped after failure"
+            : stopped is not null ? "⏹ Stopped"
+            : snapshot.Authentication.State == "failed" ? "🔴 GitHub authentication failed"
+            : snapshot.CodexAuthentication.State == "failed" ? "🔴 Codex authentication failed"
+            : snapshot.Work.AdmissionBlocked == true ? $"🟠 Dispatch blocked · {snapshot.Work.Waiting} queued"
+            : null;
+        return summary is null
+            ? $"{heartbeat} · {snapshot.Work.Running}/{snapshot.Work.Limit} active · {snapshot.Work.Waiting} queued — RepoAgent"
+            : $"{summary} · {heartbeat} — RepoAgent";
+    }
+
     static string Render(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, ReleaseNotice? release)
     {
         var text = new StringBuilder();
         text.AppendLine(AppIdentity.DashboardMarker);
-        text.AppendLine("Operational status of this repository's RepoAgent controller. The controller replaces this text on every update; comments and reactions here are never delivered to the agent.");
+        text.AppendLine(CultureInfo.InvariantCulture, $"**Last heartbeat:** {Time(now)}. Refreshed about every {HeartbeatInterval.TotalSeconds:F0} seconds while the controller runs, even when idle.");
+        text.AppendLine("Treat more than two minutes without a heartbeat as offline. A failure to publish can produce the same symptom; GitHub cannot update this frozen status automatically.");
         text.AppendLine();
         var controller = snapshot.Controller;
         var startedAt = controller.StartedAt ?? "";
-        text.AppendLine("- **Controller:** " + stopped switch
-        {
-            null => $"{controller.State} ({controller.Mode}) since {Time(startedAt)}",
-            { Failure: null } end => $"stopped at {Time(end.At)} after a graceful shutdown; it had started at {Time(startedAt)}",
-            { } end => $"stopped at {Time(end.At)} after a failure: {Code(end.Failure!)}"
-        });
-        text.AppendLine(stopped is null
-            ? $"- **Heartbeat:** {Time(now)}. Refreshed about every {HeartbeatInterval.TotalSeconds:F0} seconds while the controller runs, even when idle. An older heartbeat means this status is unconfirmed, not that a particular failure occurred."
-            : "- **Heartbeat:** none while stopped.");
+        if (stopped is { } end)
+            text.AppendLine(end.Failure is null
+                ? $"- **Controller:** stopped at {Time(end.At)} after a graceful shutdown; it had started at {Time(startedAt)}"
+                : $"- **Controller:** stopped at {Time(end.At)} after a failure: {Code(end.Failure)}");
+        else text.AppendLine(CultureInfo.InvariantCulture, $"- **Controller:** {(controller.State == "starting" ? "starting; " : "")}{Code(controller.Mode ?? "unknown mode")}; lifetime started at {Time(startedAt)}");
+        text.AppendLine("### Work capacity");
+        var work = snapshot.Work;
+        var full = work.Running >= work.Limit;
+        text.AppendLine($"- **Sessions:** {work.Sessions} stored; " +
+            (stopped is null ? $"{work.Running} of {work.Limit} turns running (active-session limit)" : "no turns run while the controller is stopped") +
+            $"; {work.Pending} awaiting native acknowledgement; {work.Waiting} inputs waiting" +
+            (work.AdmissionBlocked == true ? "; new turns are held for a checkout refresh" : ""));
+        text.AppendLine();
+        text.AppendLine("### Authentication and settings");
         var authentication = snapshot.Authentication;
-        text.AppendLine("- **Authentication:** " + authentication.State switch
+        text.AppendLine("- **GitHub authentication:** " + authentication.State switch
         {
             "failed" => $"failed at {Time(authentication.UpdatedAt ?? "")}: {Code(authentication.Error ?? "")}. Check the controller's approval and credentials, then restart it.",
             "" => "unknown",
@@ -111,12 +130,6 @@ public sealed class ControllerDashboard : IAsyncDisposable
             var state => state
         });
         Settings(text, snapshot.Settings);
-        var work = snapshot.Work;
-        var full = work.Running >= work.Limit;
-        text.AppendLine($"- **Sessions:** {work.Sessions} stored; " +
-            (stopped is null ? $"{work.Running} of {work.Limit} turns running (active-session limit)" : "no turns run while the controller is stopped") +
-            $"; {work.Pending} awaiting native acknowledgement; {work.Waiting} inputs waiting" +
-            (work.AdmissionBlocked == true ? "; new turns are held for a checkout refresh" : ""));
         var activity = Listed(snapshot.LatestActivity);
         text.AppendLine("- **Latest activity:** " + (activity is null ? "none recorded" :
             $"{(activity.Kind == "session-created" ? "session started for" : "input delivered from")} {Link(activity.Url ?? "")} at {Time(activity.At)}"));
@@ -153,7 +166,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
         var failures = snapshot.Failures.Select(Listed).OfType<StatusEvent>().Reverse().Take(MaximumFailures).ToArray();
         foreach (var item in failures) text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- {Time(item.At)} {Code(item.Kind)}: {Code(item.Message)}");
         if (failures.Length == 0) text.AppendLine("None recorded.");
-        return text.ToString();
+        return text.ToString().ReplaceLineEndings("\n");
     }
 
     // An event recorded in a form no writer leaves is shown with what reads from it, unless it is not an object at all.

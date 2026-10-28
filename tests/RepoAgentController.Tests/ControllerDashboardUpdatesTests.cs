@@ -17,7 +17,7 @@ public sealed class ControllerDashboardUpdatesTests
     {
         var text = new StringBuilder();
         ControllerDashboard.Updates(text, notice);
-        return text.ToString();
+        return text.ToString().ReplaceLineEndings("\n");
     }
 
     static string Link(BaselineRelease release) => $"[{release.Tag}](https://github.com/repoagent/controller/releases/tag/{release.Tag})";
