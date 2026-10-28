@@ -17,8 +17,9 @@
 
 ### Known limitations
 
-- Packaging, source tests and versioned publication do not establish successful hosted enrollment/replacement, rendered GitHub light/dark or narrow-screen behavior, actual provider usage outcomes or renewal of a pre-upgrade existing enrollment against the upgraded deployment. Those acceptance items remain open; no new uptime, recovery or settlement proof is claimed.
-- Revocation, positive token settlement and durable owner release remain prerequisites for enrollment replacement. Health responses and closure acknowledgments do not establish settlement; remaining hosted and renewal acceptance is tracked in #207/#283/#197.
+- A [hosted smoke at source dff8a907](https://github.com/repoagent/controller/actions/runs/40786967089) passed installation, Quick Tunnel delivery, an App reply with an EYES receipt, and a second dashboard heartbeat using the unchanged pinned tools. It does not qualify a new tool candidate (#207) or prove renewal of a pre-upgrade existing enrollment against the upgraded deployment (#197).
+- Rendered GitHub light/dark and narrow-screen layouts were not inspected. Account usage was unavailable, and no artificial turns were started to measure it. No actual quota-exhaustion, continuous-uptime or recovery guarantee follows from this smoke.
+- Cleanup confirmed broker closure but reported outstanding tokens as unsettled. Revocation, positive token settlement and durable owner release remain prerequisites for enrollment replacement; health responses and closure acknowledgments do not establish settlement.
 
 ## 1.0.0 (2026-10-28)
 
