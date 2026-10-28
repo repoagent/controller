@@ -183,6 +183,9 @@ jobs:
           done
           python3 -m unittest discover -s scripts/delivery -p 'test_*auth*.py' -v
           python3 -m unittest scripts.delivery.test_broker_release scripts.delivery.test_broker_version -v
+          python3 -m venv "$RUNNER_TEMP/broker-diagnostics-tests"
+          "$RUNNER_TEMP/broker-diagnostics-tests/bin/pip" install --disable-pip-version-check jmespath==1.0.1
+          "$RUNNER_TEMP/broker-diagnostics-tests/bin/python" -m unittest scripts.delivery.test_broker_diagnostics -v
   publish:
     needs: [select-release, verify-service]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'deploy' || inputs.operation == 'release'))) && needs.verify-service.result == 'success' && needs.select-release.outputs.release == 'true'

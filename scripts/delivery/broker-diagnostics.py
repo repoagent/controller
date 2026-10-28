@@ -78,10 +78,13 @@ def document(arguments):
         raise Unavailable('invalid-response') from None
 
 
-def read(path, version='2025-01-01', **parameters):
+def read(path, version='2025-01-01', query=None, **parameters):
     # No provider nextLink or caller URL is ever followed.
     url = 'https://management.azure.com' + path + '?' + urlencode({'api-version': version, **parameters})
-    return document(['az', 'rest', '--method', 'get', '--url', url, '--only-show-errors', '--output', 'json'])
+    arguments = ['az', 'rest', '--method', 'get', '--url', url, '--only-show-errors', '--output', 'json']
+    if query is not None:
+        arguments += ['--query', query]
+    return document(arguments)
 
 
 def checked_source():
@@ -183,7 +186,12 @@ def capture(operation):
 
 
 def executions():
-    response = read(JOB + '/executions')
+    # Azure CLI evaluates this fixed JMESPath projection before formatting stdout.
+    # Raw snapshots can exceed the pipe cap because they include private env/args.
+    # A 101st row still triggers our explicit 100-row page guard; no nextLink follows.
+    response = read(JOB + '/executions', query="""{value: value[:101].{name: name, properties: {
+status: properties.status, startTime: properties.startTime, endTime: properties.endTime,
+template: {containers: properties.template.containers[].{image: image}}}}, nextLink: nextLink != `null`} """.strip())
     rows = []
     for item in collection(response):
         name = item['name']
@@ -194,7 +202,14 @@ def executions():
                          status=choice(value.get('status'), ('Running', 'Processing', 'Stopped', 'Degraded', 'Failed', 'Succeeded')),
                          images=images(value.get('template', {}))))
     rows.sort(key=lambda item: item['start'] or '', reverse=True)
-    selected = rows[:20]
+    failed = [row for row in rows if row['status'] == 'Failed']
+    def sample(priority, candidates, limit):
+        unique = {}
+        for row in [*priority, *candidates]:
+            unique.setdefault(row['name'], row)
+        return sorted(list(unique.values())[:limit], key=lambda item: item['start'] or '', reverse=True)
+    selected = sample(failed[:2], rows, 20)
+    replica_samples = sample(failed[:1], selected, 3)
     def replicas(name):
         # The CLI's replica command uses this separate preview API, not Jobs' stable version.
         value = read(JOB + '/executions/' + name + '/replicas', '2023-11-02-preview')
@@ -212,8 +227,10 @@ def executions():
                     raise Unavailable('response-limit')
         return dict(count=len(items), containers=states)
     return dict(items=selected, truncated=bool(response.get('nextLink')) or len(rows) > 20,
-                coverage='Newest 20 from one returned page; replicas for newest three only. Not a drain fence or full history.',
-                replicas=[dict(execution=row['name'], **capture(lambda name=row['name']: replicas(name))) for row in selected[:3]])
+                pageRows=len(rows), failedPageRows=len(failed),
+                coverage='One returned page only, at most 100 rows examined; up to 20 newest samples reserving two recent failures. '
+                         'At most three replica snapshots reserving one recent failure. Not a drain fence or full history.',
+                replicas=[dict(execution=row['name'], **capture(lambda name=row['name']: replicas(name))) for row in replica_samples])
 
 
 def alerts():
