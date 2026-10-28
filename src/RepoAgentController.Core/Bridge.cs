@@ -225,8 +225,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
                 {
                     abort.ThrowIfCancellationRequested();
                     admissionStopped = true;
-                    Settle();
-                    if (sessions.ActiveTurns == 0) return;
+                    if (Settle()) return;
                 }
                 finally { gate.Release(); }
                 await next.WaitAsync(abort);
@@ -464,8 +463,9 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
 
     // Caller holds the gate. Ends the running marker of every turn the native completed or lost. Input of a turn the provider
     // rejected for its Codex account credentials goes back first in line as a redelivery; it waits for replacement credentials,
-    // since the rejection holds all dispatch.
-    void Settle()
+    // since the rejection holds all dispatch. Returns whether that same atomic snapshot held no native work, only after its
+    // outcomes are saved: a later ActiveTurns read could see a completion this pass has not yet consumed.
+    bool Settle()
     {
         var (ended, active) = sessions.TakeTurns();
         var events = new List<(string Kind, string Message)>();
@@ -486,10 +486,13 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             record.Running = null;
             events.Add(("turn-ended", $"{record.Url} session={record.SessionId ?? ""} turn={turn} status=lost"));
         }
-        if (events.Count == 0) return;
-        // Saved first: status and dashboard compose work from the saved state when these events are logged.
-        store.Save();
-        foreach (var (kind, message) in events) log.Write(kind, message);
+        if (events.Count != 0)
+        {
+            // Saved first: status and dashboard compose work from the saved state when these events are logged.
+            store.Save();
+            foreach (var (kind, message) in events) log.Write(kind, message);
+        }
+        return active.Count == 0;
     }
 
     // Caller holds the gate and saves. The native accepted this batch but the provider refused the Codex account, so no agent
