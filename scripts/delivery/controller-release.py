@@ -87,6 +87,12 @@ def image_free(version):
 
 
 def select_release(tag, output):
+    recovery_run = os.environ.get('RECOVERY_RUN', '')
+    recovery_id = os.environ.get('RECOVERY_ARTIFACT', '')
+    if bool(recovery_run) != bool(recovery_id):
+        raise ValueError('Recovery requires both original run and artifact IDs')
+    if recovery_run and (not re.fullmatch(r'[0-9]+', recovery_run) or not re.fullmatch(r'[0-9]+', recovery_id)):
+        raise ValueError('Recovery run and artifact IDs must be numeric')
     match = re.fullmatch('controller-v(' + SEMVER + ')', tag)
     if not match:
         raise ValueError('Expected a stable controller-vMAJOR.MINOR.PATCH tag')

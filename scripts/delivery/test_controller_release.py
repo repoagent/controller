@@ -117,11 +117,25 @@ else: sys.exit(2)
         git('tag', 'controller-v1.2.3'); git('update-ref', 'refs/remotes/origin/main', commit)
         self.release.write_text(json.dumps({'tag_name': 'controller-v1.2.3', 'draft': False, 'prerelease': False,
             'target_commitish': commit, 'body': notes, 'assets': []}))
+        for supplied in ('RECOVERY_RUN', 'RECOVERY_ARTIFACT'):
+            with self.subTest(incomplete=supplied):
+                self.environment[supplied] = '123'
+                refused = self.root / ('incomplete-' + supplied)
+                result = self.execute('select', 'controller-v1.2.3', refused, cwd=source)
+                self.assertNotEqual(result.returncode, 0, 'Incomplete recovery must fail before publishing plan outputs')
+                self.assertFalse(refused.exists())
+                self.assertFalse(self.ledger.exists(), 'Incomplete selection must not contact GitHub')
+                del self.environment[supplied]
         output = self.root / 'plan'
         result = self.execute('select', 'controller-v1.2.3', output, cwd=source)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['source'], commit)
         self.assertEqual((output / 'RELEASE_NOTES.md').read_text(), notes)
+        self.environment.update(RECOVERY_RUN='123', RECOVERY_ARTIFACT='456')
+        recovered = self.execute('select', 'controller-v1.2.3', self.root / 'recovery-plan', cwd=source)
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertEqual(json.loads(recovered.stdout)['source'], commit)
+        del self.environment['RECOVERY_RUN'], self.environment['RECOVERY_ARTIFACT']
         value = json.loads(self.release.read_text()); value['body'] = 'Unreviewed changed notes.'
         self.release.write_text(json.dumps(value))
         result = self.execute('select', 'controller-v1.2.3', self.root / 'other-plan', cwd=source)
