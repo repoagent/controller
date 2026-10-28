@@ -23,7 +23,7 @@ import uuid
 from test_managed_git import CONTROLLER, ROOT, GitProvider, free_port
 
 CATEGORY = 'Controller status'
-HEARTBEAT = re.compile(r'Heartbeat\W+(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)')
+HEARTBEAT = re.compile(r'Last heartbeat\W+(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)')
 # Answers every native request; no Discussion is enrolled, so no session or turn starts.
 NATIVE = """#!/usr/bin/python3
 import json,os,sys
@@ -76,7 +76,7 @@ class ControllerDashboardProcessTests(unittest.TestCase):
             provider, github, command, environment = self.fixture(Path(temporary))
 
             with Controller(self, command, environment) as first:
-                running = github.wait(self, lambda body: '**Controller:** running' in body)
+                running = github.wait(self, publishing)
                 first.process.kill()
                 first.process.wait(timeout=10)
                 writes = len(github.writes)
@@ -88,13 +88,14 @@ class ControllerDashboardProcessTests(unittest.TestCase):
             self.assertNotIn('stopped', running)
 
             with Controller(self, command, environment) as second:
-                restarted = github.wait(self, lambda body: '**Controller:** running' in body and body != running)
+                restarted = github.wait(self, lambda body: publishing(body) and body != running)
                 self.assertGreaterEqual(heartbeat(restarted), heartbeat(running))
                 second.process.send_signal(signal.SIGTERM)
                 second.process.wait(timeout=15)
             stopped = github.body()
             self.assertRegex(stopped, r'\*\*Controller:\*\* stopped at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ after a graceful shutdown')
-            self.assertNotRegex(stopped, HEARTBEAT)
+            self.assertRegex(stopped, HEARTBEAT)
+            self.assertGreaterEqual(heartbeat(stopped), heartbeat(restarted))
             self.assertEqual([kind for kind, _ in github.writes].count('createDiscussion'), 1, 'The restarted controller found its dashboard again')
             self.assertEqual(len(github.dashboards()), 1)
             for _, text in github.writes:
@@ -110,7 +111,7 @@ class ControllerDashboardProcessTests(unittest.TestCase):
             command += ['--webhook-url', 'https://fixture.invalid', '--listen-port', str(port), '--reconcile-interval', '3600']
 
             with Controller(self, command, environment) as controller:
-                body = github.wait(self, lambda body: '**Controller:** running' in body)
+                body = github.wait(self, publishing)
                 controller.wait('reconciliation-completed discussion=all success=True')
                 secret = json.loads(Path(str(directory / 'state.json') + '.webhook/hook.json').read_text())['secret'].encode()
 
@@ -133,6 +134,11 @@ class ControllerDashboardProcessTests(unittest.TestCase):
                 self.assertEqual(deliver('discussion', 'created', 101, 'octocat'), 202)
                 controller.wait('webhook-observed discussion=101 success=True')
             self.assertFalse([line for line in controller.lines if 'discussion=100' in line])
+
+
+def publishing(body):
+    # A current snapshot has time evidence, not an indefinite claim that this process is running.
+    return HEARTBEAT.search(body) and 'lifetime started at' in body and 'starting;' not in body and 'stopped at' not in body
 
 
 def heartbeat(body):
