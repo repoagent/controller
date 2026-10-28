@@ -10,6 +10,7 @@ src/RepoAgentController/CheckoutEvidence.cs
 src/RepoAgentController/CheckoutRecoveryCommand.cs
 src/RepoAgentController/BrokerTokenSource.cs
 src/RepoAgentController/Codex.cs
+src/RepoAgentController/CodexUsage.cs
 src/RepoAgentController/DirectAppTokenSource.cs
 src/RepoAgentController/DiscussionWebhooks.cs
 src/RepoAgentController/GitHubWebhookRegistration.cs
@@ -61,6 +62,8 @@ src/RepoAgentController.Core/Discussion.cs
 src/RepoAgentController.Core/GitHubOutbox.cs
 src/RepoAgentController.Core/IWebhookRegistration.cs
 src/RepoAgentController.Core/IAgentRuntime.cs
+src/RepoAgentController.Core/AgentUsageObservation.cs
+src/RepoAgentController.Core/AgentUsageCollection.cs
 src/RepoAgentController.Core/AgentSessions.cs
 src/RepoAgentController.Core/ICheckoutAdmission.cs
 src/RepoAgentController.Core/IAgentInput.cs

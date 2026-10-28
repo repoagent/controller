@@ -22,6 +22,9 @@ Treat more than two minutes without a heartbeat as offline. A failure to publish
 - Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.
 - To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see [baseline releases](https://github.com/repoagent/controller/blob/94c417d3c69ddf80b9162932e159900749c6a573/docs/ci-cd.md#baseline-releases).
 
+### Agent account usage
+Usage unavailable; no agent account observation has been collected.
+
 ### Tracked Discussions
 - [Discussion #1](https://github.com/owner/repository/discussions/1): running a turn since 2026-10-24T09:30:00Z; 1 inputs waiting for that turn to finish
 - [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting
@@ -65,6 +68,9 @@ Treat more than two minutes without a heartbeat as offline. A failure to publish
 - Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.
 - To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see [baseline releases](https://github.com/repoagent/controller/blob/94c417d3c69ddf80b9162932e159900749c6a573/docs/ci-cd.md#baseline-releases).
 
+### Agent account usage
+Usage unavailable; no agent account observation has been collected.
+
 ### Tracked Discussions
 - [Discussion #1](https://github.com/owner/repository/discussions/1): its turn ended with the controller; 1 inputs waiting
 - [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting
@@ -107,6 +113,9 @@ Treat more than two minutes without a heartbeat as offline. A failure to publish
 - Image `ghcr.io/repoagent/controller@sha256:11d6de2c4e83b36c64f2d58c44aaa10bf5d737bc1b918e3b6347b54a938e4ef7` ([package](https://github.com/repoagent/controller/pkgs/container/controller)) with gh `2.103.1` and Codex `0.164.0`.
 - Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.
 - To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see [baseline releases](https://github.com/repoagent/controller/blob/94c417d3c69ddf80b9162932e159900749c6a573/docs/ci-cd.md#baseline-releases).
+
+### Agent account usage
+Usage unavailable; no agent account observation has been collected.
 
 ### Tracked Discussions
 - [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting

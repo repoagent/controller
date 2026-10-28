@@ -42,6 +42,10 @@ public interface IAgentRuntime
 
     /// <summary>The models the agent account offers for selection, without hidden ones.</summary>
     Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct);
+
+    /// <summary>Reads account usage without starting a turn. Unsupported providers return an explicit unavailable capability.</summary>
+    Task<AgentUsageObservation> ReadUsage(CancellationToken ct) =>
+        Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Unsupported, []));
 }
 
 /// <summary>A turn to start: the bridge envelope as its input text, the selected model and effort, and whether the session still
@@ -52,7 +56,10 @@ public sealed record AgentTurnRequest(string SessionId, string Input, ModelChoic
 public sealed record AgentTurnAccepted(string TurnId, bool Ended);
 
 /// <summary>The runtime answered a request with an error, so it did not perform it. Timeouts and transport loss are not rejections.</summary>
-public sealed class AgentRequestRejected(string message) : IOException(message);
+public sealed class AgentRequestRejected(string message, int? code = null) : IOException(message)
+{
+    public int? Code { get; } = code;
+}
 
 /// <summary>Something the runtime process with this epoch reported.</summary>
 public abstract record AgentRuntimeEvent(int Epoch);

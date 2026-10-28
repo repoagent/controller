@@ -8,7 +8,7 @@ namespace RepoAgentController;
 /// The <see cref="IAgentRuntime"/> adapter: the owned Codex app-server process, its JSON-RPC transport and the native's
 /// lifecycle notifications as runtime events. Session and turn decisions are <see cref="AgentSessions"/>'.
 /// </summary>
-sealed class Codex : IAgentRuntime, IAsyncDisposable
+sealed partial class Codex : IAgentRuntime, IAsyncDisposable
 {
     // Opened by Initialize, so subscribers to Changed see the process from its start.
     Transport? transport;
@@ -44,6 +44,7 @@ sealed class Codex : IAgentRuntime, IAsyncDisposable
         AgentRuntimeEvent? change = method switch
         {
             "disconnect" => new AgentRuntimeDisconnected(source),
+            "account/updated" => new AgentUsageContextChanged(source),
             "thread/status/changed" when thread.Length != 0 => new AgentSessionStatusChanged(source, thread, Parse(parameters!["status"])),
             "turn/started" => new AgentTurnStarted(source, thread, turn?["id"].OptionalText()),
             "turn/completed" => Completed(source, thread, turn),
@@ -91,6 +92,7 @@ sealed class Codex : IAgentRuntime, IAsyncDisposable
     {
         if (transport is not null) await transport.DisposeAsync();
         whileStopped(++epoch);
+        Changed?.Invoke(new AgentUsageContextChanged(epoch));
         transport = OpenTransport();
         await Initialize(ct);
         var skills = await Request("skills/list", Json.Object(("cwds", new JsonArray(workspace)), ("forceReload", true)), ct);
@@ -297,7 +299,7 @@ sealed class Codex : IAgentRuntime, IAsyncDisposable
                     }
                     if (message["id"] is JsonValue idValue && idValue.TryGetValue<int>(out var id) && pending.TryRemove(id, out var completion))
                     {
-                        if (message["error"] is { } error) completion.TrySetException(new AgentRequestRejected($"Native request failed: {error}"));
+                        if (message["error"] is { } error) completion.TrySetException(new AgentRequestRejected($"Native request failed: {error}", error["code"] is JsonValue code && code.TryGetValue<int>(out var errorCode) ? errorCode : null));
                         else completion.TrySetResult(message["result"] ?? throw new IOException("Native response has no result"));
                     }
                 }

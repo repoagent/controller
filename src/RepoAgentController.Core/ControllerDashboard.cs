@@ -26,6 +26,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
     readonly WakeLoop loop;
     Task running = Task.CompletedTask;
     bool started;
+    AgentUsageCollection? usage;
     string? failure;
 
     /// <param name="redact">Removes the secrets the controller knows from the failure that ends a lifetime, before it is published.</param>
@@ -47,9 +48,15 @@ public sealed class ControllerDashboard : IAsyncDisposable
     void Wake() => loop.Signal();
 
     /// <summary>Publishes the current status now, then on every change, release check and heartbeat until disposal.</summary>
-    public void Start(CancellationToken ct)
+    public void Start(CancellationToken ct, IAgentRuntime? runtime = null)
     {
         started = true;
+        if (runtime is not null)
+        {
+            usage = new(runtime, clock);
+            usage.Changed += Wake;
+            usage.Start(ct);
+        }
         // A failed publication waits for the heartbeat, so reporting that failure cannot spin this loop.
         running = loop.Run(CancellationTokenSource.CreateLinkedTokenSource(ct, stop.Token), _ => Task.FromResult((HeartbeatInterval, Publish(null))));
         releases.Start(ct);
@@ -65,7 +72,8 @@ public sealed class ControllerDashboard : IAsyncDisposable
         {
             var snapshot = status.Snapshot();
             var now = clock.GetUtcNow();
-            outbox.Dashboard(category, Title(snapshot, now, stopped), Render(snapshot, now, stopped, releases.Current));
+            var accountUsage = usage?.Current;
+            outbox.Dashboard(category, Title(snapshot, now, stopped, accountUsage), Render(snapshot, now, stopped, releases.Current, accountUsage, redact));
             return true;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -76,7 +84,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
     }
 
     // Year is always present so a frozen title remains unambiguous across year boundaries.
-    static string Title(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped)
+    static string Title(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, UsageSnapshot? usage)
     {
         var heartbeat = "💓 " + now.UtcDateTime.ToString("dd MMM yyyy HH:mm 'UTC'", CultureInfo.InvariantCulture);
         var summary = stopped is { Failure: not null } ? "🔴 Stopped after failure"
@@ -84,13 +92,14 @@ public sealed class ControllerDashboard : IAsyncDisposable
             : snapshot.Authentication.State == "failed" ? "🔴 GitHub authentication failed"
             : snapshot.CodexAuthentication.State == "failed" ? "🔴 Codex authentication failed"
             : snapshot.Work.AdmissionBlocked == true ? $"🟠 Dispatch blocked · {snapshot.Work.Waiting} queued"
+            : usage?.Fresh(now) == true && usage.Exhausted ? "🟠 Usage exhausted" + (usage.Reset is { } reset ? " · resets " + reset.UtcDateTime.ToString("dd MMM yyyy HH:mm 'UTC'", CultureInfo.InvariantCulture) : "")
             : null;
         return summary is null
             ? $"{heartbeat} · {snapshot.Work.Running}/{snapshot.Work.Limit} active · {snapshot.Work.Waiting} queued — RepoAgent"
             : $"{summary} · {heartbeat} — RepoAgent";
     }
 
-    static string Render(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, ReleaseNotice? release)
+    static string Render(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, ReleaseNotice? release, UsageSnapshot? usage, Func<string, string> redact)
     {
         var text = new StringBuilder();
         text.AppendLine(AppIdentity.DashboardMarker);
@@ -137,6 +146,8 @@ public sealed class ControllerDashboard : IAsyncDisposable
         text.AppendLine();
         Updates(text, release);
         text.AppendLine();
+        Usage(text, usage, now, redact);
+        text.AppendLine();
         text.AppendLine("### Tracked Discussions");
         var inventory = snapshot.Sessions.OrderBy(session => session.Activity switch
         {
@@ -179,6 +190,31 @@ public sealed class ControllerDashboard : IAsyncDisposable
         return text.ToString().ReplaceLineEndings("\n");
     }
 
+    static void Usage(StringBuilder text, UsageSnapshot? usage, DateTimeOffset now, Func<string, string> redact)
+    {
+        string Safe(string value) => Code(redact(value));
+        text.AppendLine("### Agent account usage");
+        if (usage?.Problem is { } problem) text.AppendLine(problem);
+        else if (usage?.Observation is null) text.AppendLine("Usage unavailable; no agent account observation has been collected.");
+        if (usage is { Problem: null, Observation: { Availability: AgentUsageAvailability.Available } } && !usage.Fresh(now)) text.AppendLine("Usage stale; last-known observation is outside the two-minute freshness budget.");
+        if (usage?.Observation is { Availability: AgentUsageAvailability.Available } observation)
+        {
+            text.AppendLine(CultureInfo.InvariantCulture, $"Observed at {Time(usage.ObservedAt!.Value)}. Account allowances can span repositories; they are separate from the active-session limit.");
+            text.AppendLine("Ordinary included usage: " + (observation.OrdinaryUsageAllowed is { } allowed ? (allowed ? "allowed" : "not allowed") : "unknown") + ".");
+            foreach (var bucket in observation.Buckets.Take(20))
+            {
+                text.AppendLine($"- **{Safe(bucket.Name ?? bucket.Id)}**" +
+                    (bucket.Model is null ? "" : $"; model {Safe(bucket.Model)}") + (bucket.Plan is null ? "" : $"; plan {Safe(bucket.Plan)}"));
+                if (bucket.AdditionalUsageAvailable) text.AppendLine("  - Provider reports additional credits available; depleted included windows do not establish account exhaustion.");
+                if (bucket.SpendControlReached == true) text.AppendLine("  - Provider reports spend control reached.");
+                if (bucket.ReachedType is { } reason) text.AppendLine(CultureInfo.InvariantCulture, $"  - Provider limit reason: {Safe(reason)}.");
+                foreach (var window in bucket.Windows.Take(3))
+                    text.AppendLine(CultureInfo.InvariantCulture, $"  - {Safe(window.Label)}: {window.RemainingPercent:0.##}% remaining{(window.DurationMinutes is null ? "" : $" ({window.DurationMinutes} minutes)")}{(window.ResetsAt is { } reset ? $"; resets {Time(reset)}" : "; reset unknown")}");
+            }
+            if (observation.Buckets.Count > 20) text.AppendLine(CultureInfo.InvariantCulture, $"- {observation.Buckets.Count - 20} more usage buckets omitted.");
+            if (observation.Buckets.Count == 0) text.AppendLine("Usage windows unavailable; no numeric capacity is known.");
+        }
+    }
     // An event recorded in a form no writer leaves is shown with what reads from it, unless it is not an object at all.
     static StatusEvent? Listed(StatusEvent? item) => item is { AsRead: not null, AsReadIsObject: false } ? null : item;
 
@@ -255,6 +291,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
         await stop.CancelAsync();
         await running;
         await releases.DisposeAsync();
+        if (usage is not null) { usage.Changed -= Wake; await usage.DisposeAsync(); }
         if (started)
         {
             // Reached only when this lifetime ends under control; a killed controller leaves its last heartbeat to go stale.

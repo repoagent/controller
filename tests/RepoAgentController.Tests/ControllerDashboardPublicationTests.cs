@@ -65,6 +65,241 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
 
     static string Time(DateTimeOffset at) => at.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Usage_is_invalidated_immediately_when_the_runtime_or_account_is_replaced(bool account)
+    {
+        var runtime = new FakeAgentRuntime
+        {
+            Usage = _ => Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Available,
+                [new("account", null, null, null, [new("primary", 100, 300, null)])])
+            { AccountKey = "old-owner" })
+        };
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken, runtime);
+        Assert.Contains("Usage exhausted", Published().Title);
+        if (account) runtime.AccountChanged();
+        else runtime.Disconnect();
+        Record("app-token-refreshed", "token renewed");
+        await UsagePublication(publication => publication.Body.Contains("**GitHub authentication:** healthy", StringComparison.Ordinal));
+        Assert.DoesNotContain("Usage exhausted", Published().Title);
+        Assert.Contains("stale", Published().Body);
+        Assert.Contains("0% remaining", Published().Body);
+        Assert.DoesNotContain("old-owner", Published().Body);
+        runtime.Usage = _ => Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Available,
+            [new("account", null, null, null, [new("primary", 1, 300, null)])])
+        { AccountKey = "new-owner" });
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await UsagePublication(publication => publication.Body.Contains("99% remaining", StringComparison.Ordinal));
+        Assert.DoesNotContain("stale", Published().Body);
+    }
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Usage_does_not_claim_exhaustion_when_the_provider_permits_use_or_reports_credits(bool ordinary, bool credits)
+    {
+        var runtime = new FakeAgentRuntime
+        {
+            Usage = _ => Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Available,
+                [new("account", null, null, null, [new("primary", 100, 300, null)]) { AdditionalUsageAvailable = credits }])
+            { OrdinaryUsageAllowed = ordinary ? true : null })
+        };
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken, runtime);
+        Assert.DoesNotContain("Usage exhausted", Published().Title);
+        Assert.Contains("0% remaining", Published().Body);
+        if (credits) Assert.Contains("additional credits available", Published().Body);
+    }
+
+    [Fact]
+    public async Task Usage_discards_a_read_from_the_previous_account_context()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldRead = new TaskCompletionSource<AgentUsageObservation>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runtime = new FakeAgentRuntime
+        {
+            Usage = _ => Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Available,
+                [new("account", null, null, null, [new("primary", 20, 300, null)])]))
+        };
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken, runtime);
+        runtime.Usage = _ => { entered.SetResult(); return oldRead.Task; };
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        runtime.AccountChanged();
+        oldRead.SetResult(new(AgentUsageAvailability.Available,
+            [new("old account", null, null, null, [new("primary", 100, 300, null)])]));
+        while (clock.Delays.Count(delay => delay == TimeSpan.FromMinutes(1)) < 2) await clock.Armed();
+        Record("app-token-refreshed", "token renewed");
+        await UsagePublication(publication => publication.Body.Contains("**GitHub authentication:** healthy", StringComparison.Ordinal));
+        Assert.Contains("80% remaining", Published().Body);
+        Assert.DoesNotContain("old account", Published().Body);
+        Assert.DoesNotContain("Usage exhausted", Published().Title);
+        Assert.Contains("stale", Published().Body);
+    }
+
+    [Fact]
+    public async Task Usage_read_timeout_marks_last_known_data_stale_without_affecting_agent_work()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var held = new TaskCompletionSource<AgentUsageObservation>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runtime = new FakeAgentRuntime
+        {
+            Usage = _ => Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Available,
+                [new("account", null, null, null, [new("primary", 100, 300, null)])]))
+        };
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken, runtime);
+        runtime.Usage = _ => { entered.SetResult(); return held.Task; };
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        clock.Advance(TimeSpan.FromSeconds(10));
+        await UsagePublication(publication => publication.Body.Contains("Usage refresh failed", StringComparison.Ordinal));
+        Assert.DoesNotContain("Usage exhausted", Published().Title);
+        Assert.Contains("0% remaining", Published().Body);
+        Assert.Equal("unknown", status.Snapshot().CodexAuthentication.State);
+        Assert.Empty(runtime.Requests);
+    }
+    [Fact]
+    public async Task Usage_metadata_is_redacted_and_kept_literal_without_publishing_private_identity()
+    {
+        var runtime = new FakeAgentRuntime
+        {
+            Usage = _ => Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Available,
+                [new("meter", "ghs_secret <details> @someone", "`model`", null, [new("window", 1, null, null)])])
+            { AccountKey = "private-account" })
+        };
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken, runtime);
+        Assert.DoesNotContain("ghs_secret", Published().Body);
+        Assert.DoesNotContain("private-account", Published().Body);
+        Assert.Contains("`<redacted> <details> @someone`", Published().Body);
+        Assert.Contains("`'model'`", Published().Body);
+    }
+
+    [Theory]
+    [InlineData(AgentUsageAvailability.Unsupported, "Usage unsupported")]
+    [InlineData(AgentUsageAvailability.Unavailable, "Usage unavailable")]
+    public async Task Usage_absence_is_distinct_from_known_zero_without_failing_authentication(AgentUsageAvailability availability, string label)
+    {
+        var runtime = new FakeAgentRuntime { Usage = _ => Task.FromResult(new AgentUsageObservation(availability, [])) };
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken, runtime);
+        Assert.Contains(label, Published().Body);
+        Assert.DoesNotContain("0% remaining", Published().Body);
+        Assert.DoesNotContain("Usage exhausted", Published().Title);
+        Assert.Equal("unknown", status.Snapshot().CodexAuthentication.State);
+        Assert.Empty(runtime.Requests);
+    }
+    [Fact]
+    public async Task Usage_expires_by_observation_time_while_a_new_read_is_pending()
+    {
+        var reads = 0;
+        var pending = new TaskCompletionSource<AgentUsageObservation>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runtime = new FakeAgentRuntime
+        {
+            Usage = _ => ++reads == 1 ? Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Available,
+                [new("account", null, null, null, [new("primary", 100, 300, null)])])) : pending.Task
+        };
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken, runtime);
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await UsagePublication(publication => publication.Body.Contains("two-minute freshness budget", StringComparison.Ordinal));
+        Assert.DoesNotContain("Usage exhausted", Published().Title);
+        Assert.Contains("Observed at 2026-10-24T10:00:00Z", Published().Body);
+        Assert.Equal("unknown", status.Snapshot().CodexAuthentication.State);
+        Assert.Empty(runtime.Requests);
+    }
+    [Fact]
+    public async Task Usage_refresh_failure_keeps_last_known_values_stale_and_recovers_without_authentication_failure()
+    {
+        var runtime = new FakeAgentRuntime
+        {
+            Usage = _ => Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Available,
+                [new("account", null, null, null, [new("primary", 100, 300, null)])]))
+        };
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken, runtime);
+        Assert.Contains("Usage exhausted", Published().Title);
+        runtime.Usage = _ => Task.FromException<AgentUsageObservation>(new IOException("private provider failure"));
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await UsagePublication(publication => publication.Body.Contains("Usage refresh failed", StringComparison.Ordinal));
+        Assert.DoesNotContain("Usage exhausted", Published().Title);
+        Assert.Contains("0% remaining", Published().Body);
+        Assert.Contains("stale", Published().Body);
+        Assert.DoesNotContain("private provider failure", Published().Body);
+        Assert.Equal("unknown", status.Snapshot().CodexAuthentication.State);
+
+        runtime.Usage = _ => Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Available,
+            [new("account", null, null, null, [new("primary", 99, 300, null)])]));
+        clock.Advance(TimeSpan.FromMinutes(1));
+        await UsagePublication(publication => publication.Body.Contains("1% remaining", StringComparison.Ordinal));
+        Assert.DoesNotContain("Usage exhausted", Published().Title);
+        Assert.DoesNotContain("last-known values are stale", Published().Body);
+    }
+    [Fact]
+    public async Task Usage_exhaustion_is_current_evidence_below_authentication_admission_and_stop()
+    {
+        var runtime = new FakeAgentRuntime
+        {
+            Usage = _ => Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Available,
+                [new("account", null, null, null, [new("primary", 100, 300, Start.AddHours(1))])]))
+        };
+        await using (var dashboard = Dashboard())
+        {
+            dashboard.Start(TestContext.Current.CancellationToken, runtime);
+            Assert.StartsWith("🟠 Usage exhausted · resets 24 Oct 2026 11:00 UTC", Published().Title);
+            Assert.Contains("0% remaining", Published().Body);
+            Record("codex-auth-failed", "credentials rejected");
+            await UsagePublication(publication => publication.Title.Contains("Codex authentication failed", StringComparison.Ordinal));
+            Record("codex-auth-verified", "credentials verified");
+            await UsagePublication(publication => publication.Title.Contains("Usage exhausted", StringComparison.Ordinal));
+            checkout.Work = new(new HashSet<string>(), true);
+            Record("input-waiting", "checkout admission changed");
+            await UsagePublication(publication => publication.Title.Contains("Dispatch blocked", StringComparison.Ordinal));
+            Assert.Contains("0% remaining", Published().Body);
+        }
+        Assert.StartsWith("⏹ Stopped", Assert.Single(github.Dashboards).Title);
+    }
+
+    async Task UsagePublication(Func<DashboardOperation, bool> expected)
+    {
+        while (!expected(Published())) await clock.Armed();
+    }
+    [Fact]
+    public async Task Usage_reports_all_buckets_as_remaining_capacity_and_preserves_scope_and_reset()
+    {
+        var runtime = new FakeAgentRuntime
+        {
+            Usage = _ => Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Available,
+            [new("meter-a", "Shared allowance", "model-a", "pro", [new("primary", 28, 300, Start.AddHours(2))]),
+             new("meter-b", "Other allowance", "model-b", null, [new("secondary", 82, 10080, null)])])
+            { AccountKey = "private-account-id" })
+        };
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken, runtime);
+        await clock.Armed();
+
+        Assert.Contains("72% remaining", Published().Body);
+        Assert.Contains("18% remaining", Published().Body);
+        Assert.Contains("`model-a`", Published().Body);
+        Assert.Contains("2026-10-24T12:00:00Z", Published().Body);
+        Assert.Contains("Observed at 2026-10-24T10:00:00Z", Published().Body);
+        Assert.DoesNotContain("private-account-id", Published().Body);
+        Assert.Empty(runtime.Requests);
+    }
+    [Fact]
+    public async Task Usage_without_a_runtime_is_explicitly_unavailable_not_zero()
+    {
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+
+        Assert.Contains("### Agent account usage", Published().Body);
+        Assert.Contains("Usage unavailable", Published().Body);
+        Assert.DoesNotContain("Usage exhausted", Published().Title);
+    }
     [Fact]
     public async Task Heartbeat_leads_the_overview_and_title_without_claiming_indefinite_availability()
     {
@@ -107,6 +342,9 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
 
                 ### Updates
                 The baseline release check has not completed yet.
+
+                ### Agent account usage
+                Usage unavailable; no agent account observation has been collected.
 
                 ### Tracked Discussions
                 None.
