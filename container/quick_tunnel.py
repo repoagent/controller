@@ -1,15 +1,14 @@
 """Own a temporary, accountless tunnel and the bridge for one container lifetime.
 
-The first tunnel must connect before startup continues. Afterwards an unexpected
-cloudflared exit stops the bridge, which deactivates its saved hook, and a
-replacement tunnel is requested with capped exponential backoff. The bridge then
-restarts with the replacement URL, updating that same saved hook; recovery is
-reported only after the bridge reports readiness. A replacement that cannot
-connect, a restarted bridge that cannot start or exits before readiness, and a
-replacement tunnel lost before that readiness are failed attempts: both owned
-processes stop and the next attempt waits for the next backoff delay.
+The first tunnel must connect before startup continues. Afterwards a replacement
+is requested with capped backoff while the existing controller finishes its work.
+Only explicit idle status permits retirement; its normal shutdown also drains a
+turn admitted after that snapshot. Recovery waits for actual controller exit,
+then restarts with the replacement URL and reports recovery only after readiness.
 """
 import datetime
+import http.client
+import json
 import os
 import queue
 import re
@@ -18,12 +17,18 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 
 CONNECT_SECONDS = 90
 RETRY_FIRST_SECONDS = 5
 RETRY_MAX_SECONDS = 300
 # How long a recovered tunnel must keep serving before backoff starts over.
 BACKOFF_RESET_SECONDS = 300
+STATUS_POLL_SECONDS = 1
+STATUS_TIMEOUT_SECONDS = 2
+WAIT_PROGRESS_SECONDS = 30
+MAX_STATUS_BYTES = 65536
 OUTPUT = threading.Lock()
 
 
@@ -40,7 +45,58 @@ class TunnelNotStarted(TunnelUnavailable):
     """The cloudflared executable could not be started."""
 
 
-def run(bridge, port, environment=None):
+def status_state(body):
+    """Decode the existing status contract without treating unknown input as idle."""
+    def fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate status field')
+            result[key] = value
+        return result
+
+    def invalid_constant(value):
+        raise ValueError('invalid JSON constant')
+
+    value = json.loads(body, object_pairs_hook=fields, parse_constant=invalid_constant)
+    if not isinstance(value, dict) or value.get('state') not in ('busy', 'idle'):
+        raise ValueError('unknown status state')
+    return value['state']
+
+
+class NoStatusRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+
+def controller_status(port):
+    """Query only the private loopback status port; diagnostic reasons contain no response data."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoStatusRedirect())
+    try:
+        with opener.open('http://127.0.0.1:' + str(port) + '/status', timeout=STATUS_TIMEOUT_SECONDS) as response:
+            if response.status != 200:
+                return None, 'status-http-' + str(response.status)
+            lengths = response.headers.get_all('Content-Length', [])
+            if len(lengths) > 1 or lengths and not lengths[0].strip().isdigit():
+                return None, 'status-invalid-response'
+            declared = int(lengths[0]) if lengths else None
+            if declared is not None and declared > MAX_STATUS_BYTES:
+                return None, 'status-response-too-large'
+            body = response.read(MAX_STATUS_BYTES + 1)
+            if len(body) > MAX_STATUS_BYTES:
+                return None, 'status-response-too-large'
+            if declared is not None and declared != len(body):
+                return None, 'status-invalid-response'
+            return status_state(body), 'controller-busy'
+    except urllib.error.HTTPError as error:
+        return None, 'status-http-' + str(error.code)
+    except (ValueError, UnicodeError, RecursionError):
+        return None, 'status-invalid-response'
+    except (OSError, urllib.error.URLError, http.client.HTTPException):
+        return None, 'status-unavailable'
+
+
+def run(bridge, port, environment=None, *, status_port):
     """Discover a connected tunnel, launch the existing receiver with its origin and keep both available.
 
     Only the receiver gets ``environment``; the tunnel inherits the ordinary process environment.
@@ -91,7 +147,7 @@ def run(bridge, port, environment=None):
             reader.join(timeout=2)
         log('tunnel-process-stopped', 'process=' + label + ' exit-code=' + str(process.returncode))
 
-    def connect():
+    def connect(observe=lambda: None):
         """Start one tunnel; return its connected origin, or None when stopping."""
         nonlocal launched
         messages = queue.SimpleQueue()
@@ -109,6 +165,7 @@ def run(bridge, port, environment=None):
         origin, connected = None, False
         deadline = time.monotonic() + CONNECT_SECONDS
         while not (origin and connected):
+            observe()
             if stopping.is_set():
                 return None
             if tunnel.poll() is not None:
@@ -137,31 +194,81 @@ def run(bridge, port, environment=None):
         owned['bridge'] = (agent, reader)
         return ready
 
-    def recovery_failed(attempt, reason):
-        log('tunnel-recovery-failed', 'attempt=' + str(attempt) + ' receiver=stopped reason=' + reason
+    def recovery_failed(attempt, reason, preserve_bridge=False):
+        receiver = 'running' if preserve_bridge else 'stopped'
+        log('tunnel-recovery-failed', 'attempt=' + str(attempt) + ' receiver=' + receiver + ' reason=' + reason
             + '; retrying with capped backoff')
-        terminate('bridge', 12)
+        if not preserve_bridge:
+            terminate('bridge', 12)
         terminate('cloudflared', 3)
 
-    def recover(attempt):
+    def recover(attempt, keep_bridge):
         """Replace a lost tunnel and restart the bridge with capped backoff.
 
         Return (origin, ready, attempt); origin is None when stopping.
         """
+        retained = owned.get('bridge') if keep_bridge else None
+        retiring = False
+
+        def observe():
+            nonlocal retained
+            if retained is None or retained[0].poll() is None:
+                return
+            if not retiring or retained[0].returncode != 0:
+                raise RuntimeError('Bridge exited with status ' + str(retained[0].returncode)
+                                   + '; stopping its Quick Tunnel. Inspect the preceding bridge error before restarting.')
+            # The host has drained accepted turns and exited. Only now clean up its group and release ownership.
+            terminate('bridge', 12)
+            retained = None
+
+        next_progress = 0
         while True:
             attempt += 1
             delay = min(RETRY_MAX_SECONDS, RETRY_FIRST_SECONDS * 2 ** (attempt - 1))
-            log('tunnel-recovering', 'attempt=' + str(attempt) + ' delay-seconds=' + format(delay, 'g') + ' receiver=stopped')
-            if stopping.wait(delay):
-                return None, None, attempt
+            log('tunnel-recovering', 'attempt=' + str(attempt) + ' delay-seconds=' + format(delay, 'g')
+                + ' receiver=' + ('running' if retained else 'stopped'))
+            due = time.monotonic() + delay
+            while time.monotonic() < due:
+                observe()
+                if stopping.wait(min(0.2, due - time.monotonic())):
+                    return None, None, attempt
             try:
-                origin = connect()
+                origin = connect(observe)
             except TunnelUnavailable as error:
-                recovery_failed(attempt, str(error))
+                recovery_failed(attempt, str(error), retained is not None)
                 continue
             # A stop that arrives as connect() returns, such as while it logs, starts no replacement bridge.
             if origin is None or stopping.is_set():
                 return None, None, attempt
+            while retained is not None:
+                observe()
+                if retained is None or stopping.is_set():
+                    break
+                if owned['cloudflared'][0].poll() is not None:
+                    break
+                if not retiring:
+                    state, reason = controller_status(status_port)
+                    observe()
+                    if stopping.is_set() or retained is None or owned['cloudflared'][0].poll() is not None:
+                        break
+                    if state == 'idle':
+                        log('tunnel-retiring', 'receiver=draining reason=controller-idle; waiting for controller exit')
+                        retiring = True
+                        retained[0].terminate()
+                        next_progress = time.monotonic() + WAIT_PROGRESS_SECONDS
+                    elif time.monotonic() >= next_progress:
+                        log('tunnel-waiting', 'receiver=running reason=' + reason + '; keeping the existing controller')
+                        next_progress = time.monotonic() + WAIT_PROGRESS_SECONDS
+                elif time.monotonic() >= next_progress:
+                    log('tunnel-waiting', 'receiver=draining reason=controller-exit-pending')
+                    next_progress = time.monotonic() + WAIT_PROGRESS_SECONDS
+                if stopping.wait(0.2 if retiring else STATUS_POLL_SECONDS):
+                    return None, None, attempt
+            if stopping.is_set():
+                return None, None, attempt
+            if owned['cloudflared'][0].poll() is not None:
+                recovery_failed(attempt, 'replacement cloudflared exited before the controller could relaunch', retained is not None)
+                continue
             try:
                 return origin, launch(origin), attempt
             except (OSError, subprocess.SubprocessError) as error:
@@ -182,6 +289,7 @@ def run(bridge, port, environment=None):
         ready = launch(origin)
         attempt, serving_since = 0, None
         while not stopping.wait(0.2):
+            keep_bridge = False
             agent, tunnel = owned['bridge'][0], owned['cloudflared'][0]
             if agent.poll() is not None:
                 owned['bridge'][1].join(timeout=2)
@@ -205,10 +313,10 @@ def run(bridge, port, environment=None):
                     if serving_since is not None and time.monotonic() - serving_since >= BACKOFF_RESET_SECONDS:
                         attempt = 0
                     log('tunnel-lost', 'exit-code=' + str(tunnel.returncode)
-                        + '; stopping the bridge so it deactivates the saved hook, then requesting a replacement URL')
-                    terminate('bridge', 12)
+                        + '; requesting a replacement URL while keeping the existing controller until idle')
+                    keep_bridge = True
                     terminate('cloudflared', 3)
-            origin, ready, attempt = recover(attempt)
+            origin, ready, attempt = recover(attempt, keep_bridge)
             if origin is None:
                 return 0
             serving_since = None

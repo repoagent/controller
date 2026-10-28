@@ -58,6 +58,11 @@ def save(value):
     temporary.replace(CONFIG)
 
 
+def status_port(config):
+    # Keep status separate even when the operator selects 8081 for webhook ingress.
+    return 8082 if config.get('listenPort', 8080) == 8081 else 8081
+
+
 def bridge_args(config, *, check_auth=False, injected=False):
     args = ['--repo', config['repository'], '--app-id', config['appId'],
             '--workspace', '/workspace', '--state', STATE]
@@ -83,7 +88,7 @@ def bridge_args(config, *, check_auth=False, injected=False):
         if config['mode'] == 'fixed-url':
             args += ['--webhook-url', config['publicUrl']]
     # The controller refuses a status port equal to its listener, so a listener configured on 8081 keeps starting.
-    args += ['--status-port', '8082' if listen_port == 8081 else '8081']
+    args += ['--status-port', str(status_port(config))]
     if config.get('dashboardCategory') and not check_auth:
         args += ['--dashboard-category', config['dashboardCategory'], '--image-inventory', INVENTORY]
     for url in config.get('enroll', []):
@@ -434,7 +439,8 @@ def main():
             endpoint = ['--webhook-url', 'https://quick-tunnel.invalid'] if config.get('mode') == 'quick-tunnel' else []
             run(CONTROLLER + bridge_args(config, check_auth=True, injected=external) + endpoint + ['--check-auth'], env=controller)
         elif config.get('mode') == 'quick-tunnel':
-            sys.exit(quick_tunnel.run(CONTROLLER + bridge_args(config, injected=external), config.get('listenPort', 8080), controller))
+            sys.exit(quick_tunnel.run(CONTROLLER + bridge_args(config, injected=external), config.get('listenPort', 8080), controller,
+                                      status_port=status_port(config)))
         else:
             os.execve(CONTROLLER[0], CONTROLLER + bridge_args(config, injected=external), controller)
 

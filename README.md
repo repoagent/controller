@@ -33,7 +33,7 @@ Choose how the controller receives activity:
 
 - **Polling:** no public endpoint required.
 - **Fixed HTTPS URL:** [webhook mode](docs/webhooks.md) uses your existing ingress and automatically registers the repository hook.
-- **Temporary public URL:** [Cloudflare Quick Tunnel](docs/quick-tunnel.md) supports local development without an account or domain and automatically recovers a lost tunnel.
+- **Temporary public URL:** [Cloudflare Quick Tunnel](docs/quick-tunnel.md) supports local development without an account or domain and recovers a lost tunnel after the controller reports idle, allowing accepted turns to finish before relaunch.
 
 ## Use RepoAgent
 
