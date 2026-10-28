@@ -2,6 +2,9 @@
 set -euo pipefail
 [[ ${REPOAGENT_LIVE:-} == 1 ]] || { echo 'NOT EXERCISED: set REPOAGENT_LIVE=1 to authorize disposable real GitHub/Codex activity.' >&2; exit 1; }
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ ${REPOAGENT_LIVE_CASE:-} == hosted-smoke ]]; then
+  exec python3 "$root/scripts/delivery/hosted-smoke.py" journey "${REPOAGENT_SMOKE_DIRECTORY:?Hosted smoke directory required}"
+fi
 instance=${REPOAGENT_INSTANCE:-default}
 [[ "$instance" != default ]] || { echo 'Use a dedicated REPOAGENT_INSTANCE for live acceptance.' >&2; exit 1; }
 image=${REPOAGENT_IMAGE:-repoagent:local}

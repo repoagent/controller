@@ -79,16 +79,16 @@ def job(name):
     return re.split(r'(?m)^  (?=[a-z-]+:\n)', body, maxsplit=1)[0]
 
 
-def runs(name, *, event, ref='refs/heads/main', repository='repoagent/controller', tag=''):
+def runs(name, *, event, ref='refs/heads/main', repository='repoagent/controller', tag='', smoke=False):
     """Evaluate a job's if: expression for one GitHub context (the subset this workflow uses)."""
     condition = re.search(r'^    if: (.+)$', job(name), re.M)
     if condition is None:
         return True
     context = {'event_name': event, 'ref': ref, 'repository': repository}
     expression = re.sub(r'github\.([a-z_]+)', lambda match: repr(context[match[1]]), condition[1])
-    expression = expression.replace('inputs.tag', repr(tag))
+    expression = expression.replace('inputs.tag', repr(tag)).replace('inputs.smoke', repr(smoke)).replace(' true', ' True')
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
-    if not re.fullmatch(r'(?:\s|\(|\)|==|!=|and|or)*', re.sub(r"'[^']*'", '', expression)):
+    if not re.fullmatch(r'(?:\s|\(|\)|==|!=|and|or|True|False)*', re.sub(r"'[^']*'", '', expression)):
         raise AssertionError('Unsupported workflow expression: ' + condition[1])
     return eval(expression, {'__builtins__': {}})
 

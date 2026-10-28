@@ -10,7 +10,7 @@ Local prerequisites are the pinned SDK, Python 3, clang and zlib development hea
 
 The installer (`install.*`, `repoagent*`, `scripts/*.ps1`) and the container runtime (`container/`) have no automated tests ([ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)). They are tested manually against the local AppHost ([#204](https://github.com/repoagent/controller/issues/204), not built yet) when they change.
 
-The repository has three workflow entry points: **Controller**, **Broker**, and the scheduled **Baseline tool refresh** (with a reusable per-tool helper). Controller owns verification, image publication and native tagged releases. Broker owns verification, deployment and recovery operations. Superseded read-only checks are cancelled; publication and deployment writes finish once started.
+The repository has four workflow entry points: **Controller**, **Broker**, the scheduled **Baseline tool refresh** (with a reusable per-tool helper), and **Hosted installer smoke**. Controller owns verification, image publication and native tagged releases. Broker owns verification, deployment and recovery operations. Superseded read-only checks are cancelled; publication and deployment writes finish once started.
 
 ## Controller releases
 
@@ -90,12 +90,39 @@ Each tool has its own refresh (`refresh-baseline-tool.yml`, called once for gh a
 
 1. **Select.** `scripts/delivery/tool-refresh.py select TOOL` reads the latest stable GitHub release of `cli/cli` (gh) or `openai/codex` (Codex, `rust-v` tags) with the workflow token. A version is selected only if it is newer than the pin in `image/default.json` and the release publishes the exact Linux amd64 assets the image installs, with SHA-256 digests: `gh_VERSION_linux_amd64.tar.gz` for gh, or `codex-x86_64-unknown-linux-musl.tar.gz` and `codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz` for Codex. An older upstream release never downgrades a pin. A newer release that is a draft, prerelease or other tag form, or that lacks one of these assets or digests, fails that tool's refresh visibly. Nothing newer ends the refresh successfully without changes. The selection records the `main` commit it was made from.
 2. **Verify.** A read-only job checks out exactly that commit, pins the selected version in it and then runs the full `scripts/delivery/verify.sh` gate, whose native tests use the selected Codex. It then builds the default image with the selected tools, runs `versions` and NativeSmoke inside it and requires the versions the image reports to equal its inventory.
-3. **Pin.** Only after verification succeeds, a job in the `controller-release` environment with `contents: write` and `actions: write` commits the new catalog lines for that tool in `scripts/compose-image.py` and `image/default.json` to `main`. Every other pin stays as reviewed. The commit is one GitHub API call that applies only if `main` is still the verified commit. It is signed by GitHub and its message names the tool, both versions and the verification run.
-4. **Publish.** A commit made with the workflow token starts no push workflow, so the same job dispatches **Controller** on `main`. That run verifies again and creates the baseline release, which records the exact gh and Codex versions. When both tools are pinned in one run, each pin dispatches its own publication.
+3. **Hosted smoke.** The reusable `e2e-smoke.yml` gate installs the exact selected candidate through the operator installer and observes a real Quick Tunnel webhook, EYES receipt and App reply. Cleanup is part of success. It uses repository secrets, not the publication identity; see below.
+4. **Pin.** Only after verification and hosted smoke succeed, a job in the `controller-release` environment with `contents: write` and `actions: write` commits the new catalog lines for that tool in `scripts/compose-image.py` and `image/default.json` to `main`. Every other pin stays as reviewed. The commit is one GitHub API call that applies only if `main` is still the verified commit. It is signed by GitHub and its message names the tool, both versions and the verification run.
+5. **Publish.** A commit made with the workflow token starts no push workflow, so the same job dispatches **Controller** on `main`. That run verifies again and creates the baseline release, which records the exact gh and Codex versions. When both tools are pinned in one run, each pin dispatches its own publication.
 
 An incompatible update fails at selection or verification. It changes nothing on `main`, publishes nothing, and leaves existing baseline releases and images usable. Only that tool is held back: the other tool's refresh still selects, verifies, pins and publishes a supported update on its own. The run then shows as failed, and the daily run retries the same latest version until upstream publishes a fix or a maintainer intervenes, for example with a reviewed pull request that pins another version. If `main` moved after verification, the pin is refused and the next run selects and verifies again on the new `main`. If dispatch fails after the pin, the job fails and names the manual recovery: `gh workflow run controller.yml --ref main`.
 
 Cloudflared, base images and the Ubuntu snapshot still change only through review. Containers always use the image's pinned tools, including with older saved settings; operators adopt refreshed tools by updating to the new baseline image. Startup never updates tools.
+
+### Hosted installer smoke
+
+Run the same hosted gate on a branch without publishing an image or changing pins:
+
+```sh
+gh workflow run controller.yml --ref BRANCH -f smoke=true
+```
+
+The branch must contain this implementation. Once `e2e-smoke.yml` is on the default branch, it can also be dispatched directly with `gh workflow run e2e-smoke.yml --ref BRANCH`. A workflow-token push does not trigger another workflow; the existing Controller entry point provides explicit branch dispatch. Ordinary pull-request verification remains read-only and does not receive these secrets.
+
+The reusable smoke job holds one global `e2e-smoke` concurrency lock, across every branch and caller, with `cancel-in-progress: false`. A newer queued run can replace an older queued run under GitHub's concurrency semantics; it cannot cancel the running cleanup. Both the refresh caller and the Controller smoke entry point pass repository secrets with `secrets: inherit`. There is no `e2e` environment or new Azure/GitHub OIDC authority.
+
+Required repository secrets are `REPOAGENT_E2E_GH_TOKEN` (the `repoagent` participant's authority limited to `repoagent/ControllerTestRepo`, including Discussions and Agent-variable management) and `OPENAI_API_KEY`. The shared App must be installed on that private repository with the selected clone/webhook permissions. PowerShell 7.4+, Docker Linux containers and the pinned SDK are required on the runner. The image is built without credentials; the host GitHub CLI is downloaded from the same checksummed candidate catalog as the image.
+
+The job sweeps only Discussions created by `repoagent` with the exact `[RepoAgent hosted smoke ID] mention` title and `repoagent.hosted-smoke/v1` body marker. `SMOKE_CONTROLLER_APPROVAL` in that test repository's Agent variables is reserved exclusively for this gate. Unexpected binding at this coordinate stops the sweep. It never sweeps arbitrary Discussions, variables, repositories or production controller state.
+
+A fresh `install.ps1 -Action Install -NonInteractive -Apply` uses setup v4, `webhook-clone`, a Quick Tunnel, an empty mention-account override, an isolated instance and private state. The minimal live case in `DiscussionJourney` creates one App-mention Discussion and observes its actual creation webhook, successful observation, EYES and an App-authored marker reply. Reconciliation is set to one hour; a polling reply alone cannot pass the webhook assertions. It waits for the turn to complete before closing credentials.
+
+Cleanup runs with `if: always()`, deletes owned fixtures even after an assertion failure, stops the owned controller, and calls `install.ps1 -Action Revoke`. It inspects the structured `githubMarker` and `brokerClosure` fields, not just exit zero. Only verified owned Docker storage is removed. Unconfirmed closure, a remaining approval, failed fixture removal or uncertain local shutdown fails the gate and prevents pinning. Private setup/enrollment, API-key supplies and raw controller/installer logs are never uploaded. The seven-day artifact contains only controlled fixture snapshots and nonsecret install/sweep/cleanup outcomes.
+
+A lost runner may leave an approval whose controller secret is no longer available. The next globally locked run withdraws that exact validated reserved approval and asks the broker to admit a fresh request. Only the exact supported `enrollment_not_ready` guidance triggers a recheck of the **same private request** after at least 60 seconds, bounded to 80 minutes overall. That interval is not a readiness promise. Unknown/malformed diagnostics and `enrollment_settlement_unconfirmed` stop for inspection. Pending discovery likewise resumes its same request after the installer's five-second guidance. No retry replaces an enrollment identity or rewrites private state.
+
+Broker DELETE 204 confirms enrollment closure, never token settlement. Outcomes continue to say `outstandingTokens: unsettled`; a following tool's smoke can wait for the broker's safe settlement/preflight and can fail if readiness remains unconfirmed. This deliberately favors retaining old pins over bypassing capability settlement. A failing hosted run records an issue and leaves publication blocked.
+
+Implementation and local workflow checks do not establish hosted provider acceptance. Keep #207 open until an actual branch run proves its real secrets, App scope, tunnel, reply and cleanup. Cloudflared selection exists, but its daily matrix entry stays disabled until that acceptance; adding a YAML gate alone does not authorize activating new cloudflared publication.
 
 ## Automatic broker delivery
 

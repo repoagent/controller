@@ -15,7 +15,8 @@ public sealed class DiscussionJourney
     readonly List<JsonNode> fixtures = [];
     readonly string repository = Environment.GetEnvironmentVariable("REPOAGENT_REPOSITORY") ?? "";
     readonly string actor = Environment.GetEnvironmentVariable("REPOAGENT_ACTOR") ?? "";
-    readonly string evidence = "/evidence";
+    readonly string evidence = Environment.GetEnvironmentVariable("REPOAGENT_EVIDENCE") ?? "/evidence";
+    static bool HostedSmoke => Environment.GetEnvironmentVariable("REPOAGENT_LIVE_CASE") == "hosted-smoke";
     readonly List<object> outcomes = [];
 
     [Fact(Timeout = 3_600_000)]
@@ -33,6 +34,28 @@ public sealed class DiscussionJourney
             var repo = (await Api("query($o:String!,$r:String!){repository(owner:$o,name:$r){id discussionCategories(first:20){nodes{id name isAnswerable}}}}", new { o = parts[0], r = parts[1] }))["repository"]!;
             var categories = repo["discussionCategories"]!["nodes"]!.AsArray();
             var category = categories.FirstOrDefault(c => c!["isAnswerable"]!.GetValue<bool>()) ?? throw new InvalidOperationException("NOT EXERCISED: repository needs an answerable Discussion category.");
+            if (HostedSmoke)
+            {
+                var marker = "HOSTED_SMOKE_" + run;
+                var fixture = await Create(repo, category, "mention", $"@{actor} Authorized disposable installer smoke. Reply once with {marker}, using the authenticated GitHub response skill. Only perform this test request.");
+                var number = fixture["number"]!.GetValue<int>();
+                await Until(async () => (await Logs()).Split('\n').Any(line => IsEvent(line, "webhook-delivery") &&
+                    line.Contains($" event=discussion action=created discussion={number} scheduled=True", StringComparison.Ordinal)), "the Discussion creation webhook through the Quick Tunnel");
+                await Until(async () => (await Logs()).Split('\n').Any(line => IsEvent(line, "webhook-observed") &&
+                    line.Contains($" discussion={number} success=True ", StringComparison.Ordinal)), "successful webhook observation for the fixture");
+                var reply = await Reply(fixture, marker);
+                await Receipt(fixture["id"]!.GetValue<string>());
+                var session = await Session(fixture);
+                await Until(async () =>
+                {
+                    var log = await Logs();
+                    return log.Split('\n').Any(line => IsEvent(line, "native-accepted") && line.Contains(" session=" + session + " ", StringComparison.Ordinal)) && NativeTurnsFinished(log);
+                }, "the accepted smoke turn completed before credential closure");
+                Pass("HOSTED_INSTALLER", new { discussion = fixture["url"]!.ToString(), reply = reply["url"]!.ToString(), actor, webhook = "observed", receipt = "EYES" });
+                await Api("mutation($id:ID!){deleteDiscussion(input:{id:$id}){clientMutationId}}", new { id = fixture["id"]!.ToString() });
+                fixtures.Clear();
+                return;
+            }
             var inspection = JsonNode.Parse(await File.ReadAllTextAsync("/data/control/runtime-inspection.json", TestContext.Current.CancellationToken))!;
             Assert.False(inspection["privileged"]!.GetValue<bool>());
             Pass("C14", new { runtime = inspection, selectedSkills = JsonNode.Parse(await File.ReadAllTextAsync("/data/control/skills.json", TestContext.Current.CancellationToken)) });
@@ -189,8 +212,8 @@ public sealed class DiscussionJourney
     static async Task<JsonNode> Api(string query, object? variables = null)
     {
         var start = new ProcessStartInfo("gh") { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        start.Environment["GH_CONFIG_DIR"] = "/data/participant";
-        foreach (var name in new[] { "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_REPO", "GH_DEBUG", "DEBUG" }) start.Environment.Remove(name);
+        if (!HostedSmoke) start.Environment["GH_CONFIG_DIR"] = "/data/participant";
+        foreach (var name in new[] { "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_REPO", "GH_DEBUG", "DEBUG" }) if (!HostedSmoke || name is not ("GH_TOKEN" or "GITHUB_TOKEN")) start.Environment.Remove(name);
         foreach (var arg in new[] { "api", "graphql", "--hostname", "github.com", "--method", "POST", "--input", "-" }) start.ArgumentList.Add(arg);
         using var child = Process.Start(start)!;
         await child.StandardInput.WriteAsync(System.Text.Json.JsonSerializer.Serialize(new { query, variables = variables ?? new { } }));
@@ -208,7 +231,7 @@ public sealed class DiscussionJourney
 
     async Task<JsonNode> Create(JsonNode repo, JsonNode category, string title, string body)
     {
-        var discussion = (await Api("mutation($i:CreateDiscussionInput!){createDiscussion(input:$i){discussion{id number url}}}", new { i = new { repositoryId = repo["id"]!.ToString(), categoryId = category["id"]!.ToString(), title = $"[RepoAgent live {run}] {title}", body } }))["createDiscussion"]!["discussion"]!;
+        var discussion = (await Api("mutation($i:CreateDiscussionInput!){createDiscussion(input:$i){discussion{id number url}}}", new { i = new { repositoryId = repo["id"]!.ToString(), categoryId = category["id"]!.ToString(), title = HostedSmoke ? $"[RepoAgent hosted smoke {run}] {title}" : $"[RepoAgent live {run}] {title}", body = HostedSmoke ? "<!-- repoagent.hosted-smoke/v1 -->\n" + body : body } }))["createDiscussion"]!["discussion"]!;
         fixtures.Add(discussion.DeepClone());
         return discussion;
     }
@@ -251,7 +274,7 @@ public sealed class DiscussionJourney
     }
 
     bool IsActor(string? login) => login == actor || login == actor.Replace("[bot]", "");
-    int Eyes(JsonNode source) => source["reactionGroups"]!.AsArray().Where(g => g!["content"]!.ToString() == "EYES").SelectMany(g => g!["users"]!["nodes"]!.AsArray()).Count(u => u!["login"]!.ToString() == actor);
+    int Eyes(JsonNode source) => source["reactionGroups"]!.AsArray().Where(g => g!["content"]!.ToString() == "EYES").SelectMany(g => g!["users"]!["nodes"]!.AsArray()).Count(u => IsActor(u!["login"]!.ToString()));
     static async Task<JsonNode> Source(string id) => (await Api("""
         query($id:ID!) { node(id:$id) {
           ... on Discussion { id reactionGroups { content users(first:5) { nodes { login } } } }
@@ -272,7 +295,17 @@ public sealed class DiscussionJourney
         Assert.True(response["ok"]!.GetValue<bool>(), response["error"]?.ToString());
     }
 
-    static async Task<string> Logs() { await Control("capture"); return await File.ReadAllTextAsync("/data/control/bridge.log"); }
+    static async Task<string> Logs()
+    {
+        if (HostedSmoke)
+        {
+            var path = Environment.GetEnvironmentVariable("REPOAGENT_SMOKE_LOG") ?? throw new InvalidOperationException("Hosted smoke log path is required");
+            try { return await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken); }
+            catch (IOException) { return ""; }
+        }
+        await Control("capture");
+        return await File.ReadAllTextAsync("/data/control/bridge.log");
+    }
     static async Task<string> Session(JsonNode discussion)
     {
         var url = discussion["url"]!.ToString();

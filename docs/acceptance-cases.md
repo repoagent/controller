@@ -31,6 +31,12 @@ For focused skill validation, use `REPOAGENT_LIVE=1 REPOAGENT_LIVE_CASE=skill ./
 
 Canonical App mentions are used in this suite. Empty `--mention-user ''` avoids triggering unrelated historical `@repoagent` conversations. Existing canonical App mentions can still enroll: choose the target repository deliberately. Use the same instance across a diagnostic rerun so previously accepted fixture inputs stay checkpointed.
 
+## Hosted installer gate
+
+`gh workflow run controller.yml --ref BRANCH -f smoke=true` runs the repository-secrets-backed fresh installer/Quick Tunnel smoke described in [delivery](ci-cd.md#hosted-installer-smoke). Its `hosted-smoke` case reuses `DiscussionJourney` but runs on the hosted runner with participant authority kept outside the controller. It observes one real creation webhook, EYES receipt, App reply and completed turn; this narrow gate does not claim the broader C01–C14 acceptance journey.
+
+Every hosted outcome includes cleanup. A failure leaves pins unchanged; structured broker closure and unsettled tokens remain distinct. This path creates only its reserved test fixtures and never targets StoryBeam or another production repository.
+
 ## Cases
 
 Automated cases live in [DiscussionJourney.cs](../tests/RepoAgent.LiveTests/DiscussionJourney.cs), method `Packaged_bridge_preserves_conversations_skills_and_receipts_across_replacement`. Each records a stable ID, correlated sources/responses and its observed outcome.

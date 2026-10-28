@@ -494,6 +494,38 @@ class RefreshWorkflowTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn(command, smoke)
 
+    def test_only_a_successful_hosted_installer_smoke_allows_the_verified_pin(self):
+        self.assertGreaterEqual(needs('commit'), {'select', 'verify', 'smoke'},
+                                'A tools-only image check cannot authorize a pin without the hosted installer journey')
+        smoke = job('smoke')
+        self.assertIn('uses: ./.github/workflows/e2e-smoke.yml', smoke)
+        self.assertIn('secrets: inherit', smoke)
+        self.assertIn('needs.select.outputs.selection', smoke)
+    def test_branch_dispatch_reuses_the_same_global_smoke_without_publication(self):
+        controller = WORKFLOWS / 'controller.yml'
+        smoke = job('hosted-smoke', controller)
+        self.assertIn('uses: ./.github/workflows/e2e-smoke.yml', smoke)
+        self.assertIn('secrets: inherit', smoke)
+        self.assertIn('inputs.smoke', smoke)
+        self.assertNotIn("github.ref == 'refs/heads/main'", smoke)
+        for name in ('build', 'verify', 'publish', 'release', 'native-release'):
+            self.assertIn('inputs.smoke != true', job(name, controller))
+        reusable = WORKFLOWS / 'e2e-smoke.yml'
+        self.assertEqual(events(reusable), {'workflow_dispatch', 'workflow_call'})
+        body = job('smoke', reusable)
+        self.assertIn('group: e2e-smoke\n', body)
+        self.assertIn('cancel-in-progress: false', body)
+        self.assertNotIn('environment:', body)
+        cleanup = body.split('      - name: Close enrollment and remove every owned Discussion\n', 1)[1]
+        self.assertIn('if: always()', cleanup.split('      - name:', 1)[0])
+    def test_selection_or_verification_failure_is_reported_without_pinning(self):
+        reporting = job('report-failure')
+        self.assertGreaterEqual(needs('report-failure'), {'select', 'verify', 'smoke', 'commit'})
+        self.assertIn("if: failure()", reporting)
+        self.assertIn("needs.smoke.result != 'failure'", reporting)
+        self.assertIn('issues: write', reporting)
+        self.assertNotIn('contents: write', reporting)
+        self.assertIn('gh issue', reporting)
     def test_write_privileges_stay_in_the_main_only_commit_job(self):
         for workflow in (WORKFLOW, PIPELINE):
             with self.subTest(workflow=workflow.name):
@@ -501,7 +533,7 @@ class RefreshWorkflowTests(unittest.TestCase):
                 self.assertNotIn('persist-credentials: true', workflow.read_text())
                 self.assertNotIn('id-token', workflow.read_text())
         # The scheduled refresh grants only the ceiling the called commit job needs.
-        self.assertEqual(set(re.findall(r'(?m)^      ([a-z-]+): write$', job('refresh', WORKFLOW))), {'contents', 'actions'})
+        self.assertEqual(set(re.findall(r'(?m)^      ([a-z-]+): write$', job('refresh', WORKFLOW))), {'contents', 'actions', 'issues'})
         for name in ['select', 'verify']:
             with self.subTest(job=name):
                 self.assertNotIn('write', job(name))
