@@ -26,7 +26,11 @@ public sealed class SharedDiscussionJourney
         Assert.False(string.IsNullOrWhiteSpace(enrollment), "The private local-broker enrollment parameter is required.");
         using var binding = JsonDocument.Parse(enrollment);
         var actor = binding.RootElement.GetProperty("appSlug").GetString() + "[bot]";
-        var secret = binding.RootElement.GetProperty("deviceSecret").GetString()!;
+        var canonical = binding.RootElement.TryGetProperty("controllerSecret", out var controllerSecret);
+        var legacy = binding.RootElement.TryGetProperty("deviceSecret", out var deviceSecret);
+        Assert.NotEqual(canonical, legacy); // Exactly one naming generation; mixed aliases are ambiguous.
+        var secret = (canonical ? controllerSecret : deviceSecret).GetString();
+        Assert.False(string.IsNullOrWhiteSpace(secret), "The private controller secret is required.");
         Assert.Equal(repository, binding.RootElement.GetProperty("repository").GetString());
         var coordinates = repository.Split('/');
         var lookup = await Api("query($owner:String!,$name:String!){viewer{login} repository(owner:$owner,name:$name){id discussionCategories(first:20){nodes{id isAnswerable}}}}",
