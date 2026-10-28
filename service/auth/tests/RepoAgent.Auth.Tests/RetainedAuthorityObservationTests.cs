@@ -99,6 +99,21 @@ public sealed class RetainedAuthorityObservationTests
     }
 
     [Fact]
+    public async Task A_shared_reference_keeps_read_failure_evidence_alongside_the_purpose_contradiction()
+    {
+        var state = Fixture();
+        var gate = (await state.Inner.ReadAsync(RepositoryGate.Key(Repository), Token))!.Value;
+        gate.VerifierAttempt = Runtime;
+        state.Inner.Seed(RepositoryGate.Key(Repository), gate);
+        state.Inner.BeforeRead = key => key.Name == "attempt:" + Runtime ? throw new BrokerStateUnavailable("DO_NOT_EXPORT") : Task.CompletedTask;
+        var report = await Observe(state);
+        Assert.Equal("unavailable", report.RuntimeAttempt.Read);
+        Assert.Equal("unavailable", report.VerifierAttempt.Read);
+        Assert.Equal("purpose-ambiguous", report.VerifierAttempt.Fields!["referenceBinding"]);
+        Assert.Equal(1, state.Keys.Count(key => key == "attempt:" + Runtime));
+    }
+
+    [Fact]
     public async Task Unknown_fields_old_epochs_and_expired_clocks_remain_partial_observations_not_zero_or_settlement()
     {
         var state = Fixture();

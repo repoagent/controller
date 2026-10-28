@@ -90,8 +90,9 @@ public sealed class RetainedAuthorityObservation(IBrokerState state, string conf
             if (verifierReference == "absent") verifier = new("not-referenced", true);
             else if (verifierReference == "invalid") verifier = new("invalid-reference");
             else if (value.VerifierAttempt == runtimeReference)
-                runtime = verifier = new("binding-mismatch", Fields: new Dictionary<string, object?>(StringComparer.Ordinal)
-                { ["referenceBinding"] = "purpose-ambiguous" }); // One exact row cannot prove both purposes; never read it twice.
+                runtime = verifier = new(runtime.Read is "missing" or "unavailable" or "unreadable" ? runtime.Read : "binding-mismatch",
+                    Fields: new Dictionary<string, object?>(StringComparer.Ordinal)
+                    { ["referenceBinding"] = "purpose-ambiguous" }); // One exact row cannot prove both purposes; never read it twice.
             else verifier = await ReadAttempt(value.VerifierAttempt!, "verification",
                 ownerReference == "valid" ? value.OwnerEnrollmentId : null, value.Epoch);
 
@@ -150,8 +151,10 @@ public sealed class RetainedAuthorityObservation(IBrokerState state, string conf
         var fields = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["observedState"] = Known(value.State, ref complete, "vacant", "active", "unacknowledged", "closed"),
-            ["ownerReference"] = EnrollmentReference(value.OwnerEnrollmentId), ["verifierReference"] = OperationReference(value.VerifierAttempt),
-            ["sequence"] = Count(value.Sequence, ref complete), ["outstandingTokenCount"] = Count(value.OutstandingTokenCount, ref complete),
+            ["ownerReference"] = EnrollmentReference(value.OwnerEnrollmentId),
+            ["verifierReference"] = OperationReference(value.VerifierAttempt),
+            ["sequence"] = Count(value.Sequence, ref complete),
+            ["outstandingTokenCount"] = Count(value.OutstandingTokenCount, ref complete),
             ["pendingCount"] = Count(value.PendingCount, ref complete)
         };
         return new("present", complete, relation, fields);
@@ -165,11 +168,15 @@ public sealed class RetainedAuthorityObservation(IBrokerState state, string conf
         var fields = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["observedState"] = Known(value.State, ref complete, "unacknowledged", "active", "revoked", "redacted"),
-            ["acknowledged"] = value.Acknowledged, ["payloadRedacted"] = value.PayloadRedacted,
+            ["acknowledged"] = value.Acknowledged,
+            ["payloadRedacted"] = value.PayloadRedacted,
             ["outstandingTokenCount"] = Count(value.OutstandingTokenCount, ref complete),
-            ["runtimeReference"] = OperationReference(value.RuntimeAttempt), ["observationReferencePresent"] = value.RuntimeObservation is not null,
-            ["expiresAt"] = Clock(value.ExpiresAt, now), ["lastActivityAt"] = Clock(value.LastActivityAt, now),
-            ["firstTerminalAt"] = Clock(value.FirstTerminalAt, now), ["runtimeExpiresAt"] = Clock(value.RuntimeExpiresAt, now),
+            ["runtimeReference"] = OperationReference(value.RuntimeAttempt),
+            ["observationReferencePresent"] = value.RuntimeObservation is not null,
+            ["expiresAt"] = Clock(value.ExpiresAt, now),
+            ["lastActivityAt"] = Clock(value.LastActivityAt, now),
+            ["firstTerminalAt"] = Clock(value.FirstTerminalAt, now),
+            ["runtimeExpiresAt"] = Clock(value.RuntimeExpiresAt, now),
             ["runtimeObservationReservedAt"] = Clock(value.RuntimeObservationReservedAt, now),
             ["runtimeObservationJwtIssuedAt"] = Clock(value.RuntimeObservationJwtIssuedAt, now),
             ["runtimeObservationJwtExpiresAt"] = Clock(value.RuntimeObservationJwtExpiresAt, now)
@@ -184,7 +191,8 @@ public sealed class RetainedAuthorityObservation(IBrokerState state, string conf
         var fields = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["reason"] = Optional(value.Reason, ref complete, "revoked-acknowledged", "expired-unacknowledged"),
-            ["revokedAt"] = Clock(value.RevokedAt, now), ["ownerReleasedAt"] = Clock(value.OwnerReleasedAt, now)
+            ["revokedAt"] = Clock(value.RevokedAt, now),
+            ["ownerReleasedAt"] = Clock(value.OwnerReleasedAt, now)
         };
         return new("present", complete, relation, fields);
     }
@@ -199,13 +207,19 @@ public sealed class RetainedAuthorityObservation(IBrokerState state, string conf
             ["observedState"] = Known(value.State, ref complete, "reserved", "sending", "known", "released", "settled", "redacted"),
             ["purpose"] = Known(value.Purpose, ref complete, "runtime", "verification"),
             ["ownerBinding"] = ownerChecked ? "match" : "not-checkable",
-            ["repositoryCharged"] = value.RepositoryCharged, ["scopeValid"] = value.ScopeValid,
-            ["capacityReleased"] = value.CapacityReleased, ["payloadRedacted"] = value.PayloadRedacted,
+            ["repositoryCharged"] = value.RepositoryCharged,
+            ["scopeValid"] = value.ScopeValid,
+            ["capacityReleased"] = value.CapacityReleased,
+            ["payloadRedacted"] = value.PayloadRedacted,
             ["settlementReason"] = Optional(value.SettlementReason, ref complete, "expired", "revoked", "unsent", "unpublished"),
-            ["reservedAt"] = Clock(value.ReservedAt, now), ["payloadPurgeAt"] = Clock(value.PayloadPurgeAt, now),
-            ["jwtIssuedAt"] = Clock(value.JwtIssuedAt, now), ["jwtExpiresAt"] = Clock(value.JwtExpiresAt, now),
-            ["sendClaimedAt"] = Clock(value.SendClaimedAt, now), ["expiresAt"] = Clock(value.ExpiresAt, now),
-            ["releasedAt"] = Clock(value.ReleasedAt, now), ["settledAt"] = Clock(value.SettledAt, now),
+            ["reservedAt"] = Clock(value.ReservedAt, now),
+            ["payloadPurgeAt"] = Clock(value.PayloadPurgeAt, now),
+            ["jwtIssuedAt"] = Clock(value.JwtIssuedAt, now),
+            ["jwtExpiresAt"] = Clock(value.JwtExpiresAt, now),
+            ["sendClaimedAt"] = Clock(value.SendClaimedAt, now),
+            ["expiresAt"] = Clock(value.ExpiresAt, now),
+            ["releasedAt"] = Clock(value.ReleasedAt, now),
+            ["settledAt"] = Clock(value.SettledAt, now),
             ["firstTerminalAt"] = Clock(value.FirstTerminalAt, now)
         };
         return new("present", complete, relation, fields);

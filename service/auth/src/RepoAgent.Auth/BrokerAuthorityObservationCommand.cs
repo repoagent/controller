@@ -60,7 +60,10 @@ internal static class BrokerAuthorityObservationCommand
                 TimeProvider.System).ObserveAsync(budget.Token);
             var json = JsonSerializer.Serialize(new
             {
-                schema = observation.Schema, compiledVersion = BrokerVersion.Version, compiledSource = BrokerVersion.Source, observation
+                schema = observation.Schema,
+                compiledVersion = BrokerVersion.Version,
+                compiledSource = BrokerVersion.Source,
+                observation
             }, JsonOptions);
             if (Encoding.UTF8.GetByteCount(json) > 16 * 1024) throw new InvalidOperationException("Observation output limit.");
             Console.Out.WriteLine(json);
