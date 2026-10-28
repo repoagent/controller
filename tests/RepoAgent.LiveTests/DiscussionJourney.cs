@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -36,6 +37,7 @@ public sealed class DiscussionJourney
             var category = categories.FirstOrDefault(c => c!["isAnswerable"]!.GetValue<bool>()) ?? throw new InvalidOperationException("NOT EXERCISED: repository needs an answerable Discussion category.");
             if (HostedSmoke)
             {
+                await HostedDashboard();
                 var marker = "HOSTED_SMOKE_" + run;
                 var fixture = await Create(repo, category, "mention", $"@{actor} Authorized disposable installer smoke. Reply once with {marker}, using the authenticated GitHub response skill. Only perform this test request.");
                 var number = fixture["number"]!.GetValue<int>();
@@ -238,6 +240,59 @@ public sealed class DiscussionJourney
 
     static async Task<JsonNode> Comment(JsonNode discussion, string body, string? replyTo = null) =>
         (await Api("mutation($d:ID!,$b:String!,$r:ID){addDiscussionComment(input:{discussionId:$d,body:$b,replyToId:$r}){comment{id url}}}", new { d = discussion["id"]!.ToString(), b = body, r = replyTo }))["addDiscussionComment"]!["comment"]!;
+
+    async Task HostedDashboard()
+    {
+        var category = Environment.GetEnvironmentVariable("REPOAGENT_DASHBOARD_CATEGORY");
+        Assert.False(string.IsNullOrEmpty(category), "Hosted installer must enable the discovered dashboard category.");
+        var before = JsonSerializer.Deserialize<string[]>(Environment.GetEnvironmentVariable("REPOAGENT_DASHBOARD_BEFORE") ?? "[]")!;
+        var parts = repository.Split('/');
+        JsonNode? dashboard = null;
+        async Task<bool> Observe()
+        {
+            var page = (await Api("query($o:String!,$r:String!,$c:ID!){repository(owner:$o,name:$r){discussions(first:100,categoryId:$c){nodes{id number url title body author{login}}pageInfo{hasNextPage}}}}", new { o = parts[0], r = parts[1], c = category }))["repository"]!["discussions"]!;
+            Assert.False(page["pageInfo"]!["hasNextPage"]!.GetValue<bool>(), "Dashboard category observation is bounded.");
+            var matches = page["nodes"]!.AsArray().Where(item => !before.Contains(item!["id"]!.ToString()) &&
+                IsActor(item["author"]?["login"]?.ToString()) && item["body"]!.ToString().Contains("<!-- repoagent:controller-dashboard -->", StringComparison.Ordinal)).ToArray();
+            Assert.True(matches.Length <= 1, "The fresh smoke must not create duplicate dashboards.");
+            dashboard = matches.SingleOrDefault();
+            return dashboard is not null;
+        }
+        static string Heartbeat(JsonNode item) => Regex.Match(item["body"]!.ToString(), @"\*\*Last heartbeat:\*\* (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)").Groups[1].Value;
+        static string Usage(string body) => body.Contains("Usage unsupported", StringComparison.Ordinal) ? "unsupported"
+            : body.Contains("Usage unavailable from the runtime.", StringComparison.Ordinal) ? "unavailable"
+            : body.Contains("Usage refresh failed", StringComparison.Ordinal) ? "refresh-failed"
+            : body.Contains("Observed at ", StringComparison.Ordinal) && !body.Contains("Usage stale", StringComparison.Ordinal) ? "available" : "pending";
+        await Until(Observe, "a fresh App-owned dashboard in the selected existing category");
+        var first = Heartbeat(dashboard!);
+        Assert.NotEmpty(first);
+        await Until(async () => await Observe() && Heartbeat(dashboard!) != first && Usage(dashboard!["body"]!.ToString()) != "pending",
+            "another published heartbeat and an actual pinned-runtime usage capability outcome without an agent turn");
+        var body = dashboard!["body"]!.ToString();
+        var title = dashboard["title"]!.ToString();
+        var heartbeat = Heartbeat(dashboard);
+        var at = DateTimeOffset.Parse(heartbeat, CultureInfo.InvariantCulture);
+        Assert.InRange(DateTimeOffset.UtcNow - at, TimeSpan.FromSeconds(-5), TimeSpan.FromMinutes(2));
+        Assert.Matches(@"💓 \d{2} \w{3} \d{4} \d{2}:\d{2} UTC", title);
+        Assert.EndsWith("— RepoAgent", title, StringComparison.Ordinal);
+        Assert.Contains("Refreshed about every 30 seconds", body, StringComparison.Ordinal);
+        Assert.Contains("Treat more than two minutes without a heartbeat as offline", body, StringComparison.Ordinal);
+        Assert.Contains("### Agent account usage", body, StringComparison.Ordinal);
+        Assert.DoesNotContain((await Logs()).Split('\n'), line => IsEvent(line, "native-accepted"));
+        Pass("HOSTED_DASHBOARD", new
+        {
+            discussion = dashboard["url"]!.ToString(),
+            title,
+            firstHeartbeat = first,
+            heartbeat,
+            usage = Usage(body),
+            remainingPercentages = Regex.Matches(body, @"\d+(?:\.\d+)?% remaining").Select(match => match.Value).ToArray(),
+            observedAt = Regex.Match(body, @"Observed at (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)").Groups[1].Value,
+            resets = Regex.Matches(body, @"resets \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ").Select(match => match.Value).ToArray(),
+            artificialTurns = 0,
+            renderedGitHubUi = "not inspected"
+        });
+    }
 
     async Task<JsonNode> Snapshot(JsonNode discussion)
     {

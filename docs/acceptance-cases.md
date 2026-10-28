@@ -37,6 +37,8 @@ Canonical App mentions are used in this suite. Empty `--mention-user ''` avoids 
 
 Every hosted outcome includes cleanup. A failure leaves pins unchanged; structured broker closure and unsettled tokens remain distinct. This path creates only its reserved test fixtures and never targets StoryBeam or another production repository.
 
+The hosted case also enables the optional dashboard through the real installer, observes the new App-owned title/body and heartbeat advancement, and records the actual pinned-runtime usage capability without creating a turn for measurement. Cleanup requires the category baseline and the smoke container's exact dashboard creation log. This supplies provider-publication evidence when the hosted run passes; it does not establish rendered GitHub light/dark or narrow-screen appearance.
+
 ## Cases
 
 Automated cases live in [DiscussionJourney.cs](../tests/RepoAgent.LiveTests/DiscussionJourney.cs), method `Packaged_bridge_preserves_conversations_skills_and_receipts_across_replacement`. Each records a stable ID, correlated sources/responses and its observed outcome.
