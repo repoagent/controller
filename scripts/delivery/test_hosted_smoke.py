@@ -31,7 +31,7 @@ elif name == 'gh':
 
 @unittest.skipIf(os.name == 'nt', 'External command doubles use Linux executable scripts')
 class HostedCleanupTests(unittest.TestCase):
-    def test_fresh_install_selects_candidate_through_supported_environment(self):
+    def install(self, failure=False):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='hosted-install-')))
         directory.chmod(0o700)
         binaries = directory / 'bin'
@@ -45,6 +45,10 @@ name=Path(sys.argv[0]).name
 if name == 'pwsh':
  if '-Image' in args or os.environ.get('REPOAGENT_IMAGE') != image:
   sys.exit('Fresh installation must select the candidate through REPOAGENT_IMAGE')
+ if os.environ.get('SMOKE_INSTALL_FAIL'):
+  print('Unable to complete validate the selected plan. Safe fixture failure. '+os.environ['GH_TOKEN']+' '+os.environ['OPENAI_API_KEY'])
+  print('private token: '+('x'*48))
+  sys.exit(9)
  state=Path(args[args.index('-StateDirectory')+1]); state.mkdir()
  (state/'approval.json').write_text(json.dumps(dict(setupVersion=4,profile='webhook-clone')))
  (state/'enrollment.json').write_text(json.dumps(dict(appSlug='repo-agent-connector')))
@@ -70,12 +74,28 @@ else: print(json.dumps(inventory))
         environment = dict(os.environ, PATH=str(binaries)+os.pathsep+os.environ['PATH'], REPOAGENT_LIVE='1',
                            GH_TOKEN='ghs_DO_NOT_PUBLISH', OPENAI_API_KEY='sk_DO_NOT_PUBLISH',
                            REPOAGENT_IMAGE='wrong-inherited-image', SMOKE_INVENTORY=str(ROOT / 'image/default.json'))
+        if failure:
+            environment['SMOKE_INSTALL_FAIL'] = '1'
         result = subprocess.run([sys.executable, str(SCRIPT), 'install', str(directory)],
                                 env=environment, capture_output=True, text=True, timeout=20)
+        return result, directory
+
+    def test_fresh_install_selects_candidate_through_supported_environment(self):
+        result, directory = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads((directory / 'evidence/installed.json').read_text())
         self.assertEqual(report['state'], 'ready')
         self.assertNotIn('DO_NOT_PUBLISH', result.stdout + result.stderr + json.dumps(report))
+
+    def test_failed_install_retains_bounded_redacted_diagnostic_evidence(self):
+        result, directory = self.install(failure=True)
+        self.assertNotEqual(result.returncode, 0)
+        report = json.loads((directory / 'evidence/install-failure.json').read_text())
+        self.assertEqual(report['exitCode'], 9)
+        self.assertIn('Safe fixture failure.', report['diagnostic'])
+        self.assertNotIn('DO_NOT_PUBLISH', result.stdout + result.stderr + json.dumps(report))
+        self.assertNotIn('x'*48, json.dumps(report))
+        self.assertLessEqual(len(report['diagnostic']), 4000)
 
     def cleanup(self, closure):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='hosted-cleanup-')))
