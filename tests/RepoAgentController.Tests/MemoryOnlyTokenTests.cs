@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json.Nodes;
+using Microsoft.Win32.SafeHandles;
 using RepoAgentController;
 using Xunit;
 
@@ -22,6 +24,7 @@ public sealed class MemoryOnlyTokenTests
         using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var clock = new PollClock(fixture.Clock, TimeSpan.FromSeconds(3600));
         var run = BridgeCommand.Run(Arguments(fixture, "--interval", "3600"), fixture.Http, fixture.Gh, clock, shutdown.Token);
+        var bodySucceeded = false;
         try
         {
             // A fresh start: the agent's gh, launched by the native session through its wrapper, and the
@@ -46,12 +49,33 @@ public sealed class MemoryOnlyTokenTests
             await peers.Eventually(calls => calls.Skip(before).Any(call => !call.Agent));
             Assert.All(peers.Calls().Skip(before), call => Assert.Equal(Canary + "2", call.Token));
             AssertNotPersisted(fixture, peers);
+            // Normal shutdown drains accepted work; this peer owns the correlated end of its held turn.
+            await peers.Finish();
+            bodySucceeded = true;
         }
         finally
         {
-            await shutdown.CancelAsync();
-            Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None));
+            try
+            {
+                if (!bodySucceeded && !run.IsCompleted) await peers.Finish();
+                await shutdown.CancelAsync();
+                Assert.Equal(0, await run.WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None));
+            }
+            catch when (!bodySucceeded)
+            {
+                // Preserve the original assertion while bounding cleanup to this fixture's retained native identity.
+                try { peers.KillOwned(); }
+                catch (Exception error) { Console.Error.WriteLine("Owned native cleanup failed: " + error.GetType().Name); }
+                await shutdown.CancelAsync();
+                try { await run.WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None); }
+                catch (Exception error) when (error is TimeoutException or OperationCanceledException) { }
+            }
         }
+        var settled = JsonNode.Parse(File.ReadAllText(fixture.State))!["discussions"]!["D1"]!;
+        Assert.Null(settled["pending"]);
+        Assert.Null(settled["running"]);
+        Assert.Contains("turn=native-turn status=completed", fixture.RetainedLog);
+
 
         // A stopped controller leaves no usable credential behind, and the wrapper never falls back to ambient sign-in.
         var stopped = await fixture.InvokeWrapper();
@@ -121,15 +145,21 @@ public sealed class MemoryOnlyTokenTests
     {
         readonly string observations = Path.Combine(Path.GetTempPath(), "memory-token-observations-" + Guid.NewGuid().ToString("N"));
         readonly Dictionary<string, string?> previous = new();
+        readonly string ready = Path.Combine(Path.GetTempPath(), "memory-token-native-" + Guid.NewGuid().ToString("N"));
+        readonly string native;
+        SafeFileHandle? identity;
+        bool completionSent;
 
         public Peers(BrokerAuthenticationTests.Fixture fixture)
         {
             var tools = Path.Combine(fixture.Directory, "native-tools");
             Directory.CreateDirectory(tools);
-            WriteExecutable(Path.Combine(tools, "codex"), Native);
+            native = Path.Combine(tools, "codex");
+            WriteExecutable(native, Native);
             WriteExecutable(fixture.Gh, GitHub);
             Set("PATH", tools + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"));
             Set("MEMORY_TOKEN_OBSERVATIONS", observations);
+            Set("MEMORY_TOKEN_NATIVE_READY", ready);
         }
 
         void Set(string name, string value)
@@ -147,8 +177,49 @@ public sealed class MemoryOnlyTokenTests
 
         public Task Eventually(Func<List<Call>, bool> condition) => Until(() => condition(Calls()));
 
+        public async Task Finish()
+        {
+            if (completionSent) return;
+            await Until(() => File.Exists(ready)); // Published only after the peer installs its handler.
+            RetainIdentity();
+            Assert.Equal(0, Signal(identity!, 10, IntPtr.Zero, 0)); // SIGUSR1, through a pinned process identity.
+            completionSent = true;
+            await Until(() => File.Exists(ready + ".completed"));
+        }
+
+        void RetainIdentity()
+        {
+            if (identity is not null) return;
+            var pid = int.Parse(File.ReadAllText(ready), System.Globalization.CultureInfo.InvariantCulture);
+            var descriptor = OpenIdentity(pid, 0);
+            Assert.True(descriptor >= 0, "The ready native peer must still exist");
+            var retained = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
+            try
+            {
+                // Validate after opening the pidfd: even a PID reuse cannot redirect subsequent signals.
+                Assert.Contains(native, File.ReadAllText($"/proc/{pid}/cmdline").Split('\0'));
+                identity = retained;
+            }
+            finally { if (identity is null) retained.Dispose(); }
+        }
+
+        public void KillOwned()
+        {
+            if (identity is null && File.Exists(ready)) RetainIdentity();
+            if (identity is not null) _ = Signal(identity, 9, IntPtr.Zero, 0);
+        }
+
+        [DllImport("libc", EntryPoint = "pidfd_open", SetLastError = true)]
+        static extern int OpenIdentity(int pid, uint flags);
+
+        [DllImport("libc", EntryPoint = "pidfd_send_signal", SetLastError = true)]
+        static extern int Signal(SafeFileHandle identity, int signal, IntPtr information, uint flags);
+
         public void Dispose()
         {
+            identity?.Dispose();
+            File.Delete(ready);
+            File.Delete(ready + ".completed");
             foreach (var pair in previous) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
             File.Delete(observations);
         }
@@ -162,13 +233,31 @@ public sealed class MemoryOnlyTokenTests
         // An agent turn asks its gh for the token, as an agent's own GitHub work would.
         const string Native = """
             #!/usr/bin/python3
-            import json,os,subprocess,sys
+            import json,os,signal,subprocess,sys
+            active=False;finished=False
+            ready=os.environ['MEMORY_TOKEN_NATIVE_READY']
+            def complete():
+             global active
+             if not active:return
+             active=False
+             print(json.dumps({'method':'thread/status/changed','params':{'threadId':'native-T1','status':{'type':'idle'}}}),flush=True)
+             print(json.dumps({'method':'turn/completed','params':{'threadId':'native-T1','turn':{'id':'native-turn','status':'completed'}}}),flush=True)
+             open(ready+'.completed','w').close()
+            def finish(*_):
+             global finished
+             finished=True;complete()
+            signal.signal(signal.SIGUSR1,finish)
+            with open(ready+'.tmp','w') as output:output.write(str(os.getpid()))
+            os.replace(ready+'.tmp',ready)
             for line in sys.stdin:
              request=json.loads(line);method=request.get('method')
              if 'id' not in request:continue
              if method=='turn/start':subprocess.run(['gh','auth','token'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
              result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1','status':{'type':'idle'}}}
              print(json.dumps({'id':request['id'],'result':result}),flush=True)
+             if method=='turn/start':
+              active=True
+              if finished:complete()
             """;
 
         const string GitHub = """
