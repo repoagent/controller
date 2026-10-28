@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit selected-container version observation, separate from GET-only diagnostics."""
+"""Version CLI and shared guarded transport for two fixed selected-container commands."""
 import datetime as dt
 import json
 import os

@@ -3,19 +3,19 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Select broker delivery, rollback, access check or guarded recovery
+        description: Select broker delivery, diagnostics or guarded runtime operations
         type: choice
         options: [access-check, diagnostics, version-probe, authority-probe, verify, deploy, release, deploy-release, deploy-image, bootstrap-publish, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume, cleanup-identity-plan, cleanup-identity-apply, cleanup-plan, cleanup-apply]
         default: access-check
         required: true
       expected-source-sha:
-        description: Exact accepted current main commit (required for diagnostics, bootstrap and activation operations)
+        description: Exact accepted current main commit (required for diagnostics, runtime probes, bootstrap and activation)
         type: string
       image:
         description: Accepted immutable broker image digest (deployment, recovery or selected-runtime probes)
         type: string
       release-tag:
-        description: Approved broker-vMAJOR.MINOR.PATCH release for publication or rollback
+        description: Approved broker-vMAJOR.MINOR.PATCH release for publication, rollback or runtime probes
         type: string
       revision:
         description: Exact accepted revision (staging stop/resume or selected-runtime probes)

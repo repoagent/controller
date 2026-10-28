@@ -15,6 +15,8 @@ SCHEMA = 'repoagent.authority-observation/v1'
 COVERAGE = 'referenced-rows-only; gate reread is not a transaction snapshot or accounting reconciliation'
 CLOCK = ('absent','at-or-before-observed-time','after-observed-time')
 REFERENCE = ('absent','valid','invalid')
+# Exact v1 DTO of RetainedAuthorityObservation and BrokerAuthorityObservationCommand.
+# Never copy a provider object or accept new fields automatically.
 ATTEMPT_FIELDS = dict(observedState=('reserved','sending','known','released','settled','redacted','unknown'),
     purpose=('runtime','verification','unknown'),ownerBinding=('match','not-checkable'),repositoryCharged='flag',
     scopeValid='flag',capacityReleased='flag',payloadRedacted='flag',settlementReason=('expired','revoked','unsent','unpublished','unknown','absent'),
