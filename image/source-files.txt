@@ -26,7 +26,7 @@ src/RepoAgentController/CodexCredentials.cs
 src/RepoAgentController/OperatorStatusJson.cs
 src/RepoAgentController/StatusFiles.cs
 src/RepoAgentController/ControllerHttpServer.cs
-src/RepoAgentController/ControllerPolling.cs
+src/RepoAgentController.Core/ControllerPolling.cs
 src/RepoAgentController/GitHubBaselineReleases.cs
 src/RepoAgentController/ImageInventory.cs
 src/RepoAgentController/RenderedMentions.cs
@@ -99,3 +99,4 @@ scripts/compose-image.py
 image/source-files.txt
 src/RepoAgentController.Core/GitHubTokenThrottledException.cs
 src/RepoAgentController.Core/IAgentToolCredentials.cs
+src/RepoAgentController.Core/ControllerWebhooks.cs
