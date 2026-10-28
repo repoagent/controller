@@ -189,7 +189,7 @@ class RefreshStepTests(unittest.TestCase):
     def commit(self, temporary, moved=False, **environment):
         # The commit job checks out the selection's base again and downloads the selection artifact.
         _, copy = self.checkout(temporary, 'commit-checkout', moved=moved)
-        return self.run_step('commit', 'Pin the verified version on main and publish a baseline',
+        return self.run_step('commit', 'Pin the verified version on main and propose a semantic release',
                              temporary, copy, {}, **environment)
 
     def composed(self, copy):
@@ -349,10 +349,10 @@ class RefreshStepTests(unittest.TestCase):
                                                      for artifact in artifacts},
                                  'Only the verified tool changes; every other pin stays as reviewed')
                 label = 'Codex' if tool == 'codex' else tool
-                self.assertEqual(change['message']['headline'], f'chore: refresh baseline {label} to {version}')
+                self.assertEqual(change['message']['headline'], f'fix(controller): refresh bundled {label} from {current} to {version}')
                 self.assertIn(f'{label} {current} -> {version}', change['message']['body'])
                 self.assertIn('https://github.com/repoagent/controller/actions/runs/4242', change['message']['body'])
-                self.assertEqual(calls[1]['argv'], ['workflow', 'run', 'controller.yml', '--ref', 'main'])
+                self.assertEqual(calls[1]['argv'], ['workflow', 'run', 'release-please.yml', '--ref', 'main'])
 
     def test_moved_main_or_another_commit_pins_and_publishes_nothing(self):
         for name, moved, environment, attempted in [
@@ -401,7 +401,7 @@ class RefreshStepTests(unittest.TestCase):
         result, calls, _ = self.commit(temporary, GH_DISPATCH_FAILS='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual([call['argv'][:2] for call in calls], [['api', 'graphql'], ['workflow', 'run']])
-        self.assertIn('gh workflow run controller.yml --ref main', result.stderr)
+        self.assertIn('gh workflow run release-please.yml --ref main', result.stderr)
 
 
 def needs(name, workflow=PIPELINE):
@@ -439,7 +439,7 @@ def checkout_ref(name):
 class RefreshWorkflowTests(unittest.TestCase):
     def test_a_scheduled_workflow_refreshes_the_baseline_from_upstream_tool_releases(self):
         refreshing = [workflow.name for workflow in sorted(WORKFLOWS.glob('*.yml')) if 'schedule' in events(workflow)
-                      and any('controller.yml' in (WORKFLOWS / called).read_text()
+                      and any('release-please.yml' in (WORKFLOWS / called).read_text()
                               for called in re.findall(r'(?m)^    uses: \./\.github/workflows/(\S+)$', workflow.read_text()))]
         self.assertTrue(refreshing, 'No workflow checks upstream gh/Codex releases and feeds baseline publication')
         self.assertEqual(events(WORKFLOW), {'schedule', 'workflow_dispatch'},
@@ -508,7 +508,7 @@ class RefreshWorkflowTests(unittest.TestCase):
         self.assertIn('secrets: inherit', smoke)
         self.assertIn('inputs.smoke', smoke)
         self.assertNotIn("github.ref == 'refs/heads/main'", smoke)
-        for name in ('build', 'verify', 'publish', 'release', 'native-release'):
+        for name in ('build', 'verify'):
             self.assertIn('inputs.smoke != true', job(name, controller))
         reusable = WORKFLOWS / 'e2e-smoke.yml'
         self.assertEqual(events(reusable), {'workflow_dispatch', 'workflow_call'})

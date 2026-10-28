@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-de
     && rm -rf /var/lib/apt/lists/*
 COPY global.json Directory.Build.props .editorconfig ./
 COPY src/ ./src/
+COPY releases/controller/ ./releases/controller/
 COPY .agents/skills/github-discussion/ ./.agents/skills/github-discussion/
 COPY .agents/skills/repoagent-orientation/ ./.agents/skills/repoagent-orientation/
 RUN dotnet publish src/RepoAgentController -c Release -o /published --nologo -p:PublishAot=true -p:TreatWarningsAsErrors=true \
@@ -46,6 +47,7 @@ COPY container/runtime.py /opt/repoagent/runtime.py
 COPY container/quick_tunnel.py /opt/repoagent/quick_tunnel.py
 COPY container/control.py /opt/repoagent/control.py
 LABEL io.repoagent.role="controller"
+LABEL org.opencontainers.image.version="__CONTROLLER_VERSION__"
 ENV HOME=/home/agent CODEX_HOME=/data/credentials/codex BROWSER=echo
 ENV PATH="/opt/repoagent/controller:/opt/repoagent/tools/bin:${PATH}"
 WORKDIR /workspace

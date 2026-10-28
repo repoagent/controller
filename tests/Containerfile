@@ -2,6 +2,7 @@ FROM mcr.microsoft.com/dotnet/sdk:11.0.100-rc.3-resolute@sha256:3a9175b6c54b2f07
 WORKDIR /workspace
 COPY global.json Directory.Build.props .editorconfig ./
 COPY src/ ./src/
+COPY releases/controller/ ./releases/controller/
 COPY .agents/skills/github-discussion/ ./.agents/skills/github-discussion/
 COPY .agents/skills/repoagent-orientation/ ./.agents/skills/repoagent-orientation/
 COPY tests/RepoAgentController.Tests/ ./tests/RepoAgentController.Tests/

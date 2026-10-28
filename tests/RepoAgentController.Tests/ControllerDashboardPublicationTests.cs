@@ -379,6 +379,26 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         Assert.Contains("\n- **Sessions:** 0 stored; no turns run while the controller is stopped; 0 awaiting native acknowledgement; 0 inputs waiting\n", stopped.Body);
     }
 
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "The dashboard owns and disposes the release check.")]
+    public async Task A_known_legacy_image_reaches_the_dashboard_as_migration_guidance_without_losing_its_identity()
+    {
+        var published = new InMemoryBaselineReleases();
+        var legacy = Release(999, image: "running");
+        var semantic = Release(1) with { Tag = "controller-v1.0.0" };
+        published.Publish(legacy);
+        published.Publish(semantic);
+        var releases = new BaselineReleases(published, _ => Task.FromResult<string?>(Inventory("running")), clock, log, text => text);
+        await using var dashboard = Dashboard(releases);
+        dashboard.Start(TestContext.Current.CancellationToken);
+
+        var body = await Naming(semantic);
+
+        Assert.Contains("**Legacy release migration**", body);
+        Assert.Contains(legacy.Url, body);
+        Assert.DoesNotContain("**Release identity uncertain**", body);
+        Assert.DoesNotContain("**Update available:**", body);
+    }
     // The controller's options reaching the check is the composition's; BaselineReleaseCheckTests owns the check's decisions.
     [Fact]
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "The dashboard takes ownership of releases and disposes it after its worker ends.")]

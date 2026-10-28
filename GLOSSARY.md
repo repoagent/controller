@@ -120,5 +120,5 @@ _Avoid_: health check
 The controller-owned Discussion, in an operator-chosen category, where the controller publishes its nonsecret status, a heartbeat and update notices for newer baseline releases. It is never agent input.
 
 **Baseline release**:
-A GitHub Release of `repoagent/controller` that records one anonymously verified public controller image, with its immutable reference and tool versions. Publishing one never changes a running controller; operators adopt it deliberately.
+A controller release that records one semantic controller version, its verified native archive and public image, immutable image reference and bundled tool versions. Publishing one never changes a running controller; operators adopt it deliberately. Historical releases without semantic versions retain their original identity.
 _Avoid_: latest release
