@@ -29,7 +29,7 @@ from test_managed_git import CONTROLLER, ROOT, CredentialManager, GitProvider, f
 FIXTURE_MODEL = 'model = "gpt-6.1-sol"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Credential-free local fixture"\nbase_url = "https://broker.fixture/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n'
 
 
-def native_event(line):
+def agent_event(line):
     """Fields of the controller's redacted agent-event log line; the raw agent message is never logged."""
     return re.search(r' agent-event method=(?P<method>\S*) thread=(?P<thread>\S*) turn=(?P<turn>\S*) status=(?P<status>\S*)'
                      r' will-retry=(?P<willRetry>\S*) error=(?P<error>.*)$', line.rstrip('\n')).groupdict()
@@ -44,10 +44,10 @@ class CheckoutRefreshTests(unittest.TestCase):
         def cleanup():
             owned.cleanup()
             assert not directory.exists(), 'Owned agent prerequisite was not removed'
-            print('REFRESH_NATIVE cleanup=removed path=' + str(directory), flush=True)
+            print('REFRESH_AGENT cleanup=removed path=' + str(directory), flush=True)
         cls.addClassCleanup(cleanup)
-        native_bin, home = directory / 'bin', directory / 'home'
-        native_bin.mkdir()
+        agent_bin, home = directory / 'bin', directory / 'home'
+        agent_bin.mkdir()
         home.mkdir(mode=0o700)
         version, url, checksum = runpy.run_path(str(ROOT / 'scripts/compose-image.py'))['ARTIFACTS']['codex']
         if json.loads((ROOT / 'image/default.json').read_text())['agent']['version'] != version:
@@ -57,7 +57,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             shutil.copyfileobj(response, output)
         if hashlib.sha256(archive.read_bytes()).hexdigest() != checksum:
             raise RuntimeError('Agent test prerequisite checksum mismatch')
-        cls.agent = native_bin / 'codex'
+        cls.agent = agent_bin / 'codex'
         with tarfile.open(archive, 'r:gz') as package:
             member = package.getmember('codex-x86_64-unknown-linux-musl')
             if not member.isfile():
@@ -69,7 +69,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                                   check=True, timeout=15, env=dict(PATH=os.environ['PATH'], HOME=str(home), CODEX_HOME=str(home)))
         if identity.stdout.strip() != 'codex-cli ' + version:
             raise RuntimeError('Agent test prerequisite version mismatch')
-        print('REFRESH_NATIVE version=' + version + ' archive-sha256=' + checksum
+        print('REFRESH_AGENT version=' + version + ' archive-sha256=' + checksum
               + ' executable-sha256=' + hashlib.sha256(cls.agent.read_bytes()).hexdigest()
               + ' path=' + str(cls.agent) + ' owned-mode=' + oct(directory.stat().st_mode & 0o777)
               + ' home-mode=' + oct(home.stat().st_mode & 0o777), flush=True)
@@ -221,7 +221,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                     (relay / 'codex').write_text(textwrap.dedent('''\
                         #!/usr/bin/python3
                         import json,os,subprocess,sys,threading
-                        child=subprocess.Popen([os.environ['MATRIX_NATIVE'],*sys.argv[1:]],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+                        child=subprocess.Popen([os.environ['MATRIX_AGENT'],*sys.argv[1:]],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
                         if os.environ.get('MATRIX_PIDS'):
                          with open(os.environ['MATRIX_PIDS'],'w') as proof: json.dump(dict(relay=os.getpid(),agent=child.pid),proof)
                         lock=threading.Lock()
@@ -246,7 +246,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                         child.stdin.close();child.wait();sys.exit(child.returncode)
                         '''))
                     (relay / 'codex').chmod(0o700)
-                    environment.update(PATH=str(relay) + os.pathsep + environment['PATH'], MATRIX_NATIVE=str(self.agent),
+                    environment.update(PATH=str(relay) + os.pathsep + environment['PATH'], MATRIX_AGENT=str(self.agent),
                                        MATRIX_IN=str(incoming), MATRIX_OUT=str(outgoing), MATRIX_HOLD=str(directory / 'hold-reload'))
                 try: yield f
                 finally:
@@ -280,7 +280,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 if line is None: self.fail('Controller closed before ' + fragment + '\n' + ''.join(lines))
                 if fragment in line: return line
             self.fail('Neither agent input nor ' + fragment + ' was observed\n' + ''.join(lines))
-        f.process, f.wait, f.wait_or_native, f.lines = process, wait, wait_or_native, lines
+        f.process, f.wait, f.wait_or_agent, f.lines = process, wait, wait_or_agent, lines
         try:
             wait(ready)
             yield
@@ -759,11 +759,11 @@ class CheckoutRefreshTests(unittest.TestCase):
                     f.wait('webhook-observed discussion=' + str(number) + ' success=True')
                     session = json.loads(f.state.read_text())['discussions']['D' + str(number)]['sessionId']
                     # The actual pinned agent creates and completes every session; no manufactured session IDs.
-                    while not any(' agent-event ' in line and native_event(line)['method'] == 'turn/completed'
-                                  and native_event(line)['thread'] == session for line in f.lines):
+                    while not any(' agent-event ' in line and agent_event(line)['method'] == 'turn/completed'
+                                  and agent_event(line)['thread'] == session for line in f.lines):
                         f.wait('agent-event')
-                    completion = next(native_event(line) for line in f.lines if ' agent-event ' in line
-                                      and native_event(line)['method'] == 'turn/completed' and native_event(line)['thread'] == session)
+                    completion = next(agent_event(line) for line in f.lines if ' agent-event ' in line
+                                      and agent_event(line)['method'] == 'turn/completed' and agent_event(line)['thread'] == session)
                     self.assertEqual(completion['status'], 'completed', completion)
                 # A completed observation settles the final running marker before the retained snapshot is read.
                 deliver('discussion', 1); f.wait('webhook-observed discussion=1 success=True')
@@ -1073,7 +1073,7 @@ class CheckoutRefreshTests(unittest.TestCase):
 
 
     def test_genuine_controller_resume_receives_refreshed_instructions_skills_and_preserved_history(self):
-        from test_checkout_native import agent_config
+        from test_checkout_agent import agent_config
         with self.fixture(responses=True) as f:
             home, seed = f.directory / 'home', f.directory / 'seed'
             config = home / 'config.toml'
@@ -1081,15 +1081,15 @@ class CheckoutRefreshTests(unittest.TestCase):
             skill = seed / '.agents/skills/repo-refresh'
             skill.mkdir(parents=True); (seed / '.codex').mkdir()
             def context(version, effort):
-                (seed / 'AGENTS.md').write_text('Repository context NATIVE_AGENTS_' + version + '.\n')
+                (seed / 'AGENTS.md').write_text('Repository context AGENT_AGENTS_' + version + '.\n')
                 (seed / '.codex/config.toml').write_text('model_reasoning_effort = "' + effort + '"\n')
-                (skill / 'SKILL.md').write_text('---\nname: repo-refresh\ndescription: Fixture scoped skill NATIVE_DESCRIPTION_' + version + '.\n---\nScoped instruction NATIVE_SKILL_BODY_' + version + '.\n')
+                (skill / 'SKILL.md').write_text('---\nname: repo-refresh\ndescription: Fixture scoped skill AGENT_DESCRIPTION_' + version + '.\n---\nScoped instruction AGENT_SKILL_BODY_' + version + '.\n')
             context('A', 'low'); self.publish(f, content='agent initial A\n')
             with self.controller(f):
                 f.provider.discussions = [self.discussion(1)]
-                f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_FIRST'
-                first = native_event(f.wait('agent-event'))
-                self.assertEqual(first['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(first), flush=True)
+                f.provider.discussions[0]['body'] += ' $repo-refresh AGENT_USER_FIRST'
+                first = agent_event(f.wait('agent-event'))
+                self.assertEqual(first['method'], 'turn/completed'); print('AGENT_COMPLETED ' + json.dumps(first), flush=True)
                 self.settled(f)
                 self.assertEqual(first['status'], 'completed')
                 self.assertEqual(len(f.provider.model_requests), 1)
@@ -1097,14 +1097,14 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual(first['thread'], session)
                 rollout, = home.rglob('rollout-*.jsonl')
                 prefix = rollout.read_bytes()
-                self.assertIn(b'NATIVE_USER_FIRST', prefix)
+                self.assertIn(b'AGENT_USER_FIRST', prefix)
                 self.assertIn(b'Harmless fixture assistant 1.', prefix)
                 request_a = json.dumps(f.provider.model_requests[0]['body'])
-                self.assertIn('NATIVE_AGENTS_A', request_a)
-                self.assertIn('NATIVE_SKILL_BODY_A', request_a)
+                self.assertIn('AGENT_AGENTS_A', request_a)
+                self.assertIn('AGENT_SKILL_BODY_A', request_a)
                 # Local instruction/skill edits and a rewritten origin mainline: origin's B must win at idle.
-                (f.checkout / 'AGENTS.md').write_text('Local agent edit NATIVE_AGENTS_LOCAL.\n')
-                (f.checkout / '.agents/skills/repo-refresh/SKILL.md').write_text('---\nname: repo-refresh\ndescription: Local NATIVE_DESCRIPTION_LOCAL.\n---\nLocal NATIVE_SKILL_BODY_LOCAL.\n')
+                (f.checkout / 'AGENTS.md').write_text('Local agent edit AGENT_AGENTS_LOCAL.\n')
+                (f.checkout / '.agents/skills/repo-refresh/SKILL.md').write_text('---\nname: repo-refresh\ndescription: Local AGENT_DESCRIPTION_LOCAL.\n---\nLocal AGENT_SKILL_BODY_LOCAL.\n')
                 context('B', 'high'); f.git('-C', seed, 'add', '.')
                 f.git('-C', seed, 'commit', '--quiet', '--amend', '-m', 'rewrite agent context B')
                 f.git('-C', seed, 'push', f.directory / 'repositories/owner/project.git', '+HEAD:main')
@@ -1116,11 +1116,11 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertTrue(project); self.assertFalse(project[0].get('disabledReason'))
                 listed = json.dumps(probe['fixtureSkills'])
                 self.assertIn(str(f.checkout / '.agents/skills/repo-refresh/SKILL.md'), listed)
-                self.assertIn('NATIVE_DESCRIPTION_B', listed)
-                self.assertNotIn('NATIVE_DESCRIPTION_A', listed); self.assertNotIn('NATIVE_DESCRIPTION_LOCAL', listed)
-                f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_SECOND'
-                second = native_event(f.wait('agent-event'))
-                self.assertEqual(second['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(second), flush=True)
+                self.assertIn('AGENT_DESCRIPTION_B', listed)
+                self.assertNotIn('AGENT_DESCRIPTION_A', listed); self.assertNotIn('AGENT_DESCRIPTION_LOCAL', listed)
+                f.provider.discussions[0]['body'] += ' $repo-refresh AGENT_USER_SECOND'
+                second = agent_event(f.wait('agent-event'))
+                self.assertEqual(second['method'], 'turn/completed'); print('AGENT_COMPLETED ' + json.dumps(second), flush=True)
                 self.settled(f)
                 self.assertEqual(second['status'], 'completed')
                 self.assertEqual(second['thread'], session)
@@ -1129,20 +1129,20 @@ class CheckoutRefreshTests(unittest.TestCase):
                 # Each turn states the reasoning its checkout's project configuration selects at that turn.
                 self.assertEqual([request['body']['reasoning']['effort'] for request in f.provider.model_requests], ['low', 'high'])
                 request_b = json.dumps(f.provider.model_requests[1]['body'])
-                for text in ('NATIVE_USER_FIRST', 'Harmless fixture assistant 1.', 'NATIVE_USER_SECOND', 'NATIVE_AGENTS_B', 'NATIVE_SKILL_BODY_B'):
+                for text in ('AGENT_USER_FIRST', 'Harmless fixture assistant 1.', 'AGENT_USER_SECOND', 'AGENT_AGENTS_B', 'AGENT_SKILL_BODY_B'):
                     self.assertIn(text, request_b)
-                for text in ('NATIVE_AGENTS_LOCAL', 'NATIVE_SKILL_BODY_LOCAL', 'NATIVE_DESCRIPTION_LOCAL'):
+                for text in ('AGENT_AGENTS_LOCAL', 'AGENT_SKILL_BODY_LOCAL', 'AGENT_DESCRIPTION_LOCAL'):
                     self.assertNotIn(text, request_b)
-                self.assertLess(request_b.index('NATIVE_AGENTS_A'), request_b.index('NATIVE_AGENTS_B'))
+                self.assertLess(request_b.index('AGENT_AGENTS_A'), request_b.index('AGENT_AGENTS_B'))
                 self.assertIn('These AGENTS.md instructions replace all previously provided AGENTS.md instructions.', request_b)
                 self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
                 self.assertEqual(json.loads(f.journal.read_text())['active'], {})
             final = rollout.read_bytes()
             self.assertTrue(final.startswith(prefix))
-            self.assertIn(b'NATIVE_USER_SECOND', final)
+            self.assertIn(b'AGENT_USER_SECOND', final)
             self.assertIn(b'Harmless fixture assistant 2.', final)
             self.assertFalse(any(item[0] == 'POST' for item in f.provider.denied))
-            print('NATIVE_INTEGRATION ' + json.dumps(dict(session=session, commit=target, requests=f.provider.model_requests,
+            print('AGENT_INTEGRATION ' + json.dumps(dict(session=session, commit=target, requests=f.provider.model_requests,
                   completions=[first, second], config=probe['config'], skills=probe['fixtureSkills'], denied=f.provider.denied,
                   network=f.provider.requests, prefixLength=len(prefix), prefixSha256=hashlib.sha256(prefix).hexdigest(),
                   finalPrefixSha256=hashlib.sha256(final[:len(prefix)]).hexdigest(), rolloutSha256=hashlib.sha256(final).hexdigest())), flush=True)

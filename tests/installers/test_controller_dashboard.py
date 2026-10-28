@@ -1,7 +1,7 @@
 """A real controller process publishes its dashboard; only a stop it handles is reported.
 
 GitHub and the credential broker are the local TLS GitProvider, reached through the installed gh and the
-controller's own HTTPS client. The native app-server is a controlled stub. No live provider access.
+controller's own HTTPS client. The agent app-server is a controlled stub. No live provider access.
 """
 from contextlib import closing
 import hashlib
@@ -24,8 +24,8 @@ from test_managed_git import CONTROLLER, ROOT, GitProvider, free_port
 
 CATEGORY = 'Controller status'
 HEARTBEAT = re.compile(r'Last heartbeat\W+(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)')
-# Answers every native request; no Discussion is enrolled, so no session or turn starts.
-NATIVE = """#!/usr/bin/python3
+# Answers every agent request; no Discussion is enrolled, so no session or turn starts.
+AGENT = """#!/usr/bin/python3
 import json,os,sys
 for line in sys.stdin:
  request=json.loads(line)
@@ -61,7 +61,7 @@ class ControllerDashboardProcessTests(unittest.TestCase):
         tools, workspace = directory / 'tools', directory / 'workspace'
         tools.mkdir()
         workspace.mkdir()
-        (tools / 'codex').write_text(NATIVE)
+        (tools / 'codex').write_text(AGENT)
         (tools / 'codex').chmod(0o700)
         environment = provider.environment()
         environment.update(PATH=str(tools) + os.pathsep + environment['PATH'])
