@@ -200,6 +200,24 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Throttled_credentials_publish_automatic_retry_without_claiming_rejection_then_recover()
+    {
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+        Record("app-token-throttled", "GitHub token acquisition throttled; retry at 2026-10-24T10:01:00Z");
+        await clock.Armed();
+        Assert.Equal(Title, Published().Title);
+        Assert.Contains("temporarily throttled", Published().Body);
+        Assert.Contains("retry at 2026-10-24T10:01:00Z", Published().Body);
+        Assert.Contains("Renewal retries automatically", Published().Body);
+        Record("app-token-refreshed", "actor=test-app[bot] expires=later");
+        await clock.Armed();
+        Assert.Equal("healthy", status.Snapshot().Authentication.State);
+        Assert.DoesNotContain("temporarily throttled", Published().Body);
+    }
+
+    [Fact]
     public async Task Either_failed_credential_turns_the_title_to_attention_until_it_recovers_while_the_failure_stays_listed()
     {
         await using var dashboard = Dashboard();

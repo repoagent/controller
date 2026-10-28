@@ -7,6 +7,12 @@ public sealed class GitHubTokenLifetime(IGitHubTokenSource source, TimeProvider 
     readonly CancellationTokenSource authorityLost = new();
     GitHubToken? credential;
     string appSlug = "";
+    DateTimeOffset retryAt;
+    int throttles;
+    readonly Lock expiryGate = new();
+    ITimer? throttleExpiry;
+    bool disposed;
+    long renewalGeneration;
 
     public string AgentLogin => Identity.AgentLogin;
     public CancellationToken AuthorityLost => source.RequiresNewLifetimeOnFailure ? authorityLost.Token : CancellationToken.None;
@@ -39,23 +45,78 @@ public sealed class GitHubTokenLifetime(IGitHubTokenSource source, TimeProvider 
             RequireLiveAuthority();
             if (appSlug.Length == 0) throw new InvalidOperationException("GitHub App authentication has not been initialized");
             if (Volatile.Read(ref credential) is { } held && held.ExpiresAt > clock.GetUtcNow().AddMinutes(5)) return held;
-            try
+            while (true)
             {
-                var lease = await source.Acquire(ct);
-                var fresh = new GitHubToken(lease.Token, lease.ExpiresAt, source.GitRepository, source.GitProfile);
-                Volatile.Write(ref credential, fresh);
-                log.Write("app-token-refreshed", $"actor={AgentLogin} expires={fresh.ExpiresAt:O}");
-                return fresh;
-            }
-            catch (Exception error)
-            {
-                try { Invalidate(); }
-                finally
+                RequireLiveAuthority();
+                var now = clock.GetUtcNow();
+                if (retryAt > now)
                 {
-                    if (source.RequiresNewLifetimeOnFailure && !(error is OperationCanceledException && ct.IsCancellationRequested))
-                        authorityLost.Cancel();
+                    if (ForAgent() is { } usable) return usable;
+                    using var waiting = CancellationTokenSource.CreateLinkedTokenSource(ct, authorityLost.Token);
+                    try { await Task.Delay(retryAt - now > TimeSpan.FromDays(1) ? TimeSpan.FromDays(1) : retryAt - now, clock, waiting.Token); }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested) { RequireLiveAuthority(); throw; }
+                    continue;
                 }
-                throw;
+                try
+                {
+                    var lease = await source.Acquire(ct);
+                    var fresh = new GitHubToken(lease.Token, lease.ExpiresAt, source.GitRepository, source.GitProfile);
+                    lock (expiryGate)
+                    {
+                        RequireLiveAuthority();
+                        throttleExpiry?.Dispose();
+                        throttleExpiry = null;
+                        renewalGeneration++;
+                        Volatile.Write(ref credential, fresh);
+                    }
+                    throttles = 0;
+                    retryAt = default;
+                    log.Write("app-token-refreshed", $"actor={AgentLogin} expires={fresh.ExpiresAt:O}");
+                    return fresh;
+                }
+                catch (GitHubTokenThrottledException error)
+                {
+                    throttles = Math.Min(throttles + 1, 5);
+                    var delay = error.RetryAfter is { } supplied && supplied > TimeSpan.Zero ? supplied
+                        : TimeSpan.FromSeconds(Math.Min(300, 30 * (1 << (throttles - 1))) + Random.Shared.Next(6));
+                    now = clock.GetUtcNow();
+                    retryAt = delay > DateTimeOffset.MaxValue - now ? DateTimeOffset.MaxValue : now + delay;
+                    log.Write("app-token-throttled", $"GitHub token acquisition throttled; retry at {retryAt:O}. Existing token remains usable only until its safety cutoff.");
+                    lock (expiryGate)
+                    {
+                        if (source.RequiresNewLifetimeOnFailure && throttleExpiry is null && Volatile.Read(ref credential) is { } expiring)
+                        {
+                            var until = expiring.ExpiresAt - TimeSpan.FromSeconds(30) - clock.GetUtcNow();
+                            if (until <= TimeSpan.Zero)
+                            {
+                                Invalidate();
+                                authorityLost.Cancel();
+                                RequireLiveAuthority();
+                            }
+                            var generation = renewalGeneration;
+                            throttleExpiry = clock.CreateTimer(_ =>
+                            {
+                                lock (expiryGate)
+                                {
+                                    if (disposed || throttleExpiry is null || generation != renewalGeneration) return;
+                                    Invalidate();
+                                    log.Write("app-refresh-error", "Broker token renewal remained throttled at the token safety cutoff; authority ended.");
+                                    authorityLost.Cancel();
+                                }
+                            }, null, until, Timeout.InfiniteTimeSpan);
+                        }
+                    }
+                }
+                catch (Exception error)
+                {
+                    try { Invalidate(); }
+                    finally
+                    {
+                        if (source.RequiresNewLifetimeOnFailure && !(error is OperationCanceledException && ct.IsCancellationRequested))
+                            authorityLost.Cancel();
+                    }
+                    throw;
+                }
             }
         }
         finally { refreshLock.Release(); }
@@ -96,5 +157,9 @@ public sealed class GitHubTokenLifetime(IGitHubTokenSource source, TimeProvider 
             throw new InvalidOperationException("Broker credential renewal failed; this controller lifetime cannot resume. Check authorization and pending recovery state before restarting.");
     }
 
-    public void Dispose() { Invalidate(); source.Dispose(); refreshLock.Dispose(); authorityLost.Dispose(); }
+    public void Dispose()
+    {
+        lock (expiryGate) { disposed = true; throttleExpiry?.Dispose(); throttleExpiry = null; Invalidate(); }
+        source.Dispose(); refreshLock.Dispose(); authorityLost.Dispose();
+    }
 }
