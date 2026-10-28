@@ -414,7 +414,7 @@ try {
     Write-PrivateJson $launchPath $plan
     $stage = 'configure and privately import enrollment'
     $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--web-search', $WebSearch)
-    $configuration += "--dashboard-category=$DashboardCategory"
+    if ($DashboardCategory) { $configuration += "--dashboard-category=$DashboardCategory" }
     if ($resolvedClone) { $configuration += '--clone' }
     if ($resolvedSettings) { $configuration += '--repository-settings' }
     if ($InstallationId) { $configuration += @('--installation-id', $InstallationId) }
