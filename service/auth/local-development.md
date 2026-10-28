@@ -1,6 +1,6 @@
 # Local auth development
 
-The Aspire AppHost runs the HTTP API and cleanup directly as .NET processes, with Azurite for Table/Blob storage and the community [Azure Key Vault Emulator](https://github.com/james-gould/azure-keyvault-emulator) in Docker. You can attach a C# debugger to either .NET process. No Azure subscription or cloud credentials are needed for this stack.
+The Aspire AppHost runs the HTTP API and cleanup directly as .NET processes, with Azurite for Table/Blob storage and the community [Azure Key Vault Emulator](https://github.com/james-gould/azure-keyvault-emulator) in Docker. You can attach a C# debugger to either .NET process. The default generated-key stack needs no Azure subscription or cloud credentials. Real GitHub authentication uses the shared App signing key through the developer's Azure CLI sign-in; wrapping and storage remain local.
 
 From `service/auth`, with Docker running and the SDK from `global.json` installed:
 
@@ -26,13 +26,30 @@ On WSL the trust command can report partial success when Windows PowerShell or b
 
 Open the dashboard URL printed by Aspire. The API is `https://localhost:7443`, with `/health/live` and `/health/ready`. Cleanup runs the same application's `cleanup --watch` Development-only mode once per minute; Azure retains the scheduled `cleanup --once` Job. Azurite uses ports 27000–27002; Key Vault uses 4997 so persisted key URIs stay stable. The dashboard uses 15888 and its local resource/telemetry endpoints use 18889–18890.
 
-The `initialize` process creates a dedicated **local** `brokerstate` Table, seeds its two Int64 quota rows only when creation succeeds, creates the key-ring Blob container, and creates or reuses signing/wrapping keys. An existing Table with missing metadata fails initialization. It never resets accounting. API and cleanup wait for successful initialization. Local state persists between AppHost runs. Certificates, the emulator database and generated settings stay in the ignored `.local` directory; Azurite data uses an Aspire-owned volume. Stop the AppHost before deliberately deleting local state, and reset both stores together if you need a fresh development environment. Hosted state is independent.
+The `initialize` process creates a dedicated **local** `brokerstate` Table, seeds its two Int64 quota rows only when creation succeeds, creates the key-ring Blob container, and creates or reuses the local wrapping key (and a generated signing key in the default offline mode). An existing Table with missing metadata fails initialization. It never resets accounting. API and cleanup wait for successful initialization. Local state persists between AppHost runs. Certificates, the emulator database and generated settings stay in the ignored `.local` directory; Azurite data uses an Aspire-owned volume. Stop the AppHost before deliberately deleting local state, and reset both stores together if you need a fresh development environment. Hosted state is independent.
 
 ## Signing and real GitHub access
 
 The default generated signing key supports local cryptographic/storage debugging. It cannot authenticate as the published GitHub App, so it does not establish real enrollment or token issuance. The application's App ID and permission profiles remain fixed.
 
-A maintainer who needs the real GitHub path can explicitly set `SigningKeyPemPath` in the AppHost's user secrets to a private local file holding that App's key. Initialization imports it into the local emulator. Never commit the file or put its contents in command arguments, logs, controller enrollment files or controller images. The AppHost user-secrets ID is `repoagent-auth-apphost`; the default stack does not discover or copy any private key.
+For the real GitHub path, use an existing Azure CLI sign-in with **Key Vault Crypto User** access to the shared App signing key. The App must already be installed on the selected repository. Set the pinned key URI in the AppHost's user secrets, then start the same AppHost:
+
+```sh
+# Run from service/auth. Sign in as the authorized developer if needed.
+az login
+dotnet user-secrets set SharedSigningKeyUri \
+  "https://VAULT.vault.azure.net/keys/APP_SIGNING_KEY/KEY_VERSION" \
+  --project dev/RepoAgent.Auth.AppHost
+dotnet run --project dev/RepoAgent.Auth.AppHost
+```
+
+`SharedSigningKeyUri` names a versioned HTTPS key on the shared vault's DNS origin at port 443, without credentials, a query or a fragment. The initializer writes this nonsecret URI and the explicit `Auth:DevelopmentSigningCredential=AzureCli` choice into the ignored local broker settings. It only creates or reuses keys in the local emulator; it never reads, creates, imports, exports or changes the shared key. The broker signs through Key Vault using `AzureCliCredential`, with a three-second CLI process timeout and normal challenge-resource verification. There is no credential-chain fallback. The emulator's credential remains separate and only its local crypto client relaxes challenge-resource verification; TLS certificate validation stays enabled for both.
+
+The AppHost user-secrets ID is `repoagent-auth-apphost`. Importing an App PEM is no longer supported. Remove a previous `SigningKeyPemPath` setting with `dotnet user-secrets remove SigningKeyPemPath --project dev/RepoAgent.Auth.AppHost`; the AppHost refuses to start while it is set. No private App key is needed on disk. Remove `SharedSigningKeyUri` to return to generated-key debugging. Keep controller enrollment and Codex supplies in private storage, and never put their contents in source, arguments, dashboard captures or logs.
+
+For a real local-broker run, follow [host enrollment](../../docs/host-enrollment.md) using `-BrokerOrigin https://localhost:7443` and a fresh private state directory. Use a disposable `repoagent/e2e-<run>` repository with Discussions enabled and the App installed; delete that repository and settle its local enrollment when finished. A readiness 200 checks composition only. Observe successful enrollment and token renewal before claiming shared signing works. Keep the same persisted local stores and wrapping key when restarting an enrolled controller.
+
+This AppHost currently starts the broker and cleanup, not a controller. The shared controller/AppHost tests and complete installer journey remain under [#204](https://github.com/repoagent/controller/issues/204). An installed Docker controller needs the same saved HTTPS broker origin to be reachable and trusted inside the container; its `localhost` is not the developer machine. Native enrollment against localhost alone does not prove that installed runtime path. Never rewrite an enrollment's origin or disable certificate validation to bridge it.
 
 Controller developers can instead use the hosted broker, `https://repoagent-auth.livelydune-309701b4.swedencentral.azurecontainerapps.io`, without receiving an App key. Controller enrollment runs natively through `scripts/enroll-controller.ps1`; an enrolled controller runs directly with `dotnet run --project src/RepoAgentController -- ... --enrollment-file <private-file> --check-auth` from the repository root. `--check-auth` checks broker/GitHub access without starting Codex. An expired or unacknowledged enrollment is not usable; owner handover remains tracked in #34.
 
@@ -40,7 +57,7 @@ Controller developers can instead use the hosted broker, `https://repoagent-auth
 
 Keep the emulators running and stop the `auth` resource in the dashboard to free port 7443. In a terminal or C# launch profile, set `ASPNETCORE_ENVIRONMENT=Development` and `Broker__DevelopmentSettingsFile` to the absolute path of `dev/RepoAgent.Auth.AppHost/.local/broker.json`. Set the Azure emulator credential environment values shown in the `auth` resource's configuration, including its loopback authority, then run/debug `src/RepoAgent.Auth`. These are emulator credentials, not your Azure login.
 
-Production rejects local settings files and development storage/vault options. Development storage must match the configured loopback endpoint, and development signing/wrapping keys and credential authority must point to the same loopback HTTPS vault. No default Azure credential fallback is added to hosted operation. `dev` is excluded from the auth Docker build context.
+Production rejects local settings files, development storage/vault options and `Auth:DevelopmentSigningCredential`, even when no signing key is configured. Production continues to use managed identity for both keys and storage. Development storage must match its configured loopback endpoints; the wrapping key and emulator credential authority must use the same loopback HTTPS vault. Without the explicit `AzureCli` signing choice, signing must use that local vault too. Shared signing requires the local wrapping vault and local Table/Blob storage; it cannot opt into hosted state. `dev` is excluded from the auth Docker build context.
 
 ## Verification
 

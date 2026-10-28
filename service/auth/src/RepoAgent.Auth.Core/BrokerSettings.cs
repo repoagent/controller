@@ -38,6 +38,10 @@ public static class BrokerSettings
     public static IssuanceSettings? Issuance(Func<string, string?> setting, string? environment)
     {
         var development = string.Equals(environment, "Development", StringComparison.OrdinalIgnoreCase);
+        var signingCredential = setting("Auth:DevelopmentSigningCredential");
+        if (signingCredential is not null && (!development || signingCredential != "AzureCli"))
+            throw new InvalidOperationException("Development signing requires Development and the AzureCli credential.");
+        var developerSigning = signingCredential is not null;
         Uri? developmentVault = null;
         if (setting("Auth:DevelopmentVaultUri") is { } localVault)
         {
@@ -45,6 +49,8 @@ public static class BrokerSettings
             if (!development || !developmentVault.IsLoopback || developmentVault.AbsolutePath != "/")
                 throw new InvalidOperationException("Emulated Key Vault requires Development and a loopback HTTPS origin.");
         }
+        if (developerSigning && (developmentVault is null || setting("Auth:SigningKeyUri") is null))
+            throw new InvalidOperationException("Development signing requires a shared signing key and a local wrapping vault.");
         if (setting("Auth:SigningKeyUri") is null)
         {
             if (setting("Auth:DataProtectionKeyUri") is { } key) _ = KeyUri(key);
@@ -65,11 +71,17 @@ public static class BrokerSettings
             throw new InvalidOperationException("Auth:DataProtectionApplicationName must identify the shared key ring.");
         var options = Options(setting, environment);
         if (developmentVault is not null
-            && (signing.GetLeftPart(UriPartial.Authority) != developmentVault.GetLeftPart(UriPartial.Authority)
+            && ((!developerSigning && signing.GetLeftPart(UriPartial.Authority) != developmentVault.GetLeftPart(UriPartial.Authority))
                 || wrapping.GetLeftPart(UriPartial.Authority) != developmentVault.GetLeftPart(UriPartial.Authority)
                 || setting("AZURE_AUTHORITY_HOST")?.TrimEnd('/') != developmentVault.AbsoluteUri.TrimEnd('/')))
             throw new InvalidOperationException("Development keys and credential authority must use the local vault.");
-        return new(signing, wrapping, keyRing, application, developmentVault, developmentStorage, options);
+        if (developerSigning && (signing.IsLoopback || signing.HostNameType != UriHostNameType.Dns || !signing.IsDefaultPort
+            || developmentStorage is null || DevelopmentConnection(setting, environment) is null
+            || !options.TableEndpoint.IsLoopback || options.TableEndpoint.Scheme != "http"
+            || !keyRing.IsLoopback || !IsBare(keyRing)))
+            throw new InvalidOperationException("Development signing requires a shared HTTPS key and local Table/Blob storage.");
+        return new(signing, wrapping, keyRing, application, developmentVault, developmentStorage, options)
+        { UsesDeveloperSigning = developerSigning };
     }
 
     // Optional monitoring: null when no connection string is set. Otherwise the connection names only an instrumentation
@@ -107,6 +119,9 @@ public static class BrokerSettings
 public sealed record IssuanceSettings(Uri SigningKey, Uri WrappingKey, Uri KeyRing, string ApplicationName, Uri? DevelopmentVault,
     string? DevelopmentStorage, BrokerOptions Options)
 {
+    // An explicit Development-only choice; wrapping still uses the local emulator's credential.
+    public bool UsesDeveloperSigning { get; init; }
+
     // Enrollment needs the broker's public origin as well.
     public bool Enrolls => Options.BrokerOrigin is not null;
 
