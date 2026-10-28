@@ -116,9 +116,9 @@ Reuse the subscription, resource group, identity and exact main-only OIDC subjec
 | `AUTH_SIGNING_KEY_URI`, `AUTH_DATA_PROTECTION_KEY_URI` | Separate pinned `/keys/name/version` references |
 | `AUTH_TABLE_NAME` | Dedicated broker Table; defaults to `brokerstate` |
 | `AUTH_DEPLOYMENT_EPOCH` | Existing external restore-fencing epoch; preserve outside Table backups |
-| `AUTH_REQUEST_LIMIT_PER_MINUTE` | Optional: default 120, allowed 1â€“10000 |
-| `AUTH_CONCURRENT_REQUEST_LIMIT` | Optional: default 8, allowed 1â€“128 |
-| `AUTH_REQUEST_TIMEOUT_SECONDS` | Optional: default 15, allowed 1â€“60 |
+| `AUTH_REQUEST_LIMIT_PER_MINUTE` | Optional: default 120, allowed 1-10000 |
+| `AUTH_CONCURRENT_REQUEST_LIMIT` | Optional: default 8, allowed 1-128 |
+| `AUTH_REQUEST_TIMEOUT_SECONDS` | Optional: default 15, allowed 1-60 |
 
 The dedicated GHCR package must be public and allow repository Actions publication. Initial package visibility/access setup remains separate; each actual digest is anonymously verified before deployment. No personal registry token is required. No GitHub App private key, host GitHub credential or Codex credential enters the image or Bicep.
 
