@@ -205,6 +205,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     /// <summary>Applies replacement agent credentials between dispatches and only at a proven global idle boundary.</summary>
     public Task<bool> ReplaceAgentCredentials(Action install, CancellationToken ct) => ExcludingDispatch(async () =>
     {
+        if (admissionStopped) return false;
         if (admission is null) return await sessions.RestartWhenIdle(install, ct);
         var restarted = false;
         return await admission.CommitAtIdle(async idle => restarted = await sessions.RestartWhenIdle(install, idle), ct) && restarted;

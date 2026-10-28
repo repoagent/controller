@@ -56,6 +56,17 @@ public sealed class AgentCredentialReplacementTests
     }
 
     [Fact]
+    public async Task A_controller_that_has_stopped_admission_does_not_restart_for_replacement_credentials()
+    {
+        await using var world = new BridgeWorld();
+        await world.Begin();
+        await world.Bridge.StopAndDrain(world.Token);
+        var installed = false;
+        Assert.False(await world.Bridge.ReplaceAgentCredentials(() => installed = true, world.Token));
+        Assert.False(installed);
+        Assert.Equal(1, world.Runtime.Epoch);
+    }
+    [Fact]
     public async Task An_admission_that_cannot_prove_global_idle_refuses_credential_replacement()
     {
         await using var world = new BridgeWorld { Admission = new RecordingCheckoutAdmission() };

@@ -12,6 +12,8 @@ The controller follows [ADR 0010](adr/0010-structure-the-controller-and-broker-a
 
 `BridgeCommand` remains the composition root: it parses options, validates external paths and coordinates, acquires leases, constructs adapters and translates process stop/authority loss into lifetime cancellation. It does not decide webhook admission or the ordering of credential replacement.
 
+Once admission has permanently stopped for shutdown, replacement credentials cannot restart the agent runtime, even when it is already idle.
+
 ## Verification ownership
 
 Core characterizations use the real bridge, sessions, status and outbox with in-memory ports and controlled time. `ControllerWebhooksTests` covers observation, duplicate coalescing, a change arriving during a read, failed-read recovery, periodic reconciliation, normal stop and durable push hints. `GitHubTokenLifetimeTests` includes agent-tool publication ownership; `AgentCredentialReplacementTests` covers runtime and checkout idle exclusion. Polling and status projection retain their existing core suites.

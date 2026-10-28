@@ -133,5 +133,6 @@ public sealed class ControllerWebhooks(string repository, AppIdentity identity, 
         while (await timer.WaitForNextTickAsync(ct)) Schedule(0);
     }
 
+    /// <summary>Disposes the driving loop after <see cref="Run"/> has joined and the host has closed its HTTP listener.</summary>
     public void Dispose() => stop.Dispose();
 }
