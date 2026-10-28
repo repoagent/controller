@@ -11,7 +11,7 @@ namespace RepoAgentController.Tests;
 // ControllerDashboardGoldenTests the whole body's bytes.
 public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
 {
-    const string Category = "Controller status", Title = "RepoAgent controller status", Attention = "Attention: RepoAgent controller authentication failed";
+    const string Category = "Controller status", Title = "💓 24 Oct 2026 10:00 UTC · 0/4 active · 0 queued — RepoAgent", Attention = "🔴 GitHub authentication failed · 💓 24 Oct 2026 10:00 UTC — RepoAgent";
     const string First = "https://github.com/owner/repository/discussions/1";
     static readonly DateTimeOffset Start = new(2026, 10, 24, 10, 0, 0, TimeSpan.Zero);
     readonly SteppedClock clock = new(Start);
@@ -21,11 +21,12 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     readonly InMemoryDiscussionStore discussions = new();
     readonly RecordingLog log = new();
     readonly ControllerStatus status;
+    readonly InMemoryCheckoutWork checkout = new();
     readonly GitHubOutbox outbox;
 
     public ControllerDashboardPublicationTests()
     {
-        status = new("owner/repository", "polling", new InMemoryStatusRecord(), discussions, state, new InMemoryCheckoutWork(), clock);
+        status = new("owner/repository", "polling", new InMemoryStatusRecord(), discussions, state, checkout, clock);
         outbox = new("owner/repository", github, InMemoryDiscussions.App, state, clock, new StatusLog(status, clock));
         github.Category(Category);
     }
@@ -65,6 +66,20 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     static string Time(DateTimeOffset at) => at.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
 
     [Fact]
+    public async Task Heartbeat_leads_the_overview_and_title_without_claiming_indefinite_availability()
+    {
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+
+        Assert.Equal("💓 24 Oct 2026 10:00 UTC · 0/4 active · 0 queued — RepoAgent", Published().Title);
+        Assert.StartsWith(AppIdentity.DashboardMarker + "\n**Last heartbeat:** 2026-10-24T10:00:00Z", Published().Body);
+        Assert.Contains("more than two minutes", Published().Body);
+        Assert.Contains("failure to publish", Published().Body);
+        Assert.DoesNotContain("**Controller:** running", Published().Body);
+    }
+
+    [Fact]
     public async Task Current_status_is_published_at_start_then_every_30_seconds_while_idle_and_on_each_change_and_a_graceful_stop_last()
     {
         status.Record(new(Start, "ready", "repository=owner/repository actor=test-app[bot] mode=polling"));
@@ -77,14 +92,17 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
             Assert.Equal((Category, Title), (Published().Category, Published().Title));
             Assert.Equal($"""
                 <!-- repoagent:controller-dashboard -->
-                Operational status of this repository's RepoAgent controller. The controller replaces this text on every update; comments and reactions here are never delivered to the agent.
+                **Last heartbeat:** 2026-10-24T10:00:00Z. Refreshed about every 30 seconds while the controller runs, even when idle.
+                Treat more than two minutes without a heartbeat as offline. A failure to publish can produce the same symptom; GitHub cannot update this frozen status automatically.
 
-                - **Controller:** running (polling) since {Started}
-                - **Heartbeat:** 2026-10-24T10:00:00Z. Refreshed about every 30 seconds while the controller runs, even when idle. An older heartbeat means this status is unconfirmed, not that a particular failure occurred.
-                - **Authentication:** healthy
+                - **Controller:** `polling`; lifetime started at {Started}
+                ### Work capacity
+                - **Sessions:** 0 stored; 0 of 4 turns running (active-session limit); 0 awaiting native acknowledgement; 0 inputs waiting
+
+                ### Authentication and settings
+                - **GitHub authentication:** healthy
                 - **Codex authentication:** unknown
                 - **Repository settings:** not read; the controller runs without --repository-settings
-                - **Sessions:** 0 stored; 0 of 4 turns running (active-session limit); 0 awaiting native acknowledgement; 0 inputs waiting
                 - **Latest activity:** input delivered from [a comment on Discussion #1]({First}#discussioncomment-7) at 2026-10-24T10:00:00Z
 
                 ### Updates
@@ -104,22 +122,22 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
             clock.Advance(TimeSpan.FromSeconds(1));
             await clock.Armed();
             Assert.Equal(writes + 1, state.OutboxWrites);
-            Assert.Contains("\n- **Heartbeat:** 2026-10-24T10:00:30Z. Refreshed about every 30 seconds", Published().Body);
+            Assert.Contains("\n**Last heartbeat:** 2026-10-24T10:00:30Z. Refreshed about every 30 seconds", Published().Body);
 
             // A status change republishes at once, between heartbeats.
             clock.Advance(TimeSpan.FromSeconds(10));
             status.Record(new(Start.AddSeconds(40), "session-created", $"{First.Replace("/1", "/2")} session=s2"));
             await clock.Armed();
             Assert.Contains($"\n- **Latest activity:** session started for [Discussion #2]({First.Replace("/1", "/2")}) at 2026-10-24T10:00:40Z\n", Published().Body);
-            Assert.Contains("\n- **Heartbeat:** 2026-10-24T10:00:40Z.", Published().Body);
+            Assert.Contains("\n**Last heartbeat:** 2026-10-24T10:00:40Z.", Published().Body);
             Assert.Empty(github.Dashboards); // Delivery is the outbox's, which this test does not start.
             clock.Advance(TimeSpan.FromSeconds(5));
         }
 
         // An operator stop publishes the stop with its time, claims no heartbeat and is delivered before disposal completes.
         var stopped = Assert.Single(github.Dashboards);
-        Assert.Equal(Title, stopped.Title);
-        Assert.Contains($"\n- **Controller:** stopped at 2026-10-24T10:00:45Z after a graceful shutdown; it had started at {Started}\n- **Heartbeat:** none while stopped.\n", stopped.Body);
+        Assert.Equal("⏹ Stopped · 💓 24 Oct 2026 10:00 UTC — RepoAgent", stopped.Title);
+        Assert.Contains($"\n- **Controller:** stopped at 2026-10-24T10:00:45Z after a graceful shutdown; it had started at {Started}\n", stopped.Body);
         Assert.Contains("\n- **Sessions:** 0 stored; no turns run while the controller is stopped; 0 awaiting native acknowledgement; 0 inputs waiting\n", stopped.Body);
     }
 
@@ -229,14 +247,14 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         await clock.Armed();
         var failed = Published();
         Assert.Equal(Attention, failed.Title);
-        Assert.Matches(@"\n- \*\*Authentication:\*\* failed at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ: `GitHub App credential renewal failed: HTTP 401 Bad credentials <redacted>`\. " +
+        Assert.Matches(@"\n- \*\*GitHub authentication:\*\* failed at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ: `GitHub App credential renewal failed: HTTP 401 Bad credentials <redacted>`\. " +
             @"Check the controller's approval and credentials, then restart it\.\n- \*\*Codex authentication:\*\* unknown\n", failed.Body);
 
         Record("app-token-refreshed", "installation=234");
         await clock.Armed();
         var recovered = Published();
         Assert.Equal(Title, recovered.Title);
-        Assert.Contains("\n- **Authentication:** healthy\n", recovered.Body);
+        Assert.Contains("\n- **GitHub authentication:** healthy\n", recovered.Body);
         Assert.Matches(@"### Recent failures\n- \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials <redacted>`\n$",
             recovered.Body);
 
@@ -244,8 +262,8 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         Record("codex-auth-failed", "turn failed: unexpected status 401 Unauthorized");
         await clock.Armed();
         var codex = Published();
-        Assert.Equal(Attention, codex.Title);
-        Assert.Matches(@"\n- \*\*Authentication:\*\* healthy\n- \*\*Codex authentication:\*\* failed at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ: `turn failed: unexpected status 401 Unauthorized`\. " +
+        Assert.Equal("🔴 Codex authentication failed · 💓 24 Oct 2026 10:00 UTC — RepoAgent", codex.Title);
+        Assert.Matches(@"\n- \*\*GitHub authentication:\*\* healthy\n- \*\*Codex authentication:\*\* failed at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ: `turn failed: unexpected status 401 Unauthorized`\. " +
             @"New Discussion input is held until the Codex account credentials are replaced\.\n", codex.Body);
         Assert.Contains("`codex-auth-failed`: `turn failed: unexpected status 401 Unauthorized`\n", codex.Body);
 
@@ -253,6 +271,49 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         await clock.Armed();
         Assert.Equal(Title, Published().Title);
         Assert.Contains("\n- **Codex authentication:** supplied credentials installed; not yet verified by a completed turn\n", Published().Body);
+    }
+
+    [Fact]
+    public async Task Current_admission_block_precedes_work_but_authentication_and_known_stop_have_priority()
+    {
+        checkout.Work = new(new HashSet<string>(), true);
+        Store(("D1", new(First) { SessionId = "s1", Waiting = Waiting(3) }));
+        await using (var dashboard = Dashboard())
+        {
+            dashboard.Start(TestContext.Current.CancellationToken);
+            await clock.Armed();
+            Assert.Equal("🟠 Dispatch blocked · 3 queued · 💓 24 Oct 2026 10:00 UTC — RepoAgent", Published().Title);
+            checkout.Work = new(new HashSet<string>(), false);
+            Record("poll-error", "historical failure does not establish a current blocker");
+            await clock.Armed();
+            Assert.Equal("💓 24 Oct 2026 10:00 UTC · 0/4 active · 3 queued — RepoAgent", Published().Title);
+            checkout.Work = new(new HashSet<string>(), true);
+            Record("codex-auth-failed", "credentials rejected");
+            await clock.Armed();
+            Assert.StartsWith("🔴 Codex authentication failed", Published().Title);
+            Record("app-refresh-error", "GitHub credential rejected");
+            await clock.Armed();
+            Assert.StartsWith("🔴 GitHub authentication failed", Published().Title);
+            dashboard.Failed("shutdown after failure");
+        }
+        Assert.Equal("🔴 Stopped after failure · 💓 24 Oct 2026 10:00 UTC — RepoAgent", Assert.Single(github.Dashboards).Title);
+    }
+
+    [Fact]
+    public async Task Title_counts_turns_and_waiting_inputs_separately_from_pending_and_stored_sessions_across_year_boundaries()
+    {
+        Store(("D1", new(First) { SessionId = "s1", Running = new("t1", Start), Waiting = Waiting(2) }),
+            ("D2", new(Url(2)) { SessionId = "s2", Pending = new("send", Start, ["DC_2"], 1) }),
+            ("D3", new(Url(3)) { SessionId = "s3" }));
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+        Assert.Equal("💓 24 Oct 2026 10:00 UTC · 1/4 active · 2 queued — RepoAgent", Published().Title);
+        Assert.Contains("3 stored; 1 of 4 turns running (active-session limit); 1 awaiting native acknowledgement; 2 inputs waiting", Published().Body);
+        clock.Advance(new DateTimeOffset(2027, 1, 1, 0, 0, 0, TimeSpan.Zero) - Start);
+        await clock.Armed();
+        Assert.StartsWith("💓 01 Jan 2027 00:00 UTC", Published().Title);
+        Assert.Contains("**Last heartbeat:** 2027-01-01T00:00:00Z", Published().Body);
     }
 
     [Fact]
@@ -273,14 +334,13 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
             - **Repository settings:** 2 unusable
               - `REPOAGENT_MAX_ACTIVE_SESSIONS` is invalid: `must be an integer from 1 to 64`; no repository value applies
               - `REPOAGENT_MODEL` could not be read: `HTTP 503`; the earlier value `gpt-5.5` still applies
-            - **Sessions:**
             """, Published().Body);
         Assert.Equal(Title, Published().Title);
 
         state.WriteSettings(new(new Dictionary<string, SettingValue> { ["REPOAGENT_MODEL"] = new(SettingState.Configured, "gpt-5.5") { Since = Start } }));
         clock.Advance(ControllerDashboard.HeartbeatInterval);
         await clock.Armed();
-        Assert.Contains("\n- **Repository settings:** read without problems\n- **Sessions:**", Published().Body);
+        Assert.Contains("\n- **Repository settings:** read without problems\n", Published().Body);
 
         state.WriteSettings(new(new Dictionary<string, SettingValue> { ["REPOAGENT_MODEL"] = new(SettingState.Disabled, null) }));
         clock.Advance(ControllerDashboard.HeartbeatInterval);
@@ -313,7 +373,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         }
         Assert.Equal([$"updateDiscussion {created.Id}", $"updateDiscussion {created.Id}"], github.Calls.Skip(3));
         var recovered = Assert.Single(github.Dashboards);
-        Assert.Contains("\n- **Heartbeat:** 2026-10-24T10:02:30Z.", recovered.Body);
+        Assert.Contains("\n**Last heartbeat:** 2026-10-24T10:02:30Z.", recovered.Body);
         Assert.Contains($"`dashboard-error`: `{created.Url} attempt=1 RateLimited: You have exceeded a secondary rate limit.; retained for retry at 2026-10-24T10:02:30.0000000+00:00`\n",
             recovered.Body);
         Assert.Empty(state.Outbox!.Operations);
@@ -378,7 +438,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         dashboard.Start(TestContext.Current.CancellationToken);
         await clock.Armed();
 
-        Assert.Contains("\n- **Controller:** starting (webhook) since 2026-10-24T10:00:00Z\n", Published().Body);
+        Assert.Contains("\n- **Controller:** starting; `webhook`; lifetime started at 2026-10-24T10:00:00Z\n", Published().Body);
         Assert.Equal($"- [Discussion #1]({Url(1)}): running a turn since 2026-10-24T09:30:00Z", Listed());
     }
 
