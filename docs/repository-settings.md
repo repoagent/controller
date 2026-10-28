@@ -11,9 +11,9 @@ The catalogue's `reserved` list names `REPOAGENT_` variables that other features
 
 | Name | Value | Status |
 | --- | --- | --- |
-| `REPOAGENT_MAX_ACTIVE_SESSIONS` | Integer from 1 to 64 | The most native Discussion turns running at once. Default `4`. See [Active-session limit](#active-session-limit). |
+| `REPOAGENT_MAX_ACTIVE_SESSIONS` | Integer from 1 to 64 | The most agent turns running at once. Default `4`. See [Active-session limit](#active-session-limit). |
 | `REPOAGENT_ENROLLMENT_CATEGORIES` | 1 to 25 Discussion category names, separated by commas | New Discussions in these categories enroll without a mention. Absent means no category enrollment. See [Category enrollment](#category-enrollment). |
-| `REPOAGENT_MODEL` | Model alias such as `sol6.1`, or a model ID such as `gpt-6.1-sol` | Default model for Discussions without a model label. Unset: the native Codex configuration's `model`, then the catalogue's default model. |
+| `REPOAGENT_MODEL` | Model alias such as `sol6.1`, or a model ID such as `gpt-6.1-sol` | Default model for Discussions without a model label. Unset: the Codex configuration's `model`, then the catalogue's default model. |
 | `REPOAGENT_REASONING` | Reasoning effort such as `xhigh` | Default effort for Discussions without a model label. Unset: the agent configuration's `model_reasoning_effort`, then the selected model's default effort. |
 
 ## Inspect or change settings
@@ -87,7 +87,7 @@ Each refresh records every setting's state, effective value and reason in `<stat
 
 ## Active-session limit
 
-`REPOAGENT_MAX_ACTIVE_SESSIONS` bounds how many native Discussion turns one controller runs at the same time. A Discussion holds a slot from agent acceptance of its turn until the native reports that turn completed or failed; a native `active` status report also holds one. Stored sessions that are idle, not loaded or failed hold no slot, however many there are.
+`REPOAGENT_MAX_ACTIVE_SESSIONS` bounds how many agent turns one controller runs at the same time. A Discussion holds a slot from agent acceptance of its turn until the agent runtime reports that turn completed or failed; an agent runtime `active` status report also holds one. Stored sessions that are idle, not loaded or failed hold no slot, however many there are.
 
 At the limit, newly observed input waits in the controller, as it does for a busy session. It shows as `waiting` in `status`, gets no EYES, and the observation logs `input-waiting ... active=N limit=M`. When a turn finishes, waiting Discussions are dispatched again. `status` reports running turns as `work.running` against the effective limit `work.limit`, and the [dashboard](controller-operations.md#discussion-status-dashboard) shows that count and lists such input as waiting for a free active-session slot.
 
@@ -122,7 +122,7 @@ Category enrollment needs no permission beyond Discussions read and the Agent va
 
 Every agent turn carries an explicit model and reasoning effort. Pinned Codex keeps a `turn/start` model or effort for later turns of the same thread, so the defaults are sent explicitly too; that is how removing a label restores them.
 
-For each turn, the controller uses the Discussion's model label if it has one. Otherwise each part falls back separately: the repository default (`REPOAGENT_MODEL`, `REPOAGENT_REASONING`), then the native Codex configuration for the workspace (`model`, `model_reasoning_effort`, read through `config/read`), then the catalogue's default model and that model's default effort.
+For each turn, the controller uses the Discussion's model label if it has one. Otherwise each part falls back separately: the repository default (`REPOAGENT_MODEL`, `REPOAGENT_REASONING`), then the Codex configuration for the workspace (`model`, `model_reasoning_effort`, read through `config/read`), then the catalogue's default model and that model's default effort.
 
 **Label grammar.** `repoagent:<model>:<reasoning>`, for example `repoagent:sol6.1:xhigh`. Every label whose name starts with `repoagent:` (any case) is a model label:
 
