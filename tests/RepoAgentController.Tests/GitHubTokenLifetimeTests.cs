@@ -140,6 +140,99 @@ public sealed class GitHubTokenLifetimeTests
         Assert.Equal(finalFailure, unavailableWhenSignalled);
     }
 
+    [Fact]
+    public async Task Throttled_renewal_keeps_the_live_token_and_coordinates_retry_before_recovery()
+    {
+        using var world = new World(finalFailure: true);
+        await world.Initialize();
+        world.Clock.Advance(TimeSpan.FromMinutes(56));
+        world.Source.AcquireNext = _ => Task.FromException<GitHubTokenLease>(new GitHubTokenThrottledException(TimeSpan.FromMinutes(1)));
+
+        Assert.Equal("token-1", await world.Lifetime.GetToken(Token));
+        Assert.False(world.Lifetime.AuthorityLost.IsCancellationRequested);
+        world.Source.AcquireNext = null;
+        var callers = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => world.Lifetime.GetToken(Token)));
+        Assert.All(callers, token => Assert.Equal("token-1", token));
+        Assert.Equal(2, world.Source.Acquisitions);
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.Equal("token-3", await world.Lifetime.GetToken(Token));
+        Assert.Equal("token-3", world.Lifetime.ForAgent()!.Token);
+    }
+
+    [Fact]
+    public async Task A_long_throttle_cannot_keep_owned_authority_past_the_held_tokens_safety_cutoff()
+    {
+        using var world = new World(finalFailure: true);
+        await world.Initialize();
+        world.Clock.Advance(TimeSpan.FromMinutes(56));
+        world.Source.AcquireNext = _ => Task.FromException<GitHubTokenLease>(new GitHubTokenThrottledException(TimeSpan.FromDays(1)));
+        Assert.Equal("token-1", await world.Lifetime.GetToken(Token));
+
+        world.Clock.Advance(TimeSpan.FromMinutes(3.5));
+
+        Assert.True(world.Lifetime.AuthorityLost.IsCancellationRequested);
+        Assert.Null(world.Lifetime.ForAgent());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => world.Lifetime.GetToken(Token));
+        Assert.Equal(2, world.Source.Acquisitions);
+    }
+
+    [Fact]
+    public async Task Startup_throttling_waits_for_the_shared_retry_instead_of_exiting_and_can_be_cancelled()
+    {
+        using var world = new World(finalFailure: true);
+        world.Source.AcquireNext = _ => Task.FromException<GitHubTokenLease>(new GitHubTokenThrottledException(TimeSpan.FromMinutes(1)));
+        using var stopping = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        var startup = world.Lifetime.Initialize(234, stopping.Token);
+        Assert.False(startup.IsCompleted);
+        Assert.Null(world.Lifetime.ForAgent());
+        Assert.False(world.Lifetime.AuthorityLost.IsCancellationRequested);
+        world.Clock.Advance(TimeSpan.FromSeconds(59));
+        Assert.Equal(1, world.Source.Acquisitions);
+        await stopping.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => startup);
+        Assert.False(world.Lifetime.AuthorityLost.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task A_rejected_held_token_is_never_returned_during_throttle_and_renewal_disarms_old_expiry()
+    {
+        using var world = new World(finalFailure: true);
+        await world.Initialize();
+        world.Clock.Advance(TimeSpan.FromMinutes(56));
+        world.Source.AcquireNext = _ => Task.FromException<GitHubTokenLease>(new GitHubTokenThrottledException(TimeSpan.FromMinutes(1)));
+        await world.Lifetime.GetToken(Token);
+        world.Lifetime.Reject("token-1");
+        Assert.Null(world.Lifetime.ForAgent());
+        world.Source.AcquireNext = null;
+        var waiting = world.Lifetime.GetToken(Token);
+        Assert.False(waiting.IsCompleted);
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.Equal("token-3", await waiting);
+        world.Clock.Advance(TimeSpan.FromMinutes(3));
+        Assert.False(world.Lifetime.AuthorityLost.IsCancellationRequested);
+        Assert.Equal("token-3", world.Lifetime.ForAgent()!.Token);
+    }
+
+    [Fact]
+    public async Task Definitive_failure_after_throttling_still_ends_authority_and_cannot_reuse_the_held_token()
+    {
+        using var world = new World(finalFailure: true);
+        await world.Initialize();
+        world.Clock.Advance(TimeSpan.FromMinutes(56));
+        world.Source.AcquireNext = _ => Task.FromException<GitHubTokenLease>(new GitHubTokenThrottledException(TimeSpan.FromMinutes(1)));
+        await world.Lifetime.GetToken(Token);
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        world.Source.AcquireNext = _ => Task.FromException<GitHubTokenLease>(new InvalidOperationException("credential rejected"));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => world.Lifetime.GetToken(Token));
+
+        Assert.True(world.Lifetime.AuthorityLost.IsCancellationRequested);
+        Assert.Null(world.Lifetime.ForAgent());
+        world.Source.AcquireNext = null;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => world.Lifetime.GetToken(Token));
+        Assert.Equal(3, world.Source.Acquisitions);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

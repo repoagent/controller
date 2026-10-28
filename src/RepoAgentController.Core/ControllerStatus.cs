@@ -61,6 +61,7 @@ public sealed class ControllerStatus : IDisposable
                 case "ready": lifetime = lifetime with { Controller = controller with { State = "running" } }; break;
                 case "fatal": lifetime = lifetime with { Controller = controller with { State = "failed" } }; break;
                 case "app-token-refreshed": lifetime = lifetime with { Authentication = new("healthy") { UpdatedAt = at } }; break;
+                case "app-token-throttled": lifetime = lifetime with { Authentication = new("degraded") { UpdatedAt = at, Error = item.Message } }; break;
                 case "app-refresh-error": lifetime = lifetime with { Authentication = new("failed") { UpdatedAt = at, Error = item.Message } }; break;
                 // Agent account credentials, separate from the GitHub App: supplied, healthy (a turn completed) or failed.
                 case "codex-auth-supplied" or "codex-auth-applied": lifetime = lifetime with { CodexAuthentication = new("supplied") { UpdatedAt = at } }; break;
