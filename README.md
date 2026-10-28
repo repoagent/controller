@@ -46,6 +46,8 @@ A normal SIGTERM or Ctrl+C stop of a long-running controller holds new input and
 
 Keep the controller and its host running to receive activity. Preserve its state and Codex storage across restarts. If you enable repository context, the managed checkout is disposable; the agent uses separate worktrees for edits. The supplied GitHub permission profiles support Discussions and optional code reading; they do not grant code pushes or pull request creation. Issues and pull requests are not conversation entry points.
 
+Controller and credential broker versions are proposed independently through reviewable Release Please PRs. See the [component release policy](docs/releases.md) for compatibility, source attribution and tag protection.
+
 ## Configuration and operations
 
 - [Repository settings](docs/repository-settings.md): model defaults, model labels, concurrency and category enrollment.
