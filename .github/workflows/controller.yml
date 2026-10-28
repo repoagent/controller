@@ -11,7 +11,7 @@ on:
         type: boolean
         default: false
       tag:
-        description: Optional existing vMAJOR.MINOR.PATCH tag on main for a native release; omit for a baseline image
+        description: Reserved compatibility input; approved releases use controller-release.yml
         type: string
   pull_request:
     paths:
