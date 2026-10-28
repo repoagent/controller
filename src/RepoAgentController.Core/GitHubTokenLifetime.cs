@@ -63,6 +63,7 @@ public sealed class GitHubTokenLifetime(IGitHubTokenSource source, TimeProvider 
                     var fresh = new GitHubToken(lease.Token, lease.ExpiresAt, source.GitRepository, source.GitProfile);
                     lock (expiryGate)
                     {
+                        ct.ThrowIfCancellationRequested();
                         RequireLiveAuthority();
                         throttleExpiry?.Dispose();
                         throttleExpiry = null;
@@ -81,7 +82,6 @@ public sealed class GitHubTokenLifetime(IGitHubTokenSource source, TimeProvider 
                         : TimeSpan.FromSeconds(Math.Min(300, 30 * (1 << (throttles - 1))) + Random.Shared.Next(6));
                     now = clock.GetUtcNow();
                     retryAt = delay > DateTimeOffset.MaxValue - now ? DateTimeOffset.MaxValue : now + delay;
-                    log.Write("app-token-throttled", $"GitHub token acquisition throttled; retry at {retryAt:O}. Existing token remains usable only until its safety cutoff.");
                     lock (expiryGate)
                     {
                         if (source.RequiresNewLifetimeOnFailure && throttleExpiry is null && Volatile.Read(ref credential) is { } expiring)
@@ -100,12 +100,16 @@ public sealed class GitHubTokenLifetime(IGitHubTokenSource source, TimeProvider 
                                 {
                                     if (disposed || throttleExpiry is null || generation != renewalGeneration) return;
                                     Invalidate();
-                                    log.Write("app-refresh-error", "Broker token renewal remained throttled at the token safety cutoff; authority ended.");
-                                    authorityLost.Cancel();
+                                    // Cancellation happens before optional diagnostics. An observer may fail after the
+                                    // token is cancelled; its aggregate cannot escape a thread-pool timer callback.
+                                    try { authorityLost.Cancel(); }
+                                    catch (AggregateException) { }
+                                    ThrottleLog("app-refresh-error", "Broker token renewal remained throttled at the token safety cutoff; authority ended.");
                                 }
                             }, null, until, Timeout.InfiniteTimeSpan);
                         }
                     }
+                    ThrottleLog("app-token-throttled", $"GitHub token acquisition throttled; retry at {retryAt:O}. Existing token remains usable only until its safety cutoff.");
                 }
                 catch (Exception error)
                 {
@@ -155,6 +159,13 @@ public sealed class GitHubTokenLifetime(IGitHubTokenSource source, TimeProvider 
     {
         if (authorityLost.IsCancellationRequested)
             throw new InvalidOperationException("Broker credential renewal failed; this controller lifetime cannot resume. Check authorization and pending recovery state before restarting.");
+    }
+
+    // Diagnostics are best effort only for the throttle/cutoff path: output or retained-status storage can be unavailable.
+    void ThrottleLog(string kind, string message)
+    {
+        try { log.Write(kind, message); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ObjectDisposedException) { }
     }
 
     public void Dispose()
