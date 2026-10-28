@@ -49,17 +49,14 @@ function Get-CredentialMount {
     return Get-KeyMount
 }
 
-function Import-Enrollment([byte[]]$Bytes) {
-    if (-not $script:brokerMode) { throw 'Configure a fresh broker instance before importing enrollment.' }
-    Assert-Stopped
+function Invoke-PrivateInput([byte[]]$Bytes, [string[]]$DockerArguments) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = (Get-Command docker -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    foreach ($argument in @('run', '--rm', '--init', '-i', '--network', 'none', '--user', '1000', '--mount',
-        "type=volume,src=$containerName-enrollment,dst=/data/enrollment", $image, 'import-enrollment')) {
+    foreach ($argument in $DockerArguments) {
         $start.ArgumentList.Add($argument)
     }
     $process = [Diagnostics.Process]::new()
@@ -75,8 +72,15 @@ function Import-Enrollment([byte[]]$Bytes) {
         $null = $stderr.GetAwaiter().GetResult()
         if ($process.ExitCode -ne 0) { throw 'Import failed.' }
         $global:LASTEXITCODE = 0
-    } catch { throw 'Private enrollment import failed. No partial enrollment is published; inspect resource permissions and retry.' }
+    } catch { throw 'Private credential import failed. Inspect resource permissions and retry.' }
     finally { $process.Dispose() }
+}
+
+function Import-Enrollment([byte[]]$Bytes) {
+    if (-not $script:brokerMode) { throw 'Configure a fresh broker instance before importing enrollment.' }
+    Assert-Stopped
+    Invoke-PrivateInput $Bytes @('run', '--rm', '--init', '-i', '--network', 'none', '--user', '1000', '--mount',
+        "type=volume,src=$containerName-enrollment,dst=/data/enrollment", $image, 'import-enrollment')
 }
 
 function Invoke-Config {
@@ -257,9 +261,10 @@ switch ($Command) {
     'import-codex-auth' {
         Assert-Stopped
         if ($CommandArguments.Count -ne 1) { throw 'Supply one auth.json file path.' }
-        $authMount = Get-FileMount $CommandArguments[0] '/run/secrets/codex-auth.json'
-        $copyAuth = "import json,pathlib; p=pathlib.Path('/run/secrets/codex-auth.json'); json.loads(p.read_text()); d=pathlib.Path('/data/credentials/codex/auth.json'); d.write_bytes(p.read_bytes()); d.chmod(0o600)"
-        Invoke-Docker run --rm --init @volumeArguments @authMount --entrypoint /usr/bin/python3 $image -c $copyAuth
+        $authPath = (Get-Item -LiteralPath $CommandArguments[0] -ErrorAction Stop).FullName
+        $copyAuth = "import json,os,pathlib,sys,tempfile; b=sys.stdin.buffer.read(); json.loads(b); d=pathlib.Path('/data/credentials/codex'); d.mkdir(parents=True,exist_ok=True); f,p=tempfile.mkstemp(dir=d); s=os.fdopen(f,'wb'); s.write(b); s.close(); os.replace(p,d/'auth.json')"
+        Invoke-PrivateInput ([IO.File]::ReadAllBytes($authPath)) @('run', '--rm', '--init', '-i', '--network', 'none', '--user', '1000',
+            '--mount', "type=volume,src=$containerName-credentials,dst=/data/credentials", '--entrypoint', '/usr/bin/python3', $image, '-c', $copyAuth)
     }
     'check' { Assert-Stopped; Test-CompatibleRuntime; $keyMount = Get-CredentialMount; Invoke-Docker run --rm --init @runtimeVolumes @keyMount $image check }
     'start' { Start-Agent }
