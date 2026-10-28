@@ -200,6 +200,14 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         finally { gate.Release(); }
     }
 
+    /// <summary>Serializes a shutdown request with observation and native admission.</summary>
+    public async Task StopAndDrain(CancellationToken abort)
+    {
+        await gate.WaitAsync(abort);
+        try { abort.ThrowIfCancellationRequested(); }
+        finally { gate.Release(); }
+    }
+
     /// <summary>Reconciles category enrollment starts with a refreshed repository settings change while no observation or
     /// dispatch runs, so a category removed and selected again between observations starts afresh.</summary>
     public async Task ReconcileCategoryEnrollment(CancellationToken ct)
