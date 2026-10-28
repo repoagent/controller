@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/repoagent/controller/compare/controller-v1.0.0...controller-v1.0.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **broker:** bound execution history before diagnostic output ([9e282ae](https://github.com/repoagent/controller/commit/9e282ae21b7969226f1e9f96585c6bc88db201ef))
+
 ## 1.0.0 (2026-10-28)
 
 ### Features and fixes
