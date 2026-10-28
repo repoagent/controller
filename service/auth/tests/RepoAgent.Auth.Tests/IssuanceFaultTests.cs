@@ -155,7 +155,7 @@ public sealed class IssuanceFaultTests
             if (changedAuthority || ++batches != 2) return;
             changedAuthority = true;
             if (changed == "revoked")
-                Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
+                Assert.Equal(204, await f.Revocation().RevokeAsync(f.Credentials.EnrollmentId, f.Credentials.ControllerSecret, Token));
             else
                 f.State.Change(f.EnrollmentKey, row => row["SecretHash"] = new string('0', 64));
         };
@@ -248,7 +248,7 @@ public sealed class IssuanceFaultTests
             // The verifier's global charge is the first transaction and its repository admission the second.
             if (revoked || ++batches != 2) return;
             revoked = true;
-            Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
+            Assert.Equal(204, await f.Revocation().RevokeAsync(f.Credentials.EnrollmentId, f.Credentials.ControllerSecret, Token));
         };
         Assert.Equal(503, (await f.IssueAsync(Token)).Status);
         Assert.True(revoked);
@@ -344,7 +344,7 @@ public sealed class IssuanceFaultTests
         var runtime = issued ? f.Attempt("runtime") : null;
         StateKey key = row switch
         {
-            "locator" => EnrollmentLocator.Key(f.EnrollmentId.DeviceId),
+            "locator" => EnrollmentLocator.Key(f.Credentials.EnrollmentId),
             "gate" => IssuanceFixture.GateKey,
             "enrollment" => f.EnrollmentKey,
             "enrollment-quota" => EnrollmentQuota.Key,
@@ -405,7 +405,7 @@ public sealed class IssuanceFaultTests
         {
             if (f.GitHub.Reads == 12 && request.StartsWith("variable ", StringComparison.Ordinal))
             {
-                Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
+                Assert.Equal(204, await f.Revocation().RevokeAsync(f.Credentials.EnrollmentId, f.Credentials.ControllerSecret, Token));
                 revoked = true;
             }
         };
