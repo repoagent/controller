@@ -136,9 +136,16 @@ public sealed class ControllerDashboard : IAsyncDisposable
         text.AppendLine();
         Updates(text, release);
         text.AppendLine();
-        text.AppendLine("### Active and queued sessions");
-        var busy = snapshot.Sessions.Where(session => session.Activity is SessionActivity.Pending or SessionActivity.Running || session.Waiting != 0).ToArray();
-        foreach (var session in busy.Take(MaximumSessions))
+        text.AppendLine("### Tracked Discussions");
+        var inventory = snapshot.Sessions.OrderBy(session => session.Activity switch
+        {
+            SessionActivity.Running => 0,
+            SessionActivity.Pending => 1,
+            SessionActivity.Retrying => 2,
+            _ when session.Waiting != 0 => 3,
+            _ => 4
+        }).ThenBy(session => session.Discussion, StringComparer.Ordinal).ToArray();
+        foreach (var session in inventory.Take(MaximumSessions))
         {
             var waiting = session.Waiting;
             string? doing = session.Activity switch
@@ -146,7 +153,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
                 SessionActivity.Pending => "awaiting native acknowledgement",
                 SessionActivity.Retrying retry => $"delivery failed or was unacknowledged; attempt {(retry.Attempts ?? 0) + 1} at {Time(retry.RetryAt ?? "")}",
                 SessionActivity.Running turn => stopped is null ? $"running a turn since {Time(turn.Since ?? "")}" : "its turn ended with the controller",
-                _ => null
+                _ => session.Waiting == 0 ? "idle; no input waiting" : null
             };
             // Why idle input still waits, from the most specific cause status shows; others appear under recent failures.
             var reason = waiting == 0 ? null : session.Activity switch
@@ -154,13 +161,15 @@ public sealed class ControllerDashboard : IAsyncDisposable
                 SessionActivity.Running when stopped is null => $"{waiting} inputs waiting for that turn to finish",
                 SessionActivity.Pending or SessionActivity.Retrying or SessionActivity.Running => $"{waiting} inputs waiting",
                 _ when codexFailed => $"{waiting} inputs held until the Codex account credentials are replaced",
+                _ when authentication.State == "failed" => $"{waiting} inputs held until GitHub authentication recovers",
+                _ when work.AdmissionBlocked == true && stopped is null => $"{waiting} inputs held for a checkout refresh",
                 _ when full && stopped is null => $"{waiting} inputs waiting for a free active-session slot",
                 _ => $"{waiting} inputs waiting for dispatch"
             };
             text.AppendLine($"- {Link(session.Discussion)}: " + string.Join("; ", new[] { doing, reason }.OfType<string>()));
         }
-        if (busy.Length > MaximumSessions) text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- and {busy.Length - MaximumSessions} more");
-        if (busy.Length == 0) text.AppendLine("None.");
+        if (inventory.Length > MaximumSessions) text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- and {inventory.Length - MaximumSessions} more");
+        if (inventory.Length == 0) text.AppendLine("None.");
         text.AppendLine();
         text.AppendLine("### Recent failures");
         var failures = snapshot.Failures.Select(Listed).OfType<StatusEvent>().Reverse().Take(MaximumFailures).ToArray();
