@@ -208,7 +208,12 @@ public sealed class ControllerWebhooksTests
         public void Start() => Running = Driver.Run(Stop.Token, Token);
         public async Task Observed(string kind, int count)
         {
-            while (Log.Entries.Count(entry => entry.Kind == kind) < count) await Log.Written(Log.Entries.Count + 1);
+            while (true)
+            {
+                var entries = Log.Entries;
+                if (entries.Count(entry => entry.Kind == kind) >= count) return;
+                await Log.Written(entries.Count + 1);
+            }
         }
         public async Task End()
         {
