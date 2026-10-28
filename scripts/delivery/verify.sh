@@ -43,5 +43,5 @@ if not assemblies or sum(int(a.attrib['total']) for a in assemblies) == 0:
 PYTHON
 # Controller process suites, kept until #203 replaces them with unit tests.
 python3 -m unittest discover -s tests/installers -p 'test_*.py'
-python3 -m unittest discover -s scripts/delivery -p 'test_*.py'
+bash scripts/delivery/test-python.sh discover -s scripts/delivery -p 'test_*.py'
 bash scripts/delivery/package-controller.sh "${2:-0.0.0-ci}" "${1:?Output directory required}"
