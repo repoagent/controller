@@ -259,6 +259,15 @@ def install(path):
         raise Refused('Candidate platform, role or runtime identity differs from the operator image contract')
     value['imageId'] = image['Id']
     private_write(path / 'run.json', value)
+    # Warm a potentially scaled-to-zero broker before any state-changing setup request. Only this anonymous GET retries.
+    ready = command(['curl', '--fail', '--silent', '--show-error', '--connect-timeout', '10', '--max-time', '30',
+                     '--retry', '2', '--retry-delay', '5', '--retry-all-errors', '--output', '/dev/null',
+                     '--write-out', '%{http_code}', BROKER + '/health/ready'], check=False, timeout=110)
+    available = ready.returncode == 0 and ready.stdout.strip() == '200'
+    outcomes(path, 'broker-readiness', {'state': 'ready' if available else 'unavailable',
+                                       'httpStatus': 200 if available else None, 'exitCode': ready.returncode})
+    if not available:
+        raise Refused('Broker readiness could not be confirmed within the bounded check; no enrollment was started')
     auth = path / 'codex-auth.json'
     private_write(auth, {'OPENAI_API_KEY': key})
     state = path / 'state'

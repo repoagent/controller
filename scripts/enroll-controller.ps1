@@ -336,7 +336,9 @@ try {
     if ($_.InvocationInfo -and $_.InvocationInfo.ScriptName) {
         $location = [IO.Path]::GetFileName($_.InvocationInfo.ScriptName) + ':' + $_.InvocationInfo.ScriptLineNumber
     }
-    $errorType = $_.Exception.GetBaseException().GetType().Name
-    Write-Warning "$script:Diagnostic Failure location: $location; error type: $errorType."
+    $cause = $_.Exception.GetBaseException()
+    $errorType = $cause.GetType().Name
+    $socket = if ($cause -is [Net.Sockets.SocketException]) { "; socket code: $($cause.SocketErrorCode)" } else { '' }
+    Write-Warning "$script:Diagnostic Failure location: $location; error type: $errorType$socket."
     exit 1
 }
