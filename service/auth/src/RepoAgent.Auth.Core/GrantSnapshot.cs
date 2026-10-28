@@ -94,22 +94,22 @@ public static class ApprovalMarker
             throw new IssuanceDenied();
         // Agent (v2, v4) and Actions (v3) markers share one field order; version and kind differ.
         if (approval.IsRepositoryVariable)
-            return JsonSerializer.Serialize(new
+            return JsonSerializer.Serialize(new Dictionary<string, object>
             {
-                version = approval.SetupVersion,
-                approvalKind = approval.Kind,
-                githubHost = "github.com",
-                appId = AppId,
-                appSlug = AppSlug,
-                repositoryId = Id(repositoryId),
-                repository,
-                installationId,
-                deviceId = enrollmentId,
-                challenge = text,
-                profile,
-                policyVersion = approval.Policy,
-                epoch,
-                variable
+                ["version"] = approval.SetupVersion,
+                ["approvalKind"] = approval.Kind,
+                ["githubHost"] = "github.com",
+                ["appId"] = AppId,
+                ["appSlug"] = AppSlug,
+                ["repositoryId"] = Id(repositoryId),
+                ["repository"] = repository,
+                ["installationId"] = installationId,
+                [approval.CanonicalNames ? "enrollmentId" : "deviceId"] = enrollmentId,
+                ["challenge"] = text,
+                ["profile"] = profile,
+                ["policyVersion"] = approval.Policy,
+                ["epoch"] = epoch,
+                ["variable"] = variable
             });
         return JsonSerializer.Serialize(new
         {
