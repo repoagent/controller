@@ -1,5 +1,4 @@
 using System.CommandLine;
-using System.Diagnostics;
 
 namespace RepoAgentController;
 
@@ -244,16 +243,8 @@ public static class BridgeCommand
                                 }
                                 Log.Write("mode", $"polling interval-seconds={result.GetValue(interval)}");
                                 Log.Write("ready", $"repository={repo} actor={credentials.AgentLogin} mode=polling");
-                                do
-                                {
-                                    intakeStop.Token.ThrowIfCancellationRequested();
-                                    var pollStarted = Stopwatch.GetTimestamp();
-                                    var succeeded = await bridge.Poll(runtimeToken);
-                                    Log.Write("poll-completed", $"success={succeeded} elapsed-ms={Stopwatch.GetElapsedTime(pollStarted).TotalMilliseconds:F0}");
-                                    if (result.GetValue(once)) return await outbox.Flush(runtimeToken) && succeeded ? 0 : 1;
-                                    await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), time, intakeStop.Token);
-                                } while (!intakeStop.IsCancellationRequested);
-                                return 0;
+                                return await new ControllerPolling(bridge, outbox, time, new ControllerLog(), TimeSpan.FromSeconds(result.GetValue(interval)))
+                                    .Run(result.GetValue(once), intakeStop.Token, runtimeToken);
                             }
                             finally
                             {
