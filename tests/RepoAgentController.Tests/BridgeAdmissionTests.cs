@@ -506,4 +506,346 @@ public sealed class BridgeAdmissionTests
             Assert.Equal(["admit", "bind S1", "abandon", "dispose"], world.Admission.Calls);
         }
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Shutdown_waits_for_entered_acknowledgement_and_settles_correlated_completion(bool completesBeforeAcknowledgement)
+    {
+        var clock = new SteppedClock(BridgeWorld.Start);
+        var github = new InMemoryDiscussions(clock);
+        github.Open(1, "@test-app[bot] complete this accepted work");
+        var saved = new InMemoryDiscussionStore();
+        var state = new InMemoryControllerState();
+        var log = new RecordingLog();
+        var runtime = new HeldAcknowledgement();
+        var sessions = new AgentSessions(runtime, log);
+        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        await using var outbox = new GitHubOutbox(BridgeWorld.Repository, github, InMemoryDiscussions.App, state, clock, log);
+        var bridge = new Bridge(BridgeWorld.Repository, github, InMemoryDiscussions.App, sessions,
+            new StateStore(saved, BridgeWorld.Repository), outbox, [], settings, new AgentInputJson(), log, clock);
+        using var activity = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        using var abort = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var observing = bridge.Poll(activity.Token);
+        await runtime.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var drain = bridge.StopAndDrain(abort.Token);
+        try
+        {
+            Assert.False(drain.IsCompleted);
+            Assert.False(runtime.Activity.IsCancellationRequested);
+            Assert.NotNull(saved.Saved!.Discussions["D1"].Pending);
+            if (completesBeforeAcknowledgement) runtime.Inner.Completed("S1", "T1");
+            runtime.Acknowledge.TrySetResult();
+            Assert.True(await observing);
+            if (!completesBeforeAcknowledgement)
+            {
+                // No completion is available yet: this public exclusion only lets the queued stop enter behind admission.
+                await bridge.ExcludingDispatch(() => Task.FromResult(true), activity.Token)
+                    .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            }
+            Assert.False(runtime.Activity.IsCancellationRequested);
+            Assert.Null(saved.Saved!.Discussions["D1"].Pending);
+            if (!completesBeforeAcknowledgement)
+            {
+                Assert.False(drain.IsCompleted, "Native acknowledgement is not correlated turn completion.");
+                Assert.NotNull(saved.Saved.Discussions["D1"].Running);
+                runtime.Inner.Report("S1", AgentSessionStatus.Idle);
+                Assert.False(drain.IsCompleted, "An early native idle report cannot finish accepted work.");
+                runtime.Inner.Completed("S1", "T1");
+            }
+            await drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.Null(saved.Saved!.Discussions["D1"].Pending);
+            Assert.Null(saved.Saved.Discussions["D1"].Running);
+            Assert.Single(runtime.Inner.Requests);
+            Assert.Contains(log.Entries, entry => entry.Kind == "turn-ended" && entry.Message.EndsWith("status=completed", StringComparison.Ordinal));
+        }
+        finally
+        {
+            runtime.Acknowledge.TrySetResult();
+            await abort.CancelAsync();
+            await observing;
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Shutdown_never_admits_queued_or_new_work_through_either_dispatch_path(bool observeQueued)
+    {
+        await using var world = Mentioned(2);
+        world.Variables.Set(Setting, "1");
+        await world.Begin();
+        await world.Poll();
+        Assert.Single(world.Turns);
+        Assert.Equal([2], world.Waiting());
+        var drain = world.Bridge.StopAndDrain(world.Token);
+        world.Finish(1);
+        await drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        if (observeQueued) Assert.True(await world.Observe(2));
+        else await world.Dispatch();
+        world.GitHub.Open(3, "@test-app[bot] retain this for the next lifetime");
+        Assert.True(await world.Observe(3));
+        await world.Dispatch();
+
+        Assert.Single(world.Turns);
+        Assert.Contains(2, world.Waiting()); // Already-checkpointed input survives; retaining a new post-fence observation is optional.
+        Assert.Equal(["D1"], world.WithSessions);
+        Assert.Null(world.Saved(1)!.Running);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Shutdown_retains_an_accepted_turn_after_early_idle_even_when_its_Discussion_is_forgotten(bool forgotten)
+    {
+        await using var world = Mentioned(1);
+        await world.Begin();
+        await world.Poll();
+        var (session, turn) = world.Running(1);
+        if (forgotten)
+        {
+            world.GitHub.Remove(1);
+            Assert.True(await world.Observe(1));
+            Assert.Null(world.Saved(1));
+        }
+        world.Runtime.Report(session, AgentSessionStatus.Idle);
+        Assert.Equal(1, world.Sessions.ActiveTurns);
+        using var abort = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var drain = world.Bridge.StopAndDrain(abort.Token);
+        try
+        {
+            Assert.False(drain.IsCompleted, "Only a correlated end can retire the accepted turn, even without its Discussion record.");
+            world.Runtime.Completed(session, turn);
+            await drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.Equal(0, world.Sessions.ActiveTurns);
+            if (!forgotten) Assert.Null(world.Saved(1)!.Running);
+        }
+        finally { await abort.CancelAsync(); }
+    }
+
+    [Fact]
+    public async Task Shutdown_waits_fail_closed_for_native_active_work_without_a_known_accepted_turn()
+    {
+        await using var world = new BridgeWorld();
+        await world.Begin();
+        world.Runtime.Report("native-active", AgentSessionStatus.Active);
+        using var abort = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var drain = world.Bridge.StopAndDrain(abort.Token);
+        try
+        {
+            Assert.False(drain.IsCompleted);
+            world.Runtime.Report("native-active", AgentSessionStatus.Idle);
+            await drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.Empty(world.Turns);
+        }
+        finally { await abort.CancelAsync(); }
+    }
+
+    [Fact]
+    public async Task Shutdown_of_an_idle_bridge_is_immediate_and_repeated_stop_never_reopens_admission()
+    {
+        await using var world = new BridgeWorld();
+        await world.Begin();
+        await world.Bridge.StopAndDrain(world.Token).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await world.Bridge.StopAndDrain(world.Token).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        world.GitHub.Open(1, "@test-app[bot] wait for a later controller lifetime");
+        Assert.True(await world.Observe(1));
+        await world.Dispatch();
+
+        Assert.Empty(world.Turns);
+        Assert.Empty(world.WithSessions);
+    }
+
+    [Fact]
+    public async Task Shutdown_abort_keeps_admission_fenced_and_does_not_forge_a_turn_completion()
+    {
+        await using var world = Mentioned(2);
+        world.Variables.Set(Setting, "1");
+        await world.Begin();
+        await world.Poll();
+        using var abort = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var drain = world.Bridge.StopAndDrain(abort.Token);
+        await abort.CancelAsync();
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            Assert.NotNull(world.Saved(1)!.Running);
+            Assert.Empty(world.Logged("turn-ended"));
+            Assert.Equal([2], world.Waiting());
+        }
+        finally
+        {
+            world.Finish(1);
+        }
+        await world.Observe(2);
+        await world.Dispatch();
+        Assert.Single(world.Turns);
+        Assert.Equal([2], world.Waiting());
+    }
+
+    [Fact]
+    public async Task Shutdown_a_precanceled_repeat_cannot_report_clean_completion_or_undo_the_idle_fence()
+    {
+        await using var world = new BridgeWorld();
+        await world.Begin();
+        await world.Bridge.StopAndDrain(world.Token);
+        using var abort = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        await abort.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => world.Bridge.StopAndDrain(abort.Token));
+        world.GitHub.Open(1, "@test-app[bot] remain durably waiting");
+        await world.Observe(1);
+        await world.Dispatch();
+        Assert.Empty(world.Turns);
+        Assert.Empty(world.WithSessions);
+    }
+
+    [Fact]
+    public async Task Shutdown_settles_a_real_native_disconnect_as_lost_without_inventing_success()
+    {
+        await using var world = Mentioned(1);
+        await world.Begin();
+        await world.Poll();
+        using var abort = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var drain = world.Bridge.StopAndDrain(abort.Token);
+        try
+        {
+            world.Runtime.Disconnect();
+            await drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.Null(world.Saved(1)!.Running);
+            Assert.EndsWith("status=lost", Assert.Single(world.Logged("turn-ended")), StringComparison.Ordinal);
+        }
+        finally { await abort.CancelAsync(); }
+    }
+
+    [Fact]
+    public async Task Shutdown_settles_a_completion_published_while_an_earlier_outcome_is_saved()
+    {
+        var clock = new SteppedClock(BridgeWorld.Start);
+        var github = new InMemoryDiscussions(clock);
+        github.Open(1, "@test-app[bot] first accepted turn");
+        github.Open(2, "@test-app[bot] second accepted turn");
+        var durable = new InMemoryDiscussionStore();
+        var persisting = new AfterDiscussionSave(durable);
+        var state = new InMemoryControllerState();
+        var log = new RecordingLog();
+        var runtime = new FakeAgentRuntime();
+        var sessions = new AgentSessions(runtime, log);
+        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        await using var outbox = new GitHubOutbox(BridgeWorld.Repository, github, InMemoryDiscussions.App, state, clock, log);
+        var bridge = new Bridge(BridgeWorld.Repository, github, InMemoryDiscussions.App, sessions,
+            new StateStore(persisting, BridgeWorld.Repository), outbox, [], settings, new AgentInputJson(), log, clock);
+        Assert.True(await bridge.Poll(TestContext.Current.CancellationToken));
+        Assert.Equal(2, sessions.ActiveTurns);
+        var first = durable.Saved!.Discussions["D1"];
+        var second = durable.Saved.Discussions["D2"];
+        runtime.Report(first.SessionId!, AgentSessionStatus.Idle);
+        runtime.Completed(first.SessionId!, first.Running!.Turn);
+        var completedDuringSave = false;
+        persisting.AfterWrite = () =>
+        {
+            // The port first copies the write: S1 is settled while its atomic snapshot still contains active S2.
+            Assert.Null(durable.Saved!.Discussions["D1"].Running);
+            Assert.NotNull(durable.Saved.Discussions["D2"].Running);
+            completedDuringSave = true;
+            runtime.Report(second.SessionId!, AgentSessionStatus.Idle);
+            runtime.Completed(second.SessionId!, second.Running!.Turn);
+        };
+
+        await bridge.StopAndDrain(TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        Assert.True(completedDuringSave);
+        Assert.Null(durable.Saved!.Discussions["D1"].Running);
+        Assert.Null(durable.Saved.Discussions["D2"].Pending);
+        Assert.Null(durable.Saved.Discussions["D2"].Running);
+        Assert.Equal(2, log.Entries.Count(entry => entry.Kind == "turn-ended" && entry.Message.EndsWith("status=completed", StringComparison.Ordinal)));
+        Assert.Equal(2, runtime.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Shutdown_abort_during_the_final_durable_completion_cannot_report_a_clean_drain()
+    {
+        var clock = new SteppedClock(BridgeWorld.Start);
+        var github = new InMemoryDiscussions(clock);
+        github.Open(1, "@test-app[bot] genuinely completed native work");
+        var durable = new InMemoryDiscussionStore();
+        var persisting = new AfterDiscussionSave(durable);
+        var state = new InMemoryControllerState();
+        var log = new RecordingLog();
+        var runtime = new FakeAgentRuntime();
+        var sessions = new AgentSessions(runtime, log);
+        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        await using var outbox = new GitHubOutbox(BridgeWorld.Repository, github, InMemoryDiscussions.App, state, clock, log);
+        var bridge = new Bridge(BridgeWorld.Repository, github, InMemoryDiscussions.App, sessions,
+            new StateStore(persisting, BridgeWorld.Repository), outbox, [], settings, new AgentInputJson(), log, clock);
+        Assert.True(await bridge.Poll(TestContext.Current.CancellationToken));
+        var accepted = durable.Saved!.Discussions["D1"];
+        runtime.Report(accepted.SessionId!, AgentSessionStatus.Idle);
+        runtime.Completed(accepted.SessionId!, accepted.Running!.Turn);
+        using var abort = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var canceledDuringFinalSave = false;
+        persisting.AfterWrite = () =>
+        {
+            Assert.Null(durable.Saved!.Discussions["D1"].Running);
+            Assert.Null(durable.Saved.Discussions["D1"].Pending);
+            canceledDuringFinalSave = true;
+            abort.Cancel();
+        };
+
+        var drain = bridge.StopAndDrain(abort.Token);
+
+        Assert.True(canceledDuringFinalSave);
+        Assert.True(abort.IsCancellationRequested);
+        Assert.Null(durable.Saved!.Discussions["D1"].Running);
+        Assert.Null(durable.Saved.Discussions["D1"].Pending);
+        Assert.Contains(log.Entries, entry => entry.Kind == "turn-ended" && entry.Message.EndsWith("status=completed", StringComparison.Ordinal));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        github.Open(2, "@test-app[bot] do not reopen this stopped lifetime");
+        Assert.True(await bridge.Observe(2, TestContext.Current.CancellationToken));
+        await bridge.DispatchReady(TestContext.Current.CancellationToken);
+        Assert.Single(runtime.Requests);
+        Assert.Null(durable.Saved!.Discussions["D1"].Running);
+    }
+
+    // A faithful storage-port decorator: the existing fake owns copy-on-write durability; the callback follows its save.
+    sealed class AfterDiscussionSave(IDiscussionStore inner) : IDiscussionStore
+    {
+        public Action? AfterWrite { get; set; }
+        public DiscussionState? ReadDiscussions() => inner.ReadDiscussions();
+        public void WriteDiscussions(DiscussionState state)
+        {
+            inner.WriteDiscussions(state);
+            var after = AfterWrite;
+            AfterWrite = null;
+            after?.Invoke();
+        }
+    }
+
+    // Delays only the project-owned runtime port's acknowledgement; all session and delivery decisions remain real.
+    sealed class HeldAcknowledgement : IAgentRuntime
+    {
+        public FakeAgentRuntime Inner { get; } = new();
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Acknowledge { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public CancellationToken Activity { get; private set; }
+        public event Action<AgentRuntimeEvent>? Changed { add => Inner.Changed += value; remove => Inner.Changed -= value; }
+        public Task Restart(Action<int> whileStopped, CancellationToken ct) => Inner.Restart(whileStopped, ct);
+        public Task<(string SessionId, AgentSessionStatus Status)> StartSession(CancellationToken ct) => Inner.StartSession(ct);
+        public Task<AgentSessionStatus> ResumeSession(string sessionId, CancellationToken ct) => Inner.ResumeSession(sessionId, ct);
+        public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => Inner.ConfiguredModel(ct);
+        public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => Inner.Models(ct);
+        public async Task<AgentTurnAccepted> StartTurn(AgentTurnRequest request, CancellationToken ct)
+        {
+            Activity = ct;
+            Entered.TrySetResult();
+            await Acknowledge.Task.WaitAsync(ct);
+            return await Inner.StartTurn(request, ct);
+        }
+    }
+
 }

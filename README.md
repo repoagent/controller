@@ -41,6 +41,8 @@ Choose how the controller receives activity:
 2. A 👀 reaction means the agent accepted the input. It does not mean the work has finished; the agent posts its reply in the Discussion.
 3. Continue in comments and replies. Follow-ups wait for the current turn to finish and then reach the same session.
 
+A normal SIGTERM or Ctrl+C stop of a long-running controller holds new input and waits for active agent work to finish; credential authority loss still stops owned work immediately.
+
 Keep the controller and its host running to receive activity. Preserve its state and Codex storage across restarts. If you enable repository context, the managed checkout is disposable; the agent uses separate worktrees for edits. The supplied GitHub permission profiles support Discussions and optional code reading; they do not grant code pushes or pull request creation. Issues and pull requests are not conversation entry points.
 
 ## Configuration and operations

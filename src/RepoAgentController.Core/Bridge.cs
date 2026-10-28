@@ -30,6 +30,8 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     readonly SemaphoreSlim gate = new(1, 1), wake = new(0, 1);
     // Caller holds the gate. The batch each running turn carries, by turn ID, until its outcome; this lifetime only.
     readonly Dictionary<string, RunningBatch> running = [];
+    // Permanent for this lifetime, guarded by gate and checked by every admission path.
+    bool admissionStopped;
 
     // Read at each admission decision, so a refreshed repository value applies to the next dispatch.
     int ActiveSessionLimit => settings[ActiveSessionSetting].Value is { } value
@@ -200,6 +202,40 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         finally { gate.Release(); }
     }
 
+    /// <summary>Permanently stops new admission, then settles native work as it ends. Only a hard abort cancels the wait.</summary>
+    public async Task StopAndDrain(CancellationToken abort)
+    {
+        // A private pulse for each caller: dispatch has its own wake, and concurrent stops must not consume each other's signal.
+        var notification = new object();
+        TaskCompletionSource changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Notify() { lock (notification) changed.TrySetResult(); }
+        sessions.StatusChanged += Notify; // Raised after the turn journal observes the native event.
+        try
+        {
+            while (true)
+            {
+                Task next;
+                lock (notification)
+                {
+                    changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    next = changed.Task;
+                }
+                await gate.WaitAsync(abort);
+                try
+                {
+                    abort.ThrowIfCancellationRequested();
+                    admissionStopped = true;
+                    var settled = Settle();
+                    abort.ThrowIfCancellationRequested();
+                    if (settled) return;
+                }
+                finally { gate.Release(); }
+                await next.WaitAsync(abort);
+            }
+        }
+        finally { sessions.StatusChanged -= Notify; }
+    }
+
     /// <summary>Reconciles category enrollment starts with a refreshed repository settings change while no observation or
     /// dispatch runs, so a category removed and selected again between observations starts afresh.</summary>
     public async Task ReconcileCategoryEnrollment(CancellationToken ct)
@@ -333,6 +369,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     // Caller holds the gate. Returns whether a batch was accepted; its EYES receipts are then retained in the outbox.
     async Task<bool> Dispatch(DiscussionRecord record, CancellationToken ct)
     {
+        if (admissionStopped) return false;
         // Its waiting input, session ID, and URL for the reports below, threw when read for delivery before the records were typed.
         if (record.UnreadableKeys.FirstOrDefault(key => key.Key is RecordKey.Waiting or RecordKey.SessionId or RecordKey.Url).Value is { } unreadable) throw new InvalidDataException(unreadable.Reason);
         var waiting = record.Waiting!;
@@ -428,8 +465,9 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
 
     // Caller holds the gate. Ends the running marker of every turn the native completed or lost. Input of a turn the provider
     // rejected for its Codex account credentials goes back first in line as a redelivery; it waits for replacement credentials,
-    // since the rejection holds all dispatch.
-    void Settle()
+    // since the rejection holds all dispatch. Returns whether that same atomic snapshot held no native work, only after its
+    // outcomes are saved: a later ActiveTurns read could see a completion this pass has not yet consumed.
+    bool Settle()
     {
         var (ended, active) = sessions.TakeTurns();
         var events = new List<(string Kind, string Message)>();
@@ -450,10 +488,13 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             record.Running = null;
             events.Add(("turn-ended", $"{record.Url} session={record.SessionId ?? ""} turn={turn} status=lost"));
         }
-        if (events.Count == 0) return;
-        // Saved first: status and dashboard compose work from the saved state when these events are logged.
-        store.Save();
-        foreach (var (kind, message) in events) log.Write(kind, message);
+        if (events.Count != 0)
+        {
+            // Saved first: status and dashboard compose work from the saved state when these events are logged.
+            store.Save();
+            foreach (var (kind, message) in events) log.Write(kind, message);
+        }
+        return active.Count == 0;
     }
 
     // Caller holds the gate and saves. The native accepted this batch but the provider refused the Codex account, so no agent

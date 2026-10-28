@@ -16,14 +16,48 @@ public sealed class WebhookDeliveryTests
     [Fact]
     public async Task A_signed_Discussion_delivery_is_accepted_and_starts_a_turn_for_its_Discussion()
     {
-        await using var controller = new Controller(discussions: 0);
-        await controller.StartWebhooks();
-        controller.Open(1);
+        var controller = new Controller(discussions: 0);
+        var completionAttempted = false;
+        var bodySucceeded = false;
+        try
+        {
+            await controller.StartWebhooks();
+            controller.Open(1);
+            Assert.Equal(HttpStatusCode.Accepted, await Send(controller, new(Event(1))));
 
-        Assert.Equal(HttpStatusCode.Accepted, await Send(controller, new(Event(1))));
-
-        await controller.Logged(" webhook-observed discussion=1 success=True");
-        Assert.Equal(1, (await controller.Turn(1)).Discussion);
+            await controller.Logged(" webhook-observed discussion=1 success=True");
+            var turn = await controller.Turn(1);
+            Assert.Equal(1, turn.Discussion);
+            completionAttempted = true;
+            await controller.Finish(turn);
+            Assert.Equal(0, await controller.Stop());
+            Assert.Null(controller.DiscussionState(1)["running"]);
+            Assert.Null(controller.DiscussionState(1)["pending"]);
+            bodySucceeded = true;
+        }
+        finally
+        {
+            try
+            {
+                // Release only this case's accepted work if a routing assertion fails before normal completion.
+                if (!completionAttempted)
+                    foreach (var turn in controller.Native.Turns)
+                        controller.Native.Finish(turn, failed: false);
+            }
+            catch (Exception error) when (!bodySucceeded)
+            {
+                Console.Error.WriteLine("Webhook peer cleanup failed: " + error.GetType().Name);
+            }
+            finally
+            {
+                // Dispose retains its bounded watchdog and always closes the owned native connection/resources.
+                try { await controller.DisposeAsync(); }
+                catch (Exception error) when (!bodySucceeded)
+                {
+                    Console.Error.WriteLine("Webhook controller cleanup failed: " + error.GetType().Name);
+                }
+            }
+        }
     }
 
     [Fact]
