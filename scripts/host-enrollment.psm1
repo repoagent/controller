@@ -32,15 +32,26 @@ namespace RepoAgent {
 '@
 }
 
-function Read-HostJson([string]$Text) {
+function Read-HostJson([string]$Text, [switch]$ControllerDocument) {
     if ([Text.Encoding]::UTF8.GetByteCount($Text) -gt 65536) { throw 'Document exceeds 64 KiB.' }
     $document = [Text.Json.JsonDocument]::Parse($Text, [Text.Json.JsonDocumentOptions]@{ MaxDepth = 8 })
     try {
+        # Frozen wire/storage names are accepted only at this document boundary. Never rewrite a raw marker string.
+        function Field-Name([string]$Name) {
+            if ($ControllerDocument) {
+                switch -CaseSensitive ($Name) {
+                    'deviceId' { return 'enrollmentId' }
+                    'deviceSecret' { return 'controllerSecret' }
+                    'secret' { return 'setupSecret' }
+                }
+            }
+            return $Name
+        }
         function Test-Object($Element) {
             if ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Object) {
                 $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
                 foreach ($p in $Element.EnumerateObject()) {
-                    if (-not $names.Add($p.Name)) { throw 'Duplicate document field.' }
+                    if (-not $names.Add((Field-Name $p.Name))) { throw 'Duplicate document field.' }
                     Test-Object $p.Value
                 }
             } elseif ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Array) {
@@ -51,7 +62,7 @@ function Read-HostJson([string]$Text) {
         Test-Object $document.RootElement
         function Convert-Element($Element) {
             switch ($Element.ValueKind) {
-                Object { $result = [ordered]@{}; foreach ($p in $Element.EnumerateObject()) { $result[$p.Name] = Convert-Element $p.Value }; return $result }
+                Object { $result = [ordered]@{}; foreach ($p in $Element.EnumerateObject()) { $result[(Field-Name $p.Name)] = Convert-Element $p.Value }; return $result }
                 Array { $result = @($Element.EnumerateArray() | ForEach-Object { Convert-Element $_ }); return ,$result }
                 String { return $Element.GetString() }
                 Number { return $Element.GetInt64() }
@@ -79,6 +90,7 @@ function Assert-Id($Value) {
 # Agent variables under setup v4 (ADR 0012). Saved v2/v3 state keeps its original contract.
 $script:ApprovalLocations = @(
     [pscustomobject]@{ Location='AgentVariable'; Kind='repository-agent-variable'; SetupVersion=4; Name='Agent'; Legacy=$false; DefaultVariable='REPOAGENT_APPROVAL'; Path='agents/variables' }
+    [pscustomobject]@{ Location='AgentVariable'; Kind='repository-agent-variable'; SetupVersion=5; Name='Agent'; Legacy=$false; DefaultVariable='REPOAGENT_APPROVAL'; Path='agents/variables' }
     [pscustomobject]@{ Location='ActionsVariable'; Kind='repository-actions-variable'; SetupVersion=3; Name='Actions'; Legacy=$true; DefaultVariable='REPOAGENT_APPROVAL'; Path='actions/variables' }
     [pscustomobject]@{ Location='AgentVariable'; Kind='repository-agent-variable'; SetupVersion=2; Name='Agent'; Legacy=$true; DefaultVariable='APPROVED_CONTROLLER'; Path='agents/variables' }
 )
@@ -100,6 +112,7 @@ function Get-ApprovalPolicy([int]$SetupVersion, [string]$Profile) {
     if ($SetupVersion -eq 2 -and -not $settings) { return $(if ($clone) { 'repository-agent-clone-approval-v2' } else { 'repository-agent-approval-v2' }) }
     if ($SetupVersion -eq 3) { return $(if ($settings) { 'repository-actions-settings-approval-v3' } elseif ($clone) { 'repository-actions-clone-approval-v3' } else { 'repository-actions-approval-v3' }) }
     if ($SetupVersion -eq 4) { return $(if ($settings) { 'repository-agent-settings-approval-v4' } elseif ($clone) { 'repository-agent-clone-approval-v4' } else { 'repository-agent-approval-v4' }) }
+    if ($SetupVersion -eq 5) { return $(if ($settings) { 'repository-agent-settings-approval-v5' } elseif ($clone) { 'repository-agent-clone-approval-v5' } else { 'repository-agent-approval-v5' }) }
     throw 'Unsupported approval profile contract.'
 }
 function Get-ApprovalStateKind($State) {
@@ -110,7 +123,7 @@ function Get-ApprovalStateKind($State) {
         Assert-Text $State.repoEnvironment '\A[^\p{Cc}]{1,255}\z'
         Assert-Text $State.profile '\A(?:polling|webhook)\z'
         $kind = 'environment-variable'
-    } elseif ($State.version -in @(2, 3, 4)) {
+    } elseif ($State.version -in @(2, 3, 4, 5)) {
         # Kind names the location; version distinguishes legacy Agent v2 from Agent v4.
         Assert-Fields $State @('version','setupVersion','approvalKind','repository','repositoryId','brokerOrigin','approvalVariable','profile','pendingId','deadline','marker','expectedValueSha256','approvalWriteAttempted','approvalObserved')
         Assert-Id $State.setupVersion
@@ -228,7 +241,7 @@ function Read-PrivateJson([string]$Path) {
     try {
         if ($file.Length -gt 65536) { throw 'Private document exceeds 64 KiB.' }
         $reader = [IO.StreamReader]::new($file, [Text.UTF8Encoding]::new($false, $true))
-        try { return Read-HostJson $reader.ReadToEnd() } finally { $reader.Dispose() }
+          try { return Read-HostJson $reader.ReadToEnd() -ControllerDocument } finally { $reader.Dispose() }
     } finally { $file.Dispose() }
 }
 
@@ -280,9 +293,9 @@ function Invoke-EnrollmentBroker([string]$Origin, [string]$Method, [string]$Path
     $origin = Get-BrokerOrigin $Origin
     Assert-Text $Secret '\A[A-Za-z0-9_-]{43,128}\z'
     # Setup versions are separate from runtime revoke (v1/v2 frozen, v3 settings).
-    if ($Path -cnotmatch '\A(?:/v[234]/enrollments(?:/[A-Za-z0-9_-]+(?:/completion)?)?|/v[234]/devices/[A-Za-z0-9_-]+/acknowledgment|/v[123]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker route.' }
+    if ($Path -cnotmatch '\A(?:/v[2345]/enrollments(?:/[A-Za-z0-9_-]+(?:/completion)?)?|/v[234]/devices/[A-Za-z0-9_-]+/acknowledgment|/v5/controller-enrollments/[A-Za-z0-9_-]+/acknowledgment|/v[123]/(?:devices|controller-enrollments)/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker route.' }
     $operation = $Method + ' ' + $Path
-    if ($operation -cnotmatch '\A(?:POST /v[234]/enrollments|GET /v[234]/enrollments/[A-Za-z0-9_-]+|POST /v[234]/enrollments/[A-Za-z0-9_-]+/completion|POST /v[234]/devices/[A-Za-z0-9_-]+/acknowledgment|DELETE /v[123]/devices/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker operation.' }
+    if ($operation -cnotmatch '\A(?:POST /v[2345]/enrollments|GET /v[2345]/enrollments/[A-Za-z0-9_-]+|POST /v[2345]/enrollments/[A-Za-z0-9_-]+/completion|POST /v[234]/devices/[A-Za-z0-9_-]+/acknowledgment|POST /v5/controller-enrollments/[A-Za-z0-9_-]+/acknowledgment|DELETE /v[123]/(?:devices|controller-enrollments)/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker operation.' }
     $handler = [Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect = $false; $handler.UseCookies = $false
     $client = [Net.Http.HttpClient]::new($handler)
     $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), $origin + $Path)

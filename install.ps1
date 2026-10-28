@@ -47,7 +47,8 @@ param(
     [string[]]$BuildArg = @(),
     [string]$Repository,
     [string]$AppId,
-    [string]$DeviceId,
+    [Alias('DeviceId')][string]$EnrollmentId,
+    [ValidateSet(4, 5)][int]$ControllerEnrollmentVersion = 4,
     [string]$KeyPath,
     [string]$CodexAuthPath,
     [string]$Instance = $(if ($env:REPOAGENT_INSTANCE) { $env:REPOAGENT_INSTANCE } else { 'default' }),
@@ -98,6 +99,7 @@ if ($Action -in @('Install','Enroll')) {
 if ($Action -eq 'Enroll') {
     if ($GitHubEnvironment -or $ExpectedEnvironmentId) { throw 'Enroll uses a repository variable; Environment inputs are only for explicit legacy revoke.' }
     $enrollOptions = @{}
+    if ($PSBoundParameters.ContainsKey('ControllerEnrollmentVersion')) { $enrollOptions.ControllerEnrollmentVersion = $ControllerEnrollmentVersion }
     if ($EnrollmentProfile) { $enrollOptions.Profile = $EnrollmentProfile }
     if ($ApprovalLocation) { $enrollOptions.ApprovalLocation = $ApprovalLocation }
     & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions -Repository $Repository -BrokerOrigin $BrokerOrigin `
@@ -170,12 +172,12 @@ function Invoke-Runtime([string[]]$Arguments) {
 function Show-Binding($Binding) {
     # Only bounded public identity fields are suitable for a transcript. The native
     # consumer remains responsible for validating the frozen credential itself.
-    Assert-Text $Binding.deviceId '\A[0-9a-f]{32}\z'
+    Assert-Text $Binding.enrollmentId '\A[0-9a-f]{32}\z'
     Assert-Id $Binding.appId; Assert-Id $Binding.installationId
-    Write-Host "Saved device: $($Binding.deviceId); App: $($Binding.appId); installation: $($Binding.installationId); authorization is checked on Apply."
+    Write-Host "Saved device: $($Binding.enrollmentId); App: $($Binding.appId); installation: $($Binding.installationId); authorization is checked on Apply."
 }
 function Read-Document([string]$Path) {
-    return Read-HostJson ([Text.Encoding]::UTF8.GetString((Read-PrivateFileBytes $Path)))
+    return Read-HostJson ([Text.Encoding]::UTF8.GetString((Read-PrivateFileBytes $Path))) -ControllerDocument
 }
 try {
     if ($PSVersionTable.PSVersion -lt [version]'7.4') { Stop-Install 'Guided Install requires PowerShell 7.4 or later for checked durable host state.' }
@@ -264,6 +266,7 @@ try {
         if (($resolvedClone -or $resolvedSettings) -and $approval -and $approval.profile -cne $expectedProfile) { Stop-Install 'Changing clone or repository-settings authority requires a fresh instance and enrollment.' }
         $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
         $enrollOptions = @{ Repository=$Repository; BrokerOrigin=$BrokerOrigin; ApprovalVariable=$ApprovalVariable; Profile=$resolvedProfile; StateDirectory=$StateDirectory; NonInteractive=$true }
+        if ($PSBoundParameters.ContainsKey('ControllerEnrollmentVersion')) { $enrollOptions.ControllerEnrollmentVersion = $ControllerEnrollmentVersion }
         if ($ApprovalLocation) { $enrollOptions.ApprovalLocation = $ApprovalLocation }
         $global:LASTEXITCODE = 0
         & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions | Out-Host
@@ -386,7 +389,7 @@ try {
         $binding = Read-Document $enrollmentPath
         if ($InstallationId -and $InstallationId -cne [string]$binding.installationId) { Stop-Install 'Expected installation differs from the enrolled binding; no runtime started.' }
         $AppId = [string]$binding.appId; $InstallationId = [string]$binding.installationId
-        Write-Host "Bound device: $($binding.deviceId); App: $AppId; installation: $InstallationId."
+        Write-Host "Bound device: $($binding.enrollmentId); App: $AppId; installation: $InstallationId."
         $plan.appId = $AppId; $plan.installationId = $InstallationId
         Write-PrivateJson $launchPath $plan
     }

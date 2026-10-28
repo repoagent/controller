@@ -227,7 +227,7 @@ function Remove-LocalRuntime([string]$ExpectedId) {
 Import-Module "$PSScriptRoot/host-enrollment.psm1" -DisableNameChecking
 Import-Module "$PSScriptRoot/private-file.psm1"
 function Read-LocalJson([string]$Path) {
-    return Read-HostJson ([Text.Encoding]::UTF8.GetString((Read-PrivateFileBytes $Path)))
+    return Read-HostJson ([Text.Encoding]::UTF8.GetString((Read-PrivateFileBytes $Path))) -ControllerDocument
 }
 function Invoke-LocalUninstall([hashtable]$Options) {
     $stateDirectory = $Options.StateDirectory
@@ -244,14 +244,14 @@ function Invoke-LocalUninstall([hashtable]$Options) {
     $binding = if ($previous) { $previous.marker.binding } else { $null }
     if ($approval) {
         $kind = Get-ApprovalStateKind $approval
-        $approved = Read-HostJson $approval.marker
-        $binding = [ordered]@{ repository=$approval.repository; repositoryId=$approval.repositoryId; deviceId=$approved.deviceId;
+        $approved = Read-HostJson $approval.marker -ControllerDocument
+        $binding = [ordered]@{ repository=$approval.repository; repositoryId=$approval.repositoryId; enrollmentId=$approved.enrollmentId;
             appId=$approved.appId; installationId=$approved.installationId; brokerOrigin=$approval.brokerOrigin; profile=$approval.profile;
             approvalKind=$kind; approvalVariable=$approval.approvalVariable; expectedValueSha256=$approval.expectedValueSha256;
             githubEnvironment=$(if ($kind -eq 'environment-variable') { $approval.repoEnvironment } else { $null });
             environmentId=$(if ($kind -eq 'environment-variable') { $approval.environmentId } else { $null }) }
     }
-    $pairs = @(@('Repository','repository'),@('ExpectedRepositoryId','repositoryId'),@('DeviceId','deviceId'),@('AppId','appId'),
+    $pairs = @(@('Repository','repository'),@('ExpectedRepositoryId','repositoryId'),@('EnrollmentId','enrollmentId'),@('AppId','appId'),
         @('InstallationId','installationId'),@('BrokerOrigin','brokerOrigin'),@('EnrollmentProfile','profile'),@('ApprovalVariable','approvalVariable'),
         @('ExpectedValueSha256','expectedValueSha256'),@('GitHubEnvironment','githubEnvironment'),@('ExpectedEnvironmentId','environmentId'))
     if (-not $binding) {
@@ -270,11 +270,11 @@ function Invoke-LocalUninstall([hashtable]$Options) {
         $binding[$field] = [long]$binding[$field]
     }
     if ($binding.environmentId) { $binding.environmentId = [long]$binding.environmentId }
-    foreach ($field in @('repository','deviceId','brokerOrigin','profile','approvalVariable','expectedValueSha256')) {
+    foreach ($field in @('repository','enrollmentId','brokerOrigin','profile','approvalVariable','expectedValueSha256')) {
         if (-not $binding[$field]) { throw 'Complete nonsecret approval and device coordinates are required.' }
     }
     Assert-Text $binding.repository '\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z'
-    Assert-Text $binding.deviceId '\A[A-Za-z0-9_-]{1,128}\z'
+    Assert-Text $binding.enrollmentId '\A[A-Za-z0-9_-]{1,128}\z'
     Assert-Text $binding.expectedValueSha256 '\A[0-9a-f]{64}\z'
     Assert-Text $binding.approvalVariable '\A[A-Z_][A-Z0-9_]{0,99}\z'
     Assert-Text $binding.profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?\z'
@@ -293,7 +293,7 @@ function Invoke-LocalUninstall([hashtable]$Options) {
         githubMarker='unverifiable'; brokerClosure='unconfirmed'; outstandingTokens='unsettled'; recovery='Retry with retained nonsecret coordinates.' }
     $result = [ordered]@{ action='Uninstall'; instance=$context.Instance; localLaunch='unconfirmed'; localRuntime='unconfirmed';
         localCredentials='retained'; hostRecovery='unconfirmed'; revoke=$remote; selfRevoke='not-attempted'; result='partial' }
-    Write-Host "Instance $($context.Instance); image $($context.Image); repository $($binding.repository); device $($binding.deviceId)."
+    Write-Host "Instance $($context.Instance); image $($context.Image); repository $($binding.repository); device $($binding.enrollmentId)."
     Write-Host "Approval $($binding.approvalKind): $($binding.approvalVariable); fingerprint $($binding.expectedValueSha256)."
     if ($binding.approvalKind -eq 'environment-variable') {
         $remote.githubEnvironment = $binding.githubEnvironment
@@ -344,21 +344,21 @@ function Invoke-LocalUninstall([hashtable]$Options) {
                 $result.hostRecovery = 'protected'
                 try {
                     $recovery = Read-LocalJson (Join-Path $stateDirectory 'recovery.json')
-                    Assert-Fields $recovery @('version','setupVersion','approvalKind','request','secret','completionId','lastWorkAt','acknowledged','ackAttempted')
+                    Assert-Fields $recovery @('version','setupVersion','approvalKind','request','setupSecret','completionId','lastWorkAt','acknowledged','ackAttempted')
                     Assert-Fields $recovery.request @('idempotencyId','repositoryId','repository','variable','profile')
                     # Agent-variable kind alone cannot distinguish setup v2 from v4.
                     # Missing original approval proof leaves private recovery protected.
-                    if (-not $approval -or $approval.version -notin @(2,3,4)) { throw 'Original repository approval setup version is unconfirmed.' }
+                    if (-not $approval -or $approval.version -notin @(2,3,4,5)) { throw 'Original repository approval setup version is unconfirmed.' }
                     $recoveryVersion = $approval.version
                     if ($recovery.version -ne $recoveryVersion -or $recovery.setupVersion -ne $recoveryVersion -or $recovery.approvalKind -cne $binding.approvalKind -or $recovery.acknowledged -isnot [bool] -or $recovery.ackAttempted -cne $true -or $recovery.completionId -cnotmatch '^[0-9a-f]{32}$') { throw 'Unresolved recovery.' }
                     foreach ($pair in @(@('repositoryId','repositoryId'),@('repository','repository'),@('variable','approvalVariable'),@('profile','profile'))) {
                         if ($recovery.request[$pair[0]] -cne $binding[$pair[1]]) { throw 'Recovery binding differs.' }
                     }
                     $credential = Read-LocalJson $hostEnrollment
-                    foreach ($key in @('repository','repositoryId','deviceId','appId','installationId','brokerOrigin')) {
+                    foreach ($key in @('repository','repositoryId','enrollmentId','appId','installationId','brokerOrigin')) {
                         if ($credential[$key] -cne $binding[$key]) { throw 'Host enrollment binding differs.' }
                     }
-                    if ($launch -and $recovery.acknowledged -ceq $true -and $null -eq $recovery.secret -and $credential.deviceId -ceq $binding.deviceId -and $credential.repositoryId -eq $binding.repositoryId) {
+                    if ($launch -and $recovery.acknowledged -ceq $true -and $null -eq $recovery.setupSecret -and $credential.enrollmentId -ceq $binding.enrollmentId -and $credential.repositoryId -eq $binding.repositoryId) {
                         Remove-Item -LiteralPath $hostEnrollment
                         $result.hostRecovery = 'cleared'
                     }
@@ -447,8 +447,8 @@ function Invoke-LocalUpdate([hashtable]$Options) {
     if ($Options.Rollback -and $Options.Apply) { $binding = $record.currentLaunch.binding } else {
         $approval = Read-LocalJson (Join-Path $hostDirectory 'approval.json')
         $kind = Get-ApprovalStateKind $approval
-        $approved = Read-HostJson $approval.marker
-        $binding = [ordered]@{ repository=$approval.repository; repositoryId=$approval.repositoryId; deviceId=$approved.deviceId; appId=$approved.appId;
+        $approved = Read-HostJson $approval.marker -ControllerDocument
+        $binding = [ordered]@{ repository=$approval.repository; repositoryId=$approval.repositoryId; enrollmentId=$approved.enrollmentId; appId=$approved.appId;
             installationId=$approved.installationId; brokerOrigin=$approval.brokerOrigin; profile=$approval.profile; approvalKind=$kind;
             approvalVariable=$approval.approvalVariable; expectedValueSha256=$approval.expectedValueSha256;
             githubEnvironment=$(if ($kind -eq 'environment-variable') { $approval.repoEnvironment } else { $null }); environmentId=$(if ($kind -eq 'environment-variable') { $approval.environmentId } else { $null }) }
@@ -456,7 +456,7 @@ function Invoke-LocalUpdate([hashtable]$Options) {
     $kind = $binding.approvalKind
     if ($mirror.repository -cne $binding.repository) { throw 'Host repository binding differs.' }
     if (-not $record -and $mirror.runtimeImageId -cne $image) { throw 'Original host launch image differs.' }
-    Write-Host "Instance $instance; repository $($binding.repository); device $($binding.deviceId); image $image."
+    Write-Host "Instance $instance; repository $($binding.repository); device $($binding.enrollmentId); image $image."
     Write-Host "Approval $kind/$($binding.approvalVariable); prior $($mirror.launchState.priorImage); target $target; retain all seven volumes and private data."
     if (-not $Options.Apply) { Write-Host 'Read-only preview; authoritative volume verification is deferred until Apply.'; return }
     if ($Options.Rollback) { $target = $record.priorImage; if (-not $target) { throw 'No authoritative prior image is recorded.' } }
