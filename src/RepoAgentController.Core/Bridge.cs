@@ -225,7 +225,9 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
                 {
                     abort.ThrowIfCancellationRequested();
                     admissionStopped = true;
-                    if (Settle()) return;
+                    var settled = Settle();
+                    abort.ThrowIfCancellationRequested();
+                    if (settled) return;
                 }
                 finally { gate.Release(); }
                 await next.WaitAsync(abort);
