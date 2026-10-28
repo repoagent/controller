@@ -108,7 +108,7 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
 
     /// <summary>
     /// Removes an externally injected enrollment from this process environment and returns it, so no
-    /// later gh, Git or native child can inherit it. Returns null when no variable is selected.
+    /// later gh, Git or agent child can inherit it. Returns null when no variable is selected.
     /// </summary>
     internal static string? TakeInjected(string? variable)
     {

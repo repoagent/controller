@@ -15,8 +15,8 @@ using Xunit;
 namespace RepoAgentController.Tests;
 
 /// <summary>
-/// Runs the real controller entrypoint against a controlled GitHub world and native peer. The controller entrypoint, state,
-/// repository-settings reader, App gh wrapper and process boundaries are real; GitHub responses and the native JSON-RPC
+/// Runs the real controller entrypoint against a controlled GitHub world and agent peer. The controller entrypoint, state,
+/// repository-settings reader, App gh wrapper and process boundaries are real; GitHub responses and the agent JSON-RPC
 /// peer are controlled, so this is not live-provider evidence. Tests that use it belong to the "Managed checkout
 /// environment" collection, since the controller reads PATH and the console.
 /// </summary>
@@ -76,7 +76,7 @@ static class ControllerHarness
 
     const int OpenReadWrite = 2, OpenCloseOnExec = 0x80000, LockExclusive = 2, Interrupted = 4; // Linux values.
 
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2101", Justification = "Linux open consumes UTF-8 paths, explicitly marshalled as LPUTF8Str; UTF-16 would call the native API incorrectly.")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2101", Justification = "Linux open consumes UTF-8 paths, explicitly marshalled as LPUTF8Str; UTF-16 would call the agent API incorrectly.")]
     [DllImport("libc", EntryPoint = "open", SetLastError = true)]
     static extern int Open([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
 
@@ -131,11 +131,11 @@ static class ControllerHarness
             ["sender"] = new JsonObject { ["login"] = sender?.Login ?? "participant", ["type"] = sender?.Type ?? "User" }
         }.ToJsonString();
 
-    /// <summary>One native turn the controlled peer accepted, with the Discussion its envelope carried.</summary>
+    /// <summary>One agent turn the controlled peer accepted, with the Discussion its envelope carried.</summary>
     internal sealed record Turn(string Thread, string Id, int Discussion, JsonNode Envelope);
 
-    /// <summary>Runs the real controller entrypoint in polling or webhook mode against a controlled GitHub world and native peer.</summary>
-    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")] // The App gh wrapper and native relay use Unix tools.
+    /// <summary>Runs the real controller entrypoint in polling or webhook mode against a controlled GitHub world and agent peer.</summary>
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")] // The App gh wrapper and agent relay use Unix tools.
     internal sealed class Controller : IAsyncDisposable
     {
         static readonly TimeSpan PollInterval = TimeSpan.FromHours(1);
@@ -158,7 +158,7 @@ static class ControllerHarness
         public int StatusPort { get; } = FreePort();
         public Dictionary<string, string> Variables { get; } = [];
         public Dictionary<string, int> Statuses { get; } = [];
-        public NativePeer Native { get; }
+        public AgentPeer Agent { get; }
         public IReadOnlyList<string> Log => capture!.Lines;
 
         public Controller(int discussions)
@@ -168,12 +168,12 @@ static class ControllerHarness
             File.WriteAllText(privateKey, key.ExportRSAPrivateKeyPem());
             world = Path.Combine(directory, "github-world.json");
             gh = Path.Combine(directory, "gh");
-            tools = Path.Combine(directory, "native-tools");
+            tools = Path.Combine(directory, "agent-tools");
             state = Path.Combine(directory, "bridge.json");
             Directory.CreateDirectory(tools);
             for (var number = 1; number <= discussions; number++) this.discussions.Add(Discussion(number));
-            var socket = Path.Combine(directory, "native.sock");
-            Native = new NativePeer(socket);
+            var socket = Path.Combine(directory, "agent.sock");
+            Agent = new AgentPeer(socket);
             WriteExecutable(gh, GitHub.Replace("WORLD", Quote(world)));
             WriteExecutable(Path.Combine(tools, "codex"), Relay.Replace("SOCKET", Quote(socket)));
         }
@@ -215,7 +215,7 @@ static class ControllerHarness
             });
         }
 
-        /// <summary>Starts a real child CLI invocation using this fixture's existing provider and native peer.</summary>
+        /// <summary>Starts a real child CLI invocation using this fixture's existing provider and agent peer.</summary>
         public async Task StartChild()
         {
             Save();
@@ -356,18 +356,18 @@ static class ControllerHarness
             await Logged(reported, earlier + 1);
         }
 
-        /// <summary>Finishes a native turn and waits until the controller has observed its completion.</summary>
+        /// <summary>Finishes a agent turn and waits until the controller has observed its completion.</summary>
         public async Task Finish(Turn turn, bool failed = false)
         {
-            Native.Finish(turn, failed);
+            Agent.Finish(turn, failed);
             await Logged($" agent-event method=turn/completed thread={turn.Thread} turn={turn.Id} ");
         }
 
-        /// <summary>The <paramref name="number"/>th native turn, once the controller has checkpointed its delivery.</summary>
+        /// <summary>The <paramref name="number"/>th agent turn, once the controller has checkpointed its delivery.</summary>
         public async Task<Turn> Turn(int number)
         {
-            var turn = await Native.Accepted(number);
-            var deliveries = Native.Turns.Take(number).Count(earlier => earlier.Discussion == turn.Discussion);
+            var turn = await Agent.Accepted(number);
+            var deliveries = Agent.Turns.Take(number).Count(earlier => earlier.Discussion == turn.Discussion);
             await Logged($" forwarded {Url(turn.Discussion)} session={turn.Thread} ", deliveries);
             return turn;
         }
@@ -457,7 +457,7 @@ static class ControllerHarness
             try { if (run is not null) await run.WaitAsync(TimeSpan.FromSeconds(20), CancellationToken.None); }
             finally
             {
-                await Native.DisposeAsync();
+                await Agent.DisposeAsync();
                 child?.Dispose();
                 capture?.Dispose();
                 Environment.SetEnvironmentVariable("PATH", path);
@@ -513,7 +513,7 @@ static class ControllerHarness
             sys.stderr.write('Unexpected GitHub request\n');sys.exit(2)
             """;
 
-        // The controller starts this as codex app-server; it relays JSON-RPC lines to the test's native peer.
+        // The controller starts this as codex app-server; it relays JSON-RPC lines to the test's agent peer.
         const string Relay = """
             #!/usr/bin/python3
             import socket,sys,threading
@@ -527,10 +527,10 @@ static class ControllerHarness
     }
 
     /// <summary>
-    /// The controlled native app-server: it accepts every turn the controller starts and finishes turns only when the
+    /// The controlled agent app-server: it accepts every turn the controller starts and finishes turns only when the
     /// test says so. It counts running turns from its own side, independently of the controller.
     /// </summary>
-    internal sealed class NativePeer : IAsyncDisposable
+    internal sealed class AgentPeer : IAsyncDisposable
     {
         readonly Socket listener = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         readonly List<Turn> accepted = [];
@@ -543,7 +543,7 @@ static class ControllerHarness
         StreamWriter? writer;
         int threads, active, mostActive;
 
-        public NativePeer(string socket)
+        public AgentPeer(string socket)
         {
             listener.Bind(new UnixDomainSocketEndPoint(socket));
             listener.Listen(1);
@@ -555,7 +555,7 @@ static class ControllerHarness
         public int MostActive { get { lock (sync) return mostActive; } }
         public string[] Methods { get { lock (sync) return [.. methods]; } }
 
-        /// <summary>Refuses the next turn/start for the Discussion with a JSON-RPC error, as a native refusing input does.</summary>
+        /// <summary>Refuses the next turn/start for the Discussion with a JSON-RPC error, as a agent refusing input does.</summary>
         public void Reject(int discussion) { lock (sync) rejections.Add(discussion); }
 
         /// <summary>Completes when the <paramref name="number"/>th turn (1-based, in acceptance order) is accepted.</summary>
@@ -570,7 +570,7 @@ static class ControllerHarness
             }
         }
 
-        /// <summary>Reports the turn's end in pinned native order: thread status first, then turn/completed.</summary>
+        /// <summary>Reports the turn's end in pinned agent order: thread status first, then turn/completed.</summary>
         public void Finish(Turn turn, bool failed)
         {
             lock (sync)
@@ -610,7 +610,7 @@ static class ControllerHarness
                             "thread/start" => new JsonObject { ["thread"] = new JsonObject { ["id"] = "S" + ++threads, ["status"] = new JsonObject { ["type"] = "idle" } } },
                             "thread/resume" => new JsonObject { ["thread"] = new JsonObject { ["id"] = parameters!["threadId"]!.DeepClone(), ["status"] = new JsonObject { ["type"] = "idle" } } },
                             "turn/start" => new JsonObject { ["turn"] = new JsonObject { ["id"] = "T" + (accepted.Count + 1), ["status"] = "inProgress" } },
-                            // One selectable model with native defaults, as the pinned bundled catalogue reports it.
+                            // One selectable model with agent defaults, as the pinned bundled catalogue reports it.
                             "model/list" => new JsonObject { ["data"] = new JsonArray(new JsonObject { ["model"] = "gpt-6.1-sol", ["isDefault"] = true, ["defaultReasoningEffort"] = "low", ["supportedReasoningEfforts"] = new JsonArray(new JsonObject { ["reasoningEffort"] = "low" }) }) },
                             "config/read" => new JsonObject { ["config"] = new JsonObject() },
                             _ => new JsonObject()
@@ -619,7 +619,7 @@ static class ControllerHarness
                         if (method != "turn/start") continue;
                         mostActive = Math.Max(mostActive, ++active);
                         var thread = parameters!["threadId"]!.GetValue<string>();
-                        // Pinned native reports the thread active after acknowledging its turn.
+                        // Pinned agent reports the thread active after acknowledging its turn.
                         Send(new JsonObject { ["method"] = "thread/status/changed", ["params"] = new JsonObject { ["threadId"] = thread, ["status"] = new JsonObject { ["type"] = "active" } } });
                         accepted.Add(new Turn(thread, "T" + (accepted.Count + 1), envelope!["discussion"]!["number"]!.GetValue<int>(), envelope));
                         foreach (var waiter in waiters.Where(waiter => waiter.Number == accepted.Count).ToList())

@@ -85,7 +85,7 @@ public sealed class AppAuthenticationTests
     }
 
     [Fact]
-    public async Task The_same_native_command_wrapper_uses_a_refreshed_token_after_the_old_one_expires()
+    public async Task The_same_agent_command_wrapper_uses_a_refreshed_token_after_the_old_one_expires()
     {
         using var fixture = new AppFixture();
         using var credentials = fixture.Credentials();
@@ -123,7 +123,7 @@ public sealed class AppAuthenticationTests
     }
 
     [Fact]
-    public async Task Scheduled_refresh_failure_blocks_native_commands_until_the_next_scheduled_recovery()
+    public async Task Scheduled_refresh_failure_blocks_agent_commands_until_the_next_scheduled_recovery()
     {
         using var fixture = new AppFixture();
         using var credentials = fixture.Credentials();

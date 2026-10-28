@@ -101,7 +101,7 @@ public sealed class BridgeInputTests
     public async Task A_long_enrolled_conversation_bootstraps_in_bounded_inputs_that_keep_every_comment_in_order()
     {
         await using var world = Enrolled();
-        // GitHub bodies hold at most 65,536 characters; twenty long comments exceed the native input limit of 1,048,576.
+        // GitHub bodies hold at most 65,536 characters; twenty long comments exceed the agent input limit of 1,048,576.
         var bodies = Enumerable.Range(1, 20).Select(index => $"comment {index:D2} " + new string((char)('a' + index), 65_000)).ToArray();
         for (var index = 0; index < bodies.Length; index++) world.GitHub.Comment(1, $"C{index + 1}", bodies[index], Alice);
         for (var turns = -1; turns != world.Turns.Count;)
@@ -112,7 +112,7 @@ public sealed class BridgeInputTests
         }
 
         var inputs = world.Turns.Select(turn => (Text: turn.Input, Envelope: JsonNode.Parse(turn.Input)!)).ToArray();
-        // Each input stays within the 256 KiB batch bound, far below the native limit, so none is refused for its size.
+        // Each input stays within the 256 KiB batch bound, far below the agent limit, so none is refused for its size.
         Assert.All(inputs, input => Assert.InRange(input.Text.Length, 1, 256 * 1024));
         Assert.Equal(["bootstrap", .. Enumerable.Repeat("continue", inputs.Length - 1)], inputs.Select(input => input.Envelope["_bridge"]!["mode"]!.GetValue<string>()));
         // Every comment arrives exactly once and in order: in the bootstrap context or, after it, in its change.

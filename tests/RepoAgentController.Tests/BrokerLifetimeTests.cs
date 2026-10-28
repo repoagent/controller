@@ -18,17 +18,17 @@ public sealed class BrokerLifetimeTests
     [InlineData("turn", false, "transport")]
     [InlineData("turn", false, "deadline")]
     [InlineData("turn", false, "unavailable")]
-    public async Task Failed_broker_renewal_stops_owned_native_work_and_preserves_recovery(string stage, bool webhooks, string failure)
+    public async Task Failed_broker_renewal_stops_owned_agent_work_and_preserves_recovery(string stage, bool webhooks, string failure)
         => await Exercise(stage, webhooks, false, failure);
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public Task User_cancellation_keeps_a_successful_exit_and_drains_native_work(bool webhooks)
+    public Task User_cancellation_keeps_a_successful_exit_and_drains_agent_work(bool webhooks)
         => AcceptedDrain(webhooks, brokerDenied: false, stopBeforeAcknowledgement: false);
 
     [Fact]
-    public async Task Concurrent_broker_renewal_and_native_disposal_cannot_orphan_a_bearer_holder()
+    public async Task Concurrent_broker_renewal_and_agent_disposal_cannot_orphan_a_bearer_holder()
         => await Exercise("teardown", false, false);
 
     [Theory]
@@ -52,11 +52,11 @@ public sealed class BrokerLifetimeTests
         using var log = new RenewalLog(clock);
         using var ready = new TcpListener(IPAddress.Loopback, 0);
         ready.Start();
-        var settingsPath = Path.Combine(fixture.Directory, "native-settings.json");
+        var settingsPath = Path.Combine(fixture.Directory, "agent-settings.json");
         var history = Path.Combine(fixture.Directory, "history.jsonl");
-        var requests = Path.Combine(fixture.Directory, "native-requests.jsonl");
+        var requests = Path.Combine(fixture.Directory, "agent-requests.jsonl");
         var eof = Path.Combine(fixture.Directory, "stdin-closed");
-        var tools = Path.Combine(fixture.Directory, "native-tools");
+        var tools = Path.Combine(fixture.Directory, "agent-tools");
         Directory.CreateDirectory(tools);
         File.WriteAllText(settingsPath, new JsonObject
         {
@@ -67,7 +67,7 @@ public sealed class BrokerLifetimeTests
             ["eof"] = eof,
             ["graceful"] = !brokerDenied
         }.ToJsonString());
-        WriteExecutable(Path.Combine(tools, "codex"), Native);
+        WriteExecutable(Path.Combine(tools, "codex"), Agent);
         WriteExecutable(fixture.Gh, GitHub);
         var previousPath = Environment.GetEnvironmentVariable("PATH");
         var previousSettings = Environment.GetEnvironmentVariable("NATIVE_DRAIN_SETTINGS");
@@ -104,7 +104,7 @@ public sealed class BrokerLifetimeTests
                 await shutdown.CancelAsync();
                 Assert.False(run.IsCompleted);
             }
-            // Acknowledgement and correlated completion are two independent native-peer commands.
+            // Acknowledgement and correlated completion are two independent agent-peer commands.
             await connection.GetStream().WriteAsync(new byte[] { 1 }, TestContext.Current.CancellationToken);
             await log.WaitFor(" forwarded https://github.com/owner/repository/discussions/1 ");
             await log.WaitFor(webhooks ? " reconciliation-completed discussion=all success=True" : " poll-completed success=True");
@@ -123,7 +123,7 @@ public sealed class BrokerLifetimeTests
             Assert.Equal(held, File.ReadAllText(fixture.State));
             Assert.Throws<IOException>(() => { using var conflicting = new FileStream(fixture.State + ".lock", FileMode.Open, FileAccess.ReadWrite, FileShare.None); });
             var enrollment = File.ReadAllText(fixture.EnrollmentFile);
-            var nativeHistory = File.ReadAllText(history);
+            var agentHistory = File.ReadAllText(history);
             var admitted = File.ReadAllText(requests);
             fixture.Transport.Requested = new(TaskCreationOptions.RunContinuationsAsynchronously);
             fixture.Clock.Advance(TimeSpan.FromMinutes(56));
@@ -163,14 +163,14 @@ public sealed class BrokerLifetimeTests
             AssertStopped(child);
             Assert.False(unrelated.HasExited);
             Assert.Equal(enrollment, File.ReadAllText(fixture.EnrollmentFile));
-            Assert.Equal(nativeHistory, File.ReadAllText(history));
+            Assert.Equal(agentHistory, File.ReadAllText(history));
             Assert.Equal(admitted, File.ReadAllText(requests));
             var denied = await fixture.InvokeWrapper();
             Assert.NotEqual(0, denied.Exit);
             Assert.DoesNotContain("gh-invoked", denied.Output);
             Assert.DoesNotContain("opaque-token-", fixture.RetainedLog);
             Assert.DoesNotContain("opaque-token-", File.ReadAllText(fixture.State));
-            Assert.DoesNotContain("opaque-token-", nativeHistory);
+            Assert.DoesNotContain("opaque-token-", agentHistory);
             Assert.DoesNotContain("opaque-token-", admitted);
             Assert.DoesNotContain("DO-NOT-LOG", fixture.RetainedLog);
             using var released = new FileStream(fixture.State + ".lock", FileMode.Open, FileAccess.ReadWrite, FileShare.None);
@@ -263,11 +263,11 @@ public sealed class BrokerLifetimeTests
         using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         using var ready = new TcpListener(IPAddress.Loopback, 0);
         ready.Start();
-        var settingsPath = Path.Combine(fixture.Directory, "native-settings.json");
+        var settingsPath = Path.Combine(fixture.Directory, "agent-settings.json");
         var history = Path.Combine(fixture.Directory, "history.jsonl");
-        var requests = Path.Combine(fixture.Directory, "native-requests.jsonl");
+        var requests = Path.Combine(fixture.Directory, "agent-requests.jsonl");
         var eof = Path.Combine(fixture.Directory, "stdin-closed");
-        var tools = Path.Combine(fixture.Directory, "native-tools");
+        var tools = Path.Combine(fixture.Directory, "agent-tools");
         Directory.CreateDirectory(tools);
         var settings = new JsonObject
         {
@@ -279,7 +279,7 @@ public sealed class BrokerLifetimeTests
             ["graceful"] = userCancellation
         };
         File.WriteAllText(settingsPath, settings.ToJsonString());
-        WriteExecutable(Path.Combine(tools, "codex"), Native);
+        WriteExecutable(Path.Combine(tools, "codex"), Agent);
         WriteExecutable(fixture.Gh, GitHub);
         var environment = new Dictionary<string, string?>
         {
@@ -316,13 +316,13 @@ public sealed class BrokerLifetimeTests
             Assert.True(proof["credentialCopied"]!.GetValue<bool>());
             Assert.False(parent.HasExited);
             Assert.False(child.HasExited);
-            Assert.False(run.IsCompleted); // Native initialized or received turn input; startup failure cannot pass.
+            Assert.False(run.IsCompleted); // Agent initialized or received turn input; startup failure cannot pass.
             var allowed = await fixture.InvokeWrapper();
             Assert.Equal(0, allowed.Exit);
             Assert.Contains("gh-invoked", allowed.Output);
             var state = File.ReadAllText(fixture.State);
             var enrollment = File.ReadAllText(fixture.EnrollmentFile);
-            var nativeHistory = File.ReadAllText(history);
+            var agentHistory = File.ReadAllText(history);
             var admitted = File.ReadAllText(requests);
             if (stage is "turn" or "teardown")
             {
@@ -343,7 +343,7 @@ public sealed class BrokerLifetimeTests
                 await fixture.Transport.Requested.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
                 if (stage == "teardown")
                 {
-                    // Renewal is in flight. Let the accepted native turn finish and --once dispose.
+                    // Renewal is in flight. Let the accepted agent turn finish and --once dispose.
                     await connection.GetStream().WriteAsync(new byte[] { 1 }, TestContext.Current.CancellationToken);
                     await parent.WaitForExitAsync(TestContext.Current.CancellationToken)
                         .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
@@ -366,7 +366,7 @@ public sealed class BrokerLifetimeTests
             if (stage == "teardown") Assert.Null(JsonNode.Parse(File.ReadAllText(fixture.State))!["discussions"]!["D1"]!["pending"]);
             else Assert.Equal(state, File.ReadAllText(fixture.State));
             Assert.Equal(enrollment, File.ReadAllText(fixture.EnrollmentFile));
-            Assert.Equal(nativeHistory, File.ReadAllText(history));
+            Assert.Equal(agentHistory, File.ReadAllText(history));
             Assert.Equal(admitted, File.ReadAllText(requests));
             if (!userCancellation) Assert.False(File.Exists(eof)); // Kill the tree before EOF can orphan a bearer holder.
             var denied = await fixture.InvokeWrapper();
@@ -390,7 +390,7 @@ public sealed class BrokerLifetimeTests
     {
         var stat = "/proc/" + process.Id + "/stat";
         Assert.True(process.HasExited || !File.Exists(stat) || File.ReadAllText(stat).Split(") ")[1][0] == 'Z',
-            "Owned native process is still executing: " + process.Id);
+            "Owned agent process is still executing: " + process.Id);
     }
 
     static void WriteExecutable(string path, string source)
@@ -400,7 +400,7 @@ public sealed class BrokerLifetimeTests
     }
 
     // Only the unmanaged JSON-RPC peer is controlled; OS processes, pipes, the wrapper credential handoff and locks are real.
-    const string Native = """"
+    const string Agent = """"
         #!/usr/bin/python3
         import json,os,signal,subprocess,sys,threading
         s=json.load(open(os.environ['NATIVE_DRAIN_SETTINGS']))
@@ -421,7 +421,7 @@ public sealed class BrokerLifetimeTests
          if s['stage']=='accepted':ready.recv(1);os.kill(os.getppid(),signal.SIGUSR2)
         threading.Event().wait()
         """
-         with open(s['history'],'w') as history:history.write('retain native history\n')
+         with open(s['history'],'w') as history:history.write('retain agent history\n')
          child=subprocess.Popen([sys.executable,'-c','import signal\n'+code],stdin=subprocess.DEVNULL,stdout=None if s['stage']=='teardown' else subprocess.DEVNULL)
          if s['stage'] in ('teardown','accepted'):acknowledged.wait()
         for line in sys.stdin:
@@ -433,14 +433,14 @@ public sealed class BrokerLifetimeTests
           start_child()
           if s['stage'] not in ('teardown','accepted'):continue
          if 'id' not in request:continue
-         result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1','status':{'type':'idle'}}}
+         result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'turn':{'id':'agent-turn'}} if method=='turn/start' else {'thread':{'id':'agent-T1','status':{'type':'idle'}}}
          print(json.dumps({'id':request['id'],'result':result}),flush=True)
          if method=='turn/start' and s['stage']=='accepted':
-          print(json.dumps({'method':'thread/status/changed','params':{'threadId':'native-T1','status':{'type':'active'}}}),flush=True)
+          print(json.dumps({'method':'thread/status/changed','params':{'threadId':'agent-T1','status':{'type':'active'}}}),flush=True)
           def finish():
            completed.wait()
-           print(json.dumps({'method':'thread/status/changed','params':{'threadId':'native-T1','status':{'type':'idle'}}}),flush=True)
-           print(json.dumps({'method':'turn/completed','params':{'threadId':'native-T1','turn':{'id':'native-turn','status':'completed'}}}),flush=True)
+           print(json.dumps({'method':'thread/status/changed','params':{'threadId':'agent-T1','status':{'type':'idle'}}}),flush=True)
+           print(json.dumps({'method':'turn/completed','params':{'threadId':'agent-T1','turn':{'id':'agent-turn','status':'completed'}}}),flush=True)
           threading.Thread(target=finish,daemon=True).start()
         with open(s['eof'],'w') as marker:marker.write('EOF')
         if child and s['graceful']:child.terminate();child.wait()

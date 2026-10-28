@@ -4,7 +4,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace RepoAgent.Auth.Development;
 
-// Optional, native local controller. Its enrollment is injected only into that child, which removes it before
+// Optional, agent local controller. Its enrollment is injected only into that child, which removes it before
 // starting tools. The AppHost never reads an App private key or writes the controller enrollment to its source tree.
 internal static class ControllerDevelopment
 {

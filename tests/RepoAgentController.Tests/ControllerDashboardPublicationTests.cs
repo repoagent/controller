@@ -332,7 +332,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
 
                 - **Controller:** `polling`; lifetime started at {Started}
                 ### Work capacity
-                - **Sessions:** 0 stored; 0 of 4 turns running (active-session limit); 0 awaiting native acknowledgement; 0 inputs waiting
+                - **Sessions:** 0 stored; 0 of 4 turns running (active-session limit); 0 awaiting agent acknowledgement; 0 inputs waiting
 
                 ### Authentication and settings
                 - **GitHub authentication:** healthy
@@ -376,7 +376,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         var stopped = Assert.Single(github.Dashboards);
         Assert.Equal("⏹ Stopped · 💓 24 Oct 2026 10:00 UTC — RepoAgent", stopped.Title);
         Assert.Contains($"\n- **Controller:** stopped at 2026-10-24T10:00:45Z after a graceful shutdown; it had started at {Started}\n", stopped.Body);
-        Assert.Contains("\n- **Sessions:** 0 stored; no turns run while the controller is stopped; 0 awaiting native acknowledgement; 0 inputs waiting\n", stopped.Body);
+        Assert.Contains("\n- **Sessions:** 0 stored; no turns run while the controller is stopped; 0 awaiting agent acknowledgement; 0 inputs waiting\n", stopped.Body);
     }
 
     // The controller's options reaching the check is the composition's; BaselineReleaseCheckTests owns the check's decisions.
@@ -445,14 +445,14 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         state.FailWrites = true;
         dashboard.Start(TestContext.Current.CancellationToken);
         await clock.Armed();
-        Assert.Equal([("dashboard-error", "No space left on enrollmentId; publication is retried at the next heartbeat")], log.Entries);
+        Assert.Equal([("dashboard-error", "No space left on device; publication is retried at the next heartbeat")], log.Entries);
         Assert.Null(state.Outbox);
 
         state.FailWrites = false;
         clock.Advance(ControllerDashboard.HeartbeatInterval);
         await clock.Armed();
         Assert.Single(log.Entries);
-        Assert.Contains("\n- 2026-10-24T10:00:00Z `dashboard-error`: `No space left on enrollmentId; publication is retried at the next heartbeat`\n", Published().Body);
+        Assert.Contains("\n- 2026-10-24T10:00:00Z `dashboard-error`: `No space left on device; publication is retried at the next heartbeat`\n", Published().Body);
     }
 
     [Fact]
@@ -652,7 +652,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         dashboard.Start(TestContext.Current.CancellationToken);
         await clock.Armed();
         Assert.Equal("💓 24 Oct 2026 10:00 UTC · 1/4 active · 2 queued — RepoAgent", Published().Title);
-        Assert.Contains("3 stored; 1 of 4 turns running (active-session limit); 1 awaiting native acknowledgement; 2 inputs waiting", Published().Body);
+        Assert.Contains("3 stored; 1 of 4 turns running (active-session limit); 1 awaiting agent acknowledgement; 2 inputs waiting", Published().Body);
         clock.Advance(new DateTimeOffset(2027, 1, 1, 0, 0, 0, TimeSpan.Zero) - Start);
         await clock.Armed();
         Assert.StartsWith("💓 01 Jan 2027 00:00 UTC", Published().Title);
@@ -736,10 +736,10 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         {
             dashboard.Start(TestContext.Current.CancellationToken);
             await clock.Armed();
-            Assert.Contains("\n- **Sessions:** 5 stored; 1 of 1 turns running (active-session limit); 1 awaiting native acknowledgement; 4 inputs waiting\n", Published().Body);
+            Assert.Contains("\n- **Sessions:** 5 stored; 1 of 1 turns running (active-session limit); 1 awaiting agent acknowledgement; 4 inputs waiting\n", Published().Body);
             Assert.Equal($"""
                 - [Discussion #1]({Url(1)}): running a turn since 2026-10-24T09:30:00Z; 1 inputs waiting for that turn to finish
-                - [Discussion #2]({Url(2)}): awaiting native acknowledgement
+                - [Discussion #2]({Url(2)}): awaiting agent acknowledgement
                 - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
                 - [Discussion #4]({Url(4)}): 2 inputs waiting for a free active-session slot
                 - [Discussion #5]({Url(5)}): idle; no input waiting
@@ -750,7 +750,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
             await clock.Armed();
             Assert.Equal($"""
                 - [Discussion #1]({Url(1)}): running a turn since 2026-10-24T09:30:00Z; 1 inputs waiting for that turn to finish
-                - [Discussion #2]({Url(2)}): awaiting native acknowledgement
+                - [Discussion #2]({Url(2)}): awaiting agent acknowledgement
                 - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
                 - [Discussion #4]({Url(4)}): 2 inputs held until the Codex account credentials are replaced
                 - [Discussion #5]({Url(5)}): idle; no input waiting
@@ -766,7 +766,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         // Turns end with the controller, so its stop claims no slot is awaited even at the limit.
         Assert.Equal($"""
             - [Discussion #1]({Url(1)}): its turn ended with the controller; 1 inputs waiting
-            - [Discussion #2]({Url(2)}): awaiting native acknowledgement
+            - [Discussion #2]({Url(2)}): awaiting agent acknowledgement
             - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
             - [Discussion #4]({Url(4)}): 2 inputs waiting for dispatch
             - [Discussion #5]({Url(5)}): idle; no input waiting

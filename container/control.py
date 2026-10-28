@@ -60,7 +60,7 @@ elif command in ('invalidate-session', 'restore-session'):
         saved = json.loads(backup.read_text())
         assert saved['discussion'] == discussion
         record['sessionId'] = saved['sessionId']
-        # Only after the suite observed native rejection, so no accepted input is replayed.
+        # Only after the suite observed agent rejection, so no accepted input is replayed.
         record.pop('pending', None)
     temporary = state_path.with_suffix('.tmp')
     temporary.write_text(json.dumps(state, indent=2))

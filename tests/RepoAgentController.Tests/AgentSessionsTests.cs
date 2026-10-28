@@ -61,7 +61,7 @@ public sealed class AgentSessionsTests
         Assert.Equal((AgentSessionStatus.Active, 1), (sessions.Status(session), sessions.ActiveTurns));
         Assert.Equal("turns [S1]", order[^2]);
 
-        // The pinned native reports idle before turn/completed.
+        // The pinned agent reports idle before turn/completed.
         runtime.Report(session, AgentSessionStatus.Idle);
         Assert.Equal((AgentSessionStatus.Active, 1), (sessions.Status(session), sessions.ActiveTurns));
         Assert.Equal(("session-status", "session=S1 status=Idle"), log.Entries[^1]);
@@ -109,7 +109,7 @@ public sealed class AgentSessionsTests
     {
         var ct = TestContext.Current.CancellationToken;
         var session = await sessions.Start(ct);
-        runtime.Answer(_ => throw new AgentRequestRejected("Native request failed: {\"code\":-32600}"));
+        runtime.Answer(_ => throw new AgentRequestRejected("Agent request failed: {\"code\":-32600}"));
 
         var refused = await Assert.ThrowsAsync<AgentRequestRejected>(() => Accept(session));
 
@@ -161,7 +161,7 @@ public sealed class AgentSessionsTests
 
         // A refresh journal blocked by a lost process refuses to record the acceptance.
         await Assert.ThrowsAsync<IOException>(() => sessions.Accept(session, """{"changes":[]}""", Selection,
-            (_, _) => throw new IOException("Checkout/native state uncertain; manual recovery required"), ct));
+            (_, _) => throw new IOException("Checkout/agent state uncertain; manual recovery required"), ct));
 
         Assert.DoesNotContain(log.Entries, entry => entry.Kind == "agent-accepted");
         Assert.Equal((AgentSessionStatus.Active, 1), (sessions.Status(session), sessions.ActiveTurns));
@@ -270,7 +270,7 @@ public sealed class AgentSessionsTests
     }
 
     [Theory]
-    [InlineData(false, "Supply fresh credentials with --codex-auth, or renew the native sign-in and restart.")]
+    [InlineData(false, "Supply fresh credentials with --codex-auth, or renew the agent sign-in and restart.")]
     [InlineData(true, "Replace the --codex-auth file; the controller applies it at the next idle boundary.")]
     public async Task A_credential_rejection_names_the_remedy_for_how_the_agent_account_credentials_are_supplied(bool supplied, string remedy)
     {

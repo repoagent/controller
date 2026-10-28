@@ -41,15 +41,15 @@ public sealed class ManagedCheckoutTests
         => await Exercise(true, false, "trust-cas");
 
     [Fact]
-    public async Task Production_native_loads_exact_root_trusted_project_instructions_and_skill()
-        => await Exercise(true, false, "native");
+    public async Task Production_agent_loads_exact_root_trusted_project_instructions_and_skill()
+        => await Exercise(true, false, "agent");
 
     static async Task Exercise(bool clone, bool checkAuth, string scenario)
     {
         if (OperatingSystem.IsWindows()) return; // This process fixture uses the Linux shipping tools.
         var realGit = Environment.GetEnvironmentVariable("PATH")!.Split(Path.PathSeparator)
             .Select(path => Path.GetFullPath(Path.Combine(path, "git"))).First(File.Exists);
-        // Git, durable files and native are real; only GitHub transport is replaced.
+        // Git, durable files and agent are real; only GitHub transport is replaced.
         using var fixture = new BrokerAuthenticationTests.Fixture(clone: clone);
         // Graceful shutdown belongs to explicit own-App mode; broker teardown always ends the tree before EOF.
         using var ownKey = scenario.StartsWith("shutdown-", StringComparison.Ordinal) ? RSA.Create(2048) : null;
@@ -62,7 +62,7 @@ public sealed class ManagedCheckoutTests
         Directory.CreateDirectory(workspace);
         await Git("init", "--quiet", "--initial-branch=trunk", origin);
         File.WriteAllText(Path.Combine(origin, "tracked-sentinel"), "approved repository\n");
-        if (scenario == "native")
+        if (scenario == "agent")
         {
             Directory.CreateDirectory(Path.Combine(origin, ".codex"));
             File.WriteAllText(Path.Combine(origin, ".codex", "config.toml"), "model_reasoning_effort = \"low\"\n");
@@ -78,16 +78,16 @@ public sealed class ManagedCheckoutTests
         var commit = await Git("-C", origin, "rev-parse", "HEAD");
         var bin = Path.Combine(fixture.Directory, "tools");
         Directory.CreateDirectory(bin);
-        var capture = Path.Combine(fixture.Directory, "native.jsonl");
+        var capture = Path.Combine(fixture.Directory, "agent.jsonl");
         var metadataFile = Path.Combine(fixture.Directory, "metadata.json");
         File.WriteAllText(metadataFile, """{"id":345,"full_name":"owner/repository","clone_url":"https://github.com/owner/repository.git","default_branch":"trunk"}""");
         var cloneLog = Path.Combine(fixture.Directory, "clone.log");
-        var native = Environment.GetEnvironmentVariable("CHECKOUT_NATIVE") ?? Environment.GetEnvironmentVariable("PATH")!
+        var agent = Environment.GetEnvironmentVariable("CHECKOUT_AGENT") ?? Environment.GetEnvironmentVariable("PATH")!
             .Split(Path.PathSeparator).Select(path => Path.Combine(path, "codex")).First(File.Exists);
         var home = Path.Combine(fixture.Directory, "private-codex");
         Directory.CreateDirectory(home);
         File.SetUnixFileMode(home, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        if (scenario == "native" || scenario.StartsWith("trust-", StringComparison.Ordinal))
+        if (scenario == "agent" || scenario.StartsWith("trust-", StringComparison.Ordinal))
         {
             File.WriteAllText(Path.Combine(home, "config.toml"), "model_reasoning_effort = \"medium\"\n# Preserve fixture comment\n[projects.\"/unrelated-fixture\"]\ntrust_level = \"untrusted\"\n");
             File.SetUnixFileMode(Path.Combine(home, "config.toml"), UnixFileMode.UserRead | UnixFileMode.UserWrite);
@@ -100,7 +100,7 @@ public sealed class ManagedCheckoutTests
             import json,os,sys,subprocess,threading
             with open(os.environ['CHECKOUT_CAPTURE'],'a') as out:
              out.write(json.dumps({'cwd':os.getcwd()})+'\n')
-            command=[os.environ['CHECKOUT_REAL_NATIVE']]+sys.argv[1:]
+            command=[os.environ['CHECKOUT_REAL_AGENT']]+sys.argv[1:]
             if os.environ.get('CHECKOUT_CAS')=='1' or os.environ.get('CHECKOUT_TRANSPORT'):
              child=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
              def output():
@@ -169,7 +169,7 @@ public sealed class ManagedCheckoutTests
             ["CHECKOUT_SHUTDOWN_PID"] = null,
             ["CHECKOUT_METADATA"] = metadataFile,
             ["CHECKOUT_CLONE_LOG"] = cloneLog,
-            ["CHECKOUT_REAL_NATIVE"] = native,
+            ["CHECKOUT_REAL_AGENT"] = agent,
             ["CODEX_HOME"] = home,
             ["CHECKOUT_REAL_GIT"] = realGit
         };
@@ -238,7 +238,7 @@ public sealed class ManagedCheckoutTests
                     Assert.Contains("$github-discussion", instructions); Assert.Contains("GitHub App installation", instructions); Assert.Contains("Preserve attribution", instructions);
                 }
                 Assert.True(requests[2]["params"]!["excludeTurns"]!.GetValue<bool>());
-                return; // Fake transport acknowledgement, never a genuine native turn or resume claim.
+                return; // Fake transport acknowledgement, never a genuine agent turn or resume claim.
             }
             if (scenario is "shutdown-leases" or "shutdown-forced")
             {
@@ -257,7 +257,7 @@ public sealed class ManagedCheckoutTests
                 {
                     if (rootProcess is not null) Assert.False(rootProcess.HasExited);
                     var count = File.ReadAllLines(capture).Length;
-                    Assert.Equal(1, await Start()); // Same StateStore lease while native shutdown is held.
+                    Assert.Equal(1, await Start()); // Same StateStore lease while agent shutdown is held.
                     args[args.IndexOf("--state") + 1] = Path.Combine(fixture.Directory, "competing-state.json");
                     Assert.Equal(1, await Start()); // Different state, same actual workspace lease.
                     Assert.Equal(count, File.ReadAllLines(capture).Length);
@@ -280,11 +280,11 @@ public sealed class ManagedCheckoutTests
                 Assert.Equal(0, await leader.WaitAsync(TimeSpan.FromSeconds(10)));
                 return;
             }
-            if (scenario == "native")
+            if (scenario == "agent")
             {
                 var testRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../.."));
-                var observation = await Run("python3", Path.Combine(testRoot, "tests/installers/test_checkout_native.py"), "--observe-production", expected, home);
-                Console.WriteLine("native-production-proof " + observation);
+                var observation = await Run("python3", Path.Combine(testRoot, "tests/installers/test_checkout_agent.py"), "--observe-production", expected, home);
+                Console.WriteLine("agent-production-proof " + observation);
                 Assert.Equal("{\"fixture_preservation\":\"no credentials\"}\n", File.ReadAllText(Path.Combine(home, "auth.json")));
                 Assert.Equal("{\"fixture_preservation\":\"not session history\"}\n", File.ReadAllText(Path.Combine(home, "history.jsonl")));
                 Assert.Contains("# Preserve fixture comment", File.ReadAllText(Path.Combine(home, "config.toml")));
@@ -304,7 +304,7 @@ public sealed class ManagedCheckoutTests
         finally { foreach (var pair in previous) Environment.SetEnvironmentVariable(pair.Key, pair.Value); }
     }
 
-    // Only upstream App responses are controlled; native shutdown and both ownership leases stay real.
+    // Only upstream App responses are controlled; agent shutdown and both ownership leases stay real.
     sealed class GracefulOwnAppProvider : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)

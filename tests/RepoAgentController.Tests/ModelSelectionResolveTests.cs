@@ -18,7 +18,7 @@ public sealed class ModelSelectionResolveTests
     [InlineData(null, null, "gpt-5.5", "high", "gpt-5.5", "high")]
     [InlineData("luna6", null, "gpt-5.5", "high", "gpt-6-luna", "high")]
     [InlineData(null, "xhigh", "gpt-5.5", null, "gpt-5.5", "xhigh")]
-    public void An_unset_repository_default_falls_back_to_the_native_configuration_then_the_model_catalogue(
+    public void An_unset_repository_default_falls_back_to_the_agent_configuration_then_the_model_catalogue(
         string? model, string? reasoning, string? agentModel, string? agentReasoning, string expectedModel, string expectedEffort)
     {
         var choice = ModelSelection.Resolve([], Setting(model), Setting(reasoning), agentModel, agentReasoning, Catalogue);

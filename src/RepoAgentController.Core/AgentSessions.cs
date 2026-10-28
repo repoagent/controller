@@ -35,7 +35,7 @@ public sealed class AgentSessions
     readonly bool suppliedCredentials;
     readonly CancellationToken credentialLost;
     int epoch = 1;
-    // Guarded by statusLock for this epoch: loaded sessions, sessions oriented since loading, their latest native status
+    // Guarded by statusLock for this epoch: loaded sessions, sessions oriented since loading, their latest agent status
     // with a change version, each session's accepted turn until its turn/completed, and completions that overtook their acceptance.
     readonly object statusLock = new();
     readonly HashSet<string> resumed = [], oriented = [];
@@ -79,11 +79,11 @@ public sealed class AgentSessions
                     case AgentRuntimeDisconnected: Forget(); changed = true; break;
                     case AgentSessionStatusChanged { SessionId.Length: > 0 } report:
                         Report(report.SessionId, report.Status); changed = true;
-                        log.Write("session-status", $"session={report.SessionId} status={Native(report.SessionId)}");
+                        log.Write("session-status", $"session={report.SessionId} status={Agent(report.SessionId)}");
                         break;
                     case AgentTurnCompleted { SessionId.Length: > 0, TurnId: { } turn } completed:
                         var id = completed.SessionId;
-                        // The native reports idle before turn/completed; the session admits input after both.
+                        // The agent reports idle before turn/completed; the session admits input after both.
                         if (turns.GetValueOrDefault(id) == turn) turns.Remove(id);
                         else { if (finished.Count >= 256) finished.Clear(); finished.Add((id, turn)); }
                         completion = completed;
@@ -114,21 +114,21 @@ public sealed class AgentSessions
         if (status == AgentSessionStatus.NotLoaded) { resumed.Remove(id); oriented.Remove(id); }
     }
     long Version(string id) => statuses.TryGetValue(id, out var value) ? value.Version : 0;
-    AgentSessionStatus Native(string id) => statuses.TryGetValue(id, out var value) ? value.Status : AgentSessionStatus.Unknown;
-    // An accepted turn holds its session until that turn's completion, whatever status the native reports meanwhile.
-    AgentSessionStatus Current(string id) => turns.ContainsKey(id) ? AgentSessionStatus.Active : Native(id);
+    AgentSessionStatus Agent(string id) => statuses.TryGetValue(id, out var value) ? value.Status : AgentSessionStatus.Unknown;
+    // An accepted turn holds its session until that turn's completion, whatever status the agent reports meanwhile.
+    AgentSessionStatus Current(string id) => turns.ContainsKey(id) ? AgentSessionStatus.Active : Agent(id);
 
-    /// <summary>Broker credential loss has begun terminating the native process; this controller lifetime is ending.</summary>
+    /// <summary>Broker credential loss has begun terminating the agent process; this controller lifetime is ending.</summary>
     public bool CredentialLost => credentialLost.IsCancellationRequested;
 
     public AgentSessionStatus Status(string id) { lock (statusLock) return Current(id); }
     public bool Loaded(string id) { lock (statusLock) return resumed.Contains(id); }
-    /// <summary>Sessions running a native turn in this process; idle, unloaded and failed sessions are not counted.</summary>
+    /// <summary>Sessions running a agent turn in this process; idle, unloaded and failed sessions are not counted.</summary>
     public int ActiveTurns { get { lock (statusLock) return Running().Count(); } }
 
     /// <summary>
     /// Takes the turns completed since the last call, together with the sessions still running a turn. Read atomically, so a
-    /// session that runs no turn and has no outcome here lost its turn with the native process.
+    /// session that runs no turn and has no outcome here lost its turn with the agent process.
     /// </summary>
     public (TurnOutcome[] Ended, HashSet<string> Running) TakeTurns()
     {
@@ -159,11 +159,11 @@ public sealed class AgentSessions
         return true;
     }
 
-    // The native reports account-credential health only through turn outcomes.
+    // The agent reports account-credential health only through turn outcomes.
     volatile string? authenticationFailure;
     int authenticated;
 
-    /// <summary>The native's latest account-credential rejection; cleared by applied replacement credentials or a completed turn.</summary>
+    /// <summary>The agent's latest account-credential rejection; cleared by applied replacement credentials or a completed turn.</summary>
     public string? AuthenticationFailure => authenticationFailure;
 
     void Authentication(AgentTurnCompleted turn)
@@ -179,7 +179,7 @@ public sealed class AgentSessions
             authenticationFailure = message;
             log.Write("codex-auth-failed", $"session={turn.SessionId} turn={turn.TurnId}: Codex account credentials were rejected ({message}). " +
                 (suppliedCredentials ? "Replace the --codex-auth file; the controller applies it at the next idle boundary." :
-                    "Supply fresh credentials with --codex-auth, or renew the native sign-in and restart.") +
+                    "Supply fresh credentials with --codex-auth, or renew the agent sign-in and restart.") +
                 " New Discussion input is held until then.");
         }
     }
@@ -241,19 +241,19 @@ public sealed class AgentSessions
         bool orient;
         lock (statusLock)
         {
-            // Native turn/start adds input to an active turn (steering); only a loaded session that admits input receives a batch.
+            // Agent turn/start adds input to an active turn (steering); only a loaded session that admits input receives a batch.
             if (!resumed.Contains(id) || !Admits(Current(id)))
-                throw new InvalidOperationException("Native session is not loaded and ready for input; input must wait");
-            // Each start or resume in this native process receives the shared orientation once.
+                throw new InvalidOperationException("Agent session is not loaded and ready for input; input must wait");
+            // Each start or resume in this agent process receives the shared orientation once.
             orient = !oriented.Contains(id);
         }
-        // Native keeps a turn's model and effort for later turns, so every turn states its selection.
+        // Agent keeps a turn's model and effort for later turns, so every turn states its selection.
         var response = await runtime.StartTurn(new(id, input, selection, orient), ct);
         var turn = response.TurnId;
         lock (statusLock)
         {
             if (orient && resumed.Contains(id)) oriented.Add(id);
-            // Native reports active only after this response, and its completion can overtake it.
+            // Agent reports active only after this response, and its completion can overtake it.
             if (!finished.Remove((id, turn)) && !response.Ended) turns[id] = turn;
             TurnsChanged?.Invoke([.. Running()]);
         }

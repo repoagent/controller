@@ -49,7 +49,7 @@ public sealed class DiscussionJourney
                 await Until(async () =>
                 {
                     var log = await Logs();
-                    return log.Split('\n').Any(line => IsEvent(line, "agent-accepted") && line.Contains(" session=" + session + " ", StringComparison.Ordinal)) && NativeTurnsFinished(log);
+                    return log.Split('\n').Any(line => IsEvent(line, "agent-accepted") && line.Contains(" session=" + session + " ", StringComparison.Ordinal)) && AgentTurnsFinished(log);
                 }, "the accepted smoke turn completed before credential closure");
                 Pass("HOSTED_INSTALLER", new { discussion = fixture["url"]!.ToString(), reply = reply["url"]!.ToString(), actor, webhook = "observed", receipt = "EYES" });
                 await Api("mutation($id:ID!){deleteDiscussion(input:{id:$id}){clientMutationId}}", new { id = fixture["id"]!.ToString() });
@@ -81,7 +81,7 @@ public sealed class DiscussionJourney
             await Receipt(a["id"]!.GetValue<string>());
             var originalSession = await Session(a);
             Pass(explicitJourney ? "SETUP_EXPLICIT" : "C01", new { discussion = a["url"]!.ToString(), session = originalSession, reply = initial["url"]!.ToString() });
-            await Until(async () => NativeTurnsFinished(await Logs()), "initial turn completed before container replacement");
+            await Until(async () => AgentTurnsFinished(await Logs()), "initial turn completed before container replacement");
 
             if (!recoveryOnly)
             {
@@ -123,22 +123,22 @@ public sealed class DiscussionJourney
                 Pass("C06", new { skill = "acceptance-marker", correlation = run, expected });
 
                 var hold = await Comment(a, $"Use $acceptance-marker's marker.py with arguments {run} --hold. It creates a ready file and waits up to 300 seconds for the test runner's release file. Run it now and publish its result once after release. If the skill is unavailable, report SKILL_UNAVAILABLE.");
-                await Until(() => Task.FromResult(File.Exists("/workspace/hold-ready-" + run)), "native skill action is active");
+                await Until(() => Task.FromResult(File.Exists("/workspace/hold-ready-" + run)), "agent skill action is active");
                 var during = await Comment(a, "This additional input arrives while the previous tool is waiting. When you receive it, reply once with ACTIVE_SECOND_" + run);
-                await Until(async () => Waiting(await Logs(), during["id"]!.ToString()), "second input waits during native work");
+                await Until(async () => Waiting(await Logs(), during["id"]!.ToString()), "second input waits during agent work");
                 Assert.Equal(0, CountAcceptedSources(await Logs(), during["id"]!.ToString()));
                 Assert.Equal(0, Eyes(await Source(during["id"]!.ToString())));
                 var activeGate = JsonNode.Parse(await File.ReadAllTextAsync("/workspace/hold-ready-" + run, TestContext.Current.CancellationToken))!;
-                Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "native skill gate remains active while the additional input waits");
+                Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "agent skill gate remains active while the additional input waits");
                 Assert.False(File.Exists("/workspace/hold-release-" + run));
                 File.WriteAllText("/workspace/hold-release-" + run, "release");
-                await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted after native idle");
+                await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted after agent idle");
                 await Receipt(during["id"]!.ToString());
                 await Reply(a, expected, hold["id"]!.ToString());
                 await Reply(a, "ACTIVE_SECOND_" + run, during["id"]!.ToString());
                 Pass("C07", new { activeSource = hold["url"]!.ToString(), additionalSource = during["url"]!.ToString() });
 
-                await Until(async () => NativeTurnsFinished(await Logs()), "native turns completed before quiet observation");
+                await Until(async () => AgentTurnsFinished(await Logs()), "agent turns completed before quiet observation");
                 var quietBaseline = Forwarded(await Logs());
                 await StableAcrossPolls(log => Forwarded(log) == quietBaseline, "unchanged polls and App-only output stay quiet");
                 Pass("C08", new { acceptedInputs = quietBaseline, completeUnchangedPolls = 2 });
@@ -150,13 +150,13 @@ public sealed class DiscussionJourney
                 Assert.Equal(originalSession, await Session(a));
                 Assert.Contains("session-resumed " + originalSession, await Logs());
                 Pass("C09", new { session = originalSession, reply = afterRestart["url"]!.ToString() });
-                await Until(async () => NativeTurnsFinished(await Logs()), "continued turn completed before the rejection fixture");
+                await Until(async () => AgentTurnsFinished(await Logs()), "continued turn completed before the rejection fixture");
             }
 
-            // The operator path stops the bridge, backs up state and substitutes an invalid native ID.
+            // The operator path stops the bridge, backs up state and substitutes an invalid agent ID.
             await Control("invalidate-session", a["id"]!.ToString());
             var rejected = await Comment(a, "Rejected-input fixture: reply only if this input is accepted. Marker REJECTED_" + run);
-            await Until(async () => HasRetryForSource(await Logs(), a["url"]!.ToString(), rejected["id"]!.ToString()), "native rejection retried for this source and the deliberately invalid session");
+            await Until(async () => HasRetryForSource(await Logs(), a["url"]!.ToString(), rejected["id"]!.ToString()), "agent rejection retried for this source and the deliberately invalid session");
             Assert.Equal(0, Eyes(await Source(rejected["id"]!.ToString())));
             var rejectedCount = Forwarded(await Logs());
             await StableAcrossPolls(log => Forwarded(log) == rejectedCount, "rejected input keeps retrying without acceptance", requireSuccessfulPolls: false);
@@ -173,7 +173,7 @@ public sealed class DiscussionJourney
             Assert.Equal(originalSession, await Session(a));
             Pass("C11", new { session = originalSession });
 
-            await Until(async () => NativeTurnsFinished(await Logs()), "turn completion before the credential fault fixture");
+            await Until(async () => AgentTurnsFinished(await Logs()), "turn completion before the credential fault fixture");
             // The controller holds its App token only in memory: the fixture revokes that live token at GitHub
             // through the controller's credential handoff, and only a new controller lifetime acquires another.
             var beforeFault = (await Logs()).Split('\n').Length;
@@ -266,7 +266,7 @@ public sealed class DiscussionJourney
             var data = await Snapshot(discussion);
             var candidates = root is null ? data["comments"]!["nodes"]!.AsArray() : data["comments"]!["nodes"]!.AsArray().SingleOrDefault(x => x!["id"]!.ToString() == root)?["replies"]?["nodes"]?.AsArray();
             if (marker.StartsWith("SKILL_ACTION_", StringComparison.Ordinal) && candidates?.Any(x => IsActor(x!["author"]?["login"]?.ToString()) && x["body"]!.ToString().Contains("SKILL_UNAVAILABLE", StringComparison.Ordinal)) == true)
-                Assert.Fail("Selected skill action was absent: native agent reported SKILL_UNAVAILABLE.");
+                Assert.Fail("Selected skill action was absent: agent agent reported SKILL_UNAVAILABLE.");
             match = candidates?.FirstOrDefault(x => IsActor(x!["author"]?["login"]?.ToString()) && x["body"]!.ToString().Contains(marker, StringComparison.Ordinal));
             return match is not null;
         }, "App reply " + marker);
@@ -315,14 +315,14 @@ public sealed class DiscussionJourney
             var line = (await Logs()).Split('\n').LastOrDefault(x => x.Contains("forwarded " + url + " session="));
             if (line is not null) session = line[(line.LastIndexOf("session=", StringComparison.Ordinal) + 8)..].Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
             return session is not null;
-        }, "native session ID");
+        }, "agent session ID");
         return session!;
     }
     [Fact]
     public void Retry_evidence_matches_the_source_and_the_invalid_session()
     {
         const string log = """
-            2026-10-20T00:26:25.2314303+00:00 delivery-retry https://github.com/egil/repoagent/discussions/23 session=invalid-agent-session attempt=1 redelivery=false inputs=2 sources=DC_kwDOVQFj7c4BIsCJ,DC_kwDOVQFj7c4BIsCK retry-at=2026-10-20T00:26:30.2314303+00:00: Native request failed: {
+            2026-10-20T00:26:25.2314303+00:00 delivery-retry https://github.com/egil/repoagent/discussions/23 session=invalid-agent-session attempt=1 redelivery=false inputs=2 sources=DC_kwDOVQFj7c4BIsCJ,DC_kwDOVQFj7c4BIsCK retry-at=2026-10-20T00:26:30.2314303+00:00: Agent request failed: {
               "code": -32600,
               "message": "thread not found"
             }
@@ -349,7 +349,7 @@ public sealed class DiscussionJourney
     static int CountAcceptedSources(string log, string id) => log.Split('\n').Count(x => IsEvent(x, "forwarded") && x.Contains(id));
     static int Forwarded(string log) => log.Split('\n').Count(x => IsEvent(x, "forwarded"));
     static bool Waiting(string log, string id) => log.Split('\n').Any(x => IsEvent(x, "input-waiting") && x.Contains(id));
-    static bool NativeTurnsFinished(string log)
+    static bool AgentTurnsFinished(string log)
     {
         var lines = log.Split('\n');
         var ready = Array.FindLastIndex(lines, line => IsEvent(line, "ready"));
@@ -360,7 +360,7 @@ public sealed class DiscussionJourney
         {
             if (IsEvent(line, "agent-accepted")) accepted.Add(line[(line.LastIndexOf("turn=", StringComparison.Ordinal) + 5)..].Trim());
             if (!IsEvent(line, "agent-event")) continue;
-            // The controller logs only redacted fields of native events, never the raw message.
+            // The controller logs only redacted fields of agent events, never the raw message.
             var completion = Regex.Match(line, @" agent-event method=turn/completed thread=\S* turn=(\S+) ");
             if (completion.Success) completed.Add(completion.Groups[1].Value);
         }

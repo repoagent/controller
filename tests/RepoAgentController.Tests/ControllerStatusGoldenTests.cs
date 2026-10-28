@@ -52,9 +52,9 @@ public sealed class ControllerStatusGoldenTests : IDisposable
             ["REPOAGENT_MAX_ACTIVE_SESSIONS"] = new(SettingState.Configured, "3") { Since = Start },
             ["REPOAGENT_MODEL"] = new(SettingState.Invalid, null, "must be a model name")
         }));
-        // As CheckoutRefresh saves its journal when it starts over an earlier lifetime's admission: S6's native turn is still
+        // As CheckoutRefresh saves its journal when it starts over an earlier lifetime's admission: S6's agent turn is still
         // recorded, so admission is blocked with its reason.
-        File.WriteAllText(State + ".refresh.json", """{"version":1,"root":"/workspace/repository","owner":"owner","repositoryId":7,"requested":1,"completed":1,"active":{"6f1c2a9e0b7d4e5f8a3c1d2e4f6a8b0c":{"thread":"S6","turn":"T6","since":1,"confirmed":true}},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":1}""");
+        File.WriteAllText(State + ".refresh.json", """{"version":1,"root":"/workspace/repository","owner":"owner","repositoryId":7,"requested":1,"completed":1,"active":{"6f1c2a9e0b7d4e5f8a3c1d2e4f6a8b0c":{"thread":"S6","turn":"T6","since":1,"confirmed":true}},"reason":"Agent activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":1}""");
     }
 
     static void Log(ControllerStatus status, int seconds, string kind, string message) => status.Record(new(Start.AddSeconds(seconds), kind, message));
@@ -72,7 +72,7 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         Log(first, 3, "codex-auth-supplied", "account credentials installed");
         Log(first, 4, "session-created", Url + "1 session=S1");
         Log(first, 5, "forwarded", Url + "1 session=S1 changes=1 sources=C1 waiting=0 latest=" + Url + "1#discussioncomment-7");
-        Log(first, 6, "delivery-retry", Url + "3 session=S3 attempt=2 redelivery=false inputs=2 sources=C3 retry-at=2026-10-25T09:05:00.0000000+00:00: native refused");
+        Log(first, 6, "delivery-retry", Url + "3 session=S3 attempt=2 redelivery=false inputs=2 sources=C3 retry-at=2026-10-25T09:05:00.0000000+00:00: agent refused");
         Log(first, 7, "input-waiting", Url + "5 session= status=none waiting=1");
         Log(first, 8, "discovered", Url + "5");
         first.Running(["S9", "S4"]); // S9's Discussion record is forgotten while its turn runs.
@@ -196,7 +196,7 @@ public sealed class ControllerStatusGoldenTests : IDisposable
         WriteFiles();
         var first = StatusFiles.Open(State, Repository, "polling", clock);
         Log(first, 5, "forwarded", Url + "1 session=S1 changes=1 sources=C1 waiting=0 latest=" + Url + "1#discussioncomment-7");
-        Log(first, 6, "delivery-retry", Url + "3 attempt=2: native refused");
+        Log(first, 6, "delivery-retry", Url + "3 attempt=2: agent refused");
         first.Running(["S9", "S4"]);
         first.Dispose();
         Damage(State + suffix, path, json);

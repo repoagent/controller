@@ -477,7 +477,7 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
 
     public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => Task.FromResult(Configuration);
 
-    /// <summary>When set, reading the model catalogue fails with it, as a native that cannot answer does.</summary>
+    /// <summary>When set, reading the model catalogue fails with it, as a agent that cannot answer does.</summary>
     public Exception? ModelsFailure { get; set; }
 
     public Task<IReadOnlyList<AgentModel>> Models(CancellationToken ct) => ModelsFailure is { } failure

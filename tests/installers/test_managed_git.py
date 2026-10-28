@@ -118,7 +118,7 @@ class ManagedGitTests(unittest.TestCase):
         self.assert_clone_and_fetch(prefix="managed git's ", fork=True, ambient=True)
 
     @unittest.skipUnless(os.environ.get('REPOAGENT_TEST_NATIVE_CODEX'), 'Installed native Codex command boundary required')
-    def test_persistent_native_process_observes_real_manager_renewal_then_denial(self):
+    def test_persistent_agent_process_observes_real_manager_renewal_then_denial(self):
         self.assert_clone_and_fetch(native=True)
 
     def assert_clone_and_fetch(self, prefix='managed-git-', fork=False, ambient=False, native=False):
@@ -182,7 +182,7 @@ class ManagedGitTests(unittest.TestCase):
                         self.assertFalse(any('/upstream/' in path for method, host, path in fixture.requests))
                     self.assertFalse(spy.exists(), 'Ambient authentication must never execute')
                     if native:
-                        self.assert_native_renewal(fixture, manager, credential, state, checkout)
+                        self.assert_agent_renewal(fixture, manager, credential, state, checkout)
                     if ambient:
                         self.assert_managed_denials(fixture, environment, manager, credential, wrapper, checkout, spy)
                 finally:
@@ -191,7 +191,7 @@ class ManagedGitTests(unittest.TestCase):
             finally:
                 fixture.close()
 
-    def assert_native_renewal(self, fixture, manager, credential, state, checkout):
+    def assert_agent_renewal(self, fixture, manager, credential, state, checkout):
         # The shipped image's native permission profile: commands reach the network and the credential handoff.
         home = fixture.directory / 'native-codex'
         home.mkdir(mode=0o700)

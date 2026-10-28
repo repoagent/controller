@@ -10,7 +10,7 @@ namespace RepoAgentController.Tests;
 // The repository webhook receiver's contract with GitHub: its route, signature check and status codes, on the real
 // controller in webhook mode. The secret is the one the controller registered with GitHub. Core observation and dispatch are covered by ControllerWebhooksTests.
 [Collection("Managed checkout environment")]
-[System.Runtime.Versioning.UnsupportedOSPlatform("windows")] // The App gh wrapper and native relay use Unix tools.
+[System.Runtime.Versioning.UnsupportedOSPlatform("windows")] // The App gh wrapper and agent relay use Unix tools.
 public sealed class WebhookDeliveryTests
 {
     [Fact]
@@ -28,7 +28,7 @@ public sealed class WebhookDeliveryTests
 
         Assert.Equal(signatures.Length, controller.Log.Count(line => line.Contains(" webhook-rejected reason=signature", StringComparison.Ordinal)));
         Assert.DoesNotContain(controller.Log, line => line.Contains(" webhook-delivery ", StringComparison.Ordinal));
-        Assert.Equal(0, controller.Native.TurnCount);
+        Assert.Equal(0, controller.Agent.TurnCount);
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public sealed class WebhookDeliveryTests
         }));
 
         Assert.DoesNotContain(controller.Log, line => line.Contains(" webhook-delivery ", StringComparison.Ordinal));
-        Assert.Equal(0, controller.Native.TurnCount);
+        Assert.Equal(0, controller.Agent.TurnCount);
     }
 
     [Fact]

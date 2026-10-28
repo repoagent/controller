@@ -24,7 +24,7 @@ public sealed class ControllerWebhooksTests
 
         Assert.NotNull(world.Saved(1).Running);
         Assert.Null(world.Saved(1).Pending);
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         Assert.True(await world.Outbox.Flush(Token));
         Assert.True(await world.GitHub.HasEyesReceipt("D1", Token));
     }
@@ -49,7 +49,7 @@ public sealed class ControllerWebhooksTests
         foreach (var (notice, expected) in cases) Assert.Equal(expected, world.Driver.Accept(notice));
         world.Start();
         await world.Observed("reconciliation-completed", 1);
-        Assert.Empty(world.Native.Requests);
+        Assert.Empty(world.Agent.Requests);
         Assert.DoesNotContain(world.Log.Entries, entry => entry.Kind == "webhook-observed");
     }
 
@@ -63,7 +63,7 @@ public sealed class ControllerWebhooksTests
         world.Start();
         await world.Observed("reconciliation-completed", 1);
         Assert.Single(world.Log.Entries, entry => entry.Kind == "webhook-observed");
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         Assert.NotNull(world.Saved(1).Running);
     }
 
@@ -74,7 +74,7 @@ public sealed class ControllerWebhooksTests
         world.Start();
         await world.Observed("reconciliation-completed", 1);
         world.Open(1);
-        world.Native.Answer(_ =>
+        world.Agent.Answer(_ =>
         {
             world.GitHub.Comment(1, "DC_later", "please retain this later input");
             Assert.Equal(WebhookDisposition.Accepted, world.Driver.Accept(Delivery() with { Change = WebhookChange.Comment }));
@@ -84,7 +84,7 @@ public sealed class ControllerWebhooksTests
         Assert.Equal(WebhookDisposition.Accepted, world.Driver.Accept(Delivery()));
         await world.Observed("webhook-observed", 2);
 
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         Assert.NotNull(world.Saved(1).Running);
         Assert.Single(world.Saved(1).Waiting!.Inputs);
         Assert.Equal(2, world.Log.Entries.Count(entry => entry.Kind == "webhook-observed"));
@@ -99,10 +99,10 @@ public sealed class ControllerWebhooksTests
         await world.Clock.Armed();
         world.Open(2);
         world.Clock.Advance(Interval - TimeSpan.FromTicks(1));
-        Assert.Empty(world.Native.Requests);
+        Assert.Empty(world.Agent.Requests);
         world.Clock.Advance(TimeSpan.FromTicks(1));
         await world.Observed("reconciliation-completed", 2);
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         await world.Stop.CancelAsync();
         await world.End();
         world.Clock.Advance(Interval);
@@ -123,7 +123,7 @@ public sealed class ControllerWebhooksTests
         world.Runtime.Release.TrySetResult();
         await world.End();
         Assert.NotNull(world.Saved(1).Running);
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         Assert.True(world.Registration.Deactivated);
     }
 
@@ -134,7 +134,7 @@ public sealed class ControllerWebhooksTests
         world.Registration.Failure = new IOException("registration unconfirmed");
         await Assert.ThrowsAsync<IOException>(() => world.Driver.Run(Token, Token));
         Assert.True(world.Registration.Deactivated);
-        Assert.Empty(world.Native.Requests);
+        Assert.Empty(world.Agent.Requests);
         Assert.DoesNotContain(world.Log.Entries, entry => entry.Kind == "ready");
     }
 
@@ -150,7 +150,7 @@ public sealed class ControllerWebhooksTests
         Assert.Equal(WebhookDisposition.Accepted, world.Driver.Accept(push));
         Assert.Equal(1, world.Journal.Saved.Requested);
         Assert.Equal(0, world.Checkout.Refreshes);
-        Assert.Empty(world.Native.Requests);
+        Assert.Empty(world.Agent.Requests);
     }
 
     [Fact]
@@ -163,12 +163,12 @@ public sealed class ControllerWebhooksTests
         world.GitHub.FailReads("Find", new IOException("read unconfirmed"));
         Assert.Equal(WebhookDisposition.Accepted, world.Driver.Accept(Delivery()));
         await world.Observed("webhook-observed", 1);
-        Assert.Empty(world.Native.Requests);
+        Assert.Empty(world.Agent.Requests);
         Assert.Contains(world.Log.Entries, entry => entry.Kind == "webhook-observed" && entry.Message.Contains("success=False", StringComparison.Ordinal));
         world.GitHub.FailReads("Find", null);
         Assert.Equal(WebhookDisposition.Accepted, world.Driver.Accept(Delivery()));
         await world.Observed("webhook-observed", 2);
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         Assert.NotNull(world.Saved(1).Running);
     }
     sealed class World : IAsyncDisposable
@@ -177,7 +177,7 @@ public sealed class ControllerWebhooksTests
         public RecordingLog Log { get; } = new();
         public InMemoryDiscussionStore Durable { get; } = new();
         public InMemoryControllerState State { get; } = new();
-        public FakeAgentRuntime Native { get; } = new();
+        public FakeAgentRuntime Agent { get; } = new();
         public InMemoryDiscussions GitHub { get; }
         public Registration Registration { get; } = new();
         public InMemoryRefreshJournal Journal { get; } = new();
@@ -192,7 +192,7 @@ public sealed class ControllerWebhooksTests
         public World(bool holdAcceptance = false, bool managed = false)
         {
             GitHub = new(Clock);
-            Runtime = new(Native, holdAcceptance);
+            Runtime = new(Agent, holdAcceptance);
             var sessions = new AgentSessions(Runtime, Log);
             var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, null, State, Clock, Log);
             Outbox = new(Repository, GitHub, InMemoryDiscussions.App, State, Clock, Log);

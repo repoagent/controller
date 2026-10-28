@@ -118,7 +118,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
         var full = work.Running >= work.Limit;
         text.AppendLine($"- **Sessions:** {work.Sessions} stored; " +
             (stopped is null ? $"{work.Running} of {work.Limit} turns running (active-session limit)" : "no turns run while the controller is stopped") +
-            $"; {work.Pending} awaiting native acknowledgement; {work.Waiting} inputs waiting" +
+            $"; {work.Pending} awaiting agent acknowledgement; {work.Waiting} inputs waiting" +
             (work.AdmissionBlocked == true ? "; new turns are held for a checkout refresh" : ""));
         text.AppendLine();
         text.AppendLine("### Authentication and settings");
@@ -162,7 +162,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
             var waiting = session.Waiting;
             string? doing = session.Activity switch
             {
-                SessionActivity.Pending => "awaiting native acknowledgement",
+                SessionActivity.Pending => "awaiting agent acknowledgement",
                 SessionActivity.Retrying retry => $"delivery failed or was unacknowledged; attempt {(retry.Attempts ?? 0) + 1} at {Time(retry.RetryAt ?? "")}",
                 SessionActivity.Running turn => stopped is null ? $"running a turn since {Time(turn.Since ?? "")}" : "its turn ended with the controller",
                 _ => session.Waiting == 0 ? "idle; no input waiting" : null

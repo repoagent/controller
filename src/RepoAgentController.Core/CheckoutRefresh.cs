@@ -1,6 +1,6 @@
 namespace RepoAgentController;
 
-/// <summary>Excludes checkout updates from all admitted native work, including uncertain work.</summary>
+/// <summary>Excludes checkout updates from all admitted agent work, including uncertain work.</summary>
 public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisposable
 {
     static readonly TimeSpan DeferredRetry = TimeSpan.FromSeconds(5);
@@ -10,7 +10,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     readonly TimeProvider clock;
     readonly IControllerLog log;
     readonly object journalLock = new();
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2213", Justification = "Native reader callbacks may still signal after the worker stops; these managed-only semaphores never create wait handles.")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2213", Justification = "Agent reader callbacks may still signal after the worker stops; these managed-only semaphores never create wait handles.")]
     readonly SemaphoreSlim exclusion = new(1), wake = new(0, 1);
     readonly CancellationTokenSource stop = new();
     readonly RefreshJournal journal;
@@ -43,7 +43,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
         {
             store.PreserveStartupEvidence();
             if (journal.ReasonAsRead is null)
-                journal.Reason = "Native activity or checkout update is uncertain; inspect state before recovery";
+                journal.Reason = "Agent activity or checkout update is uncertain; inspect state before recovery";
         }
         Save();
     }
@@ -60,7 +60,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     }
     void CheckAdmission()
     {
-        if (blocked || journal.Applying is not null) throw new IOException("Checkout/native state uncertain; manual recovery required");
+        if (blocked || journal.Applying is not null) throw new IOException("Checkout/agent state uncertain; manual recovery required");
     }
     void Fault(string reason)
     {
@@ -85,15 +85,15 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
         Signal();
     }
 
-    public async Task Start(AgentSessions native, TimeSpan interval, CancellationToken ct)
+    public async Task Start(AgentSessions agent, TimeSpan interval, CancellationToken ct)
     {
-        sessions = native;
+        sessions = agent;
         lock (journalLock)
             if (blocked)
             {
                 log.Write("refresh-blocked", originalJournalMissing
-                    ? "Lifecycle journal is missing; native admission is held. Preserve evidence and use an isolated fresh instance."
-                    : "Checkout/native state uncertain; native admission is held. Stop the controller, runtime and ALL agent tools before using recover-checkout; applying or malformed evidence requires an isolated fresh instance.");
+                    ? "Lifecycle journal is missing; agent admission is held. Preserve evidence and use an isolated fresh instance."
+                    : "Checkout/agent state uncertain; agent admission is held. Stop the controller, runtime and ALL agent tools before using recover-checkout; applying or malformed evidence requires an isolated fresh instance.");
                 return;
             }
         Request();
@@ -135,7 +135,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return false; }
     }
 
-    // Caller holds exclusion. Native callbacks only take journalLock; no RPC awaits under that lock.
+    // Caller holds exclusion. Agent callbacks only take journalLock; no RPC awaits under that lock.
     async Task Reconcile(CancellationToken ct)
     {
         long generation;
@@ -153,7 +153,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
                 lock (journalLock)
                 {
                     CheckAdmission();
-                    if (Busy) throw new IOException("Native work appeared while checkout was excluded");
+                    if (Busy) throw new IOException("Agent work appeared while checkout was excluded");
                     journal.Applying = new(previous, target, generation);
                     Save();
                 }
@@ -161,7 +161,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             if (changed) await sessions!.Reload(ct);
             lock (journalLock)
             {
-                if (blocked) throw new IOException("Native refresh became uncertain");
+                if (blocked) throw new IOException("Agent refresh became uncertain");
                 journal.Applying = null; journal.Reason = null;
                 journal.Completed = generation; Save();
             }
@@ -197,7 +197,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             lock (journalLock)
             {
                 CheckAdmission();
-                if (active.Count >= 64) throw new IOException("Too many unresolved native admissions");
+                if (active.Count >= 64) throw new IOException("Too many unresolved agent admissions");
                 var record = new RefreshAdmission(++sequence);
                 var id = Guid.NewGuid().ToString("N"); active[id] = record; Save();
                 return new Admission(this, id, record);
@@ -219,7 +219,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
                 if (Busy || journal.Requested != journal.Completed) return false;
             }
             await commit(ct);
-            lock (journalLock) { CheckAdmission(); if (Busy) throw new IOException("Native activity changed during idle commit"); }
+            lock (journalLock) { CheckAdmission(); if (Busy) throw new IOException("Agent activity changed during idle commit"); }
             return true;
         }
         finally { exclusion.Release(); }
@@ -233,7 +233,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             lock (owner.journalLock)
             {
                 owner.CheckAdmission();
-                if (!Valid(thread)) throw new IOException("Malformed native thread identity");
+                if (!Valid(thread)) throw new IOException("Malformed agent thread identity");
                 record.Thread = thread; owner.Save();
             }
         }
@@ -242,10 +242,10 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             lock (owner.journalLock)
             {
                 owner.CheckAdmission();
-                if (record.Thread != thread || !Valid(turn)) throw new IOException("Native acknowledgement identity differs");
+                if (record.Thread != thread || !Valid(turn)) throw new IOException("Agent acknowledgement identity differs");
                 var key = (thread, turn);
                 if (owner.turns.TryGetValue(key, out var seen) && seen.Done && seen.Sequence <= record.Since)
-                    throw new IOException("Native reused a completed turn identity");
+                    throw new IOException("Agent reused a completed turn identity");
                 owner.Track(key, seen.Done, seen.Sequence);
                 record.Turn = turn; owner.Save();
             }
@@ -256,13 +256,13 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             lock (owner.journalLock)
             {
                 owner.CheckAdmission();
-                if (record.Turn.Length != 0) throw new IOException("Accepted native admission cannot be abandoned");
+                if (record.Turn.Length != 0) throw new IOException("Accepted agent admission cannot be abandoned");
                 owner.active.Remove(id); owner.Save(); confirmed = true;
             }
             owner.Signal();
         }
         /// <summary>
-        /// Releases an admission whose input the native may have accepted without acknowledgement. It stays recorded, so
+        /// Releases an admission whose input the agent may have accepted without acknowledgement. It stays recorded, so
         /// the checkout remains excluded and that thread's lifecycle events still match, until a later acknowledged turn on
         /// the same thread completes. Only the newest such admission per thread is kept, since it settles the same way.
         /// </summary>
@@ -272,7 +272,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             {
                 owner.CheckAdmission();
                 var thread = record.Thread;
-                if (thread.Length == 0) owner.active.Remove(id); // No session, so no native turn can hold the input.
+                if (thread.Length == 0) owner.active.Remove(id); // No session, so no agent turn can hold the input.
                 else
                 {
                     foreach (var older in owner.active.Where(operation => operation.Key != id && Unsettled(operation.Value, thread)).ToArray())
@@ -288,7 +288,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             lock (owner.journalLock)
             {
                 owner.CheckAdmission();
-                if (record.Turn.Length == 0) throw new IOException("Native admission has no acknowledgement");
+                if (record.Turn.Length == 0) throw new IOException("Agent admission has no acknowledgement");
                 record.Confirmed = true; owner.Complete(); owner.Save(); confirmed = true;
             }
             owner.Signal();
@@ -297,7 +297,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
         {
             try
             {
-                if (!confirmed) lock (owner.journalLock) owner.Fault("Native admission interrupted; inspect pending operation " + id);
+                if (!confirmed) lock (owner.journalLock) owner.Fault("Agent admission interrupted; inspect pending operation " + id);
             }
             finally { owner.exclusion.Release(); }
         }
@@ -305,7 +305,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
 
     static bool Valid(string id) => id.Length is > 0 and <= 256 && !id.Any(char.IsControl);
 
-    /// <summary>The native thread and turn a turn lifecycle event names, and whether it completed the turn; null for any other
+    /// <summary>The agent thread and turn a turn lifecycle event names, and whether it completed the turn; null for any other
     /// event. A missing turn ID maps to "", which no valid identity is.</summary>
     static (string Thread, string Turn, bool Completed)? Lifecycle(AgentRuntimeEvent change)
     {
@@ -315,7 +315,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             AgentTurnCompleted ended => (ended.SessionId, ended.TurnId ?? "", true),
             _ => null
         };
-        if (identity is (var thread, var turn, _) && (!Valid(thread) || !Valid(turn))) throw new IOException("Malformed native lifecycle identity");
+        if (identity is (var thread, var turn, _) && (!Valid(thread) || !Valid(turn))) throw new IOException("Malformed agent lifecycle identity");
         return identity;
     }
 
@@ -325,7 +325,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
         {
             var old = turns.FirstOrDefault(pair => pair.Value.Done && !active.Any(operation =>
                 operation.Value.Thread == pair.Key.Thread && (operation.Value.Turn == pair.Key.Turn || operation.Value.Turn == "")));
-            if (old.Key == default) throw new IOException("Native correlation capacity exhausted; manual recovery required");
+            if (old.Key == default) throw new IOException("Agent correlation capacity exhausted; manual recovery required");
             turns.Remove(old.Key);
         }
         turns[key] = (done, observed);
@@ -347,7 +347,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     {
         lock (journalLock)
         {
-            if (Busy || blocked) throw new IOException("Cannot replace native transport with unresolved work");
+            if (Busy || blocked) throw new IOException("Cannot replace agent transport with unresolved work");
             this.epoch = epoch; turns.Clear();
         }
     }
@@ -358,14 +358,14 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             if (change.Epoch != epoch) return;
             try
             {
-                if (change is AgentRuntimeDisconnected) { Fault("Native transport disconnected; completion unknown"); return; }
+                if (change is AgentRuntimeDisconnected) { Fault("Agent transport disconnected; completion unknown"); return; }
                 if (Lifecycle(change) is not (var thread, var turn, var completed)) return;
                 var key = (thread, turn);
                 var known = turns.TryGetValue(key, out var previous);
                 var awaiting = active.Any(item => item.Value.Thread == thread && item.Value.Turn == "");
-                if (!known && !awaiting) throw new IOException("Unmatched native lifecycle event");
+                if (!known && !awaiting) throw new IOException("Unmatched agent lifecycle event");
                 if (completed && known && previous.Done) return;
-                if (!completed && known && previous.Done) throw new IOException("Native restarted a completed turn identity");
+                if (!completed && known && previous.Done) throw new IOException("Agent restarted a completed turn identity");
                 Track(key, completed || previous.Done, ++sequence);
                 Complete(); Save();
             }

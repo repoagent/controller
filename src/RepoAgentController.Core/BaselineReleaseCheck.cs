@@ -76,7 +76,7 @@ public sealed class BaselineReleaseCheck(IBaselineReleases published, Func<Cance
         // Newest first by publication run and attempt, which the tag records; GitHub's Latest badge is not used.
         var releases = (await published.Published(ct)).OrderByDescending(release => release.Run).ThenByDescending(release => release.Attempt).ToArray();
         var matched = Array.FindIndex(releases, release => release.InventorySha256 == identity);
-        var uncertainty = identity is null ? "this controller was not started with a baseline image inventory, for example in a native or development run"
+        var uncertainty = identity is null ? "this controller was not started with a baseline image inventory, for example in a agent or development run"
             : matched < 0 ? "its image inventory matches none of the newest published baseline releases, so it is a derived, local, unreleased or much older image"
             : null;
         return new(clock.GetUtcNow(), matched < 0 ? null : releases[matched], releases.FirstOrDefault(), Math.Max(matched, 0), uncertainty);

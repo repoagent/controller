@@ -237,7 +237,7 @@ public sealed class BrokerAuthenticationTests
     [InlineData("oversized")]
     [InlineData("wrong-type")]
     [InlineData("redirect")]
-    public async Task Rejected_lease_cannot_reach_a_native_launch_including_on_renewal(string defect)
+    public async Task Rejected_lease_cannot_reach_a_agent_launch_including_on_renewal(string defect)
     {
         using var fixture = new Fixture();
         using var credentials = fixture.Credentials();

@@ -8,7 +8,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
 {
     static readonly CheckoutBinding Binding = new("/workspace/repository", "0123456789abcdef0123456789abcdef", 345, "refs/heads/main");
     static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
-    const string Uncertain = "Checkout/native state uncertain; manual recovery required";
+    const string Uncertain = "Checkout/agent state uncertain; manual recovery required";
     readonly InMemoryRefreshJournal journal = new();
     readonly ScriptedCheckout checkout = new();
     readonly SteppedClock clock = new(new(2026, 10, 26, 9, 0, 0, TimeSpan.Zero));
@@ -184,7 +184,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
             Assert.Null(journal.Read());
             Assert.True(opened.AdmissionBlocked);
         }
-        else Assert.Equal((true, "Native activity or checkout update is uncertain; inspect state before recovery"), (Saved.Blocked, Saved.Reason));
+        else Assert.Equal((true, "Agent activity or checkout update is uncertain; inspect state before recovery"), (Saved.Blocked, Saved.Reason));
     }
 
     public static TheoryData<string> BlocksBeforeTheRunningCount() => ["a recorded block", "a recorded admission", "a recorded refresh applying"];
@@ -205,7 +205,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         Open();
 
         Assert.Equal((true, 0, true), (Saved.Blocked, Saved.Running, Saved.RunningUnreadable));
-        Assert.Equal("Native activity or checkout update is uncertain; inspect state before recovery", Saved.Reason);
+        Assert.Equal("Agent activity or checkout update is uncertain; inspect state before recovery", Saved.Reason);
     }
 
     [Theory]
@@ -345,8 +345,8 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         });
         var opened = Open();
 
-        Assert.Equal("Native refresh became uncertain", (await Assert.ThrowsAsync<IOException>(() => Start(opened, Token))).Message);
-        Assert.Equal((true, "Native refresh became uncertain", 0L), (Saved.Blocked, Saved.Reason, Saved.Completed));
+        Assert.Equal("Agent refresh became uncertain", (await Assert.ThrowsAsync<IOException>(() => Start(opened, Token))).Message);
+        Assert.Equal((true, "Agent refresh became uncertain", 0L), (Saved.Blocked, Saved.Reason, Saved.Completed));
     }
 
     [Fact]
@@ -463,7 +463,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         using var acknowledged = await started.Admit(Token);
         acknowledged.Bind("S1");
         acknowledged.Accepted("S1", "T1");
-        Assert.Equal("Accepted native admission cannot be abandoned", Assert.Throws<IOException>(acknowledged.Abandon).Message);
+        Assert.Equal("Accepted agent admission cannot be abandoned", Assert.Throws<IOException>(acknowledged.Abandon).Message);
         Assert.Single(Saved.Active);
     }
 
@@ -525,7 +525,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
 
         started.Observe(new AgentTurnStarted(1, "S1", "T2"));
 
-        Assert.Equal((true, "Unmatched native lifecycle event"), (Saved.Blocked, Saved.Reason));
+        Assert.Equal((true, "Unmatched agent lifecycle event"), (Saved.Blocked, Saved.Reason));
     }
 
     [Fact]
@@ -534,7 +534,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         var started = Open();
         using (await started.Admit(Token)) { }
 
-        Assert.Equal((true, "Native admission interrupted; inspect pending operation " + Saved.Active.Keys.Single()), (Saved.Blocked, Saved.Reason));
+        Assert.Equal((true, "Agent admission interrupted; inspect pending operation " + Saved.Active.Keys.Single()), (Saved.Blocked, Saved.Reason));
         Assert.Equal(Uncertain, (await Assert.ThrowsAsync<IOException>(() => started.Admit(Token))).Message);
     }
 
@@ -545,7 +545,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         for (var number = 1; number <= 64; number++)
             using (var turn = await started.Admit(Token)) { turn.Bind("S" + number); turn.Unconfirmed(); }
 
-        Assert.Equal("Too many unresolved native admissions", (await Assert.ThrowsAsync<IOException>(() => started.Admit(Token))).Message);
+        Assert.Equal("Too many unresolved agent admissions", (await Assert.ThrowsAsync<IOException>(() => started.Admit(Token))).Message);
         Assert.Equal((64, false), (Saved.Active.Count, Saved.Blocked));
     }
 
@@ -555,14 +555,14 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         var started = Open();
         using (var turn = await started.Admit(Token))
         {
-            Assert.Equal("Malformed native thread identity", Assert.Throws<IOException>(() => turn.Bind("S\n1")).Message);
-            Assert.Equal("Malformed native thread identity", Assert.Throws<IOException>(() => turn.Bind("")).Message);
-            Assert.Equal("Malformed native thread identity", Assert.Throws<IOException>(() => turn.Bind(new string('S', 257))).Message);
+            Assert.Equal("Malformed agent thread identity", Assert.Throws<IOException>(() => turn.Bind("S\n1")).Message);
+            Assert.Equal("Malformed agent thread identity", Assert.Throws<IOException>(() => turn.Bind("")).Message);
+            Assert.Equal("Malformed agent thread identity", Assert.Throws<IOException>(() => turn.Bind(new string('S', 257))).Message);
             turn.Bind(new string('S', 256));
             turn.Bind("S1");
-            Assert.Equal("Native acknowledgement identity differs", Assert.Throws<IOException>(() => turn.Accepted("S2", "T1")).Message);
-            Assert.Equal("Native acknowledgement identity differs", Assert.Throws<IOException>(() => turn.Accepted("S1", "")).Message);
-            Assert.Equal("Native admission has no acknowledgement", Assert.Throws<IOException>(turn.Confirm).Message);
+            Assert.Equal("Agent acknowledgement identity differs", Assert.Throws<IOException>(() => turn.Accepted("S2", "T1")).Message);
+            Assert.Equal("Agent acknowledgement identity differs", Assert.Throws<IOException>(() => turn.Accepted("S1", "")).Message);
+            Assert.Equal("Agent admission has no acknowledgement", Assert.Throws<IOException>(turn.Confirm).Message);
             turn.Accepted("S1", "T1");
             turn.Confirm();
         }
@@ -573,7 +573,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         {
             reused.Bind("S1");
             started.Observe(Completed("S1", "T1"));
-            Assert.Equal("Native reused a completed turn identity", Assert.Throws<IOException>(() => reused.Accepted("S1", "T1")).Message);
+            Assert.Equal("Agent reused a completed turn identity", Assert.Throws<IOException>(() => reused.Accepted("S1", "T1")).Message);
             reused.Abandon();
         }
         Assert.False(Saved.Blocked);
@@ -581,13 +581,13 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
 
     public static TheoryData<string, string> Faults() => new()
     {
-        { "a turn no admission can hold", "Unmatched native lifecycle event" },
-        { "a lost transport", "Native transport disconnected; completion unknown" },
-        { "a completed turn restarted", "Native restarted a completed turn identity" },
-        { "a turn without an identity", "Malformed native lifecycle identity" },
-        { "a completion without an identity", "Malformed native lifecycle identity" },
-        { "a turn without a session", "Malformed native lifecycle identity" },
-        { "a completion with an identity over 256 characters", "Malformed native lifecycle identity" },
+        { "a turn no admission can hold", "Unmatched agent lifecycle event" },
+        { "a lost transport", "Agent transport disconnected; completion unknown" },
+        { "a completed turn restarted", "Agent restarted a completed turn identity" },
+        { "a turn without an identity", "Malformed agent lifecycle identity" },
+        { "a completion without an identity", "Malformed agent lifecycle identity" },
+        { "a turn without a session", "Malformed agent lifecycle identity" },
+        { "a completion with an identity over 256 characters", "Malformed agent lifecycle identity" },
     };
 
     [Theory]
@@ -620,7 +620,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         var started = Open();
         started.Observe(new AgentTurnStarted(2, "S9", "T9")); // Not yet the current process.
         using (var turn = await started.Admit(Token)) { turn.Bind("S1"); turn.Accepted("S1", "T1"); turn.Confirm(); }
-        Assert.Equal("Cannot replace native transport with unresolved work", Assert.Throws<IOException>(() => started.NewEpoch(2)).Message);
+        Assert.Equal("Cannot replace agent transport with unresolved work", Assert.Throws<IOException>(() => started.NewEpoch(2)).Message);
 
         started.Observe(Completed("S1", "T1"));
         started.NewEpoch(2);
@@ -629,8 +629,8 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
 
         // The earlier process's completed T1 is forgotten, so the new one's T1 is unmatched rather than restarted.
         started.Observe(new AgentTurnStarted(2, "S1", "T1"));
-        Assert.Equal((true, "Unmatched native lifecycle event"), (Saved.Blocked, Saved.Reason));
-        Assert.Equal("Cannot replace native transport with unresolved work", Assert.Throws<IOException>(() => started.NewEpoch(3)).Message);
+        Assert.Equal((true, "Unmatched agent lifecycle event"), (Saved.Blocked, Saved.Reason));
+        Assert.Equal("Cannot replace agent transport with unresolved work", Assert.Throws<IOException>(() => started.NewEpoch(3)).Message);
     }
 
     [Fact]
@@ -659,7 +659,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         using (var remembered = await started.Admit(Token))
         {
             remembered.Bind("S2");
-            Assert.Equal("Native reused a completed turn identity", Assert.Throws<IOException>(() => remembered.Accepted("S2", "T2")).Message);
+            Assert.Equal("Agent reused a completed turn identity", Assert.Throws<IOException>(() => remembered.Accepted("S2", "T2")).Message);
             remembered.Abandon();
         }
         using (var forgotten = await started.Admit(Token))
@@ -682,7 +682,7 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
 
         started.Observe(Completed("S1", "T257"));
 
-        Assert.Equal((true, "Native correlation capacity exhausted; manual recovery required"), (Saved.Blocked, Saved.Reason));
+        Assert.Equal((true, "Agent correlation capacity exhausted; manual recovery required"), (Saved.Blocked, Saved.Reason));
     }
 
     [Fact]

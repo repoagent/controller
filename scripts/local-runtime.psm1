@@ -183,7 +183,7 @@ function Invoke-LocalHelper([string]$Operation, $Marker) {
     $bootstrap = "import io,json,sys; request=json.load(sys.stdin); sys.stdin=io.TextIOWrapper(io.BytesIO(request['input'].encode('utf-8'))); sys.argv=sys.argv[1:]; exec(compile(request['source'],sys.argv[0],'exec'))"
     $output = $request | & docker run --pull never --rm -i --network none --user 1000 @mounts --entrypoint /usr/bin/python3 $script:helperImage -E -c $bootstrap /source/local-lifecycle.py $script:helperImage $Operation
     if ($LASTEXITCODE -ne 0) { throw 'Selected lifecycle state is unconfirmed; inspect private file safety and binding.' }
-    return Read-OperatorJson ($output -join "`n")
+    return Read-OperatorJson ($output -join "`n") -ControllerDocument
 }
 function Assert-LocalRuntimeAction([string]$Action, [string[]]$Arguments, $ProposedLaunch = $null) {
     if (-not $brokerMode -or $Action -in @('help','build','stop','logs','get','state','versions','Revoke','Uninstall')) { return }
