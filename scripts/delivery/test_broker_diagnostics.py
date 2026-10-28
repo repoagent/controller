@@ -218,6 +218,7 @@ class BrokerDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(report['executions']['observations']['items']), 20)
         self.assertTrue(report['executions']['observations']['truncated'])
+        self.assertFalse(report['executions']['observations']['pageTruncated'])
         self.assertEqual(sum('/replicas?' in ' '.join(call) for call in calls), 3)
 
     def test_verbose_execution_snapshots_are_projected_before_the_bounded_output_pipe(self):
@@ -233,6 +234,34 @@ class BrokerDiagnosticsTests(unittest.TestCase):
         self.assertEqual(execution['status'], 'Failed')
         self.assertEqual(execution['images'], ['ghcr.io/repoagent/controller-auth@sha256:'+'b'*64])
         self.assertNotIn(SECRET, json.dumps(report) + result.stdout + result.stderr)
+
+    def test_large_provider_page_yields_only_a_validated_bounded_prefix_and_honest_truncation(self):
+        def page(fixtures, job):
+            first = fixtures[job+'/executions']['value'][0]
+            fixtures[job+'/executions'] = dict(value=[dict(first, name='repoagent-auth-cleanup-'+str(i)) for i in range(150)])
+            # This outside-prefix row is intentionally neither validated nor exported.
+            fixtures[job+'/executions']['value'][-1]['name'] = SECRET
+            for i in range(3):
+                fixtures[job+'/executions/repoagent-auth-cleanup-'+str(i)+'/replicas'] = dict(value=[])
+        result, report, calls, _ = self.invoke(page)
+        self.assertEqual(result.returncode, 0, report['executions'])
+        evidence = report['executions']['observations']
+        self.assertEqual(evidence['pageRows'], 100)
+        self.assertTrue(evidence['pageTruncated'])
+        self.assertEqual(len(evidence['items']), 20)
+        self.assertTrue(evidence['truncated'])
+        self.assertIn('First 100 rows', evidence['coverage'])
+        self.assertEqual(sum('/replicas?' in ' '.join(call) for call in calls), 3)
+        self.assertNotIn(SECRET, json.dumps(report)+result.stdout+result.stderr)
+
+    def test_malformed_selected_prefix_rows_still_make_history_unavailable(self):
+        def malformed(fixtures, job):
+            fixtures[job+'/executions']['value'][0]['name'] = SECRET
+        result, report, calls, _ = self.invoke(malformed)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(report['executions']['state'], 'unavailable')
+        self.assertFalse(any('/replicas?' in ' '.join(call) for call in calls))
+        self.assertNotIn(SECRET, json.dumps(report)+result.stdout+result.stderr)
 
     def test_recent_failed_execution_is_retained_when_newer_successes_fill_the_page(self):
         def history(fixtures, job):
