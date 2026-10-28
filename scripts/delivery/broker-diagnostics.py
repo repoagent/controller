@@ -217,15 +217,22 @@ def executions():
 
 
 def alerts():
+    rule_name = 'repoagent-auth-cleanup-execution-failed'
+    rule_id = GROUP + '/providers/Microsoft.Insights/metricAlerts/' + rule_name
+    # Essentials.alertRule may be a name or ARM ID. A name-only server filter can
+    # silently omit Platform alerts; keep the fixed target/time/count filters and
+    # validate the bounded response against both exact known identities instead.
     response = read(GROUP + '/providers/Microsoft.AlertsManagement/alerts', '2019-03-01',
-                    targetResource=JOB, alertRule='repoagent-auth-cleanup-execution-failed', includeContext='false',
+                    targetResource=JOB, includeContext='false',
                     includeEgressConfig='false', timeRange='1d', pageCount='10', sortOrder='desc')
     result = []
     if response.get('nextLink'):
         raise Unavailable('response-limit')
     for item in collection(response, 10):
         value = item['properties']['essentials']
-        if value.get('targetResource', '').lower() != JOB.lower() or value.get('alertRule') != 'repoagent-auth-cleanup-execution-failed':
+        rule = value.get('alertRule', '')
+        if value.get('targetResource', '').lower() != JOB.lower() or not (
+                rule == rule_name or rule.lower() == rule_id.lower()):
             raise Unavailable('target-ownership-mismatch')
         result.append(dict(condition=choice(value.get('monitorCondition'), ('Fired', 'Resolved')),
                            severity=choice(value.get('severity'), ('Sev0', 'Sev1', 'Sev2', 'Sev3', 'Sev4')),

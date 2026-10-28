@@ -123,6 +123,36 @@ class BrokerDiagnosticsTests(unittest.TestCase):
         request = next(call for call in calls if '/replicas?' in ' '.join(call))
         self.assertIn('api-version=2023-11-02-preview', ' '.join(request))
 
+    def test_alert_rule_arm_identity_is_accepted_without_a_name_only_server_filter(self):
+        from urllib.parse import parse_qs, urlsplit
+        rule = GROUP + '/providers/Microsoft.Insights/metricAlerts/repoagent-auth-cleanup-execution-failed'
+        for identity in (rule, rule.upper()):
+            with self.subTest(identity=identity):
+                def platform(fixtures, job):
+                    fixtures[GROUP + '/providers/Microsoft.AlertsManagement/alerts']['value'][0]['properties']['essentials']['alertRule'] = identity
+                result, report, calls, _ = self.invoke(platform)
+                self.assertEqual(result.returncode, 0, report['alerts'])
+                self.assertEqual(report['alerts']['observations'][0]['condition'], 'Resolved')
+                request = next(call for call in calls if '/Microsoft.AlertsManagement/alerts?' in ' '.join(call))
+                parameters = parse_qs(urlsplit(request[request.index('--url')+1]).query)
+                self.assertNotIn('alertRule', parameters)
+                self.assertEqual(parameters['targetResource'], [GROUP + '/providers/Microsoft.App/jobs/repoagent-auth-cleanup'])
+                self.assertEqual(parameters['timeRange'], ['1d'])
+                self.assertEqual(parameters['pageCount'], ['10'])
+
+    def test_other_alert_rules_are_unavailable_without_exporting_the_rule(self):
+        rule_id = GROUP + '/providers/Microsoft.Insights/metricAlerts/repoagent-auth-cleanup-execution-failed'
+        for identity in (SECRET, rule_id.replace('rg-repoagent-controller-auth', 'other-group'), rule_id + '-other'):
+            with self.subTest(identity=identity):
+                def unrelated(fixtures, job):
+                    fixtures[GROUP + '/providers/Microsoft.AlertsManagement/alerts']['value'][0]['properties']['essentials']['alertRule'] = identity
+                result, report, _, _ = self.invoke(unrelated)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(report['state'], 'partial')
+                self.assertEqual(report['alerts'], dict(state='unavailable', reason='target-ownership-mismatch'))
+                self.assertNotIn(identity, json.dumps(report) + result.stdout + result.stderr)
+
+
     def test_an_arbitrary_registry_tag_is_not_published_as_diagnostic_text(self):
         def malicious(fixtures, job):
             fixtures[job]['properties']['template']['containers'][0]['image'] = 'ghcr.io/repoagent/controller-auth:' + SECRET
