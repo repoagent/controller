@@ -1,0 +1,315 @@
+{
+  "purpose": "Recovery of unfinished local Claude/T3/Codex work before PC reinstallation; snapshots are not accepted or merge-ready implementation.",
+  "captured_at_utc": "2026-10-26T20:35:08.409832+00:00",
+  "repository": "repoagent/controller",
+  "origin": "https://github.com/repoagent/controller.git",
+  "scope": "Four requested repositories, all registered worktrees, stashes, and local branch histories missing from origin and not fully covered by merged PR source history.",
+  "preservation": "Original worktrees, branches, indexes, and stashes were retained. Recovery refs were pushed without force and remote SHAs checked. No merge, rebase, deployment, or application tests were performed.",
+  "active_sessions": [
+    {
+      "t3_thread_id": "b152706e-27e7-4eb7-9319-cbe368fe5a50",
+      "title": "Test Pinned Tool Updates Before Publishing",
+      "last_updated_at": "2026-10-26T18:11:31.318Z",
+      "provider": "codex",
+      "recorded_branch": "fix/expired-controller-enrollment",
+      "recorded_worktree": "/home/egil/.t3/worktrees/repoagent/fix-expired-controller-enrollment",
+      "note": "T3 branch/path metadata can be stale. Git snapshot and current remote PR head are authoritative."
+    }
+  ],
+  "continuation_notes": [
+    "Existing PR #244 (Agent-variable settings) is published at 8d55bce7bfa001184adbe8e42e3ad9a86dd3f0ea. One uncommitted documentation correction is saved separately. The last session recorded documentation review follow-ups.",
+    "Existing PR #241 is at remote 2cbd1d180333... and reports conflicts with main. Local feat/203-checkout-sequence at e99e922b03809a4f4e4744cc6e062d12ba14b081 diverges. Compare both histories; neither was force-pushed during recovery.",
+    "Issue #240 broker setup v4 remains unfinished. Latest recorded decision: Agent variables with REPOAGENT_ prefixes. Its source parent is a deliberately red test checkpoint. The previous session recorded that production deployment needs owner confirmation."
+  ],
+  "existing_open_prs": [
+    {
+      "number": 244,
+      "title": "feat: read repository settings from Agent variables and retire setup v3 enrollment files (#240)",
+      "url": "https://github.com/repoagent/controller/pull/244",
+      "isDraft": false,
+      "headRefName": "feat/240-agent-variable-settings",
+      "headRefOid": "8d55bce7bfa001184adbe8e42e3ad9a86dd3f0ea",
+      "baseRefName": "main",
+      "mergeStateStatus": "CLEAN",
+      "observed_checks": [
+        {
+          "name": "build",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS"
+        },
+        {
+          "name": "verify",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS"
+        },
+        {
+          "name": "verify",
+          "status": "COMPLETED",
+          "conclusion": "SKIPPED"
+        },
+        {
+          "name": "verify-artifact",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS"
+        },
+        {
+          "name": "publish",
+          "status": "COMPLETED",
+          "conclusion": "SKIPPED"
+        },
+        {
+          "name": "release",
+          "status": "COMPLETED",
+          "conclusion": "SKIPPED"
+        }
+      ],
+      "note": "Captured state only; recheck before continuing."
+    },
+    {
+      "number": 241,
+      "title": "refactor: decide checkout opening in the core over inspection facts (#203)",
+      "url": "https://github.com/repoagent/controller/pull/241",
+      "isDraft": false,
+      "headRefName": "feat/203-checkout-sequence",
+      "headRefOid": "2cbd1d18033330480c447b9a586d23ba25ed5b16",
+      "baseRefName": "main",
+      "mergeStateStatus": "DIRTY",
+      "observed_checks": [
+        {
+          "name": "build",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS"
+        },
+        {
+          "name": "verify",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS"
+        },
+        {
+          "name": "verify",
+          "status": "COMPLETED",
+          "conclusion": "SKIPPED"
+        },
+        {
+          "name": "verify-artifact",
+          "status": "COMPLETED",
+          "conclusion": "SUCCESS"
+        },
+        {
+          "name": "publish",
+          "status": "COMPLETED",
+          "conclusion": "SKIPPED"
+        },
+        {
+          "name": "release",
+          "status": "COMPLETED",
+          "conclusion": "SKIPPED"
+        }
+      ],
+      "note": "Captured state only; recheck before continuing."
+    }
+  ],
+  "new_recovery_drafts": [
+    {
+      "repo": "repoagent",
+      "branch": "recovery/pc-reinstall-2026-10-26/wip/broker-setup-v4",
+      "sha": "a51893796dc8f6c91bbc7272a0137aa07d39c8f7",
+      "title": "chore(recovery): preserve unfinished broker setup v4 (#240)",
+      "url": "https://github.com/repoagent/controller/pull/245",
+      "number": 245,
+      "isDraft": true
+    },
+    {
+      "repo": "repoagent",
+      "branch": "recovery/pc-reinstall-2026-10-26/wip/auth-hosted-bicep-review",
+      "sha": "4f94e8c56b5df4cb20b145791c5be3daaba315b2",
+      "title": "chore(recovery): preserve auth-hosted Bicep review WIP",
+      "url": "https://github.com/repoagent/controller/pull/246",
+      "number": 246,
+      "isDraft": true
+    }
+  ],
+  "recovery_refs": [
+    {
+      "branch": "recovery/pc-reinstall-2026-10-26/original/feat/240-broker-setup-v4",
+      "sha": "6e708986f809dca55f98eb4f55ffa71c7d32d39f",
+      "date": "2026-10-26 14:18:12 +0000",
+      "upstream": "origin/main",
+      "local_only_commits": 1,
+      "subject": "test(auth): pin broker setup v4 on Agent variables before it exists (#240)",
+      "kind": "historical_branch",
+      "source_branch": "feat/240-broker-setup-v4",
+      "needs_draft": false,
+      "branch_url": "https://github.com/repoagent/controller/tree/recovery/pc-reinstall-2026-10-26/original/feat/240-broker-setup-v4",
+      "commit_url": "https://github.com/repoagent/controller/commit/6e708986f809dca55f98eb4f55ffa71c7d32d39f"
+    },
+    {
+      "branch": "recovery/pc-reinstall-2026-10-26/original/feat/203-checkout-sequence",
+      "sha": "e99e922b03809a4f4e4744cc6e062d12ba14b081",
+      "date": "2026-10-26 13:55:39 +0000",
+      "upstream": "origin/feat/203-checkout-sequence",
+      "local_only_commits": 9,
+      "subject": "fix: refuse a record whose key or known value is not valid text as an invalid record at a restart (#203)",
+      "kind": "historical_branch",
+      "source_branch": "feat/203-checkout-sequence",
+      "needs_draft": false,
+      "branch_url": "https://github.com/repoagent/controller/tree/recovery/pc-reinstall-2026-10-26/original/feat/203-checkout-sequence",
+      "commit_url": "https://github.com/repoagent/controller/commit/e99e922b03809a4f4e4744cc6e062d12ba14b081"
+    },
+    {
+      "branch": "recovery/pc-reinstall-2026-10-26/original/fix/171-review-tools",
+      "sha": "02430c5b198fd212f7d97c521d128953ef7a47e9",
+      "date": "2026-10-24 01:30:46 +0000",
+      "upstream": "",
+      "local_only_commits": 4,
+      "subject": "test: cross the broker sign window before the Docker clone probe (#196)",
+      "kind": "historical_branch",
+      "source_branch": "fix/171-review-tools",
+      "needs_draft": false,
+      "branch_url": "https://github.com/repoagent/controller/tree/recovery/pc-reinstall-2026-10-26/original/fix/171-review-tools",
+      "commit_url": "https://github.com/repoagent/controller/commit/02430c5b198fd212f7d97c521d128953ef7a47e9"
+    },
+    {
+      "branch": "recovery/pc-reinstall-2026-10-26/original/fix/171-review-auth",
+      "sha": "57ce5eccc0f4054773014d3b337b9a48ff117641",
+      "date": "2026-10-24 01:24:53 +0000",
+      "upstream": "",
+      "local_only_commits": 8,
+      "subject": "docs: call v3 grants repository-settings profiles in auth and host scripts (S1, #196)",
+      "kind": "historical_branch",
+      "source_branch": "fix/171-review-auth",
+      "needs_draft": false,
+      "branch_url": "https://github.com/repoagent/controller/tree/recovery/pc-reinstall-2026-10-26/original/fix/171-review-auth",
+      "commit_url": "https://github.com/repoagent/controller/commit/57ce5eccc0f4054773014d3b337b9a48ff117641"
+    },
+    {
+      "branch": "recovery/pc-reinstall-2026-10-26/original/fix/171-review-docs",
+      "sha": "0c67206c60ffbc1e80316e16779985c53beaafff",
+      "date": "2026-10-24 00:27:43 +0000",
+      "upstream": "",
+      "local_only_commits": 3,
+      "subject": "docs: warn that repository Actions variables must never hold secrets (#196)",
+      "kind": "historical_branch",
+      "source_branch": "fix/171-review-docs",
+      "needs_draft": false,
+      "branch_url": "https://github.com/repoagent/controller/tree/recovery/pc-reinstall-2026-10-26/original/fix/171-review-docs",
+      "commit_url": "https://github.com/repoagent/controller/commit/0c67206c60ffbc1e80316e16779985c53beaafff"
+    },
+    {
+      "branch": "recovery/pc-reinstall-2026-10-26/original/feat/azure-vm-controller",
+      "sha": "e5043054b070a346dd4b867e951407f5e70d121c",
+      "date": "2026-10-22 18:41:42 +0000",
+      "upstream": "origin/main",
+      "local_only_commits": 1,
+      "subject": "docs: research simpler Azure VM controller hosting (#142)",
+      "kind": "historical_branch",
+      "source_branch": "feat/azure-vm-controller",
+      "needs_draft": false,
+      "branch_url": "https://github.com/repoagent/controller/tree/recovery/pc-reinstall-2026-10-26/original/feat/azure-vm-controller",
+      "commit_url": "https://github.com/repoagent/controller/commit/e5043054b070a346dd4b867e951407f5e70d121c"
+    },
+    {
+      "kind": "worktree_snapshot",
+      "branch": "recovery/pc-reinstall-2026-10-26/wip/agent-variable-settings",
+      "sha": "c4fd4c6cb1d980cd0bed488bf0ecf2a92a33510b",
+      "source_worktree": "/home/egil/src/repoagent/.claude/worktrees/240-agent-variable-settings",
+      "source_branch": "feat/240-agent-variable-settings",
+      "source_head": "8d55bce7bfa001184adbe8e42e3ad9a86dd3f0ea",
+      "files": [
+        "docs/broker-protocol.md"
+      ],
+      "file_sha256": {
+        "docs/broker-protocol.md": "db13c2d550602f1360a52dfe3353685577f532bc4ac5653fb6b30193af1cf57c"
+      },
+      "existing_pr": 244,
+      "summary": "One remaining broker-protocol documentation wording correction for existing PR #244.",
+      "needs_draft": false,
+      "tree": "d053d3995a1325d4d11512a6f0821c10a983b265",
+      "branch_url": "https://github.com/repoagent/controller/tree/recovery/pc-reinstall-2026-10-26/wip/agent-variable-settings",
+      "commit_url": "https://github.com/repoagent/controller/commit/c4fd4c6cb1d980cd0bed488bf0ecf2a92a33510b",
+      "existing_pr_url": "https://github.com/repoagent/controller/pull/244"
+    },
+    {
+      "kind": "worktree_snapshot",
+      "branch": "recovery/pc-reinstall-2026-10-26/wip/broker-setup-v4",
+      "sha": "a51893796dc8f6c91bbc7272a0137aa07d39c8f7",
+      "source_worktree": "/home/egil/src/repoagent/.claude/worktrees/240-broker-v4",
+      "source_branch": "feat/240-broker-setup-v4",
+      "source_head": "6e708986f809dca55f98eb4f55ffa71c7d32d39f",
+      "files": [
+        "service/auth/README.md",
+        "service/auth/src/RepoAgent.Auth.Core/ApprovalContract.cs",
+        "service/auth/src/RepoAgent.Auth.Core/ApprovalObserver.cs",
+        "service/auth/src/RepoAgent.Auth.Core/BrokerRoutes.cs",
+        "service/auth/src/RepoAgent.Auth.Core/EnrollmentModels.cs",
+        "service/auth/src/RepoAgent.Auth.Core/EnrollmentService.cs",
+        "service/auth/src/RepoAgent.Auth.Core/GrantSnapshot.cs",
+        "service/auth/src/RepoAgent.Auth.Core/InstallationTokenIssuer.cs",
+        "service/auth/src/RepoAgent.Auth.Core/RuntimeAuthority.cs",
+        "service/auth/src/RepoAgent.Auth/BrokerEndpoints.cs",
+        "service/auth/tests/RepoAgent.Auth.Tests/ApprovalMarkerTests.cs",
+        "service/auth/tests/RepoAgent.Auth.Tests/ApprovalObserverTests.cs",
+        "service/auth/tests/RepoAgent.Auth.Tests/GitHubTokenMinterTests.cs",
+        "service/auth/tests/RepoAgent.Auth.Tests/InMemoryGitHub.cs",
+        "service/auth/tests/RepoAgent.Auth.Tests/SecretProtectionTests.cs"
+      ],
+      "file_sha256": {
+        "service/auth/README.md": "3f23eacf48e8db7e8035b0a19ecf233ee0f5ff46dab0e7a7acfb4f415dbc5fa4",
+        "service/auth/src/RepoAgent.Auth.Core/ApprovalContract.cs": "bdffd6aadc7f326e923edf621d95260cd114b09fa8805e631a2d18bae1fb7e50",
+        "service/auth/src/RepoAgent.Auth.Core/ApprovalObserver.cs": "9b5e562da93445562d3377598976a5a11a6db78145e5d9e214a35899a09b90c5",
+        "service/auth/src/RepoAgent.Auth.Core/BrokerRoutes.cs": "d5f6be1d8b61a47033bfd8279ea3bb436078b50ad63a318ec464cf8960fa1060",
+        "service/auth/src/RepoAgent.Auth.Core/EnrollmentModels.cs": "9ca4722c10ceaaa981b8c609e8ba6501bf5f5cdf6adb75de3133fc4c3f8c154f",
+        "service/auth/src/RepoAgent.Auth.Core/EnrollmentService.cs": "d5baa6e0cd34a80e4d7890ac9d06cdcd540bf5538386d938026ace8f07dcab2d",
+        "service/auth/src/RepoAgent.Auth.Core/GrantSnapshot.cs": "112eff2352afe509ad020ba8306bcb86bce92bf566c1c3823d206c6c29067229",
+        "service/auth/src/RepoAgent.Auth.Core/InstallationTokenIssuer.cs": "df71ed159c69cbc6481156daa470e9ad26459a939f51689988b609ca455768d3",
+        "service/auth/src/RepoAgent.Auth.Core/RuntimeAuthority.cs": "9fb7506ee100f6e1c88933fc57f878c6439cc4dfb75bf372ad6704d1b683bb3d",
+        "service/auth/src/RepoAgent.Auth/BrokerEndpoints.cs": "724dfd90280c3035bd18a439074ec86e6dd2f7efeaa6f2ffcfc63683920a5f09",
+        "service/auth/tests/RepoAgent.Auth.Tests/ApprovalMarkerTests.cs": "418e50e31ace585e81fb0c16daefc83fdf6a4791fdf0360f573c745ebd232006",
+        "service/auth/tests/RepoAgent.Auth.Tests/ApprovalObserverTests.cs": "a59ed6f11800b02e2fe3f0299f780c4a271517473a962f645224512649907463",
+        "service/auth/tests/RepoAgent.Auth.Tests/GitHubTokenMinterTests.cs": "f95fd9435923b6ca9ae1a39f6f7e7b67a2a2e1e67e68bdb591f5623cc2e9637f",
+        "service/auth/tests/RepoAgent.Auth.Tests/InMemoryGitHub.cs": "09c8e4ae672c8464ea02ea634f974f2c6160d8e5ad9b935a1d165c4cc0768b23",
+        "service/auth/tests/RepoAgent.Auth.Tests/SecretProtectionTests.cs": "3746eb1dc6edaf532e690fda2966df4cb4f6d7e9443d3e4b072b8f4da8101b19"
+      },
+      "existing_pr": null,
+      "summary": "Issue #240 broker setup v4 on Agent variables with REPOAGENT_ prefixes. Parent contains a deliberately red test checkpoint. Implementation remains unfinished. The previous session records that production deployment needs owner confirmation.",
+      "needs_draft": true,
+      "tree": "0d43995af4c28d816585f85b3d73bee1c0c639b4",
+      "branch_url": "https://github.com/repoagent/controller/tree/recovery/pc-reinstall-2026-10-26/wip/broker-setup-v4",
+      "commit_url": "https://github.com/repoagent/controller/commit/a51893796dc8f6c91bbc7272a0137aa07d39c8f7",
+      "draft_pr_url": "https://github.com/repoagent/controller/pull/245"
+    },
+    {
+      "kind": "worktree_snapshot",
+      "branch": "recovery/pc-reinstall-2026-10-26/wip/auth-hosted-bicep-review",
+      "sha": "4f94e8c56b5df4cb20b145791c5be3daaba315b2",
+      "source_worktree": "/home/egil/src/repoagent/artifacts/reviews/auth-hosted-2026-10-21/source-8806ad",
+      "source_branch": null,
+      "source_head": "8806ad22455bfddcb3703888a01500b5c4b6d4b8",
+      "files": [
+        "infra/auth/main.bicep"
+      ],
+      "file_sha256": {
+        "infra/auth/main.bicep": "d5eebc5911492d48a2db3f6d85684b2e387f49ed513239d6d6f1b0e54ad07fb5"
+      },
+      "existing_pr": null,
+      "summary": "Older detached review worktree with an uncommitted auth infrastructure Bicep edit. Preserve for comparison; do not apply infrastructure.",
+      "needs_draft": true,
+      "tree": "69973ebd2547109946da2be461db29f4821f9b22",
+      "branch_url": "https://github.com/repoagent/controller/tree/recovery/pc-reinstall-2026-10-26/wip/auth-hosted-bicep-review",
+      "commit_url": "https://github.com/repoagent/controller/commit/4f94e8c56b5df4cb20b145791c5be3daaba315b2",
+      "draft_pr_url": "https://github.com/repoagent/controller/pull/246"
+    }
+  ],
+  "restore_instructions": [
+    "Clone the repository normally.",
+    "Run: git fetch origin",
+    "For a recovery branch below, run: git switch --track origin/<recovery-branch>",
+    "For an exact raw stash, recover in an appropriate clean worktree: git stash apply <raw-stash-commit-sha>. Add --index if its saved staging is required.",
+    "Compare historical snapshots against current main and existing PRs before resuming; none is ready for automatic merge."
+  ],
+  "limits": [
+    "Full session databases, authentication data, machine-specific settings, generated caches, and local-only review artifacts were not uploaded.",
+    "Clean historical branches fully represented in a merged PR source history were not duplicated.",
+    "Recorded CI/session state may be stale. Reinspect the current remote head and linked issue/PR checkpoints."
+  ]
+}
