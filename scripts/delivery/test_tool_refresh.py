@@ -455,8 +455,8 @@ class RefreshWorkflowTests(unittest.TestCase):
         tools = re.search(r'(?m)^        tool: \[(.*)\]$', refresh)[1]
         upstream = runpy.run_path(str(ROOT / 'scripts/delivery/tool-refresh.py'))['UPSTREAM']
         scheduled = {item.strip() for item in tools.split(',')}
-        self.assertEqual(scheduled, {'gh', 'codex'},
-                         'Cloudflared must stay unscheduled until the hosted smoke gate is implemented')
+        self.assertEqual(scheduled, {'gh', 'codex', 'cloudflared'},
+                         'Every supported tool must use the verified refresh and hosted smoke gate')
         self.assertLessEqual(scheduled, set(upstream))
         self.assertIn('      fail-fast: false\n', refresh, "One tool's failed refresh must not cancel the other's")
         self.assertIn('      max-parallel: 1\n', refresh,

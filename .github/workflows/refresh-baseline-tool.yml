@@ -7,7 +7,7 @@ on:
   workflow_call:
     inputs:
       tool:
-        description: The tool to refresh, gh or codex
+        description: The tool to refresh, gh, codex or cloudflared
         required: true
         type: string
 permissions:
