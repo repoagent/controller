@@ -18,7 +18,7 @@
 ### Known limitations
 
 - Packaging, source tests and versioned publication do not establish successful hosted enrollment/replacement, rendered GitHub light/dark or narrow-screen behavior, actual provider usage outcomes or renewal of a pre-upgrade existing enrollment against the upgraded deployment. Those acceptance items remain open; no new uptime, recovery or settlement proof is claimed.
-- Revocation, positive token settlement and durable owner release remain prerequisites for enrollment replacement. Health responses and closure acknowledgments do not establish settlement; existing hosted and migration acceptance remains tracked in #283/#249/#197.
+- Revocation, positive token settlement and durable owner release remain prerequisites for enrollment replacement. Health responses and closure acknowledgments do not establish settlement; remaining hosted and renewal acceptance is tracked in #207/#283/#197.
 
 ## 1.0.0 (2026-10-28)
 
