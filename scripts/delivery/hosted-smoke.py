@@ -251,11 +251,12 @@ def install(path):
     arguments = ['pwsh', '-NoLogo', '-NoProfile', '-File', ROOT / 'install.ps1', '-Authentication', 'Broker',
                  '-Repository', REPOSITORY, '-BrokerOrigin', BROKER, '-ApprovalVariable', APPROVAL,
                  '-ApprovalLocation', 'AgentVariable', '-Clone', '-Mode', 'quick-tunnel', '-MentionUser', '',
-                 '-Instance', value['instance'], '-StateDirectory', state, '-Image', value['image'], '-SkipBuild',
+                 '-Instance', value['instance'], '-StateDirectory', state, '-SkipBuild',
                  '-CodexAuthPath', auth, '-ReconcileInterval', '3600', '-WebSearch', 'disabled', '-NonInteractive', '-Apply']
     deadline = time.monotonic() + 80 * 60
+    environment = dict(os.environ, REPOAGENT_IMAGE=value['image'])
     while True:
-        result = command(arguments, check=False, timeout=900)
+        result = command(arguments, check=False, timeout=900, environment=environment)
         # Raw installer output stays private and is never an uploaded artifact.
         (path / 'installer.log').write_text(result.stdout + result.stderr)
         (path / 'installer.log').chmod(0o600)
