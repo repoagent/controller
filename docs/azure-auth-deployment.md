@@ -170,6 +170,25 @@ The activation job has a 40-minute timeout. Azure CLI runs the actual Incrementa
 
    Promotion requires the current owned no-ingress staging app with that artifact. It uses guarded full apply and public rollout/origin checks, restoring HTTPS/min 0/max 1 without rebuild. A newly built CI digest is a subsequent release with its own acceptance. Prove public TLS/cold start, bounded enrollment/recovery/ack, issuance/renewal, withdrawal/revocation/token settlement, rollback and selected-private-repository binding. Native Windows/Docker Desktop remains separately owned acceptance.
 
+## Version-only runtime console probe
+
+This is an explicit console operation, separate from GET-only `operation=diagnostics`. It uses the existing main-only OIDC identity and its existing selected-container console authority; it adds no roles or trust. Supply the accepted current-main source, exact currently deployed immutable image, current ready revision, and a separately observed running replica:
+
+```sh
+gh workflow run broker.yml --repo repoagent/controller --ref main \
+  -f operation=version-probe -f expected-source-sha=EXACT_ACCEPTED_MAIN_SHA \
+  -f image=ghcr.io/repoagent/controller-auth@sha256:EXACT_CURRENT_IMAGE_DIGEST \
+  -f revision=EXACT_CURRENT_READY_REVISION -f replica=EXACT_OBSERVED_REPLICA
+```
+
+The helper verifies the same fixed source/account/resource group as diagnostics. Before and after console execution, it verifies app ownership, the current ready revision, matching immutable images in app/revision templates, an active healthy revision, and the exact running ready `auth-service` container in that replica. Missing, scaled-to-zero, changed or unauthorized targets are unavailable; the operation never starts, activates or replaces a replica. These checks detect observed drift but do not lock Azure resources.
+
+The only command is `dotnet /app/RepoAgent.Auth.dll --version --json`. The broker handles it before composing the host, Table storage, cleanup, signing/protection or telemetry. The CLI obtains the normal console token and opens the selected session using existing authorization. Standard-library PTY stdin meets the CLI's terminal requirement; no input or follow-up command is sent. Console stdout is privately captured with a 30-second deadline and 64 KiB cap, while stderr is discarded. Management reads retain the diagnostics helper's 30-second/2 MiB limits. No raw console, tokens, provider errors, environment or command snapshots are retained.
+
+The seven-day `broker-version-probe-RUN-ATTEMPT` artifact contains only the strict component/version/source metadata, validated selected identities, timestamps and availability. Invalid/ambiguous metadata, command failure, timeout or observed target drift exits unsuccessfully with explicit unavailable evidence. `observed` means exactly one valid metadata record was observed and the CLI session completed; **remote process exit status remains unestablished**, and `settlementProven` is always false. Compiled broker source can predate the workflow's current-main source. This does not inspect authority state or prove replacement, cleanup, restore or notification acceptance. Actual Azure session availability must be verified through the main operation; local PTY tests alone do not establish it.
+
+Primary shapes: [stable revision and replica GET schema](https://github.com/Azure/azure-rest-api-specs/blob/7aa1ea88a08c6b12cabd943ad441fcebc26988a4/specification/app/resource-manager/Microsoft.App/ContainerApps/stable/2025-01-01/ContainerAppsRevisions.json), [Azure CLI selected-console driver](https://github.com/Azure/azure-cli/blob/azure-cli-2.91.0/src/azure-cli/azure/cli/command_modules/containerapp/custom.py), and [token/session/PTY handling](https://github.com/Azure/azure-cli/blob/azure-cli-2.91.0/src/azure-cli/azure/cli/command_modules/containerapp/_ssh_utils.py). Revision and replica GETs use `2025-01-01`; the CLI's console operation is not a GET-only diagnostic read.
+
 ## Selected console and private runtime evidence
 
 Use the returned app/revision and inspect replicas to select the exact `auth-service` container. Use Azure's existing selected-container exec or ephemeral debug console. An authorized CLI session can open:

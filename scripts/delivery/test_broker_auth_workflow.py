@@ -31,6 +31,15 @@ def selected(name, *, event='push', operation='', ref='refs/heads/main', publish
 
 
 class BrokerWorkflowTests(unittest.TestCase):
+    def test_version_probe_is_explicit_main_only_and_does_not_select_get_diagnostics_or_delivery(self):
+        context = dict(event='workflow_dispatch', operation='version-probe', published='skipped', recorded='skipped')
+        self.assertTrue(selected('version-probe', **context))
+        for overrides in (dict(ref='refs/heads/other'), dict(repository='other/controller'), dict(event='push')):
+            self.assertFalse(selected('version-probe', **dict(context, **overrides)))
+        for name in ('diagnostics','verify-service','publish','deploy'):
+            self.assertFalse(selected(name, **context), name)
+        self.assertFalse(selected('version-probe', event='workflow_dispatch', operation='diagnostics'))
+
     def test_diagnostics_only_selects_fixed_repository_main_dispatch_and_never_deploys(self):
         context = dict(event='workflow_dispatch', operation='diagnostics', published='skipped', recorded='skipped')
         self.assertTrue(selected('diagnostics', **context))
@@ -93,7 +102,7 @@ class BrokerWorkflowTests(unittest.TestCase):
             self.assertTrue(selected(name, **context), name)
 
     def test_access_and_guarded_recovery_do_not_accidentally_deploy(self):
-        for operation in ['access-check', 'diagnostics', 'bootstrap-publish', 'foundation-plan', 'foundation-apply',
+        for operation in ['access-check', 'diagnostics', 'version-probe', 'bootstrap-publish', 'foundation-plan', 'foundation-apply',
                           'stage-plan', 'stage-apply', 'promote-staged', 'stage-stop', 'stage-resume',
                           'cleanup-identity-plan', 'cleanup-identity-apply', 'cleanup-plan', 'cleanup-apply']:
             context = dict(event='workflow_dispatch', operation=operation, published='skipped')
