@@ -18,6 +18,47 @@ public sealed class ControllerStatusProjectionTests
 
     ControllerStatus Open() => new(Repository, "polling", record, discussions, settings, checkout, clock);
 
+    [Fact]
+    public void Known_checkout_uncertainty_stays_busy_after_all_Discussions_are_gone()
+    {
+        using var status = Open();
+        checkout.Work = new(new HashSet<string>(), true);
+        Assert.Equal("busy", StatusSnapshot.From(status.Snapshot()).State);
+        Assert.Equal(0, status.Snapshot().Work.Running);
+        checkout.Work = new(new HashSet<string>(), null);
+        Assert.Equal("idle", StatusSnapshot.From(status.Snapshot()).State);
+    }
+
+    [Fact]
+    public void A_blocked_start_reports_prior_markers_as_uncertainty_and_counts_only_this_lifetimes_known_turns()
+    {
+        discussions.WriteDiscussions(State(("D1", Record(1, "S1", running: new("old-turn", Start)))));
+        checkout.Work = new(new HashSet<string> { "S1" }, true);
+        using var status = Open();
+
+        Assert.Equal(0, status.Snapshot().Work.Running);
+        Assert.IsType<SessionActivity.Idle>(Assert.Single(status.Snapshot().Sessions).Activity);
+        Assert.NotNull(discussions.Saved!.Discussions["D1"].Running);
+        Assert.Equal("busy", StatusSnapshot.From(status.Snapshot()).State);
+
+        status.Running(["S1"]);
+        Assert.Equal(1, status.Snapshot().Work.Running);
+        Assert.IsType<SessionActivity.Running>(Assert.Single(status.Snapshot().Sessions).Activity);
+        status.Running([]);
+        Assert.Equal(0, status.Snapshot().Work.Running);
+    }
+
+    [Theory]
+    [InlineData(true, "busy")]
+    [InlineData(false, "idle")]
+    public void An_unavailable_checkout_observation_is_not_idle_when_the_host_expects_a_managed_checkout(bool managed, string expected)
+    {
+        using var status = Open();
+        Assert.Null(status.Snapshot().Work.AdmissionBlocked);
+        Assert.Equal(expected, StatusSnapshot.From(status.Snapshot(), managed).State);
+        Assert.Equal(0, status.Snapshot().Work.Running);
+    }
+
     OperatorStatus Stopped() => ControllerStatus.Read(record, discussions, settings, checkout, clock)!;
 
     static LogEntry Entry(int seconds, string kind, string message) => new(Start.AddSeconds(seconds), kind, message);
@@ -208,6 +249,7 @@ public sealed class ControllerStatusProjectionTests
             ("D6", Record(6, null, inputs: 2))));
         checkout.Work = new(new HashSet<string> { "S5", "S6" }, true);
         using var status = Open();
+        status.Running(["S3", "S5"]); // Current runtime evidence, independent of retained journal markers.
 
         var snapshot = status.Snapshot();
 

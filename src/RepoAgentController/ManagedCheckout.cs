@@ -248,6 +248,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
     }
 
     internal static string ReadPrivate(string path) => ReadFile(path, PrivateFileMode);
+    internal static string ReadCheckoutMetadata(string path) => ReadFile(path, CheckoutMetadataMode);
 
     static string ReadFile(string path, UnixFileMode maximumMode)
     {

@@ -664,6 +664,13 @@ sealed class RecordingCheckoutAdmission : ICheckoutAdmission
 /// demand, before it saves anything.</summary>
 sealed class InMemoryRefreshJournal : IRefreshJournal
 {
+    public Exception? PreserveFailure { get; set; }
+    public List<RefreshJournal?> Evidence { get; } = [];
+    public void PreserveStartupEvidence()
+    {
+        if (PreserveFailure is { } failure) throw failure;
+        Evidence.Add(Saved);
+    }
     readonly Lock sync = new();
     readonly List<(Func<RefreshJournal, bool> Condition, TaskCompletionSource Reached)> waiters = [];
     RefreshJournal? saved;
@@ -705,6 +712,8 @@ sealed class InMemoryRefreshJournal : IRefreshJournal
             Requested = journal.Requested,
             Completed = journal.Completed,
             Blocked = journal.Blocked,
+            ActiveUnreadable = journal.ActiveUnreadable,
+            ActiveAsRead = journal.ActiveAsRead,
             Running = journal.Running,
             Reason = journal.Reason,
             Applying = journal.Applying,
@@ -712,6 +721,7 @@ sealed class InMemoryRefreshJournal : IRefreshJournal
         };
         copy.ReasonAsRead = journal.ReasonAsRead;
         copy.RunningUnreadable = journal.RunningUnreadable;
+        copy.RunningAsRead = journal.RunningAsRead;
         foreach (var (id, admission) in journal.Active)
             copy.Active[id] = new(admission.Since)
             {

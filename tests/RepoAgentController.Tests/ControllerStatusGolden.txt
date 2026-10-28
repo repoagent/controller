@@ -34,7 +34,7 @@
     "pending": 1,
     "retrying": 1,
     "waiting": 5,
-    "running": 3,
+    "running": 2,
     "limit": 3,
     "admissionBlocked": true
   },
@@ -76,7 +76,7 @@
     {
       "discussion": "https://github.com/owner/repository/discussions/6",
       "session": "S6",
-      "state": "running"
+      "state": "idle"
     }
   ],
   "failures": [

@@ -113,7 +113,7 @@ The App's EYES reaction on a Discussion, comment or reply, added once the agent 
 The controller's durable queue of its own GitHub writes, such as EYES receipts and dashboard updates, retained until each succeeds or fails permanently. It never resends agent input, and agent replies do not pass through it.
 
 **Status endpoint**:
-The controller's local `GET /status`, which reports it busy while an agent turn runs or input is pending, retrying or waiting, and idle otherwise, with its work counts. A hosting environment reads it to decide whether it may stop the controller; the controller never acts on it.
+The controller's local `GET /status`, which reports it busy while an agent turn runs, input is pending, retrying or waiting, or managed checkout admission is known to be blocked by uncertainty; otherwise idle, with its work counts. A hosting environment reads it to decide whether it may stop the controller; the controller never acts on it.
 _Avoid_: health check
 
 **Dashboard**:
