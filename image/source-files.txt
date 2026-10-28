@@ -98,3 +98,4 @@ container/prepare-runtime.sh
 scripts/compose-image.py
 image/source-files.txt
 src/RepoAgentController.Core/GitHubTokenThrottledException.cs
+src/RepoAgentController.Core/IAgentToolCredentials.cs
