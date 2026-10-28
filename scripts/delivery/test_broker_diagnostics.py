@@ -47,9 +47,16 @@ elif args[:2] == ['containerapp','exec']:
     value['properties']['template']['containers'][0]['image']='ghcr.io/repoagent/controller-auth@sha256:'+'c'*64
   Path(os.environ['TEST_FIXTURES']).write_text(json.dumps(fixtures))
  print('INFO: DO_NOT_EXPORT_SECRET provider banner')
- print(json.dumps(dict(component='broker',version='1.0.0',source='b'*40)))
+ if args[args.index('--command')+1]=='dotnet /app/RepoAgent.Auth.dll --inspect-retained-authority':
+  print(fixtures.get('authorityRaw',json.dumps(fixtures['authorityPayload'])))
+ else: print(json.dumps(dict(component='broker',version='1.0.0',source='b'*40)))
  if mode=='ambiguous': print(json.dumps(dict(component='broker',version='1.0.1',source='c'*40)))
  if mode=='private-json': print(json.dumps(dict(component='broker',version='1.0.0',source='b'*40,private='DO_NOT_EXPORT_SECRET')))
+ if mode=='trailing-hang':
+  import time
+  sys.stdout.flush()
+  time.sleep(60)
+ sys.exit(fixtures.get('consoleExitCode',0))
 elif args[:3] == ['rest','--method','get']:
  from urllib.parse import urlsplit
  url=args[args.index('--url')+1]; key=urlsplit(url).path

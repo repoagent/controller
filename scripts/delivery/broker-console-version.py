@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Explicit selected-container version observation, separate from GET-only diagnostics."""
+"""Version CLI and shared guarded transport for two fixed selected-container commands."""
 import datetime as dt
 import json
 import os
@@ -41,11 +41,20 @@ def published_contract(image, tag):
     return dict(component='broker', version=value['version'], source=sha)
 
 
-def selection(image, revision, replica, discover=False):
+def selection(image, revision, replica, discover=False, authority=False):
     app = guard.read(guard.APP)
     if app.get('id', '').lower() != guard.APP.lower() or any(app.get('tags', {}).get(key) != value for key, value in
             dict(repositoryId='1426154477', ownerId='345029828', managedBy='repoagent-auth').items()):
         raise guard.Unavailable('target-ownership-mismatch')
+    if authority:
+        expected_identity = guard.GROUP+'/providers/Microsoft.ManagedIdentity/userAssignedIdentities/repoagent-auth-runtime'
+        identity = app.get('identity', {})
+        assigned = identity.get('userAssignedIdentities', {})
+        if identity.get('type') != 'UserAssigned' or not isinstance(assigned, dict) or len(assigned) != 1:
+            raise guard.Unavailable('selected-runtime-identity-mismatch')
+        identity_id, identity_value = next(iter(assigned.items()))
+        if identity_id.lower() != expected_identity.lower() or identity_value.get('clientId', '').lower() != '8016ef66-b1b7-4118-8de4-07814ebc9896':
+            raise guard.Unavailable('selected-runtime-identity-mismatch')
     properties = app['properties']
     if properties.get('provisioningState') != 'Succeeded' or properties.get('latestReadyRevisionName') != revision:
         raise guard.Unavailable('selected-runtime-mismatch')
@@ -82,7 +91,7 @@ name: name, ready: ready, runningState: runningState}}}, hasNext: nextLink != `n
     return replica
 
 
-def console(revision, replica):
+def capture_console(revision, replica, authority=False):
     import pty
     # Only stdin is a PTY. No terminal input is ever sent; stdout stays a bounded
     # private pipe and stderr is discarded, including auth-token/provider errors.
@@ -92,6 +101,7 @@ def console(revision, replica):
         process = subprocess.Popen(['az', 'containerapp', 'exec', '--subscription', guard.SUBSCRIPTION,
             '--resource-group', guard.RESOURCE_GROUP, '--name', 'repoagent-auth', '--revision', revision,
             '--replica', replica, '--container', 'auth-service', '--command',
+            'dotnet /app/RepoAgent.Auth.dll --inspect-retained-authority' if authority else
             'dotnet /app/RepoAgent.Auth.dll --version --json', '--only-show-errors'], stdin=slave,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
             env=dict(os.environ, AZURE_CORE_COLLECT_TELEMETRY='0', AZURE_EXTENSION_USE_DYNAMIC_INSTALL='no'))
@@ -111,20 +121,8 @@ def console(revision, replica):
                     output.extend(chunk)
                     if len(output) > 65536:
                         raise guard.Unavailable('console-response-limit')
-        if process.wait(timeout=max(.01, deadline-time.monotonic())):
-            raise guard.Unavailable('console-command-failed')
-        candidates = []
-        for line in output.decode('utf-8', errors='strict').splitlines():
-            if line.startswith('{'):
-                value = json.loads(line)
-                if not isinstance(value, dict) or set(value) != {'component', 'version', 'source'} \
-                        or value['component'] != 'broker' or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', value['version']) \
-                        or len(value['version']) > 32 or not re.fullmatch('[0-9a-f]{40}', value['source']):
-                    raise guard.Unavailable('unexpected-version-metadata')
-                candidates.append(value)
-        if len(candidates) != 1:
-            raise guard.Unavailable('unexpected-version-metadata')
-        return candidates[0]
+        result = process.wait(timeout=max(.01, deadline-time.monotonic()))
+        return result, output.decode('utf-8', errors='strict')
     except (OSError, UnicodeError, subprocess.TimeoutExpired):
         raise guard.Unavailable('console-command-failed') from None
     finally:
@@ -138,7 +136,25 @@ def console(revision, replica):
         os.close(master)
 
 
-def collect(output):
+def console(revision, replica):
+    result, output = capture_console(revision, replica)
+    if result:
+        raise guard.Unavailable('console-command-failed')
+    candidates = []
+    for line in output.splitlines():
+        if line.startswith('{'):
+            value = json.loads(line)
+            if not isinstance(value, dict) or set(value) != {'component', 'version', 'source'} \
+                    or value['component'] != 'broker' or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', value['version']) \
+                    or len(value['version']) > 32 or not re.fullmatch('[0-9a-f]{40}', value['source']):
+                raise guard.Unavailable('unexpected-version-metadata')
+            candidates.append(value)
+    if len(candidates) != 1:
+        raise guard.Unavailable('unexpected-version-metadata')
+    return candidates[0]
+
+
+def request():
     image = os.environ.get('AUTH_EXPECTED_IMAGE', '')
     revision = os.environ.get('AUTH_EXPECTED_REVISION', '')
     replica = os.environ.get('AUTH_EXPECTED_REPLICA', '')
@@ -148,7 +164,11 @@ def collect(output):
             or (replica and not re.fullmatch(re.escape(revision)+'-[a-z0-9-]{1,80}', replica)) \
             or not re.fullmatch('broker-v'+release_policy['VERSION'], tag) or int(tag.split('v')[1].split('.')[0]) < 1:
         raise guard.Refused('Expected exact selected immutable image, revision and replica')
-    source = guard.checked_source()
+    return image, revision, replica, tag, guard.checked_source()
+
+
+def collect(output):
+    image, revision, replica, tag, source = request()
     if not output.is_absolute() or output.exists():
         raise guard.Refused('Use a new absolute evidence directory')
     output.mkdir(mode=0o700, parents=True)
