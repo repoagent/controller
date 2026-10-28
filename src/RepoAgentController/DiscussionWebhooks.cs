@@ -12,7 +12,7 @@ sealed record WebhookConfiguration(Uri PublicUrl, int Port, TimeSpan ReconcileIn
 }
 
 /// <summary>
-/// Authenticates HTTP deliveries and serializes observations with reconciliation. The controller's HTTP server serves
+/// Authenticates and translates HTTP deliveries into core observations. The controller's HTTP server serves
 /// <see cref="Receive"/>; <see cref="Run"/> registers the repository webhook and deactivates it when the controller stops.
 /// </summary>
 sealed class DiscussionWebhooks : IDisposable
@@ -34,6 +34,7 @@ sealed class DiscussionWebhooks : IDisposable
     public void Dispose() { slots.Dispose(); observations.Dispose(); }
     public Task Run(CancellationToken ct) => observations.Run(ct, ct);
     public Task Run(CancellationToken stoppingToken, CancellationToken activityToken) => observations.Run(stoppingToken, activityToken);
+
     /// <summary>Answers one delivery to POST /github/webhook with an empty response and its status code.</summary>
     public async Task Receive(HttpContext context)
     {

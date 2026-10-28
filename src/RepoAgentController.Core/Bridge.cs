@@ -202,6 +202,14 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         finally { gate.Release(); }
     }
 
+    /// <summary>Applies replacement agent credentials between dispatches and only at a proven global idle boundary.</summary>
+    public Task<bool> ReplaceAgentCredentials(Action install, CancellationToken ct) => ExcludingDispatch(async () =>
+    {
+        if (admission is null) return await sessions.RestartWhenIdle(install, ct);
+        var restarted = false;
+        return await admission.CommitAtIdle(async idle => restarted = await sessions.RestartWhenIdle(install, idle), ct) && restarted;
+    }, ct);
+
     /// <summary>Permanently stops new admission, then settles native work as it ends. Only a hard abort cancels the wait.</summary>
     public async Task StopAndDrain(CancellationToken abort)
     {

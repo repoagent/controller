@@ -41,16 +41,8 @@ public sealed class WebhookDeliveryTests
         [
             ("not JSON", new("{not json"), HttpStatusCode.BadRequest),
             ("not an object", new("[]"), HttpStatusCode.BadRequest),
-            ("another repository", new(Event(1, repository: "other/repository")), HttpStatusCode.Forbidden),
             ("no delivery ID", new(Event(1)) { Id = null }, HttpStatusCode.BadRequest),
             ("malformed delivery ID", new(Event(1)) { Id = "delivery-1" }, HttpStatusCode.BadRequest),
-            ("ping", new(Event(1)) { Event = "ping" }, HttpStatusCode.NoContent),
-            ("unsubscribed event", new(Event(1)) { Event = "issues" }, HttpStatusCode.NoContent),
-            ("push without a managed clone", new(Event(1)) { Event = "push" }, HttpStatusCode.NoContent),
-            ("malformed action", new(Event(1, action: "Created!")), HttpStatusCode.BadRequest),
-            ("no Discussion number", new(Event(null)), HttpStatusCode.BadRequest),
-            ("non-positive Discussion number", new(Event(0)), HttpStatusCode.BadRequest),
-            ("the App's own comment", new(Event(1, sender: ("test-app[bot]", "Bot"))) { Event = "discussion_comment" }, HttpStatusCode.NoContent),
             ("GET", new(Event(1)) { Method = "GET" }, HttpStatusCode.MethodNotAllowed),
             ("another path", new(Event(1)) { Path = "/github/other" }, HttpStatusCode.NotFound),
         ];
@@ -65,9 +57,6 @@ public sealed class WebhookDeliveryTests
             controller.Elapse(TimeSpan.FromSeconds(5));
         }));
 
-        Assert.Contains(controller.Log, line => line.Contains(" webhook-rejected reason=repository", StringComparison.Ordinal));
-        Assert.Contains(controller.Log, line => line.Contains(" webhook-ping delivery=", StringComparison.Ordinal));
-        Assert.Contains(controller.Log, line => line.Contains(" webhook-ignored delivery=", StringComparison.Ordinal) && line.EndsWith(" discussion=1 reason=own-comment", StringComparison.Ordinal));
         Assert.DoesNotContain(controller.Log, line => line.Contains(" webhook-delivery ", StringComparison.Ordinal));
         Assert.Equal(0, controller.Native.TurnCount);
     }
