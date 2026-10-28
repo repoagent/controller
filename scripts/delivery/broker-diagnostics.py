@@ -188,10 +188,14 @@ def capture(operation):
 def executions():
     # Azure CLI evaluates this fixed JMESPath projection before formatting stdout.
     # Raw snapshots can exceed the pipe cap because they include private env/args.
-    # A 101st row still triggers our explicit 100-row page guard; no nextLink follows.
-    response = read(JOB + '/executions', query="""{value: value[:101].{name: name, properties: {
+    # Examine only the first 100 rows of one response, even if Azure returns more.
+    # Preserve a boolean for page/prefix truncation; no nextLink is followed.
+    response = read(JOB + '/executions', query="""{value: value[:100].{name: name, properties: {
 status: properties.status, startTime: properties.startTime, endTime: properties.endTime,
-template: {containers: properties.template.containers[].{image: image}}}}, nextLink: nextLink != `null`} """.strip())
+template: {containers: properties.template.containers[].{image: image}}}},
+truncated: length(value) > `100` || nextLink != `null`} """.strip())
+    if not isinstance(response.get('truncated'), bool):
+        raise Unavailable('invalid-response')
     rows = []
     for item in collection(response):
         name = item['name']
@@ -226,10 +230,11 @@ template: {containers: properties.template.containers[].{image: image}}}}, nextL
                 if len(states) > 64:
                     raise Unavailable('response-limit')
         return dict(count=len(items), containers=states)
-    return dict(items=selected, truncated=bool(response.get('nextLink')) or len(rows) > 20,
+    return dict(items=selected, truncated=response['truncated'] or len(rows) > 20, pageTruncated=response['truncated'],
                 pageRows=len(rows), failedPageRows=len(failed),
-                coverage='One returned page only, at most 100 rows examined; up to 20 newest samples reserving two recent failures. '
-                         'At most three replica snapshots reserving one recent failure. Not a drain fence or full history.',
+                coverage='First 100 rows of one returned page only; samples sorted within that prefix, not globally latest. '
+                         'Up to 20 samples reserving two recent failures; up to three replica snapshots reserving one recent failure. '
+                         'Not a drain fence or full history.',
                 replicas=[dict(execution=row['name'], **capture(lambda name=row['name']: replicas(name))) for row in replica_samples])
 
 
