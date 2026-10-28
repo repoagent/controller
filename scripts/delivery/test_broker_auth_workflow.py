@@ -30,6 +30,13 @@ def selected(name, *, event='push', operation='', ref='refs/heads/main', publish
 
 
 class BrokerWorkflowTests(unittest.TestCase):
+    def test_release_pr_explicit_verification_is_read_only_on_its_branch(self):
+        context = dict(event='workflow_dispatch', operation='verify', ref='refs/heads/release-please--branches--main',
+                       published='skipped', recorded='skipped', approved=False)
+        self.assertTrue(selected('verify-service', **context))
+        self.assertFalse(selected('publish', **context))
+        self.assertFalse(selected('deploy', **context))
+
     def test_unreleased_main_source_is_verified_without_republishing_the_previous_version(self):
         self.assertTrue(selected('verify-service', approved=False))
         self.assertFalse(selected('publish', approved=False))

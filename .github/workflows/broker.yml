@@ -5,7 +5,7 @@ on:
       operation:
         description: Select broker delivery, rollback, access check or guarded recovery
         type: choice
-        options: [access-check, deploy, release, deploy-release, deploy-image, bootstrap-publish, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume, cleanup-identity-plan, cleanup-identity-apply, cleanup-plan, cleanup-apply]
+        options: [access-check, verify, deploy, release, deploy-release, deploy-image, bootstrap-publish, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume, cleanup-identity-plan, cleanup-identity-apply, cleanup-plan, cleanup-apply]
         default: access-check
         required: true
       expected-source-sha:
@@ -125,7 +125,7 @@ jobs:
         run: python3 scripts/delivery/broker-release.py plan
   verify-service:
     needs: select-release
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.operation == 'deploy' || inputs.operation == 'release') }}
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.operation == 'verify' || inputs.operation == 'deploy' || inputs.operation == 'release') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
