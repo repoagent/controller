@@ -168,6 +168,78 @@ print('{}')
         self.release.write_text(json.dumps({'tag_name': 'controller-v1.2.3', 'body': notes.decode(), 'assets': []}))
         return artifact, plan
 
+    def test_retry_recovers_only_the_exact_alias_from_retained_verified_artifacts(self):
+        artifact, plan = self.artifact()
+        state = self.root / 'registry.json'
+        state.write_text(json.dumps({'alias': False, 'fail': True}))
+        self.environment.update(FIXTURE_REGISTRY_STATE=str(state), GITHUB_REF='refs/heads/main',
+                                GITHUB_REPOSITORY='repoagent/controller', GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='1')
+        fixture = '#!' + sys.executable + '\n' + r'''
+import json, os, pathlib, sys
+args = sys.argv[1:]
+state = pathlib.Path(os.environ['FIXTURE_REGISTRY_STATE'])
+value = json.loads(state.read_text())
+with open(os.environ['FIXTURE_LEDGER'], 'a') as log: log.write(json.dumps([pathlib.Path(sys.argv[0]).name, *args]) + '\n')
+if pathlib.Path(sys.argv[0]).name == 'docker':
+    if args[0] == 'push' and ':controller-v' in args[-1]: value['alias'] = True; state.write_text(json.dumps(value))
+elif args[0] == 'inspect':
+    if ':controller-v' in args[-1]:
+        if not value['alias']: print('manifest unknown', file=sys.stderr); sys.exit(1)
+        if value['fail']: value['fail'] = False; state.write_text(json.dumps(value)); sys.exit(1)
+    print('sha256:' + ('d' if value.get('conflict') else 'b') * 64)
+elif args[0] == 'copy':
+    target = pathlib.Path(args[-1].removeprefix('dir:')); target.mkdir(exist_ok=True)
+    (target / 'manifest.json').write_text(json.dumps({'config': {'digest': 'sha256:' + 'c' * 64}}))
+else: sys.exit(2)
+'''
+        for name in ('docker', 'skopeo'):
+            tool = self.binary / name; tool.write_text(fixture); tool.chmod(0o755)
+        first = self.execute('publish-image', artifact, plan)
+        self.assertNotEqual(first.returncode, 0, 'The injected post-alias observation must fail')
+        self.assertTrue(json.loads(state.read_text())['alias'], first.stderr)
+        self.assertTrue((artifact / 'publication.json').exists(), first.stderr)
+        pushes = lambda: [call for call in map(json.loads, self.ledger.read_text().splitlines()) if call[:2] == ['docker', 'push']]
+        self.assertEqual(len(pushes()), 2)
+        second = self.execute('publish-image', artifact, plan, '--recover')
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(json.loads(second.stdout)['image'], self.environment['IMAGE'])
+        self.assertEqual(len(pushes()), 2, 'Recovery must not push or move any alias')
+        retained = (artifact / 'publication.json').read_bytes()
+        (artifact / 'publication.json').unlink()
+        self.assertNotEqual(self.execute('publish-image', artifact, plan).returncode, 0, 'An unrecorded alias is ambiguous')
+        (artifact / 'publication.json').write_bytes(retained)
+        value = json.loads(state.read_text()); value['conflict'] = True; state.write_text(json.dumps(value))
+        self.assertNotEqual(self.execute('publish-image', artifact, plan).returncode, 0)
+        self.assertEqual(len(pushes()), 2)
+
+        value['conflict'] = False; state.write_text(json.dumps(value))
+        for name in ('RELEASE_NOTES.md', 'repoagent-controller-1.2.3-linux-amd64.tar.gz', 'image-inventory.json'):
+            with self.subTest(changed=name):
+                path = artifact / name; original = path.read_bytes()
+                path.write_bytes(b'Changed artifact')
+                self.assertNotEqual(self.execute('publish-image', artifact, plan, '--recover').returncode, 0)
+                self.assertEqual(len(pushes()), 2)
+                path.write_bytes(original)
+
+    def test_recovery_artifact_must_come_from_the_main_release_workflow(self):
+        observations = self.root / 'observations.json'
+        run = dict(path='.github/workflows/controller-release.yml', event='workflow_dispatch', head_branch='main')
+        artifact = dict(name='controller-publication-123-1', expired=False, workflow_run=dict(id=123))
+        observations.write_text(json.dumps(dict(run=run, artifact=artifact)))
+        self.environment['FIXTURE_OBSERVATIONS'] = str(observations)
+        gh = self.binary / 'gh'
+        gh.write_text('#!' + sys.executable + '\n' + r'''
+import json, os, pathlib, sys
+value = json.loads(pathlib.Path(os.environ['FIXTURE_OBSERVATIONS']).read_text())
+print(json.dumps(value['artifact' if '/artifacts/' in sys.argv[-1] else 'run']))
+''')
+        gh.chmod(0o755)
+        self.assertEqual(self.execute('recovery-artifact', '123', '456').returncode, 0)
+        for field, value in [('path', '.github/workflows/controller.yml'), ('head_branch', 'untrusted-branch'), ('event', 'pull_request')]:
+            changed = dict(run); changed[field] = value
+            observations.write_text(json.dumps(dict(run=changed, artifact=artifact)))
+            self.assertNotEqual(self.execute('recovery-artifact', '123', '456').returncode, 0, field)
+
     def test_verified_publication_is_retry_safe_and_never_overwrites_conflicting_assets(self):
         artifact, plan = self.artifact()
         first = self.execute('finalize', artifact, plan)

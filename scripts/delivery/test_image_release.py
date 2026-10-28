@@ -144,13 +144,13 @@ class AutomaticPublicationTests(unittest.TestCase):
         self.assertIn('cancel-in-progress: false', workflow)
         self.assertNotIn('pull_request:', workflow)
 
-    def test_publication_requires_verified_transfer_positive_absence_and_anonymous_digest(self):
+    def test_publication_routes_verified_artifacts_through_the_retry_safe_image_command(self):
         publication = self.semantic('publish')
         self.assertIn('needs: [select, build]', publication)
         self.assertIn('sha256sum --check SHA256SUMS', publication)
-        self.assertIn('controller-release.py image-free', publication)
-        self.assertIn('--src-no-creds --preserve-digests', publication)
-        self.assertIn('"docker://$reference")" = "$digest"', publication)
+        self.assertIn('controller-release.py publish-image', publication)
+        self.assertIn('controller-release.py recovery-artifact', publication)
+        self.assertIn('cmp "$RUNNER_TEMP/controller-plan/plan.json" "$RUNNER_TEMP/controller-image/plan.json"', publication)
         self.assertIn('needs: [select, build, publish]', self.semantic('finalize'))
         self.assertIn('controller-release.py finalize', self.semantic('finalize'))
 
@@ -169,7 +169,7 @@ class AutomaticPublicationTests(unittest.TestCase):
             self.assertIn('cancel-in-progress: true', job(name))
             self.assertIn('${{ github.ref }}', job(name))
         for name in ['build', 'publish', 'finalize']:
-            self.assertIn("if: needs.select.outputs.complete != 'true'", self.semantic(name))
+            self.assertRegex(self.semantic(name), r"(?m)^    if: .*needs\.select\.outputs\.complete != 'true'")
 
 class BaselineReleaseTests(unittest.TestCase):
     def artifact(self, versions=VERSIONS):

@@ -169,7 +169,7 @@ def verify_native(archive, version, commit, notes):
             raise ValueError('Native archive release notes differ from the image')
 
 
-def finalize(artifact, plan_path):
+def verified_artifact(artifact, plan_path):
     plan = json.loads(plan_path.read_text())
     version, tag, commit = plan['version'], plan['tag'], plan['source']
     if tag != 'controller-v' + version or not re.fullmatch(SEMVER, version) or not re.fullmatch(r'[0-9a-f]{40}', commit):
@@ -189,15 +189,105 @@ def finalize(artifact, plan_path):
     checksum = artifact / (archive.name + '.sha256')
     if checksum.read_text().split()[0] != digest(archive.read_bytes()):
         raise ValueError('Native checksum differs from the verified archive')
-    image = os.environ.get('IMAGE', '')
-    reference = os.environ.get('REFERENCE', '')
-    if not re.fullmatch(r'ghcr\.io/repoagent/controller@sha256:[0-9a-f]{64}', image) or reference != 'ghcr.io/repoagent/controller:' + tag:
-        raise ValueError('Verified immutable image and component version alias are required')
     config_digest = json.loads((artifact / 'build.json').read_text()).get('containerimage.config.digest', '')
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', config_digest):
         raise ValueError('Verified image config digest is required')
     files = [archive, checksum, artifact / 'RELEASE_NOTES.md']
     assets = {file.name: digest(file.read_bytes()) for file in files}
+    return plan, notes, versions, config_digest, files, assets
+
+
+def alias_image(reference, auth):
+    result = subprocess.run(['skopeo', 'inspect', '--authfile', str(auth), '--no-creds', '--format', '{{.Digest}}',
+                             'docker://' + reference], capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        if any(code in result.stderr.lower() for code in ('manifest unknown', 'name unknown')):
+            return None
+        raise ValueError('Registry alias observation is unconfirmed; no alias may be written')
+    value = result.stdout.strip()
+    if not re.fullmatch(r'sha256:[0-9a-f]{64}', value):
+        raise ValueError('Registry did not return one immutable image digest')
+    return 'ghcr.io/repoagent/controller@' + value
+
+
+def verify_public_image(image, config_digest, auth, directory):
+    run(['skopeo', 'copy', '--src-authfile', str(auth), '--src-no-creds', '--preserve-digests',
+         'docker://' + image, 'dir:' + str(directory)])
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    if manifest.get('config', {}).get('digest') != config_digest:
+        raise ValueError('Public immutable image differs from the verified artifact config')
+
+
+def publish_image(artifact, plan_path, recover=False):
+    if os.environ.get('GITHUB_REF') != 'refs/heads/main' or os.environ.get('GITHUB_REPOSITORY') != 'repoagent/controller':
+        raise ValueError('Controller image publication requires the repository main workflow')
+    plan, notes, versions, config_digest, files, assets = verified_artifact(artifact, plan_path)
+    if os.environ.get('SOURCE_COMMIT') != plan['source']:
+        raise ValueError('Publication source differs from the approved release plan')
+    reference = 'ghcr.io/repoagent/controller:' + plan['tag']
+    identity = dict(version=plan['version'], source=plan['source'], notesSha256=digest(notes), assets=assets,
+                    imageConfigDigest=config_digest, inventorySha256=digest((artifact / 'image-inventory.json').read_bytes()))
+    receipt = artifact / 'publication.json'
+    if recover and not receipt.exists():
+        raise ValueError('Recovery requires retained publication evidence; no image may be pushed')
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = Path(temporary)
+        auth = directory / 'auth.json'; auth.write_text('{"auths":{}}')
+        existing = alias_image(reference, auth)
+        if existing is not None:
+            retained = json.loads(receipt.read_text()) if receipt.exists() else None
+            if retained != dict(identity, image=existing):
+                raise ValueError('Existing version alias lacks matching retained verified publication evidence; it is preserved')
+            image = existing
+            verify_public_image(image, config_digest, auth, directory / 'image')
+        else:
+            if receipt.exists():
+                raise ValueError('Retained publication alias is absent; inspect before recovery')
+            run_id, attempt = os.environ.get('GITHUB_RUN_ID', ''), os.environ.get('GITHUB_RUN_ATTEMPT', '')
+            if not re.fullmatch(r'[0-9]+', run_id) or not re.fullmatch(r'[0-9]+', attempt):
+                raise ValueError('Hosted run identity is required')
+            candidate = f"ghcr.io/repoagent/controller:sha-{plan['source']}-{run_id}-{attempt}"
+            local = 'repoagent-controller:semantic-release'
+            run(['docker', 'tag', local, candidate]); run(['docker', 'push', candidate])
+            image = alias_image(candidate, auth)
+            if image is None:
+                raise ValueError('Published candidate digest is unconfirmed')
+            verify_public_image(image, config_digest, auth, directory / 'image')
+            # Retain the identity before the write whose acknowledgement/observation can be lost.
+            receipt.write_text(json.dumps(dict(identity, image=image), sort_keys=True, indent=2) + '\n')
+            if alias_image(reference, auth) is not None:
+                raise ValueError('Version alias appeared concurrently; inspect before recovery')
+            run(['docker', 'tag', local, reference]); run(['docker', 'push', reference])
+            if alias_image(reference, auth) != image:
+                raise ValueError('Version alias publication is unconfirmed; retain the publication artifact for recovery')
+    outputs = dict(image=image, reference=reference)
+    if os.environ.get('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            for name, value in outputs.items():
+                output.write(name + '=' + value + '\n')
+    print(json.dumps(outputs, sort_keys=True))
+
+
+def recovery_artifact(run_id, artifact_id):
+    if not re.fullmatch(r'[0-9]+', run_id) or not re.fullmatch(r'[0-9]+', artifact_id):
+        raise ValueError('Recovery requires both original numeric run and artifact IDs')
+    prefix = f'repos/{repository()}/actions/'
+    workflow = json.loads(run(['gh', 'api', prefix + 'runs/' + run_id]))
+    artifact = json.loads(run(['gh', 'api', prefix + 'artifacts/' + artifact_id]))
+    if (workflow.get('path') != '.github/workflows/controller-release.yml'
+            or workflow.get('event') != 'workflow_dispatch' or workflow.get('head_branch') != 'main'
+            or artifact.get('expired') is not False or artifact.get('workflow_run', {}).get('id') != int(run_id)
+            or not re.fullmatch('controller-publication-' + run_id + r'-[0-9]+', artifact.get('name', ''))):
+        raise ValueError('Recovery artifact must be retained from the repository main controller-release workflow')
+
+
+def finalize(artifact, plan_path):
+    plan, notes, versions, config_digest, files, assets = verified_artifact(artifact, plan_path)
+    version, tag, commit = plan['version'], plan['tag'], plan['source']
+    image = os.environ.get('IMAGE', '')
+    reference = os.environ.get('REFERENCE', '')
+    if not re.fullmatch(r'ghcr\.io/repoagent/controller@sha256:[0-9a-f]{64}', image) or reference != 'ghcr.io/repoagent/controller:' + tag:
+        raise ValueError('Verified immutable image and component version alias are required')
     metadata = {'schema': 'repoagent.controller-release/v2', 'release': tag, 'version': version, 'source': commit,
         'platform': 'linux/amd64', 'image': image, 'imageTag': reference, 'imageConfigDigest': config_digest,
         'inventorySha256': digest((artifact / 'image-inventory.json').read_bytes()), 'notesSha256': digest(notes),
@@ -240,6 +330,13 @@ def main():
     finish = commands.add_parser('finalize')
     finish.add_argument('artifact', type=Path)
     finish.add_argument('plan', type=Path)
+    publish = commands.add_parser('publish-image')
+    publish.add_argument('artifact', type=Path)
+    publish.add_argument('plan', type=Path)
+    publish.add_argument('--recover', action='store_true')
+    recovery = commands.add_parser('recovery-artifact')
+    recovery.add_argument('run')
+    recovery.add_argument('artifact')
     args = parser.parse_args()
     if args.command == 'notes':
         notes_command(args)
@@ -249,6 +346,10 @@ def main():
         image_free(args.version)
     elif args.command == 'finalize':
         finalize(args.artifact, args.plan)
+    elif args.command == 'publish-image':
+        publish_image(args.artifact, args.plan, args.recover)
+    elif args.command == 'recovery-artifact':
+        recovery_artifact(args.run, args.artifact)
 
 if __name__ == '__main__':
     try:
