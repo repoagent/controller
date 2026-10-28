@@ -410,16 +410,72 @@ public sealed class GitHubTokenLifetimeTests
         Assert.Contains(("app-refresh-error", "provider unavailable"), log.Entries);
     }
 
+    [Fact]
+    public async Task Agent_tools_share_current_authority_without_renewing_and_reject_only_the_token_they_saw()
+    {
+        using var tools = new ToolHandoff();
+        using var world = new World(tools: tools);
+        Assert.Null(tools.Current);
+        await world.Initialize();
+        Assert.Equal("token-1", tools.Current!.Token);
+        Assert.Equal(1, world.Source.Acquisitions);
+        tools.Reject("token-1");
+        Assert.Null(tools.Current);
+        Assert.Equal("token-2", await world.Lifetime.GetToken(Token));
+        tools.Reject("token-1");
+        Assert.Equal("token-2", tools.Current!.Token);
+        Assert.Equal(2, world.Source.Acquisitions);
+    }
+
+    [Fact]
+    public async Task Ending_the_controller_lifetime_closes_the_tool_handoff_and_disposes_its_authority_source()
+    {
+        using var tools = new ToolHandoff();
+        var world = new World(tools: tools);
+        await world.Initialize();
+        Assert.NotNull(tools.Current);
+        world.Dispose();
+        Assert.Null(tools.Current);
+        Assert.True(world.Source.Disposed);
+    }
+
+    [Fact]
+    public void A_handoff_that_cannot_start_does_not_leave_its_authority_source_owned()
+    {
+        using var source = new Source(new FakeTimeProvider(Start), finalFailure: true);
+        Assert.Throws<IOException>(() => new GitHubTokenLifetime(source, new FakeTimeProvider(Start), new RecordingLog(), new UnavailableHandoff()));
+        Assert.True(source.Disposed);
+        Assert.Equal(0, source.Acquisitions);
+    }
+
+    sealed class ToolHandoff : IAgentToolCredentials, IDisposable
+    {
+        Func<GitHubToken?>? current;
+        Action<string>? rejected;
+        public GitHubToken? Current => current?.Invoke();
+        public void Reject(string token) => rejected!(token);
+        public IDisposable Bind(Func<GitHubToken?> current, Action<string> rejected)
+        {
+            (this.current, this.rejected) = (current, rejected);
+            return this;
+        }
+        public void Dispose() { current = null; rejected = null; }
+    }
+
+    sealed class UnavailableHandoff : IAgentToolCredentials
+    {
+        public IDisposable Bind(Func<GitHubToken?> current, Action<string> rejected) => throw new IOException("private handoff unavailable");
+    }
     sealed class World : IDisposable
     {
         public FakeTimeProvider Clock { get; } = new(Start);
         public Source Source { get; }
         public RecordingLog Log { get; } = new();
         public GitHubTokenLifetime Lifetime { get; }
-        public World(bool finalFailure = false)
+        public World(bool finalFailure = false, IAgentToolCredentials? tools = null)
         {
             Source = new(Clock, finalFailure);
-            Lifetime = new(Source, Clock, Log);
+            Lifetime = new(Source, Clock, Log, tools);
         }
         public Task Initialize() => Lifetime.Initialize(234, Token);
         public void Dispose() => Lifetime.Dispose();

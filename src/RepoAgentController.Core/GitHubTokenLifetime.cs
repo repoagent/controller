@@ -1,8 +1,12 @@
 namespace RepoAgentController;
 
 /// <summary>The in-memory GitHub token lifetime: serialized renewal, current agent authority and irreversible loss.</summary>
-public sealed class GitHubTokenLifetime(IGitHubTokenSource source, TimeProvider clock, IControllerLog log) : IDisposable
+public sealed class GitHubTokenLifetime : IDisposable
 {
+    readonly IGitHubTokenSource source;
+    readonly TimeProvider clock;
+    readonly IControllerLog log;
+    readonly IDisposable? toolBinding;
     readonly SemaphoreSlim refreshLock = new(1);
     readonly CancellationTokenSource authorityLost = new();
     GitHubToken? credential;
@@ -13,6 +17,13 @@ public sealed class GitHubTokenLifetime(IGitHubTokenSource source, TimeProvider 
     ITimer? throttleExpiry;
     bool disposed;
     long renewalGeneration;
+
+    public GitHubTokenLifetime(IGitHubTokenSource source, TimeProvider clock, IControllerLog log, IAgentToolCredentials? tools = null)
+    {
+        (this.source, this.clock, this.log) = (source, clock, log);
+        try { toolBinding = tools?.Bind(ForAgent, Reject); }
+        catch { Dispose(); throw; }
+    }
 
     public string AgentLogin => Identity.AgentLogin;
     public CancellationToken AuthorityLost => source.RequiresNewLifetimeOnFailure ? authorityLost.Token : CancellationToken.None;
@@ -170,7 +181,11 @@ public sealed class GitHubTokenLifetime(IGitHubTokenSource source, TimeProvider 
 
     public void Dispose()
     {
-        lock (expiryGate) { disposed = true; throttleExpiry?.Dispose(); throttleExpiry = null; Invalidate(); }
-        source.Dispose(); refreshLock.Dispose(); authorityLost.Dispose();
+        try { toolBinding?.Dispose(); }
+        finally
+        {
+            lock (expiryGate) { disposed = true; throttleExpiry?.Dispose(); throttleExpiry = null; Invalidate(); }
+            source.Dispose(); refreshLock.Dispose(); authorityLost.Dispose();
+        }
     }
 }

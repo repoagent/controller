@@ -80,7 +80,7 @@ def publication(local=None, digests=None, remote=None):
 
 
 class AuthPipelineCliTests(unittest.TestCase):
-    def invoke(self, verb, transcript=(), *, missing=None, sdk=SDK, root_sdk=None, environment=None, shell=None):
+    def invoke(self, verb, transcript=(), *, missing=None, sdk=SDK, root_sdk=None, environment=None, shell=None, broker_version=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             script = root / 'scripts/delivery/auth-pipeline.py'
@@ -92,6 +92,8 @@ class AuthPipelineCliTests(unittest.TestCase):
                 path.write_text('# Contract fixture only; not a service implementation.\n')
             for name, version in [('service/auth/global.json', sdk), ('global.json', root_sdk if root_sdk is not None else sdk)]:
                 (root / name).write_text(json.dumps(dict(sdk=dict(version=version, rollForward='disable', allowPrerelease=True))))
+            if broker_version is not None:
+                (root / 'service/auth/version.txt').write_text(broker_version + '\n')
             provider = root / 'infra-double.py'
             provider.write_text(DOUBLE)
             (root / 'infra/auth/deploy.sh').write_text(f'exec {sys.executable} "{provider}" "$@"\n')
@@ -198,6 +200,21 @@ class AuthPipelineCliTests(unittest.TestCase):
         self.assertEqual(output, 'existing=value\nimage=' + IMAGE + '\n')
         self.assertNotIn(CANARY, result.stdout + result.stderr + output + json.dumps([call['argv'] for call in calls]))
 
+    def test_versioned_image_matches_compiled_diagnostics_before_publication(self):
+        labels = {'io.repoagent.role': 'auth-service', 'org.opencontainers.image.revision': SHA,
+                  'org.opencontainers.image.version': '1.0.0'}
+        build = BUILD[:4] + ['--build-arg', 'BROKER_VERSION=1.0.0', '--build-arg', 'SOURCE_REVISION=' + SHA,
+                            '--label', 'org.opencontainers.image.version=1.0.0'] + BUILD[4:]
+        diagnostic = ['docker', 'run', '--rm', '--network', 'none', TAG, '--version', '--json']
+        transcript = [step(build), step(INSPECT, [local_image(Config=dict(Labels=labels, User='10001'))]),
+                      step(diagnostic, dict(component='broker', version='1.0.0', source=SHA)),
+                      step(PUSH), step(INSPECT, [local_image(RepoDigests=[IMAGE])]),
+                      step(ATTEST, remote_image(config=dict(Labels=labels, User='10001')))]
+        result, calls, output, _ = self.invoke('publish', transcript, broker_version='1.0.0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call['argv'] for call in calls], [item['argv'] for item in transcript])
+        self.assertEqual(output, 'existing=value\nimage=' + IMAGE + '\nversion=1.0.0\n')
+
     def test_ambiguous_wrong_repository_or_malformed_digests_never_become_outputs(self):
         for digests in [[], [IMAGE, IMAGE], ['ghcr.io/repoagent/controller@sha256:' + 'a' * 64],
                         [REPOSITORY + ':latest'], [REPOSITORY + '@sha256:bad']]:
@@ -247,6 +264,23 @@ class AuthPipelineCliTests(unittest.TestCase):
         self.assertEqual(([call['argv'] for call in calls], output), ([ATTEST], 'existing=value\n'))
         self.assertNotIn(CANARY, result.stdout + result.stderr + output)
         self.assertNotEqual(result.returncode, 0, 'Attestation accepted an image from a different source commit')
+
+    def test_semantic_selection_rejects_an_image_from_a_different_broker_version(self):
+        image = remote_image(config=dict(Labels={
+            'io.repoagent.role': 'auth-service', 'org.opencontainers.image.revision': SHA,
+            'org.opencontainers.image.version': '2.0.0'}, User='10001:10001'))
+        result, calls, output, _ = self.invoke('attest', [step(ATTEST, image)], environment={
+            'AUTH_EXPECTED_SOURCE_SHA': SHA, 'AUTH_EXPECTED_BROKER_VERSION': '1.0.0'})
+        self.assertNotEqual(result.returncode, 0, 'A semantic rollback selected an image with another version')
+        self.assertEqual(([call['argv'] for call in calls], output), ([ATTEST], 'existing=value\n'))
+
+    def test_release_source_selection_cannot_override_a_different_guarded_activation_source(self):
+        image = remote_image(config=dict(Labels={
+            'io.repoagent.role': 'auth-service', 'org.opencontainers.image.revision': 'c' * 40}, User='10001'))
+        result, calls, output, _ = self.invoke('attest', [step(ATTEST, image)], environment={
+            'AUTH_EXPECTED_SOURCE_SHA': SHA, 'AUTH_EXPECTED_IMAGE_SOURCE_SHA': 'c' * 40})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(([call['argv'] for call in calls], output), ([ATTEST], 'existing=value\n'))
 
     def test_attest_accepts_the_image_matching_the_accepted_source(self):
         image = remote_image(config=dict(Labels={

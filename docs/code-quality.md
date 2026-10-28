@@ -14,6 +14,8 @@ SDK/framework generators and generated files retain their supplied generated-cod
 
 ## Verification
 
+The [controller architecture guide](controller-architecture.md) identifies the core driving interfaces and the remaining HTTP/process safety checks. Core behavior uses domain ports and controlled time; provider compatibility belongs to the shared Aspire and hosted smoke paths.
+
 Install the exact SDK from `global.json`, then run from the repository root:
 
 ```sh

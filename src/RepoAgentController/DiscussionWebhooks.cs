@@ -2,7 +2,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Threading.Channels;
 using Microsoft.AspNetCore.Http;
 
 namespace RepoAgentController;
@@ -13,82 +12,28 @@ sealed record WebhookConfiguration(Uri PublicUrl, int Port, TimeSpan ReconcileIn
 }
 
 /// <summary>
-/// Authenticates HTTP deliveries and serializes observations with reconciliation. The controller's HTTP server serves
+/// Authenticates and translates HTTP deliveries into core observations. The controller's HTTP server serves
 /// <see cref="Receive"/>; <see cref="Run"/> registers the repository webhook and deactivates it when the controller stops.
 /// </summary>
-sealed class DiscussionWebhooks(GitHub github, Bridge bridge, IWebhookRegistration registration, WebhookConfiguration configuration, TimeProvider time,
-    CheckoutRefresh? refresh = null) : IDisposable
+sealed class DiscussionWebhooks : IDisposable
 {
-    // The HTTP server is disposed first, after Run has joined its workers.
-    public void Dispose() { slots.Dispose(); stop.Dispose(); }
-    readonly Channel<int> work = Channel.CreateUnbounded<int>(new UnboundedChannelOptions { SingleReader = true });
-    readonly HashSet<int> queued = [];
+    readonly IWebhookRegistration registration;
+    readonly TimeProvider time;
+    readonly ControllerWebhooks observations;
     readonly SemaphoreSlim slots = new(16);
-    // Cancelled when the controller stops: deliveries still being read then end with 408.
-    readonly CancellationTokenSource stop = new();
     const int MaximumBody = 2 * 1024 * 1024;
 
-    /// <summary>Registers the webhook, then observes deliveries and reconciles until <paramref name="ct"/> stops the controller.</summary>
-    /// <remarks>The HTTP server must already serve <see cref="Receive"/>: GitHub pings a newly registered hook at once.</remarks>
-    public Task Run(CancellationToken ct) => Run(ct, ct);
-
-    /// <summary>Stops intake on <paramref name="stoppingToken"/> without cancelling an entered observation on <paramref name="ct"/>.</summary>
-    public async Task Run(CancellationToken stoppingToken, CancellationToken ct)
+    public DiscussionWebhooks(GitHub github, Bridge bridge, IWebhookRegistration registration, WebhookConfiguration configuration,
+        TimeProvider time, CheckoutRefresh? refresh = null)
     {
-        using var stopping = stoppingToken.UnsafeRegister(_ => stop.Cancel(), null);
-        Task worker = Task.CompletedTask, reconcile = Task.CompletedTask;
-        try
-        {
-            await registration.Configure(configuration.Endpoint, refresh is not null, stoppingToken);
-            Log.Write("mode", $"webhook-fixed public-url={configuration.Endpoint} port={configuration.Port} reconcile-seconds={configuration.ReconcileInterval.TotalSeconds:F0}");
-            Log.Write("ready", $"repository={github.Repository} actor={github.AgentLogin} mode=webhook-fixed");
-            Schedule(0);
-            worker = Observe(stop.Token, ct);
-            reconcile = Reconcile(stop.Token);
-            var completed = await Task.WhenAny(worker, reconcile);
-            await completed;
-        }
-        finally
-        {
-            await stop.CancelAsync();
-            // Remote cleanup gets its own bounded budget, including during a normal native drain.
-            await registration.Deactivate();
-            work.Writer.TryComplete();
-            try { await Task.WhenAll(worker, reconcile); }
-            catch (Exception) when (stop.IsCancellationRequested) { }
-        }
+        (this.registration, this.time) = (registration, time);
+        observations = new(github.Repository, github.Identity, bridge, registration, configuration.Endpoint, configuration.Port,
+            configuration.ReconcileInterval, time, new ControllerLog(), refresh);
     }
 
-    bool Schedule(int number)
-    {
-        lock (queued)
-        {
-            if (!queued.Add(number)) return true;
-            if (work.Writer.TryWrite(number)) return true;
-            queued.Remove(number);
-            return false;
-        }
-    }
-
-    async Task Observe(CancellationToken stopping, CancellationToken ct)
-    {
-        await foreach (var number in work.Reader.ReadAllAsync(stopping))
-        {
-            stopping.ThrowIfCancellationRequested();
-            // Remove before reading: a delivery during this observation schedules another read.
-            lock (queued) queued.Remove(number);
-            var started = System.Diagnostics.Stopwatch.GetTimestamp();
-            var succeeded = number == 0 ? await bridge.Poll(ct) : await bridge.Observe(number, ct);
-            Log.Write(number == 0 ? "reconciliation-completed" : "webhook-observed",
-                $"discussion={(number == 0 ? "all" : number.ToString(System.Globalization.CultureInfo.InvariantCulture))} success={succeeded} elapsed-ms={System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0}");
-        }
-    }
-
-    async Task Reconcile(CancellationToken ct)
-    {
-        using var timer = new PeriodicTimer(configuration.ReconcileInterval);
-        while (await timer.WaitForNextTickAsync(ct)) Schedule(0);
-    }
+    public void Dispose() { slots.Dispose(); observations.Dispose(); }
+    public Task Run(CancellationToken ct) => observations.Run(ct, ct);
+    public Task Run(CancellationToken stoppingToken, CancellationToken activityToken) => observations.Run(stoppingToken, activityToken);
 
     /// <summary>Answers one delivery to POST /github/webhook with an empty response and its status code.</summary>
     public async Task Receive(HttpContext context)
@@ -99,7 +44,7 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, IWebhookRegistrati
         {
             // The body must arrive within five seconds of the controller's time.
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), time);
-            using var reading = CancellationTokenSource.CreateLinkedTokenSource(stop.Token, context.RequestAborted, deadline.Token);
+            using var reading = CancellationTokenSource.CreateLinkedTokenSource(observations.Stopping, context.RequestAborted, deadline.Token);
             status = await Accept(context.Request, registration.Secret, reading.Token);
         }
         catch (OperationCanceledException) { status = 408; }
@@ -131,44 +76,36 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, IWebhookRegistrati
             return 401;
         }
         if (JsonNode.Parse(bytes) is not JsonObject payload) return 400;
-        if (!string.Equals(payload["repository"]?["full_name"]?.ToString(), github.Repository, StringComparison.OrdinalIgnoreCase))
-        {
-            Log.Write("webhook-rejected", "reason=repository");
-            return 403;
-        }
-        if (!Guid.TryParse(request.Headers["X-GitHub-Delivery"].ToString(), out var delivery)) return 400;
+        var repository = payload["repository"] as JsonObject;
+        var discussion = payload["discussion"] as JsonObject;
         var eventName = request.Headers["X-GitHub-Event"].ToString();
-        if (eventName == "ping") { Log.Write("webhook-ping", $"delivery={delivery}"); return 204; }
-        if (eventName == "push")
+        var observation = new WebhookObservation(eventName switch
         {
-            if (refresh is null) return 204;
-            if (payload["repository"]?["id"] is not JsonValue identity || !identity.TryGetValue<long>(out var repositoryId) ||
-                repositoryId != refresh.RepositoryId) return 403;
-            if (payload["ref"].OptionalText() is not { } pushedRef ||
-                pushedRef.Length is 0 or > 1024 || pushedRef.Any(char.IsControl)) return 400;
-            if (pushedRef != refresh.DefaultRef) return 204;
-            refresh.Request(); // Persist the hint before acknowledging; only the worker touches Git/native.
-            Log.Write("webhook-delivery", $"delivery={delivery} event=push scheduled=True");
-            return 202;
-        }
-        if (eventName is not ("discussion" or "discussion_comment")) return 204;
-        var action = payload["action"]?.ToString() ?? "";
-        if (action.Length is 0 or > 64 || action.Any(c => !char.IsAsciiLetterLower(c) && c != '_')) return 400;
-        if (payload["discussion"]?["number"] is not JsonValue value || !value.TryGetValue<int>(out var number) || number < 1) return 400;
-        var discussion = payload["discussion"]!;
-        // Every heartbeat edit of the controller's own status Discussion is notified too; none of it is agent input.
-        var app = github.Identity;
-        if (app.IsDashboard(Account(discussion["user"]), discussion["body"]?.ToString() ?? "")) return 204;
-        if (eventName == "discussion_comment" && app.IsAgentActor(Account(payload["sender"])))
+            "ping" => WebhookChange.Ping,
+            "push" => WebhookChange.Push,
+            "discussion" => WebhookChange.Discussion,
+            "discussion_comment" => WebhookChange.Comment,
+            _ => WebhookChange.Other
+        }, Guid.TryParse(request.Headers["X-GitHub-Delivery"].ToString(), out var delivery) ? delivery : null,
+            repository?["full_name"]?.ToString() ?? "")
         {
-            Log.Write("webhook-ignored", $"delivery={delivery} discussion={number} reason=own-comment");
-            return 204;
-        }
-        if (!Schedule(number)) return 503;
-        Log.Write("webhook-delivery", $"delivery={delivery} event={eventName} action={action} discussion={number} scheduled=True");
-        return 202;
+            Action = payload["action"]?.ToString() ?? "",
+            DiscussionNumber = discussion?["number"] is JsonValue number && number.TryGetValue<int>(out var parsedNumber) ? parsedNumber : null,
+            DiscussionAuthor = Account(discussion?["user"]),
+            DiscussionBody = discussion?["body"]?.ToString() ?? "",
+            Sender = Account(payload["sender"]),
+            RepositoryId = repository?["id"] is JsonValue id && id.TryGetValue<long>(out var parsedId) ? parsedId : null,
+            PushedRef = payload["ref"].OptionalText()
+        };
+        return observations.Accept(observation) switch
+        {
+            WebhookDisposition.Accepted => 202,
+            WebhookDisposition.Ignored => 204,
+            WebhookDisposition.Invalid => 400,
+            WebhookDisposition.WrongRepository => 403,
+            _ => 503
+        };
     }
-
     // A webhook payload's user or sender, which GitHub reports as a login and a type such as User or Bot.
     static Actor Account(JsonNode? user) => new(user?["login"]?.ToString() ?? "", user?["type"]?.ToString() ?? "");
 }

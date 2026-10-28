@@ -20,12 +20,12 @@ internal sealed class CredentialHandoff : IDisposable
     const UnixFileMode PrivateDirectory = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
     readonly string pointer, directory, endpoint;
     readonly Socket listener;
-    readonly Func<InstallationCredential?> current;
+    readonly Func<GitHubToken?> current;
     readonly Action<string> reject;
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2213", Justification = "Socket handlers still read this source while asynchronously unwinding after synchronous Dispose; disposing it there would race their token access.")]
     readonly CancellationTokenSource stopping = new();
 
-    public CredentialHandoff(string credentialDirectory, Func<InstallationCredential?> current, Action<string> reject)
+    public CredentialHandoff(string credentialDirectory, Func<GitHubToken?> current, Action<string> reject)
     {
         this.current = current;
         this.reject = reject;
@@ -167,4 +167,10 @@ internal sealed class CredentialHandoff : IDisposable
         try { Directory.Delete(directory, true); }
         catch (IOException) { }
     }
+}
+
+/// <summary>The Unix socket adapter for the core's agent-tool authority publication port.</summary>
+internal sealed class SocketAgentToolCredentials(string credentialDirectory) : IAgentToolCredentials
+{
+    public IDisposable Bind(Func<GitHubToken?> current, Action<string> rejected) => new CredentialHandoff(credentialDirectory, current, rejected);
 }

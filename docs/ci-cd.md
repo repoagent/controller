@@ -110,13 +110,15 @@ The branch must contain this implementation. Once `e2e-smoke.yml` is on the defa
 
 The reusable smoke job holds one global `e2e-smoke` concurrency lock, across every branch and caller, with `cancel-in-progress: false`. A newer queued run can replace an older queued run under GitHub's concurrency semantics; it cannot cancel the running cleanup. Both the refresh caller and the Controller smoke entry point pass repository secrets with `secrets: inherit`. There is no `e2e` environment or new Azure/GitHub OIDC authority.
 
+Before enrollment, the helper allows up to 110 seconds for an anonymous broker readiness check, including bounded GET retries for a scaled-to-zero service. A readiness 200 proves availability only; it does not establish enrollment, token issuance or settlement. An unconfirmed check stops before writing the Codex supply or starting enrollment.
+
 Required repository secrets are `REPOAGENT_E2E_GH_TOKEN` (the `repoagent` participant's authority limited to `repoagent/ControllerTestRepo`, including Discussions and Agent-variable management) and `OPENAI_API_KEY`. The shared App must be installed on that private repository with the selected clone/webhook permissions. PowerShell 7.4+, Docker Linux containers and the pinned SDK are required on the runner. The image is built without credentials; the host GitHub CLI is downloaded from the same checksummed candidate catalog as the image.
 
 The job sweeps only Discussions created by `repoagent` with the exact `[RepoAgent hosted smoke ID] mention` title and `repoagent.hosted-smoke/v1` body marker. `SMOKE_CONTROLLER_APPROVAL` in that test repository's Agent variables is reserved exclusively for this gate. Unexpected binding at this coordinate stops the sweep. It never sweeps arbitrary Discussions, variables, repositories or production controller state.
 
 A fresh `install.ps1 -Action Install -NonInteractive -Apply` uses setup v4, `webhook-clone`, a Quick Tunnel, an empty mention-account override, an isolated instance and private state. The minimal live case in `DiscussionJourney` creates one App-mention Discussion and observes its actual creation webhook, successful observation, EYES and an App-authored marker reply. Reconciliation is set to one hour; a polling reply alone cannot pass the webhook assertions. It waits for the turn to complete before closing credentials.
 
-Cleanup runs with `if: always()`, deletes owned fixtures even after an assertion failure, stops the owned controller, and calls `install.ps1 -Action Revoke`. It inspects the structured `githubMarker` and `brokerClosure` fields, not just exit zero. Only verified owned Docker storage is removed. Unconfirmed closure, a remaining approval, failed fixture removal or uncertain local shutdown fails the gate and prevents pinning. Private setup/enrollment, API-key supplies and raw controller/installer logs are never uploaded. The seven-day artifact contains only controlled fixture snapshots and nonsecret install/sweep/cleanup outcomes.
+Cleanup runs with `if: always()`, deletes owned fixtures even after an assertion failure, stops the owned controller, and calls `install.ps1 -Action Revoke`. It inspects the structured `githubMarker` and `brokerClosure` fields, not just exit zero. Only verified owned Docker storage is removed. Unconfirmed closure, a remaining approval, failed fixture removal or uncertain local shutdown fails the gate and prevents pinning. Private setup/enrollment, API-key supplies and raw controller/installer logs are never uploaded. The seven-day artifact contains only controlled fixture snapshots and nonsecret install/sweep/cleanup outcomes. A failed installation also records its exit code and at most 4,000 characters of diagnostic text after credential and opaque-token redaction; the complete installer log stays private.
 
 A lost runner may leave an approval whose controller secret is no longer available. The next globally locked run withdraws that exact validated reserved approval and asks the broker to admit a fresh request. Only the exact supported `enrollment_not_ready` guidance triggers a recheck of the **same private request** after at least 60 seconds, bounded to 80 minutes overall. That interval is not a readiness promise. Unknown/malformed diagnostics and `enrollment_settlement_unconfirmed` stop for inspection. Pending discovery likewise resumes its same request after the installer's five-second guidance. No retry replaces an enrollment identity or rewrites private state.
 
@@ -126,9 +128,9 @@ Implementation and local workflow checks do not establish hosted provider accept
 
 ## Automatic broker delivery
 
-Changes merged to `main` under `service/auth`, `infra/auth`, the auth delivery scripts/workflows or shared MSBuild/NuGet files trigger **Broker**. Controller-only changes do not deploy the broker. Pull requests run verification without publication or Azure credentials.
+Changes under `service/auth`, `infra/auth`, the broker delivery scripts/workflows or shared MSBuild/NuGet files trigger **Broker** verification. [Independent broker releases](broker-releases.md) begin at 1.0.0 and are proposed by Release Please; controller-only changes do not release or deploy the broker. A source push with no new approved release is verified without rebuilding or redeploying the previous version. Pull requests and explicit `operation=verify` branch runs use no publication or Azure authority. The explicit branch route covers release PRs created with `GITHUB_TOKEN`, whose normal PR events are suppressed.
 
-Delivery runs the .NET service tests and compiles Bicep, then builds one Linux amd64 image with the auth role, numeric nonroot user and full source-revision label. It publishes to the existing public GHCR package and anonymously verifies the resolved immutable digest. Publication has `packages: write` and no Azure token; deployment has `id-token: write` and no package write.
+After Release Please creates an approved `broker-v...` release, the release orchestrator explicitly dispatches delivery from `main`. The Broker workflow verifies the exact selected source and compiles Bicep, then checks one Linux amd64 image's role, numeric nonroot user, compiled version/source diagnostic and OCI labels. It anonymously verifies the immutable GHCR digest before creating a semantic tag. A separate release-metadata job confirms the non-clobbered `broker-release.json` version/source/digest mapping without modifying approved notes. Publication has `packages: write` and no Azure token; the metadata writer has only `contents: write`; deployment has `id-token: write` and no package write. Retries reuse recorded verified content and reject conflicting version tags or assets.
 
 The Azure job applies `main.bicep` in the existing resource group. Public deployment includes `cleanup.bicep`, so the API and scheduled cleanup Job receive the **same digest**. The script inspects both images, waits for the ready API revision and requests public `/health/live` and `/health/ready`. Cleanup runs independently so it can process expired records while HTTP scales to zero; it retains its separate Table-only identity.
 
@@ -159,8 +161,11 @@ For infrastructure changes, read current resource/module documentation, use late
 ## Manual retry and rollback
 
 ```sh
-# Retry normal verification, publication and deployment from main.
+# Retry the current approved release from main (unreleased source is not published).
 gh workflow run broker.yml --ref main -f operation=deploy
+# Publish/deploy an exact approved semantic release, or resolve one for rollback.
+gh workflow run broker.yml --ref main -f operation=release -f release-tag=broker-v1.0.0
+gh workflow run broker.yml --ref main -f operation=deploy-release -f release-tag=broker-v1.0.0
 # Deploy or roll back both modes to a previously approved immutable image.
 gh workflow run broker.yml --ref main -f operation=deploy-image -f image=ghcr.io/repoagent/controller-auth@sha256:APPROVED_DIGEST
 # Existing outputs-only OIDC access check.
