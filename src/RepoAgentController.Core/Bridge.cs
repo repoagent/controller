@@ -30,6 +30,8 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     readonly SemaphoreSlim gate = new(1, 1), wake = new(0, 1);
     // Caller holds the gate. The batch each running turn carries, by turn ID, until its outcome; this lifetime only.
     readonly Dictionary<string, RunningBatch> running = [];
+    // Permanent for this lifetime, guarded by gate and checked by every admission path.
+    bool admissionStopped;
 
     // Read at each admission decision, so a refreshed repository value applies to the next dispatch.
     int ActiveSessionLimit => settings[ActiveSessionSetting].Value is { } value
@@ -200,12 +202,37 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         finally { gate.Release(); }
     }
 
-    /// <summary>Serializes a shutdown request with observation and native admission.</summary>
+    /// <summary>Permanently stops new admission, then settles native work as it ends. Only a hard abort cancels the wait.</summary>
     public async Task StopAndDrain(CancellationToken abort)
     {
-        await gate.WaitAsync(abort);
-        try { abort.ThrowIfCancellationRequested(); }
-        finally { gate.Release(); }
+        // A private pulse for each caller: dispatch has its own wake, and concurrent stops must not consume each other's signal.
+        var notification = new object();
+        TaskCompletionSource changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Notify() { lock (notification) changed.TrySetResult(); }
+        sessions.StatusChanged += Notify; // Raised after the turn journal observes the native event.
+        try
+        {
+            while (true)
+            {
+                Task next;
+                lock (notification)
+                {
+                    changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    next = changed.Task;
+                }
+                await gate.WaitAsync(abort);
+                try
+                {
+                    abort.ThrowIfCancellationRequested();
+                    admissionStopped = true;
+                    Settle();
+                    if (sessions.ActiveTurns == 0) return;
+                }
+                finally { gate.Release(); }
+                await next.WaitAsync(abort);
+            }
+        }
+        finally { sessions.StatusChanged -= Notify; }
     }
 
     /// <summary>Reconciles category enrollment starts with a refreshed repository settings change while no observation or
@@ -341,6 +368,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     // Caller holds the gate. Returns whether a batch was accepted; its EYES receipts are then retained in the outbox.
     async Task<bool> Dispatch(DiscussionRecord record, CancellationToken ct)
     {
+        if (admissionStopped) return false;
         // Its waiting input, session ID, and URL for the reports below, threw when read for delivery before the records were typed.
         if (record.UnreadableKeys.FirstOrDefault(key => key.Key is RecordKey.Waiting or RecordKey.SessionId or RecordKey.Url).Value is { } unreadable) throw new InvalidDataException(unreadable.Reason);
         var waiting = record.Waiting!;
