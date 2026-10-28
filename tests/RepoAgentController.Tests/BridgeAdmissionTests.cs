@@ -766,6 +766,52 @@ public sealed class BridgeAdmissionTests
         Assert.Equal(2, runtime.Requests.Count);
     }
 
+    [Fact]
+    public async Task Shutdown_abort_during_the_final_durable_completion_cannot_report_a_clean_drain()
+    {
+        var clock = new SteppedClock(BridgeWorld.Start);
+        var github = new InMemoryDiscussions(clock);
+        github.Open(1, "@test-app[bot] genuinely completed native work");
+        var durable = new InMemoryDiscussionStore();
+        var persisting = new AfterDiscussionSave(durable);
+        var state = new InMemoryControllerState();
+        var log = new RecordingLog();
+        var runtime = new FakeAgentRuntime();
+        var sessions = new AgentSessions(runtime, log);
+        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        await using var outbox = new GitHubOutbox(BridgeWorld.Repository, github, InMemoryDiscussions.App, state, clock, log);
+        var bridge = new Bridge(BridgeWorld.Repository, github, InMemoryDiscussions.App, sessions,
+            new StateStore(persisting, BridgeWorld.Repository), outbox, [], settings, new AgentInputJson(), log, clock);
+        Assert.True(await bridge.Poll(TestContext.Current.CancellationToken));
+        var accepted = durable.Saved!.Discussions["D1"];
+        runtime.Report(accepted.SessionId!, AgentSessionStatus.Idle);
+        runtime.Completed(accepted.SessionId!, accepted.Running!.Turn);
+        using var abort = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var canceledDuringFinalSave = false;
+        persisting.AfterWrite = () =>
+        {
+            Assert.Null(durable.Saved!.Discussions["D1"].Running);
+            Assert.Null(durable.Saved.Discussions["D1"].Pending);
+            canceledDuringFinalSave = true;
+            abort.Cancel();
+        };
+
+        var drain = bridge.StopAndDrain(abort.Token);
+
+        Assert.True(canceledDuringFinalSave);
+        Assert.True(abort.IsCancellationRequested);
+        Assert.Null(durable.Saved!.Discussions["D1"].Running);
+        Assert.Null(durable.Saved.Discussions["D1"].Pending);
+        Assert.Contains(log.Entries, entry => entry.Kind == "turn-ended" && entry.Message.EndsWith("status=completed", StringComparison.Ordinal));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        github.Open(2, "@test-app[bot] do not reopen this stopped lifetime");
+        Assert.True(await bridge.Observe(2, TestContext.Current.CancellationToken));
+        await bridge.DispatchReady(TestContext.Current.CancellationToken);
+        Assert.Single(runtime.Requests);
+        Assert.Null(durable.Saved!.Discussions["D1"].Running);
+    }
+
     // A faithful storage-port decorator: the existing fake owns copy-on-write durability; the callback follows its save.
     sealed class AfterDiscussionSave(IDiscussionStore inner) : IDiscussionStore
     {
