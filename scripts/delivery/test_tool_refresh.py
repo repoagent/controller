@@ -518,6 +518,12 @@ class RefreshWorkflowTests(unittest.TestCase):
         self.assertNotIn('environment:', body)
         cleanup = body.split('      - name: Close enrollment and remove every owned Discussion\n', 1)[1]
         self.assertIn('if: always()', cleanup.split('      - name:', 1)[0])
+        # runner context is unavailable at jobs.<job>.env; only the live-test step needs this variable.
+        self.assertNotIn('runner.', body.split('    steps:', 1)[0])
+        self.assertNotIn('REPOAGENT_SMOKE_DIRECTORY', cleanup.split('      - name:', 1)[0])
+        self.assertIn('cleanup "$RUNNER_TEMP/hosted-smoke"', cleanup)
+        live = body.split('      - name: Observe the real Quick Tunnel, receipt and App reply\n', 1)[1]
+        self.assertIn('REPOAGENT_SMOKE_DIRECTORY: ${{ runner.temp }}/hosted-smoke', live.split('      - name:', 1)[0])
     def test_selection_or_verification_failure_is_reported_without_pinning(self):
         reporting = job('report-failure')
         self.assertGreaterEqual(needs('report-failure'), {'select', 'verify', 'smoke', 'commit'})
