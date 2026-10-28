@@ -721,6 +721,65 @@ public sealed class BridgeAdmissionTests
         finally { await abort.CancelAsync(); }
     }
 
+    [Fact]
+    public async Task Shutdown_settles_a_completion_published_while_an_earlier_outcome_is_saved()
+    {
+        var clock = new SteppedClock(BridgeWorld.Start);
+        var github = new InMemoryDiscussions(clock);
+        github.Open(1, "@test-app[bot] first accepted turn");
+        github.Open(2, "@test-app[bot] second accepted turn");
+        var durable = new InMemoryDiscussionStore();
+        var persisting = new AfterDiscussionSave(durable);
+        var state = new InMemoryControllerState();
+        var log = new RecordingLog();
+        var runtime = new FakeAgentRuntime();
+        var sessions = new AgentSessions(runtime, log);
+        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        await using var outbox = new GitHubOutbox(BridgeWorld.Repository, github, InMemoryDiscussions.App, state, clock, log);
+        var bridge = new Bridge(BridgeWorld.Repository, github, InMemoryDiscussions.App, sessions,
+            new StateStore(persisting, BridgeWorld.Repository), outbox, [], settings, new AgentInputJson(), log, clock);
+        Assert.True(await bridge.Poll(TestContext.Current.CancellationToken));
+        Assert.Equal(2, sessions.ActiveTurns);
+        var first = durable.Saved!.Discussions["D1"];
+        var second = durable.Saved.Discussions["D2"];
+        runtime.Report(first.SessionId!, AgentSessionStatus.Idle);
+        runtime.Completed(first.SessionId!, first.Running!.Turn);
+        var completedDuringSave = false;
+        persisting.AfterWrite = () =>
+        {
+            // The port first copies the write: S1 is settled while its atomic snapshot still contains active S2.
+            Assert.Null(durable.Saved!.Discussions["D1"].Running);
+            Assert.NotNull(durable.Saved.Discussions["D2"].Running);
+            completedDuringSave = true;
+            runtime.Report(second.SessionId!, AgentSessionStatus.Idle);
+            runtime.Completed(second.SessionId!, second.Running!.Turn);
+        };
+
+        await bridge.StopAndDrain(TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        Assert.True(completedDuringSave);
+        Assert.Null(durable.Saved!.Discussions["D1"].Running);
+        Assert.Null(durable.Saved.Discussions["D2"].Pending);
+        Assert.Null(durable.Saved.Discussions["D2"].Running);
+        Assert.Equal(2, log.Entries.Count(entry => entry.Kind == "turn-ended" && entry.Message.EndsWith("status=completed", StringComparison.Ordinal)));
+        Assert.Equal(2, runtime.Requests.Count);
+    }
+
+    // A faithful storage-port decorator: the existing fake owns copy-on-write durability; the callback follows its save.
+    sealed class AfterDiscussionSave(IDiscussionStore inner) : IDiscussionStore
+    {
+        public Action? AfterWrite { get; set; }
+        public DiscussionState? ReadDiscussions() => inner.ReadDiscussions();
+        public void WriteDiscussions(DiscussionState state)
+        {
+            inner.WriteDiscussions(state);
+            var after = AfterWrite;
+            AfterWrite = null;
+            after?.Invoke();
+        }
+    }
+
     // Delays only the project-owned runtime port's acknowledgement; all session and delivery decisions remain real.
     sealed class HeldAcknowledgement : IAgentRuntime
     {
