@@ -388,7 +388,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         var semantic = Release(1) with { Tag = "controller-v1.0.0" };
         published.Publish(legacy);
         published.Publish(semantic);
-        var releases = new BaselineReleases(published, _ => Task.FromResult<string?>(Inventory("running")), clock, log, text => text);
+        var releases = new BaselineReleaseCheck(published, _ => Task.FromResult<string?>(Inventory("running")), clock, log, text => text);
         await using var dashboard = Dashboard(releases);
         dashboard.Start(TestContext.Current.CancellationToken);
 

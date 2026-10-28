@@ -86,7 +86,7 @@ public sealed class BaselineReleaseCheck(IBaselineReleases published, Func<Cance
             .ThenByDescending(release => release.Run).ThenByDescending(release => release.Attempt).ToArray();
         var matched = Array.FindIndex(releases, release => release.InventorySha256 == identity);
         var migration = matched >= 0 && releases[matched].Version is null && releases.Any(release => release.Version is not null);
-        var uncertainty = identity is null ? "this controller was not started with a baseline image inventory, for example in a native or development run"
+        var uncertainty = identity is null ? "this controller was not started with a baseline image inventory, for example in a standalone or development run"
             : matched < 0 ? "its image inventory matches none of the newest published baseline releases, so it is a derived, local, unreleased or much older image"
             : migration ? "this controller has an identified legacy baseline without a semantic version; compare its inventory and deliberately adopt a semantic release before version comparisons apply"
             : null;
