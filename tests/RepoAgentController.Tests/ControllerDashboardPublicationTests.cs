@@ -256,6 +256,48 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Repeated_historical_failures_have_a_compact_count_and_every_retained_event_in_expandable_details()
+    {
+        Record("poll-error", First + " request failed");
+        clock.Advance(TimeSpan.FromSeconds(10));
+        Record("poll-error", First + " request failed");
+        clock.Advance(TimeSpan.FromSeconds(10));
+        Record("poll-error", Url(2) + " request failed");
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+
+        var publication = Published();
+        Assert.Equal(Title, publication.Title);
+        Assert.Contains("### Historical failures\nHistorical evidence does not establish recovery", publication.Body);
+        Assert.Contains("**2 occurrences; latest 2026-10-24T10:00:10Z** `poll-error`", publication.Body);
+        Assert.Contains("**1 occurrence; latest 2026-10-24T10:00:20Z** `poll-error`", publication.Body);
+        Assert.Contains("[Discussion #1](" + First + ")", publication.Body);
+        var details = publication.Body.Split("<summary>All 3 retained failure events</summary>\n\n")[1].Split("\n</details>")[0];
+        Assert.Contains("- 2026-10-24T10:00:00Z `poll-error`", details);
+        Assert.Contains("- 2026-10-24T10:00:10Z `poll-error`", details);
+        Assert.Contains("- 2026-10-24T10:00:20Z `poll-error`", details);
+        Assert.Equal(3, details.Split('\n').Count(line => line.StartsWith("- ", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task Historical_details_disclose_truncation_and_keep_hostile_text_and_known_secrets_protected()
+    {
+        Record("poll-error", First + " [hostile](javascript:alert(1)) </summary> `escape` ghs_secret " + new string('x', 350));
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+
+        var body = Published().Body;
+        Assert.DoesNotContain("ghs_secret", body);
+        Assert.Contains("[Discussion #1](" + First + ")", body);
+        Assert.Contains("(dashboard text truncated at 300 characters)", body);
+        Assert.Contains("`https://github.com/owner/repository/discussions/1 [hostile](javascript:alert(1)) </summary> 'escape' <redacted>", body);
+        Assert.Single(Regex.Matches(body!, "(?m)^</details>$"));
+        Assert.DoesNotContain("](javascript:", Regex.Replace(body!, "`[^`]*`", ""));
+    }
+
+    [Fact]
     public async Task Current_admission_block_precedes_work_but_authentication_and_known_stop_have_priority()
     {
         checkout.Work = new(new HashSet<string>(), true);
