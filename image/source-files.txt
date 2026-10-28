@@ -98,5 +98,8 @@ container/prepare-runtime.sh
 scripts/compose-image.py
 image/source-files.txt
 src/RepoAgentController.Core/GitHubTokenThrottledException.cs
+releases/controller/version.txt
+releases/controller/CHANGELOG.md
+scripts/delivery/controller-release.py
 src/RepoAgentController.Core/IAgentToolCredentials.cs
 src/RepoAgentController.Core/ControllerWebhooks.cs

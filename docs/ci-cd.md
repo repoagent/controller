@@ -14,73 +14,29 @@ The repository has four workflow entry points: **Controller**, **Broker**, the s
 
 ## Controller releases
 
-An intentional dispatch publishes a Linux amd64 Native AOT distribution to GitHub Releases. The Ubuntu 24.04 build requires glibc 2.39 or newer and normal .NET native dependencies, including ICU/OpenSSL. Codex and GitHub CLI are separate image/runtime dependencies. Windows and ARM executables are not supplied.
+Controller and credential broker versions are independent. Pinned Release Please proposes a version and editable notes in a release PR, starting each component at 1.0.0. See the [component release policy](releases.md) for compatibility, reviewed Conventional Commits, shared source attribution, tag protection and workflow-token event suppression. Enable GitHub Actions to create pull requests before enabling the proposal workflow.
 
-Before publication, create the `controller-release` GitHub environment and restrict it to `main`. Protect main and release tags. Required human release approval was removed by the maintainer on 2026-10-22; new versions can publish without waiting for a person. This environment has no Azure trust or credentials; only the release job receives `contents: write`.
+The ordinary **Controller** workflow verifies relevant PRs and main changes with read-only authority. It also accepts explicit branch `verify=true` dispatches for Release Please PRs, because a PR created with `GITHUB_TOKEN` does not start normal PR workflows. It does not publish on an ordinary push. Hosted branch smoke remains a separate `smoke=true` path with no publication authority.
 
-Create an immutable version tag on a reviewed main commit containing the delivery scripts, then dispatch from main:
+After an approved release PR is merged, Release Please creates `controller-vMAJOR.MINOR.PATCH` on its exact main commit. A separate **Controller release** workflow selects that immutable tag, verifies main ancestry and version/notes agreement, runs the full gate, builds both native archive and image, and checks that compiled diagnostics, inventory and exact offline notes agree. A semantic GitHub Release record can exist while artifacts are still pending; only verified `controller-release.json` metadata and its recorded assets establish completed publication.
 
-```sh
-gh workflow run controller.yml --ref main -f tag=v1.2.3
-```
+The native Linux amd64 Native AOT archive requires glibc 2.39 or newer and normal ICU/OpenSSL dependencies. Windows and ARM executables are not supplied. It includes the executable, packaged skills, `VERSION`, `RELEASE_NOTES.md` and `SHA256SUMS`. Image `/opt/repoagent/controller/RELEASE_NOTES.md` contains the same bytes; `versions` reports the compiled controller version separately from tool versions. Image inventory records the source version and notes hash, while source commit, full bundled-tool inventory and immutable image digest remain separate provenance.
 
-The job validates the tag, checks its commit belongs to main, checks out that source, verifies it and packages it. Pull requests publish nothing, and ordinary pushes to main publish only [baseline image releases](#baseline-releases), never a native distribution. An existing release, including a partial upload, is refused to preserve assets; inspect and resolve a partial release explicitly.
+Publication uses the existing main-only `controller-release` environment. Its registry job has package write but no release write; finalization has release write but no package write. One global noncanceling semantic-release lock serializes candidates. The registry version alias `ghcr.io/repoagent/controller:controller-vMAJOR.MINOR.PATCH` is written only after positive absence and anonymous verification of the candidate immutable image. The release publishes that digest with native-asset hashes. A released alias or conflicting asset is never overwritten.
 
-Local packaging does not publish:
+Manual recovery dispatch selects the approved semantic tag, not current main:
 
 ```sh
-bash scripts/delivery/package-controller.sh 1.2.3 /tmp/controller-release
+gh workflow run controller-release.yml --ref main -f tag=controller-v1.2.3
 ```
 
-```text
-repoagent-controller-1.2.3-linux-amd64.tar.gz
-repoagent-controller-1.2.3-linux-amd64.tar.gz.sha256
-  repoagent-controller-1.2.3-linux-amd64/
-    RepoAgentController
-    github-discussion/SKILL.md
-    repoagent-orientation/SKILL.md
-    VERSION                  # version, full source commit, runtime
-    SHA256SUMS               # executable, skills and VERSION
-```
-
-Verify the archive checksum before extraction, then run `sha256sum -c SHA256SUMS` inside it. Keep the skills beside the executable; the controller registers that directory for native skill discovery. Local builds record HEAD and can include edits; release only from the workflow's clean tagged source. This archive interface supports later image composition without developer credentials.
-
-## Public controller container image
-
-The same **Controller** workflow builds and smokes the real default Linux amd64 image on relevant pull requests with read-only permissions, then uploads and downloads the exact artifact ID into a second job to verify its checksum and loaded image identity. It records the image's own `versions` output and embedded `image-inventory.json` in the checksummed artifact and checks that the reported gh and Codex versions match the inventory. It uses the existing explicit source inventory; no enrollment, Codex sign-in or host GitHub credential enters the build. Pull requests never publish.
-
-A push to `main` that changes the same image inputs (controller source, container, image manifest, bundled skill, composition or release scripts, or this workflow) publishes automatically. Both PR and main runs execute the full `scripts/delivery/verify.sh` gate, because `main` has no required status checks; publication waits for it and for the artifact verification. Read-only build and verification jobs cancel superseded runs on the same ref. Publication and release jobs are serialized independently and never cancel an active write. Documentation-only changes and service code changes under `service/auth` do not publish a controller image. A verified [tool refresh](#tool-refresh) pins newer gh/Codex versions on `main` and dispatches this publication.
-
-The build uploads its Docker archive, build metadata, versions output, inventory and checksums for seven days before publication proceeds through the main-only `controller-release` environment. The publish job loads that same artifact, checks its checksum/platform/UID/controller role/source revision, and receives `packages: write` only in that job. It publishes `ghcr.io/repoagent/controller:sha-FULL_SOURCE_SHA-RUN_ID-ATTEMPT`; reruns use fresh coordinates, and no `latest` tag is changed. A separate release job with only `contents: write` then creates the [baseline release](#baseline-releases).
-
-Manual recovery stays available: `gh workflow run controller.yml --ref main` rebuilds, verifies and publishes current `main` with a new release. If only the release job failed, re-run that failed job in the same workflow run; it reuses the already published image coordinates.
-
-Initial GHCR packages are private by default. An account with package administration rights must make `repoagent/controller` public under package **Settings > Danger Zone > Change visibility**, and grant this repository **Write** under **Manage Actions access** if access was not inherited. The workflow cannot report success until a clean anonymous registry client downloads the immutable image and all its layers into empty storage and confirms that its image config matches the approved build. A visibility failure can therefore leave a published private image; inspect the package and rerun deliberately after fixing access. No personal registry token or ACR is required. Use the public `ghcr.io/repoagent/controller@sha256:...` reference from the release or run summary; publication does not deploy a controller.
-
-Action versions are pinned to current release commits. See [GitHub's image publication guidance](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images), [artifact upload](https://github.com/actions/upload-artifact) and [download](https://github.com/actions/download-artifact) documentation.
+A completed retry verifies recorded assets and anonymous immutable-image identity, then leaves them unchanged. A partial release with an already-written version image but no complete metadata fails closed for inspection: retain the original workflow artifact, verify its source/version/notes/digest and resume its failed finalization job. Never delete or move a released tag/alias or use `--clobber` to conceal a mismatch. Failed visibility checks may leave an unpublished/private candidate; make GHCR public and grant repository package write, then inspect before retrying. No `latest` tag or running controller is changed.
 
 ### Baseline releases
 
-Each successful publication creates one GitHub Release for the anonymously verified image. Publication never updates a running controller; operators adopt a release deliberately through [local image update](local-runtime.md#update-an-immutable-image-or-restore-the-prior-image). Hosting lifecycle is outside the controller ([ADR 0009](adr/0009-keep-hosting-lifecycle-out-of-the-controller.md)); hosted operation will be redesigned around the status endpoint.
+The dashboard reads completed `controller-vMAJOR.MINOR.PATCH` releases in numerical SemVer order, excludes previews and broker releases, and identifies its running image by inventory digest. Its v2 machine-readable body marker is `<!-- repoagent.controller-release/v2 -->`; `controller-release.json` records version, source, image/config digests, inventory/notes hashes and native-asset hashes. Missing metadata is not a completed baseline.
 
-- Tag `baseline-RUN_ID.ATTEMPT`, created on the published source commit. It corresponds one-to-one with the GHCR tag `sha-FULL_SOURCE_SHA-RUN_ID-ATTEMPT`. Run IDs increase across the repository, so a larger `RUN_ID` (then `ATTEMPT`) is a later publication.
-- Title `Controller baseline SHORT_SHA (gh GH_VERSION, Codex CODEX_VERSION)`, and a body with the `docker pull` immutable reference and a version table.
-- Machine-readable metadata: the body line `<!-- repoagent.baseline-release/v1 -->` followed by one fenced `json` block:
-
-| Field | Meaning |
-| --- | --- |
-| `schema` | `repoagent.baseline-release/v1`; incompatible changes use a new schema name |
-| `release` | The release tag |
-| `image` | Immutable `ghcr.io/repoagent/controller@sha256:...` manifest reference that was pulled anonymously |
-| `imageTag` | The GHCR tag pushed for that run; registry tags can move, so pull by `image` |
-| `imageConfigDigest` | Image config digest from the build; Docker's classic image store reports it as the image ID |
-| `platform` | `linux/amd64` |
-| `versions.controller` | Full source commit |
-| `versions.gh`, `versions.codex` | Versions reported by the image's own `gh --version`/`codex --version`, which must equal the inventory |
-| `inventorySha256` | SHA-256 of the image's `/opt/repoagent/image-inventory.json` bytes; a running container can recompute it to find its own release. No match means a derived, local or otherwise unreleased image |
-| `run` | The verification and publication workflow run |
-
-The controller's [Discussion dashboard](controller-operations.md#discussion-status-dashboard) is one such consumer: it reports a newer release as an operator update notice and never deploys it. Consumers should select releases by the `baseline-` tag prefix and this marker rather than GitHub's **Latest** badge, which manual `v*` controller releases can also hold. An existing release with the same tag is never replaced. Baseline tags are not covered by the `v*` tag ruleset; add `refs/tags/baseline-*` to the tag ruleset to block their update or deletion.
+Historical `baseline-RUN_ID.ATTEMPT` releases retain their v1 metadata and remain identifiable. They are not semantic versions. When a legacy running image meets semantic releases, the dashboard preserves its inventory identity and explicitly requires deliberate migration; it does not claim semantic currentness or downgrade. Older controllers only understand legacy tags, so operators must deliberately adopt a verified semantic image once before its dashboard can discover later semantic versions. The controller never updates itself; preserve external configuration, credentials and session data during [image adoption](local-runtime.md#update-an-immutable-image-or-restore-the-prior-image).
 
 ### Tool refresh
 
@@ -92,7 +48,7 @@ Each tool has its own refresh (`refresh-baseline-tool.yml`, called once for gh a
 2. **Verify.** A read-only job checks out exactly that commit, pins the selected version in it and then runs the full `scripts/delivery/verify.sh` gate, whose native tests use the selected Codex. It then builds the default image with the selected tools, runs `versions` and NativeSmoke inside it and requires the versions the image reports to equal its inventory.
 3. **Hosted smoke.** The reusable `e2e-smoke.yml` gate installs the exact selected candidate through the operator installer and observes a real Quick Tunnel webhook, EYES receipt and App reply. Cleanup is part of success. It uses repository secrets, not the publication identity; see below.
 4. **Pin.** Only after verification and hosted smoke succeed, a job in the `controller-release` environment with `contents: write` and `actions: write` commits the new catalog lines for that tool in `scripts/compose-image.py` and `image/default.json` to `main`. Every other pin stays as reviewed. The commit is one GitHub API call that applies only if `main` is still the verified commit. It is signed by GitHub and its message names the tool, both versions and the verification run.
-5. **Publish.** A commit made with the workflow token starts no push workflow, so the same job dispatches **Controller** on `main`. That run verifies again and creates the baseline release, which records the exact gh and Codex versions. When both tools are pinned in one run, each pin dispatches its own publication.
+5. **Propose.** A workflow-token commit starts no push workflow, so the same job explicitly dispatches **Release Please** on main. Verified tool-only changes use `fix(controller)` with previous/new tool versions and propose a controller patch release. Upstream tool major versions do not redefine controller compatibility. Approved release notes and source version then drive the semantic artifact workflow.
 
 An incompatible update fails at selection or verification. It changes nothing on `main`, publishes nothing, and leaves existing baseline releases and images usable. Only that tool is held back: the other tool's refresh still selects, verifies, pins and publishes a supported update on its own. The run then shows as failed, and the daily run retries the same latest version until upstream publishes a fix or a maintainer intervenes, for example with a reviewed pull request that pins another version. If `main` moved after verification, the pin is refused and the next run selects and verifies again on the new `main`. If dispatch fails after the pin, the job fails and names the manual recovery: `gh workflow run controller.yml --ref main`.
 

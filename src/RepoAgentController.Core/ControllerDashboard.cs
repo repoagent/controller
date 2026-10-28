@@ -304,7 +304,10 @@ public sealed class ControllerDashboard : IAsyncDisposable
         if (notice.Newest is not { } newest) { text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"No published baseline release was found at {at}."); return; }
         if (notice.Uncertainty is not null || notice.Running is not { } running)
         {
-            text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"**Release identity uncertain** (checked at {at}): {notice.Uncertainty}. No replacement is suggested.");
+            var legacy = notice.Running is { Version: null } ? notice.Running : null;
+            var label = legacy is null ? "Release identity uncertain" : "Legacy release migration";
+            text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"**{label}** (checked at {at}): {notice.Uncertainty}. No replacement is suggested.");
+            if (legacy is not null) text.AppendLine(CultureInfo.InvariantCulture, $"- Identified running baseline: {Release(legacy)}, image {Image(legacy)}.");
             text.AppendLine($"- Newest published baseline release: {Release(newest)}, image {Image(newest)} with gh {Code(newest.Gh)} and Codex {Code(newest.Codex)}. " +
                 "Compare it with this controller's image before deciding whether to rebuild or recreate it.");
             return;

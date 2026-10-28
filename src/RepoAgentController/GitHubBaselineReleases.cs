@@ -8,7 +8,7 @@ namespace RepoAgentController;
 /// through gh. A release whose tag, state or metadata does not describe a supported baseline release is left out.</summary>
 sealed class GitHubBaselineReleases(GitHub github) : IBaselineReleases
 {
-    const string Marker = "<!-- repoagent.baseline-release/v1 -->";
+    const string Marker = "<!-- repoagent.baseline-release/v1 -->", SemanticMarker = "<!-- repoagent.controller-release/v2 -->";
 
     public async Task<IReadOnlyList<BaselineRelease>> Published(CancellationToken ct)
     {
@@ -32,8 +32,11 @@ sealed class GitHubBaselineReleases(GitHub github) : IBaselineReleases
     static BaselineRelease? Parse(JsonObject release)
     {
         var tag = Regex.Match(Field(release, "tag_name"), @"\Abaseline-([0-9]{1,18})\.([0-9]{1,9})\z");
-        if (!tag.Success || !IsFalse(release, "draft") || !IsFalse(release, "prerelease")) return null;
-        var block = Regex.Match(Field(release, "body"), "^" + Regex.Escape(Marker) + @"\r?\n```json\r?\n(.*?)\r?\n```", RegexOptions.Multiline | RegexOptions.Singleline);
+        var name = Field(release, "tag_name");
+        var semantic = Regex.IsMatch(name, @"\Acontroller-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z") &&
+            Version.TryParse(name[12..], out _);
+        if ((!tag.Success && !semantic) || !IsFalse(release, "draft") || !IsFalse(release, "prerelease")) return null;
+        var block = Regex.Match(Field(release, "body"), "^" + Regex.Escape(semantic ? SemanticMarker : Marker) + @"\r?\n```json\r?\n(.*?)\r?\n```", RegexOptions.Multiline | RegexOptions.Singleline);
         JsonObject? metadata;
         JsonNode? versions;
         try
@@ -42,12 +45,14 @@ sealed class GitHubBaselineReleases(GitHub github) : IBaselineReleases
             versions = metadata?["versions"];
         }
         catch (Exception error) when (error is JsonException or ArgumentException) { return null; } // Including duplicate keys.
-        if (Field(metadata, "schema") != "repoagent.baseline-release/v1" || Field(metadata, "release") != tag.Value || Field(metadata, "platform") != "linux/amd64" ||
+        if (Field(metadata, "schema") != (semantic ? "repoagent.controller-release/v2" : "repoagent.baseline-release/v1") || Field(metadata, "release") != name || Field(metadata, "platform") != "linux/amd64" ||
             !Regex.IsMatch(Field(metadata, "image"), @"\Aghcr\.io/repoagent/controller@sha256:[0-9a-f]{64}\z") ||
             !Regex.IsMatch(Field(metadata, "inventorySha256"), @"\A[0-9a-f]{64}\z") || !Regex.IsMatch(Field(versions, "controller"), @"\A[0-9a-f]{40}\z") ||
             !Regex.IsMatch(Field(versions, "gh"), @"\A[0-9A-Za-z.+-]{1,64}\z") || !Regex.IsMatch(Field(versions, "codex"), @"\A[0-9A-Za-z.+-]{1,64}\z"))
             return null;
-        return new(tag.Value, long.Parse(tag.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture), int.Parse(tag.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture),
+        if (semantic && (Field(metadata, "version") != name[12..] || Field(metadata, "source") != Field(versions, "controller") ||
+                !Regex.IsMatch(Field(metadata, "notesSha256"), @"\A[0-9a-f]{64}\z"))) return null;
+        return new(name, semantic ? 0 : long.Parse(tag.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture), semantic ? 0 : int.Parse(tag.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture),
             Field(metadata, "image"), Field(metadata, "inventorySha256"), Field(versions, "controller"), Field(versions, "gh"), Field(versions, "codex"));
     }
 

@@ -79,14 +79,14 @@ def job(name):
     return re.split(r'(?m)^  (?=[a-z-]+:\n)', body, maxsplit=1)[0]
 
 
-def runs(name, *, event, ref='refs/heads/main', repository='repoagent/controller', tag='', smoke=False):
+def runs(name, *, event, ref='refs/heads/main', repository='repoagent/controller', tag='', smoke=False, verify=False):
     """Evaluate a job's if: expression for one GitHub context (the subset this workflow uses)."""
     condition = re.search(r'^    if: (.+)$', job(name), re.M)
     if condition is None:
         return True
     context = {'event_name': event, 'ref': ref, 'repository': repository}
     expression = re.sub(r'github\.([a-z_]+)', lambda match: repr(context[match[1]]), condition[1])
-    expression = expression.replace('inputs.tag', repr(tag)).replace('inputs.smoke', repr(smoke)).replace(' true', ' True')
+    expression = expression.replace('inputs.tag', repr(tag)).replace('inputs.smoke', repr(smoke)).replace('inputs.verify', repr(verify)).replace(' true', ' True')
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     if not re.fullmatch(r'(?:\s|\(|\)|==|!=|and|or|True|False)*', re.sub(r"'[^']*'", '', expression)):
         raise AssertionError('Unsupported workflow expression: ' + condition[1])
@@ -110,74 +110,66 @@ def metadata(notes):
 
 
 class AutomaticPublicationTests(unittest.TestCase):
-    def test_relevant_main_changes_trigger_publication_and_docs_only_changes_do_not(self):
+    def test_relevant_main_changes_are_verified_and_docs_only_changes_do_not_build_images(self):
         on = triggers()
-        self.assertIn('push', on, 'Main changes must trigger publication without a manual dispatch')
         self.assertEqual(on['push'].get('branches'), ['main'])
-        image_inputs = (ROOT / 'image/source-files.txt').read_text().split()
-        for path in image_inputs + ['scripts/delivery/image-release.py']:
+        for path in (ROOT / 'image/source-files.txt').read_text().split() + ['scripts/delivery/controller-release.py']:
             with self.subTest(path=path):
                 self.assertTrue(any(matches(pattern, path) for pattern in on['push']['paths']))
         for path in ['docs/ci-cd.md', 'service/auth/Program.cs', 'README.md']:
-            with self.subTest(path=path):
-                self.assertFalse(any(matches(pattern, path) for pattern in on['push']['paths']))
-        self.assertEqual(on['push']['paths'], on['pull_request']['paths'],
-                         'Pull requests must validate exactly what main would publish')
-        self.assertIn('workflow_dispatch', on, 'Manual recovery dispatch must remain available')
+            self.assertFalse(any(matches(pattern, path) for pattern in on['push']['paths']))
+        self.assertEqual(on['push']['paths'], on['pull_request']['paths'])
 
-    def test_main_push_and_recovery_dispatch_publish_and_release_but_pull_requests_never_do(self):
-        for name in ['publish', 'release']:
-            with self.subTest(job=name):
-                self.assertTrue(runs(name, event='push'))
-                self.assertTrue(runs(name, event='workflow_dispatch'))
-                self.assertFalse(runs(name, event='pull_request', ref='refs/pull/7/merge'))
-                self.assertFalse(runs(name, event='push', ref='refs/heads/feature'))
-                self.assertFalse(runs(name, event='push', repository='someone/controller'))
-        self.assertTrue(runs('build', event='pull_request', ref='refs/pull/7/merge'))
-        self.assertTrue(runs('verify', event='pull_request', ref='refs/pull/7/merge'),
-                        'The Controller workflow must verify PRs itself')
-        self.assertTrue(runs('verify', event='push'))
-
-    def test_tagged_native_release_is_an_explicit_main_only_alternative_to_baseline_delivery(self):
-        for event, ref, tag, repository, expected in [
-            ('workflow_dispatch', 'refs/heads/main', 'v1.2.3', 'repoagent/controller', True),
-            ('workflow_dispatch', 'refs/heads/feature', 'v1.2.3', 'repoagent/controller', False),
-            ('pull_request', 'refs/pull/7/merge', 'v1.2.3', 'repoagent/controller', False),
-            ('push', 'refs/heads/main', 'v1.2.3', 'repoagent/controller', False),
-            ('workflow_dispatch', 'refs/heads/main', '', 'repoagent/controller', False),
-            ('workflow_dispatch', 'refs/heads/main', 'v1.2.3', 'someone/controller', False),
-        ]:
-            with self.subTest(event=event, ref=ref, tag=tag, repository=repository):
-                self.assertEqual(runs('native-release', event=event, ref=ref, tag=tag, repository=repository), expected)
-        for name in ['build', 'verify', 'publish', 'release']:
-            self.assertFalse(runs(name, event='workflow_dispatch', tag='v1.2.3'), name)
-        self.assertIn('environment: controller-release', job('native-release'))
-        self.assertIn('contents: write', job('native-release'))
-
-    def test_superseded_read_jobs_cancel_per_ref_but_active_writes_finish(self):
-        for name in ['build', 'verify-artifact', 'verify']:
-            with self.subTest(job=name):
-                self.assertIn('cancel-in-progress: true', job(name))
-                self.assertIn('${{ github.ref }}', job(name))
+    def test_ordinary_ci_and_explicit_release_pr_checks_never_publish(self):
+        for name in ['build', 'verify']:
+            self.assertTrue(runs(name, event='pull_request', ref='refs/pull/7/merge'))
+            self.assertTrue(runs(name, event='push'))
+            self.assertTrue(runs(name, event='workflow_dispatch', ref='refs/heads/release-please--branches--main--components--controller', verify=True))
+            self.assertFalse(runs(name, event='workflow_dispatch', ref='refs/heads/feature'))
         for name in ['publish', 'release', 'native-release']:
-            self.assertIn('cancel-in-progress: false', job(name))
+            self.assertNotRegex(WORKFLOW.read_text(), r'(?m)^  ' + name + ':')
 
+    def semantic(self, name):
+        workflow = (ROOT / '.github/workflows/controller-release.yml').read_text()
+        return re.split(r'(?m)^  (?=[a-z-]+:\n)', workflow.split('\n  ' + name + ':\n', 1)[1], maxsplit=1)[0]
 
-    def test_publication_waits_for_full_verification_and_release_for_publication(self):
-        self.assertGreaterEqual(needs('publish'), {'build', 'verify-artifact', 'verify'})
-        self.assertIn('bash scripts/delivery/verify.sh', job('verify'))
-        self.assertIn('publish', needs('release'))
+    def test_one_stable_main_source_drives_both_native_and_image_artifacts(self):
+        workflow = (ROOT / '.github/workflows/controller-release.yml').read_text()
+        self.assertIn("github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main'", self.semantic('select'))
+        self.assertIn('controller-release.py select', self.semantic('select'))
+        self.assertIn('ref: ${{ needs.select.outputs.source }}', self.semantic('build'))
+        self.assertIn('verify.sh "$RUNNER_TEMP/controller-image" "$VERSION"', self.semantic('build'))
+        self.assertIn('NativeSmoke', self.semantic('build'))
+        self.assertIn('cmp "$RUNNER_TEMP/controller-plan/RELEASE_NOTES.md"', self.semantic('build'))
+        self.assertIn('cancel-in-progress: false', workflow)
+        self.assertNotIn('pull_request:', workflow)
 
-    def test_registry_and_release_write_privileges_stay_in_separate_jobs(self):
-        publish, release = job('publish'), job('release')
+    def test_publication_requires_verified_transfer_positive_absence_and_anonymous_digest(self):
+        publication = self.semantic('publish')
+        self.assertIn('needs: [select, build]', publication)
+        self.assertIn('sha256sum --check SHA256SUMS', publication)
+        self.assertIn('controller-release.py image-free', publication)
+        self.assertIn('--src-no-creds --preserve-digests', publication)
+        self.assertIn('"docker://$reference")" = "$digest"', publication)
+        self.assertIn('needs: [select, build, publish]', self.semantic('finalize'))
+        self.assertIn('controller-release.py finalize', self.semantic('finalize'))
+
+    def test_registry_and_release_write_privileges_remain_separate(self):
+        publish, finish = self.semantic('publish'), self.semantic('finalize')
         self.assertIn('packages: write', publish)
         self.assertNotIn('contents: write', publish)
-        self.assertIn('contents: write', release)
-        self.assertNotIn('packages: write', release)
-        for name in ['build', 'verify-artifact', 'verify', 'publish', 'release']:
-            with self.subTest(job=name):
-                self.assertNotIn('id-token:', job(name))
+        self.assertIn('contents: write', finish)
+        self.assertNotIn('packages: write', finish)
+        for name in ['select', 'build']:
+            self.assertNotIn('contents: write', self.semantic(name))
+            self.assertNotIn('packages: write', self.semantic(name))
 
+    def test_superseded_read_jobs_cancel_and_completed_release_retries_do_not_republish(self):
+        for name in ['build', 'verify-artifact', 'verify']:
+            self.assertIn('cancel-in-progress: true', job(name))
+            self.assertIn('${{ github.ref }}', job(name))
+        for name in ['build', 'publish', 'finalize']:
+            self.assertIn("if: needs.select.outputs.complete != 'true'", self.semantic(name))
 
 class BaselineReleaseTests(unittest.TestCase):
     def artifact(self, versions=VERSIONS):
@@ -191,8 +183,12 @@ class BaselineReleaseTests(unittest.TestCase):
         artifact.mkdir()
         (artifact / 'controller.tar').write_bytes(b'docker archive fixture')
         (artifact / 'build.json').write_text(json.dumps({'containerimage.config.digest': CONFIG_DIGEST}))
+        # This fixture represents the retained historical v1 publisher contract.
+        inventory = json.loads((temporary / 'context/image-inventory.json').read_text())
+        inventory['controller'].pop('version', None)
+        inventory['controller'].pop('releaseNotesSha256', None)
+        (artifact / 'image-inventory.json').write_text(json.dumps(inventory))
         (artifact / 'versions.txt').write_text(versions)
-        (artifact / 'image-inventory.json').write_bytes((temporary / 'context/image-inventory.json').read_bytes())
         sums = subprocess.run(['sha256sum', 'controller.tar', 'build.json', 'versions.txt', 'image-inventory.json'],
                               cwd=artifact, capture_output=True, text=True, check=True)
         (artifact / 'SHA256SUMS').write_text(sums.stdout)
@@ -210,7 +206,8 @@ class BaselineReleaseTests(unittest.TestCase):
                    GITHUB_REPOSITORY='repoagent/controller', GITHUB_SERVER_URL='https://github.com',
                    GITHUB_RUN_ID=RUN)
         env.update(environment)
-        result = subprocess.run(['bash', '-e', '-c', shell(job_name, step_name)], cwd=ROOT, env=env,
+        command = [sys.executable, str(ROOT / 'scripts/delivery/image-release.py'), 'publish', str(temporary / 'controller-image')] if job_name == 'release' else ['bash', '-e', '-c', shell(job_name, step_name)]
+        result = subprocess.run(command, cwd=ROOT, env=env,
                                 capture_output=True, text=True, timeout=30)
         calls = [json.loads(line) for line in ledger.read_text().splitlines()] if ledger.exists() else []
         self.assertNotIn(CANARY, result.stdout + result.stderr + json.dumps(calls))

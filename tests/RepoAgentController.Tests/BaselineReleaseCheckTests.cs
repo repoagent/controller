@@ -27,6 +27,35 @@ public sealed class BaselineReleaseCheckTests
     static string Digest(string seed) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(seed)));
 
     [Fact]
+    public async Task Legacy_image_identity_is_preserved_without_claiming_semantic_downgrade_or_currentness()
+    {
+        var legacy = Release(999, image: "running");
+        var semantic = Release(1) with { Tag = "controller-v1.0.0" };
+        published.Publish(semantic);
+        published.Publish(legacy);
+        await using var releases = Check(Inventory("running"));
+
+        await releases.Check(TestContext.Current.CancellationToken);
+
+        Assert.Equal(legacy, releases.Current!.Running);
+        Assert.Equal(semantic, releases.Current.Newest);
+        Assert.Equal(0, releases.Current.Newer);
+        Assert.Contains("legacy baseline", releases.Current.Uncertainty, StringComparison.Ordinal);
+    }
+    [Fact]
+    public async Task Stable_controller_versions_are_compared_numerically_and_other_components_are_ignored()
+    {
+        var running = Release(500, image: "running") with { Tag = "controller-v1.2.0" };
+        var newest = Release(100) with { Tag = "controller-v1.10.0" };
+        foreach (var release in new[] { running, newest, Release(999) with { Tag = "broker-v99.0.0" },
+            Release(998) with { Tag = "controller-v2.0.0-rc.1" }, Release(997) }) published.Publish(release);
+        await using var releases = Check(Inventory("running"));
+
+        await releases.Check(TestContext.Current.CancellationToken);
+
+        Assert.Equal(new ReleaseNotice(Start, running, newest, 1, null), releases.Current);
+    }
+    [Fact]
     public async Task Newer_baseline_release_is_offered_with_how_many_are_newer_while_the_running_release_claims_no_update()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -36,8 +36,20 @@ def bundled(artifact):
         raise ValueError('Image versions output must report exactly one gh and one Codex version')
     if gh[0] != inventory['githubCli']['version'] or codex[0] != inventory['agent']['version']:
         raise ValueError('Bundled gh/Codex versions differ from the image inventory')
-    controller = environment('GITHUB_SHA', r'[0-9a-f]{40}', 'the full source commit')
-    return {'controller': controller, 'gh': gh[0], 'codex': codex[0]}
+    controller = environment('SOURCE_COMMIT' if os.environ.get('SOURCE_COMMIT') else 'GITHUB_SHA', r'[0-9a-f]{40}', 'the full source commit')
+    versions = {'controller': controller, 'gh': gh[0], 'codex': codex[0]}
+    if 'version' in inventory.get('controller', {}):
+        version = inventory['controller']['version']
+        if not re.fullmatch(r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)', version):
+            raise ValueError('Controller inventory version must be stable SemVer')
+        actual = re.findall(r'^RepoAgentController version: ([0-9A-Za-z.+-]+)$', output, re.M)
+        if len(actual) != 1 or actual[0].split('+', 1)[0] != version:
+            raise ValueError('Compiled controller version differs from the image inventory')
+        notes = hashlib.sha256((artifact / 'RELEASE_NOTES.md').read_bytes()).hexdigest()
+        if notes != inventory['controller'].get('releaseNotesSha256'):
+            raise ValueError('Bundled release notes differ from the image inventory')
+        versions.update(version=version, notesSha256=notes)
+    return versions
 
 
 def describe(artifact):
@@ -99,6 +111,11 @@ def check(artifact):
 
 
 def publish(artifact):
+    # Retained legacy recovery command; semantic releases use controller-release.py.
+    for line in (artifact / 'SHA256SUMS').read_text().splitlines():
+        match = re.fullmatch(r'([0-9a-f]{64})  ([A-Za-z0-9_.-]+)', line)
+        if not match or hashlib.sha256((artifact / match[2]).read_bytes()).hexdigest() != match[1]:
+            raise ValueError('Transferred artifact checksum differs')
     value = describe(artifact)
     tag, versions = value['release'], value['versions']
     if subprocess.run(['gh', 'release', 'view', tag], capture_output=True).returncode == 0:

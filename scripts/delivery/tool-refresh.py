@@ -172,7 +172,7 @@ def commit(path):
                       f'{label} {previous} -> {version}'])
     change = {'branch': {'repositoryNameWithOwner': os.environ['GITHUB_REPOSITORY'], 'branchName': 'main'},
               'expectedHeadOid': value['base'],
-              'message': {'headline': f'chore: refresh baseline {label} to {version}', 'body': body},
+              'message': {'headline': f'fix(controller): refresh bundled {label} from {previous} to {version}', 'body': body},
               'fileChanges': {'additions': [{'path': str(file), 'contents': base64.b64encode(file.read_bytes()).decode()}
                                             for file in (CATALOG, MANIFEST)]}}
     result = subprocess.run(['gh', 'api', 'graphql', '--input', '-'], capture_output=True, text=True,
