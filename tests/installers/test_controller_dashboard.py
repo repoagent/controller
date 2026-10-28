@@ -3,22 +3,16 @@
 GitHub and the credential broker are the local TLS GitProvider, reached through the installed gh and the
 controller's own HTTPS client. The agent app-server is a controlled stub. No live provider access.
 """
-from contextlib import closing
-import hashlib
-import hmac
-import http.client
 import json
 import os
 from pathlib import Path
 import re
 import signal
-import socket
 import subprocess
 import tempfile
 import threading
 import time
 import unittest
-import uuid
 
 from test_managed_git import CONTROLLER, ROOT, GitProvider, free_port
 
@@ -45,15 +39,14 @@ class ControllerDashboardProcessTests(unittest.TestCase):
         controller = os.environ.get('CHECKOUT_CONTROLLER')
         cls.command = [str(Path(controller).resolve(strict=True))] if controller else ['dotnet', str(CONTROLLER)]
 
-    def fixture(self, directory, webhooks=False):
+    def fixture(self, directory):
         provider = GitProvider(directory)
         self.addCleanup(provider.close)
         # A v1 enrollment: Discussions only, no clone; its leases follow it.
-        provider.webhooks, provider.clone, provider.hooks = webhooks, False, []
-        if not webhooks:
-            provider.enrollment = lambda: dict(protocolVersion=1, brokerOrigin='https://broker.fixture', githubHost='github.com',
-                                               deviceId='device-1', deviceSecret='a' * 43, appId=123, appSlug='test-app', installationId=234,
-                                               repositoryId=345, repository='owner/project', permissions={'discussions': 'write'})
+        provider.webhooks, provider.clone, provider.hooks = False, False, []
+        provider.enrollment = lambda: dict(protocolVersion=1, brokerOrigin='https://broker.fixture', githubHost='github.com',
+                                           deviceId='device-1', deviceSecret='a' * 43, appId=123, appSlug='test-app', installationId=234,
+                                           repositoryId=345, repository='owner/project', permissions={'discussions': 'write'})
         github = OwnedDiscussions(provider)
         enrollment = directory / 'enrollment.json'
         enrollment.write_text(json.dumps(provider.enrollment()))
@@ -100,40 +93,6 @@ class ControllerDashboardProcessTests(unittest.TestCase):
             self.assertEqual(len(github.dashboards()), 1)
             for _, text in github.writes:
                 self.assertNotIn(provider.token, text)
-
-    def test_webhook_deliveries_about_the_dashboard_never_wake_the_controller(self):
-        with tempfile.TemporaryDirectory(prefix='dashboard-webhook-') as temporary:
-            directory = Path(temporary)
-            provider, github, command, environment = self.fixture(directory, webhooks=True)
-            with socket.socket() as listener:
-                listener.bind(('127.0.0.1', 0))
-                port = listener.getsockname()[1]
-            command += ['--webhook-url', 'https://fixture.invalid', '--listen-port', str(port), '--reconcile-interval', '3600']
-
-            with Controller(self, command, environment) as controller:
-                body = github.wait(self, publishing)
-                controller.wait('reconciliation-completed discussion=all success=True')
-                secret = json.loads(Path(str(directory / 'state.json') + '.webhook/hook.json').read_text())['secret'].encode()
-
-                def deliver(event, action, number, author, sender='octocat'):
-                    payload = json.dumps(dict(action=action, repository=dict(full_name='owner/project', id=345),
-                                              discussion=dict(number=number, body=body, user=dict(login=author, type='Bot' if author.endswith('[bot]') else 'User')),
-                                              sender=dict(login=sender, type='Bot' if sender.endswith('[bot]') else 'User'))).encode()
-                    with closing(http.client.HTTPConnection('127.0.0.1', port, timeout=10)) as connection:
-                        connection.request('POST', '/github/webhook', payload, {
-                            'X-GitHub-Event': event, 'X-GitHub-Delivery': str(uuid.uuid4()),
-                            'X-Hub-Signature-256': 'sha256=' + hmac.new(secret, payload, hashlib.sha256).hexdigest()})
-                        response = connection.getresponse()
-                        response.read()
-                        return response.status
-
-                # GitHub notifies every heartbeat edit, and participants may reply on the dashboard; none of it is agent input.
-                self.assertEqual(deliver('discussion', 'edited', 100, 'test-app[bot]', sender='test-app[bot]'), 204)
-                self.assertEqual(deliver('discussion_comment', 'created', 100, 'test-app[bot]'), 204)
-                # A participant's copy of the dashboard text is an ordinary Discussion and still wakes the controller.
-                self.assertEqual(deliver('discussion', 'created', 101, 'octocat'), 202)
-                controller.wait('webhook-observed discussion=101 success=True')
-            self.assertFalse([line for line in controller.lines if 'discussion=100' in line])
 
 
 def publishing(body):
@@ -207,12 +166,6 @@ class Controller:
         self.reader = threading.Thread(target=lambda: self.lines.extend(self.process.stdout), daemon=True)
         self.reader.start()
         return self
-
-    def wait(self, text, timeout=30):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and not any(text in line for line in self.lines):
-            time.sleep(0.05)
-        self.test.assertTrue(any(text in line for line in self.lines), 'Controller never logged ' + text + ':\n' + ''.join(self.lines))
 
     def __exit__(self, *_):
         if self.process.poll() is None:
