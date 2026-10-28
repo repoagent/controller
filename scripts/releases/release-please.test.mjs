@@ -55,3 +55,7 @@ test('real manifest never turns an internal-only feature commit into an empty re
     { 'releases/controller': Version.parse('1.0.0'), 'service/auth': Version.parse('1.0.0') }, { separatePullRequests: true, logger: quiet });
   assert.deepEqual(await manifest.buildPullRequests(), []);
 });
+
+test('documentation inside a runtime source tree is not an artifact change', () => {
+  assert.equal(plan({ component: 'broker', currentVersion: '1.0.0', commits: [{ sha: 'a'.repeat(40), message: 'feat(broker): document infrastructure', files: ['infra/auth/README.md'] }] }), null);
+});

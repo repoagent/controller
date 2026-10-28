@@ -14,7 +14,8 @@ const ownership = JSON.parse(fs.readFileSync(new URL('./components.json', import
 function matches(file, patterns) { return patterns.some(pattern => pattern.endsWith('/') ? file.startsWith(pattern) : file === pattern); }
 export function owners(files) {
   if (!Array.isArray(files)) throw new Error('Commit file inventory is required for component attribution');
-  return Object.keys(components).filter(component => files.some(file => matches(file, ownership.shared) || matches(file, ownership[component])));
+  const runtime = files.filter(file => file.startsWith('.agents/skills/') || (!/(^|\/)(?:tests?|docs|dev)\//.test(file) && !/\.(?:md|http)$/.test(file)));
+  return Object.keys(components).filter(component => runtime.some(file => matches(file, ownership.shared) || matches(file, ownership[component])));
 }
 export function attribute(github) {
   const iterator = github.mergeCommitIterator.bind(github);
