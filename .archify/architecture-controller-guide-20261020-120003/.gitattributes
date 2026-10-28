@@ -1,4 +1,0 @@
-# Preserve exact artifact and receipt bytes across platform checkouts.
-*.html -text -whitespace
-*.json -text -whitespace
-*.mjs text eol=lf
