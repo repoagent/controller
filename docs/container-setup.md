@@ -140,11 +140,11 @@ docker run --rm \
   repoagent:local supply-codex-auth
 ```
 
-The command atomically replaces `/data/credentials/codex-supply/auth.json` (owner-only). Once that file exists, `start` and `check` pass it to the controller as `--codex-auth` instead of checking the container sign-in. A running agent applies a replacement within about five seconds when no Codex turn is running: it restarts only its owned Codex app-server, and each Discussion's session resumes its native history on the next input. The pinned Codex cannot reload a replaced `auth.json` in a running app-server, so that owned restart is required. Rejected credentials appear as `codexAuthentication.state` `failed` in `status`, and new input waits until replacement credentials are applied. See [supplied Codex credentials](controller-operations.md#supplied-codex-credentials).
+The command atomically replaces `/data/credentials/codex-supply/auth.json` (owner-only). Once that file exists, `start` and `check` pass it to the controller as `--codex-auth` instead of checking the container sign-in. A running agent applies a replacement within about five seconds when no Codex turn is running: it restarts only its owned Codex app-server, and each Discussion's session resumes its agent session history on the next input. The pinned Codex cannot reload a replaced `auth.json` in a running app-server, so that owned restart is required. Rejected credentials appear as `codexAuthentication.state` `failed` in `status`, and new input waits until replacement credentials are applied. See [supplied Codex credentials](controller-operations.md#supplied-codex-credentials).
 
 ## Skills
 
-Two required skills are built alongside the bridge: `github-discussion` (how to answer each input) and `repoagent-orientation` (participants, compact and redelivered inputs, reply routing, App identity, and the read-only mainline checkout with separate worktrees for other revisions or edits). The controller registers their directory with native skill discovery. Every turn receives `github-discussion`. The first turn after a session starts or resumes in a native process also receives `repoagent-orientation`. Optional skills are configured independently:
+Two required skills are built alongside the bridge: `github-discussion` (how to answer each input) and `repoagent-orientation` (participants, compact and redelivered inputs, reply routing, App identity, and the read-only mainline checkout with separate worktrees for other revisions or edits). The controller registers their directory with native skill discovery. Every turn receives `github-discussion`. The first turn after a session starts or resumes in an agent runtime process also receives `repoagent-orientation`. Optional skills are configured independently:
 
 ```json
 [
@@ -163,7 +163,7 @@ Two required skills are built alongside the bridge: `github-discussion` (how to 
 ./repoagent start
 ```
 
-Use an immutable full commit SHA. Setup parses the skill's YAML frontmatter, validates its name and description, reports repository/revision/path, and installs into the native user skill location. Missing sources, invalid paths, duplicate/reserved names and invalid skill metadata fail before replacing the current selection. Installing an empty array explicitly clears optional skills. The required skills stay installed.
+Use an immutable full commit SHA. Setup parses the skill's YAML frontmatter, validates its name and description, reports repository/revision/path, and installs into the agent user skill location. Missing sources, invalid paths, duplicate/reserved names and invalid skill metadata fail before replacing the current selection. Installing an empty array explicitly clears optional skills. The required skills stay installed.
 
 For a private source, set `"private": true` and explicitly supply a token file:
 
@@ -182,7 +182,7 @@ The supplied credential must be authorized to read that exact source repository/
 | `repoagent-default-config` | Operator configuration and selected skills; mounted read-only during agent work |
 | `repoagent-default-credentials` | Codex sign-in/configuration |
 | `repoagent-default-workspace` | Agent working files |
-| `repoagent-default-history` | Native Codex session histories |
+| `repoagent-default-history` | Agent session histories |
 | `repoagent-default-state` | JSON checkpoint, lease, GitHub App wrappers and credential handoff pointer (no tokens), operator status and bounded retained logs |
 | `repoagent-default-tools` | Updated `gh` and managed Codex executables and update metadata |
 | `repoagent-default-participant` | Separate human GitHub sign-in, used only by opt-in live tests |
@@ -202,9 +202,9 @@ Polling mode publishes no ports. Explicit [fixed-URL webhook mode](webhooks.md) 
 
 `./repoagent status` (or `.\repoagent.ps1 status`) shows identity, lifetime, authentication health, sessions, pending/retrying/running work and recent failures as JSON while the agent runs or after it stops. `./repoagent logs --retained` prints the retained logs from the state volume, which survive container replacement unlike `docker logs`. Retention defaults to five 1 MiB files; see [status and retained logs](controller-operations.md#status-and-retained-logs) for fields, bounds and exclusions.
 
-Keep one running bridge per repository/App; separate instances do not make concurrent processing of the same conversations safe. Back up the state and native history before any manual recovery described in the [controller operations guide](controller-operations.md#checkpoints-and-manual-recovery).
+Keep one running bridge per repository/App; separate instances do not make concurrent processing of the same conversations safe. Back up the state and agent session history before any manual recovery described in the [controller operations guide](controller-operations.md#checkpoints-and-manual-recovery).
 
-To intentionally remove this instance's stored credentials, selected skills, workspace, native history and checkpoint:
+To intentionally remove this instance's stored credentials, selected skills, workspace, agent session history and checkpoint:
 
 ```sh
 ./repoagent reset --delete-stored-data

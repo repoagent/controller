@@ -4,7 +4,7 @@
   "settings": [
     {
       "name": "REPOAGENT_MAX_ACTIVE_SESSIONS",
-      "description": "Maximum native Discussion turns running at the same time.",
+      "description": "Maximum agent turns running at the same time.",
       "type": "integer",
       "minimum": 1,
       "maximum": 64

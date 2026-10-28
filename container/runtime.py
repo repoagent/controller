@@ -251,7 +251,7 @@ def runtime_settings(injected):
 
 
 def import_enrollment():
-    """Transport only: the native consumer owns all credential policy."""
+    """Transport only: the controller owns all credential policy."""
     directory = Path('/data/enrollment')
     info = directory.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != 1000 or stat.S_IMODE(info.st_mode) != 0o700:
@@ -433,7 +433,7 @@ def main():
         external = injected is not None
         # Only the controller receives the injected credential; it removes it before starting children.
         controller = os.environ | ({ENROLLMENT_VARIABLE: injected} if external else {})
-        if not CODEX_SUPPLY.is_file():  # Otherwise the controller validates and installs the supply before native use.
+        if not CODEX_SUPPLY.is_file():  # Otherwise the controller validates and installs the supply before agent runtime use.
             run(['codex', 'login', 'status'])
         if args.command == 'check':
             # Check the webhook grant without creating a tunnel or registering a hook.

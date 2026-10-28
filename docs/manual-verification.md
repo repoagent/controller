@@ -17,10 +17,10 @@ Build/run inside a Linux container, inspect `--help`, and start the long-running
 | Source-specific EYES | Discussion body, comment and reply each get the agent's EYES on the actual source, including reaction subjects |
 | Existing EYES reuse | Edit an acknowledged source; `receipt-reused`; no duplicate work from the receipt itself |
 | Quiet polls and own output | At least two unchanged polls; own comment/reaction causes no forwarding/response loop |
-| Normal restart | Same state and session ID; a new participant message resumes native history and replies in GitHub |
-| Failed input | With disposable state, make a recorded session ID invalid, post a new source without EYES, confirm native rejection logs `delivery-retry` with growing backoff and no acceptance or new EYES; restore the session ID while stopped and confirm the retry delivers and answers it |
+| Normal restart | Same state and session ID; a new participant message resumes agent session history and replies in GitHub |
+| Failed input | With disposable state, make a recorded session ID invalid, post a new source without EYES, confirm agent runtime rejection logs `delivery-retry` with growing backoff and no acceptance or new EYES; restore the session ID while stopped and confirm the retry delivers and answers it |
 | Receipt failure | With accepted agent input, provoke a real receipt permission failure; log error and verify next unchanged poll does not resend input |
 
 For every failure record whether GitHub observation, agent acceptance, checkpoint persistence, receipt, or agent publication failed. Avoid declaring full acceptance from a build or transport-only probe. Input acceptance and successful GitHub publication are separate observations.
 
-Protocol reference: [Codex app-server](https://learn.chatgpt.com/docs/app-server). The native `turn/start` protocol adds input to an active turn, so the bridge sends a batch only after `thread/status/changed` reports the session idle; history, execution and compaction remain owned by Codex. GitHub [Discussion mutations](https://docs.github.com/en/graphql/reference/mutations#adddiscussioncomment) do not promise idempotent publication through `clientMutationId`.
+Protocol reference: [Codex app-server](https://learn.chatgpt.com/docs/app-server). The Codex `turn/start` protocol adds input to an active turn, so the bridge sends a batch only after `thread/status/changed` reports the session idle; history, execution and compaction remain owned by Codex. GitHub [Discussion mutations](https://docs.github.com/en/graphql/reference/mutations#adddiscussioncomment) do not promise idempotent publication through `clientMutationId`.

@@ -24,7 +24,7 @@ public sealed class CodexCredentialsTests : IDisposable
     string Installed() => JsonNode.Parse(File.ReadAllText(Path.Combine(home, "auth.json")))!["OPENAI_API_KEY"]!.GetValue<string>();
 
     [Fact]
-    public void Each_start_keeps_the_natives_refreshed_credentials_until_the_operator_supplies_new_ones()
+    public void Each_start_keeps_the_agents_refreshed_credentials_until_the_operator_supplies_new_ones()
     {
         File.WriteAllText(supplied, Credential("sk-canary-A"));
         CodexCredentials.Open(supplied, home).Install();
