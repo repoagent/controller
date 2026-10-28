@@ -23,8 +23,33 @@ if Path(sys.argv[0]).name == 'git':
  elif args == ['remote','get-url','origin']: print('https://github.com/repoagent/controller.git')
  elif args == ['ls-remote','--exit-code','origin','refs/heads/main']: print('a'*40+'\\trefs/heads/main')
  else: sys.exit(91)
+elif Path(sys.argv[0]).name == 'gh' and args[0]=='api':
+ fixtures=json.loads(Path(os.environ['TEST_FIXTURES']).read_text())
+ value=fixtures[args[-1]]
+ if value=='FAIL': sys.exit('DO_NOT_EXPORT_SECRET provider error')
+ print(json.dumps(value))
 elif args[:2] == ['account','show']:
  print(json.dumps(dict(id='46f7e5d6-05f3-435b-8089-6c63a203dbfa',tenantId='3c356090-bfe9-459b-a2ac-064231707881')))
+elif args[:2] == ['containerapp','exec']:
+ import tty
+ tty.setcbreak(sys.stdin.fileno())
+ assert os.isatty(sys.stdin.fileno())
+ fixtures=json.loads(Path(os.environ['TEST_FIXTURES']).read_text())
+ mode=fixtures.get('consoleMode','success')
+ if mode=='denied': sys.exit('DO_NOT_EXPORT_SECRET provider error')
+ if mode=='overflow': print('DO_NOT_EXPORT_SECRET'*10000);sys.exit(0)
+ if mode=='hang':
+  import time
+  time.sleep(60)
+ if mode=='drift':
+  for key,value in fixtures.items():
+   if key.endswith('/containerApps/repoagent-auth'):
+    value['properties']['template']['containers'][0]['image']='ghcr.io/repoagent/controller-auth@sha256:'+'c'*64
+  Path(os.environ['TEST_FIXTURES']).write_text(json.dumps(fixtures))
+ print('INFO: DO_NOT_EXPORT_SECRET provider banner')
+ print(json.dumps(dict(component='broker',version='1.0.0',source='b'*40)))
+ if mode=='ambiguous': print(json.dumps(dict(component='broker',version='1.0.1',source='c'*40)))
+ if mode=='private-json': print(json.dumps(dict(component='broker',version='1.0.0',source='b'*40,private='DO_NOT_EXPORT_SECRET')))
 elif args[:3] == ['rest','--method','get']:
  from urllib.parse import urlsplit
  url=args[args.index('--url')+1]; key=urlsplit(url).path
@@ -44,11 +69,11 @@ else: sys.exit(93)
 
 @unittest.skipIf(os.name == 'nt', 'Command transports use Linux executable scripts')
 class BrokerDiagnosticsTests(unittest.TestCase):
-    def invoke(self, change=None, **environment):
+    def invoke(self, change=None, script=SCRIPT, report_name='diagnostics.json', **environment):
         folder = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='broker-diagnostics-')))
         binaries = folder / 'bin'
         binaries.mkdir()
-        for name in ('az', 'git'):
+        for name in ('az', 'git', 'gh'):
             path = binaries / name
             path.write_text('#!' + sys.executable + '\n' + DOUBLE)
             path.chmod(0o700)
@@ -95,10 +120,10 @@ class BrokerDiagnosticsTests(unittest.TestCase):
             AZURE_TENANT_ID=TENANT, AZURE_RESOURCE_GROUP='rg-repoagent-controller-auth', AZURE_LOCATION='swedencentral')
         env.update(environment)
         output = folder / 'evidence'
-        result = subprocess.run([sys.executable, str(SCRIPT), str(output)], env=env, cwd=ROOT,
-                                capture_output=True, text=True, timeout=30)
+        result = subprocess.run([sys.executable, str(script), str(output)], env=env, cwd=ROOT,
+                                capture_output=True, text=True, timeout=45)
         calls = [json.loads(row) for row in ledger.read_text().splitlines()] if ledger.exists() else []
-        report = json.loads((output/'diagnostics.json').read_text()) if (output/'diagnostics.json').exists() else None
+        report = json.loads((output/report_name).read_text()) if (output/report_name).exists() else None
         return result, report, calls, output
 
     def test_collects_fixed_read_only_evidence_without_private_provider_fields(self):
