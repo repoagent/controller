@@ -1,0 +1,57 @@
+name: Release Please
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-please-main
+  cancel-in-progress: false
+jobs:
+  propose:
+    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      result: ${{ steps.proposal.outputs.result }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: scripts/releases/package-lock.json
+      - run: npm ci --prefix scripts/releases --ignore-scripts --no-audit --no-fund
+      - id: proposal
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          result=$(node scripts/releases/release-please.mjs propose)
+          printf 'result=%s\n' "$result" >> "$GITHUB_OUTPUT"
+  dispatch:
+    needs: propose
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: scripts/releases/package-lock.json
+      - run: npm ci --prefix scripts/releases --ignore-scripts --no-audit --no-fund
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PROPOSAL_RESULT: ${{ needs.propose.outputs.result }}
+        run: printf '%s' "$PROPOSAL_RESULT" | node scripts/releases/release-please.mjs dispatch

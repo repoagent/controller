@@ -1,0 +1,5 @@
+{
+  "shared": ["global.json", "Directory.Build.props", ".editorconfig", "scripts/releases/", "release-please-config.json", ".release-please-manifest.json", ".github/workflows/release-please.yml"],
+  "controller": ["src/", "container/", "image/", ".agents/skills/github-discussion/", ".agents/skills/repoagent-orientation/", "install.ps1", "install.sh", "repoagent", "repoagent.ps1", "scripts/host-enrollment.psm1", "scripts/enroll-controller.ps1", "scripts/delivery/package-controller.sh", "scripts/delivery/image-release.py", "scripts/delivery/tool-refresh.py", "scripts/compose-image.py", ".github/workflows/controller.yml", ".github/workflows/controller-release.yml", ".github/workflows/e2e-smoke.yml", ".github/workflows/refresh-baseline-tool.yml", ".github/workflows/refresh-baseline-tools.yml", "releases/controller/version.txt"],
+  "broker": ["service/auth/src/", "service/auth/Directory.Build.props", "service/auth/global.json", "service/auth/Dockerfile", "service/auth/version.txt", "infra/auth/", "scripts/delivery/auth-pipeline.py", "scripts/delivery/broker-release.py", ".github/workflows/broker.yml"]
+}
