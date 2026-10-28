@@ -20,12 +20,13 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     readonly InMemoryControllerState state = new();
     readonly InMemoryDiscussionStore discussions = new();
     readonly RecordingLog log = new();
+    readonly InMemoryCheckoutWork checkout = new();
     readonly ControllerStatus status;
     readonly GitHubOutbox outbox;
 
     public ControllerDashboardPublicationTests()
     {
-        status = new("owner/repository", "polling", new InMemoryStatusRecord(), discussions, state, new InMemoryCheckoutWork(), clock);
+        status = new("owner/repository", "polling", new InMemoryStatusRecord(), discussions, state, checkout, clock);
         outbox = new("owner/repository", github, InMemoryDiscussions.App, state, clock, new StatusLog(status, clock));
         github.Category(Category);
     }
@@ -90,7 +91,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
                 ### Updates
                 The baseline release check has not completed yet.
 
-                ### Active and queued sessions
+                ### Tracked Discussions
                 None.
 
                 ### Recent failures
@@ -302,7 +303,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task Each_busy_session_is_listed_with_what_it_is_doing_and_the_most_specific_reason_its_input_waits()
+    public async Task Each_tracked_Discussion_is_listed_with_what_it_is_doing_and_the_most_specific_reason_its_input_waits()
     {
         Limit(1);
         Store(
@@ -321,6 +322,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
                 - [Discussion #2]({Url(2)}): awaiting native acknowledgement
                 - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
                 - [Discussion #4]({Url(4)}): 2 inputs waiting for a free active-session slot
+                - [Discussion #5]({Url(5)}): idle; no input waiting
                 """, Listed());
 
             // Rejected Codex credentials hold idle input; input behind a turn or a delivery keeps its own reason.
@@ -331,12 +333,13 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
                 - [Discussion #2]({Url(2)}): awaiting native acknowledgement
                 - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
                 - [Discussion #4]({Url(4)}): 2 inputs held until the Codex account credentials are replaced
+                - [Discussion #5]({Url(5)}): idle; no input waiting
                 """, Listed());
 
             Limit(4);
             status.Record(new(Start, "codex-auth-verified", "turn completed"));
             await clock.Armed();
-            Assert.EndsWith($"\n- [Discussion #4]({Url(4)}): 2 inputs waiting for dispatch", Listed());
+            Assert.Contains($"\n- [Discussion #4]({Url(4)}): 2 inputs waiting for dispatch\n", Listed());
             Limit(1);
         }
 
@@ -346,6 +349,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
             - [Discussion #2]({Url(2)}): awaiting native acknowledgement
             - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
             - [Discussion #4]({Url(4)}): 2 inputs waiting for dispatch
+            - [Discussion #5]({Url(5)}): idle; no input waiting
             """, Listed(Assert.Single(github.Dashboards).Body));
     }
 
@@ -354,7 +358,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     public async Task Before_the_lifetime_is_ready_its_state_and_mode_are_published_and_a_turn_without_waiting_input_is_listed()
     {
         Store(("D1", new(Url(1)) { SessionId = "s1", Running = new("t1", Start.AddMinutes(-30)) }));
-        using var starting = new ControllerStatus("owner/repository", "webhook", new InMemoryStatusRecord(), discussions, state, new InMemoryCheckoutWork(), clock);
+        using var starting = new ControllerStatus("owner/repository", "webhook", new InMemoryStatusRecord(), discussions, state, checkout, clock);
         await using var dashboard = new ControllerDashboard(Category, starting, outbox, new BaselineReleases(new InMemoryBaselineReleases(),
             async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, new RecordingLog(), text => text), clock, log, Redact);
         dashboard.Start(TestContext.Current.CancellationToken);
@@ -365,24 +369,71 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task Idle_sessions_are_not_listed_and_at_most_20_busy_ones_are_with_only_GitHub_Discussion_links()
+    public async Task Idle_tracked_Discussions_are_linked_in_the_published_inventory()
     {
         Store(("D0", new(Url(1)) { SessionId = "s0" }));
         await using var dashboard = Dashboard();
         dashboard.Start(TestContext.Current.CancellationToken);
         await clock.Armed();
-        Assert.Equal("None.", Listed());
+        Assert.Equal($"- [Discussion #1]({Url(1)}): idle; no input waiting", Listed());
 
+        discussions.WriteDiscussions(new DiscussionState("owner/repository"));
         Store([.. Enumerable.Range(1, 22).Select(number => ($"D{number}", new DiscussionRecord(number == 1 ? "javascript:alert(1)" : Url(number)) { Waiting = Waiting(1) }))]);
         clock.Advance(ControllerDashboard.HeartbeatInterval);
         await clock.Armed();
         var listed = Listed().Split('\n');
         Assert.Equal(21, listed.Length);
-        Assert.Equal("- an unlinked Discussion: 1 inputs waiting for dispatch", listed[0]);
-        Assert.Equal($"- [Discussion #20]({Url(20)}): 1 inputs waiting for dispatch", listed[19]);
+        Assert.Equal($"- [Discussion #10]({Url(10)}): 1 inputs waiting for dispatch", listed[0]);
+        Assert.Equal($"- [Discussion #8]({Url(8)}): 1 inputs waiting for dispatch", listed[19]);
         Assert.Equal("- and 2 more", listed[20]);
     }
 
+    [Fact]
+    public async Task Current_work_precedes_idle_inventory_in_a_deterministic_order_and_preserves_comment_activity()
+    {
+        Store(
+            ("idle9", new(Url(9)) { SessionId = "s9" }),
+            ("queued", new(Url(4)) { SessionId = "s4", Waiting = Waiting(1) }),
+            ("pending", new(Url(2)) { SessionId = "s2", Pending = new("send", Start, ["DC_2"], 1) }),
+            ("retry", new(Url(3)) { SessionId = "s3", Waiting = Waiting(1, new(2, Start.AddMinutes(5))) }),
+            ("running", new(Url(1)) { SessionId = "s1", Running = new("t1", Start.AddMinutes(-30)) }),
+            ("idle5", new(Url(5)) { SessionId = "s5" }));
+        Record("forwarded", Url(4) + " session=s4 latest=" + Url(4) + "#discussioncomment-123");
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+        Assert.Equal(["1", "2", "3", "4", "5", "9"],
+            Regex.Matches(Listed(), @"\[Discussion #(\d+)\]").Select(match => match.Groups[1].Value));
+        Assert.Contains($"[a comment on Discussion #4]({Url(4)}#discussioncomment-123)", Published().Body);
+        Assert.DoesNotContain("recovered", Listed(), StringComparison.OrdinalIgnoreCase);
+    }
+    [Fact]
+    public async Task Waiting_inventory_explains_checkout_admission_and_GitHub_credentials_without_claiming_idle_recovery()
+    {
+        Store(("D1", new(Url(1)) { SessionId = "s1", Waiting = Waiting(1) }));
+        checkout.Work = new(new HashSet<string>(), true);
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+        Assert.Equal($"- [Discussion #1]({Url(1)}): 1 inputs held for a checkout refresh", Listed());
+
+        Record("app-refresh-error", "GitHub App credential renewal failed");
+        await clock.Armed();
+        Assert.Equal($"- [Discussion #1]({Url(1)}): 1 inputs held until GitHub authentication recovers", Listed());
+    }
+    [Theory]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("https://github.com/owner/repository/discussions/1)\n@participant")]
+    [InlineData("https://github.com/owner/repository/discussions/not-a-number")]
+    public async Task Malformed_stored_Discussion_links_are_unlinked_without_publishing_their_text(string url)
+    {
+        Store(("D1", new(url) { SessionId = "s1" }));
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+        Assert.Equal("- an unlinked Discussion: idle; no input waiting", Listed());
+        Assert.DoesNotContain(url, Published().Body, StringComparison.Ordinal);
+    }
     // An earlier lifetime's failures and latest activity in forms no writer leaves, as the status record file reads them: an
     // object is shown with the text fields that read from it, and anything else is not shown. Where a field was not text, the
     // dashboard's JSON rendering threw instead, so it published nothing that lifetime and its stop failed.
@@ -411,7 +462,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         json["version"] = 1;
         json["repository"] = "owner/repository";
         using var restarted = new ControllerStatus("owner/repository", "polling", new InMemoryStatusRecord { Recorded = OperatorStatusJson.ReadRecord(json) },
-            discussions, state, new InMemoryCheckoutWork(), clock);
+            discussions, state, checkout, clock);
         await using (var dashboard = new ControllerDashboard(Category, restarted, outbox, new BaselineReleases(new InMemoryBaselineReleases(),
             async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, new RecordingLog(), text => text), clock, log, Redact))
         {
@@ -426,7 +477,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     static string Url(int number) => $"https://github.com/owner/repository/discussions/{number}";
 
     // The dashboard's session list, from the last publication handed to the outbox unless another body is given.
-    string Listed(string? body = null) => (body ?? Published().Body!).Split("\n### Active and queued sessions\n")[1].Split("\n\n### Recent failures\n")[0];
+    string Listed(string? body = null) => (body ?? Published().Body!).ReplaceLineEndings("\n").Split("\n### Tracked Discussions\n")[1].Split("\n\n### Recent failures\n")[0];
 
     // Discussion records as the bridge saves them in the Discussion state the status reads.
     void Store(params (string Id, DiscussionRecord Record)[] records)

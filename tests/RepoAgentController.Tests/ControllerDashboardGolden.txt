@@ -19,12 +19,13 @@ Operational status of this repository's RepoAgent controller. The controller rep
 - Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.
 - To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see [baseline releases](https://github.com/repoagent/controller/blob/94c417d3c69ddf80b9162932e159900749c6a573/docs/ci-cd.md#baseline-releases).
 
-### Active and queued sessions
+### Tracked Discussions
 - [Discussion #1](https://github.com/owner/repository/discussions/1): running a turn since 2026-10-24T09:30:00Z; 1 inputs waiting for that turn to finish
 - [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting
 - [Discussion #3](https://github.com/owner/repository/discussions/3): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 2 inputs waiting
-- [Discussion #4](https://github.com/owner/repository/discussions/4): 3 inputs waiting for a free active-session slot
-- an unlinked Discussion: 1 inputs waiting for a free active-session slot
+- [Discussion #4](https://github.com/owner/repository/discussions/4): 3 inputs held until GitHub authentication recovers
+- an unlinked Discussion: 1 inputs held until GitHub authentication recovers
+- [Discussion #5](https://github.com/owner/repository/discussions/5): idle; no input waiting
 
 ### Recent failures
 - 2026-10-24T10:00:02Z `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`
@@ -58,12 +59,13 @@ Operational status of this repository's RepoAgent controller. The controller rep
 - Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.
 - To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see [baseline releases](https://github.com/repoagent/controller/blob/94c417d3c69ddf80b9162932e159900749c6a573/docs/ci-cd.md#baseline-releases).
 
-### Active and queued sessions
+### Tracked Discussions
 - [Discussion #1](https://github.com/owner/repository/discussions/1): its turn ended with the controller; 1 inputs waiting
 - [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting
 - [Discussion #3](https://github.com/owner/repository/discussions/3): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 2 inputs waiting
-- [Discussion #4](https://github.com/owner/repository/discussions/4): 3 inputs waiting for dispatch
-- an unlinked Discussion: 1 inputs waiting for dispatch
+- [Discussion #4](https://github.com/owner/repository/discussions/4): 3 inputs held until GitHub authentication recovers
+- an unlinked Discussion: 1 inputs held until GitHub authentication recovers
+- [Discussion #5](https://github.com/owner/repository/discussions/5): idle; no input waiting
 
 ### Recent failures
 - 2026-10-24T10:00:02Z `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`
@@ -97,12 +99,13 @@ Operational status of this repository's RepoAgent controller. The controller rep
 - Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.
 - To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see [baseline releases](https://github.com/repoagent/controller/blob/94c417d3c69ddf80b9162932e159900749c6a573/docs/ci-cd.md#baseline-releases).
 
-### Active and queued sessions
-- [Discussion #1](https://github.com/owner/repository/discussions/1): 1 inputs held until the Codex account credentials are replaced
+### Tracked Discussions
 - [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting
 - [Discussion #3](https://github.com/owner/repository/discussions/3): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 2 inputs waiting
+- [Discussion #1](https://github.com/owner/repository/discussions/1): 1 inputs held until the Codex account credentials are replaced
 - [Discussion #4](https://github.com/owner/repository/discussions/4): 3 inputs held until the Codex account credentials are replaced
 - an unlinked Discussion: 1 inputs held until the Codex account credentials are replaced
+- [Discussion #5](https://github.com/owner/repository/discussions/5): idle; no input waiting
 
 ### Recent failures
 - 2026-10-24T10:01:15Z `codex-auth-failed`: `turn failed: unexpected status 401 Unauthorized`
