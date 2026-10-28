@@ -5,6 +5,8 @@ namespace RepoAgentController;
 
 sealed partial class Codex
 {
+    sealed class UsageUnsupportedException : IOException;
+
     // Codex 0.165.0 account/rateLimits/read. Only this owned process supplies account observations.
     public async Task<AgentUsageObservation> ReadUsage(CancellationToken ct)
     {
@@ -26,7 +28,7 @@ sealed partial class Codex
                 OrdinaryUsageAllowed = OptionalBoolean(root, "ordinaryUsageAllowed")
             };
         }
-        catch (AgentRequestRejected error) when (error.Code == -32601)
+        catch (UsageUnsupportedException)
         { return new(AgentUsageAvailability.Unsupported, []); }
         catch (Exception error) when (error is AgentRequestRejected or JsonException or InvalidOperationException or ArgumentException or OverflowException)
         { return new(AgentUsageAvailability.Unavailable, []); }

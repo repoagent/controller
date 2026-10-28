@@ -39,12 +39,14 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
     // The native's lifecycle notifications as runtime events, read leniently; other notifications are not lifecycle.
     void Observe(int source, string method, JsonNode? parameters)
     {
+        // Usage updates are sparse; the bounded collector reads full snapshots instead.
+        if (method == "account/rateLimits/updated") return;
+        if (method == "account/updated") { Changed?.Invoke(new AgentUsageContextChanged(source)); return; }
         var thread = parameters?["threadId"].OptionalText() ?? "";
         var turn = parameters?["turn"] as JsonObject;
         AgentRuntimeEvent? change = method switch
         {
             "disconnect" => new AgentRuntimeDisconnected(source),
-            "account/updated" => new AgentUsageContextChanged(source),
             "thread/status/changed" when thread.Length != 0 => new AgentSessionStatusChanged(source, thread, Parse(parameters!["status"])),
             "turn/started" => new AgentTurnStarted(source, thread, turn?["id"].OptionalText()),
             "turn/completed" => Completed(source, thread, turn),
@@ -221,7 +223,7 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
     sealed class Transport : IAsyncDisposable
     {
         readonly Process process;
-        readonly ConcurrentDictionary<int, TaskCompletionSource<JsonNode>> pending = new();
+        readonly ConcurrentDictionary<int, (string Method, TaskCompletionSource<JsonNode> Completion)> pending = new();
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2213", Justification = "Concurrent writers can still unwind after process teardown; this managed-only semaphore never creates a wait handle.")]
         readonly SemaphoreSlim writeLock = new(1);
         readonly Task reader;
@@ -255,7 +257,7 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
         {
             var id = Interlocked.Increment(ref nextId);
             var completion = new TaskCompletionSource<JsonNode>(TaskCreationOptions.RunContinuationsAsynchronously);
-            pending[id] = completion;
+            pending[id] = (method, completion);
             try
             {
                 await Write(Json.Object(("id", id), ("method", method), ("params", parameters)), ct);
@@ -297,9 +299,17 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
                         }
                         continue;
                     }
-                    if (message["id"] is JsonValue idValue && idValue.TryGetValue<int>(out var id) && pending.TryRemove(id, out var completion))
+                    if (message["id"] is JsonValue idValue && idValue.TryGetValue<int>(out var id) && pending.TryRemove(id, out var request))
                     {
-                        if (message["error"] is { } error) completion.TrySetException(new AgentRequestRejected($"Native request failed: {error}", error["code"] is JsonValue code && code.TryGetValue<int>(out var errorCode) ? errorCode : null));
+                        var completion = request.Completion;
+                        if (message["error"] is { } error)
+                        {
+                            // Method-specific provider capability stays inside this adapter.
+                            Exception failure = request.Method == "account/rateLimits/read" && error is JsonObject errorObject &&
+                                errorObject["code"] is JsonValue code && code.TryGetValue<int>(out var errorCode) && errorCode == -32601
+                                ? new UsageUnsupportedException() : new AgentRequestRejected($"Native request failed: {error}");
+                            completion.TrySetException(failure);
+                        }
                         else completion.TrySetResult(message["result"] ?? throw new IOException("Native response has no result"));
                     }
                 }
@@ -308,7 +318,7 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             catch (Exception error)
             {
                 if (Volatile.Read(ref closing) == 0) observe(epoch, "disconnect", null);
-                foreach (var completion in pending.Values) completion.TrySetException(error);
+                foreach (var request in pending.Values) request.Completion.TrySetException(error);
                 Log.Write("native-disconnected", error.Message);
             }
         }

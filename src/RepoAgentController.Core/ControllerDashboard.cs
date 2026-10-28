@@ -202,6 +202,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
             foreach (var bucket in observation.Buckets.Take(20))
             {
                 text.AppendLine($"- **{Safe(bucket.Name ?? bucket.Id)}**" +
+                    (bucket.Name is null || bucket.Name == bucket.Id ? "" : $"; meter {Safe(bucket.Id)}") +
                     (bucket.Model is null ? "" : $"; model {Safe(bucket.Model)}") + (bucket.Plan is null ? "" : $"; plan {Safe(bucket.Plan)}"));
                 if (bucket.AdditionalUsageAvailable) text.AppendLine("  - Provider reports additional credits available; depleted included windows do not establish account exhaustion.");
                 if (bucket.SpendControlReached == true) text.AppendLine("  - Provider reports spend control reached.");
