@@ -241,7 +241,7 @@ function Read-PrivateJson([string]$Path) {
     try {
         if ($file.Length -gt 65536) { throw 'Private document exceeds 64 KiB.' }
         $reader = [IO.StreamReader]::new($file, [Text.UTF8Encoding]::new($false, $true))
-          try { return Read-OperatorJson $reader.ReadToEnd() -ControllerDocument } finally { $reader.Dispose() }
+        try { return Read-OperatorJson $reader.ReadToEnd() -ControllerDocument } finally { $reader.Dispose() }
     } finally { $file.Dispose() }
 }
 

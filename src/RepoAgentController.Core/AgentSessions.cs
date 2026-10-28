@@ -79,7 +79,7 @@ public sealed class AgentSessions
                     case AgentRuntimeDisconnected: Forget(); changed = true; break;
                     case AgentSessionStatusChanged { SessionId.Length: > 0 } report:
                         Report(report.SessionId, report.Status); changed = true;
-                        log.Write("session-status", $"session={report.SessionId} status={Agent(report.SessionId)}");
+                        log.Write("session-status", $"session={report.SessionId} status={RuntimeStatus(report.SessionId)}");
                         break;
                     case AgentTurnCompleted { SessionId.Length: > 0, TurnId: { } turn } completed:
                         var id = completed.SessionId;
@@ -114,9 +114,9 @@ public sealed class AgentSessions
         if (status == AgentSessionStatus.NotLoaded) { resumed.Remove(id); oriented.Remove(id); }
     }
     long Version(string id) => statuses.TryGetValue(id, out var value) ? value.Version : 0;
-    AgentSessionStatus Agent(string id) => statuses.TryGetValue(id, out var value) ? value.Status : AgentSessionStatus.Unknown;
+    AgentSessionStatus RuntimeStatus(string id) => statuses.TryGetValue(id, out var value) ? value.Status : AgentSessionStatus.Unknown;
     // An accepted turn holds its session until that turn's completion, whatever status the agent reports meanwhile.
-    AgentSessionStatus Current(string id) => turns.ContainsKey(id) ? AgentSessionStatus.Active : Agent(id);
+    AgentSessionStatus Current(string id) => turns.ContainsKey(id) ? AgentSessionStatus.Active : RuntimeStatus(id);
 
     /// <summary>Broker credential loss has begun terminating the agent process; this controller lifetime is ending.</summary>
     public bool CredentialLost => credentialLost.IsCancellationRequested;

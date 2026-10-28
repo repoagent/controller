@@ -46,7 +46,7 @@ installation, repository ID and trusted broker origin:
 
 ```sh
 enrollment="$HOME/.repoagent/instances/YOUR_INSTANCE/enrollment.json"
-check_state="$HOME/.repoagent/native-auth-check"
+check_state="$HOME/.repoagent/agent-auth-check"
 install -d -m 700 "$check_state"
 
 dotnet run --project src/RepoAgentController -- \

@@ -6,7 +6,7 @@ Treat more than two minutes without a heartbeat as offline. A failure to publish
 
 - **Controller:** `polling`; lifetime started at 2026-10-24T10:00:00Z
 ### Work capacity
-- **Sessions:** 5 stored; 2 of 1 turns running (active-session limit); 1 awaiting native acknowledgement; 8 inputs waiting; new turns are held for a checkout refresh
+- **Sessions:** 5 stored; 2 of 1 turns running (active-session limit); 1 awaiting agent acknowledgement; 8 inputs waiting; new turns are held for a checkout refresh
 
 ### Authentication and settings
 - **GitHub authentication:** failed at 2026-10-24T10:00:02Z: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`. Check the controller's approval and credentials, then restart it.
@@ -27,7 +27,7 @@ Usage unavailable; no agent account observation has been collected.
 
 ### Tracked Discussions
 - [Discussion #1](https://github.com/owner/repository/discussions/1): running a turn since 2026-10-24T09:30:00Z; 1 inputs waiting for that turn to finish
-- [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting
+- [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting agent acknowledgement; 1 inputs waiting
 - [Discussion #3](https://github.com/owner/repository/discussions/3): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 2 inputs waiting
 - [Discussion #4](https://github.com/owner/repository/discussions/4): 3 inputs held until GitHub authentication recovers
 - an unlinked Discussion: 1 inputs held until GitHub authentication recovers
@@ -71,7 +71,7 @@ Treat more than two minutes without a heartbeat as offline. A failure to publish
 
 - **Controller:** stopped at 2026-10-24T10:00:15Z after a graceful shutdown; it had started at 2026-10-24T10:00:00Z
 ### Work capacity
-- **Sessions:** 5 stored; no turns run while the controller is stopped; 1 awaiting native acknowledgement; 8 inputs waiting; new turns are held for a checkout refresh
+- **Sessions:** 5 stored; no turns run while the controller is stopped; 1 awaiting agent acknowledgement; 8 inputs waiting; new turns are held for a checkout refresh
 
 ### Authentication and settings
 - **GitHub authentication:** failed at 2026-10-24T10:00:02Z: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`. Check the controller's approval and credentials, then restart it.
@@ -92,7 +92,7 @@ Usage unavailable; no agent account observation has been collected.
 
 ### Tracked Discussions
 - [Discussion #1](https://github.com/owner/repository/discussions/1): its turn ended with the controller; 1 inputs waiting
-- [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting
+- [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting agent acknowledgement; 1 inputs waiting
 - [Discussion #3](https://github.com/owner/repository/discussions/3): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 2 inputs waiting
 - [Discussion #4](https://github.com/owner/repository/discussions/4): 3 inputs held until GitHub authentication recovers
 - an unlinked Discussion: 1 inputs held until GitHub authentication recovers
@@ -136,7 +136,7 @@ Treat more than two minutes without a heartbeat as offline. A failure to publish
 
 - **Controller:** stopped at 2026-10-24T10:01:15Z after a failure: `Repository webhook registration failed: 'hooks' returned HTTP 422`
 ### Work capacity
-- **Sessions:** 5 stored; no turns run while the controller is stopped; 1 awaiting native acknowledgement; 8 inputs waiting; new turns are held for a checkout refresh
+- **Sessions:** 5 stored; no turns run while the controller is stopped; 1 awaiting agent acknowledgement; 8 inputs waiting; new turns are held for a checkout refresh
 
 ### Authentication and settings
 - **GitHub authentication:** unknown
@@ -156,7 +156,7 @@ Treat more than two minutes without a heartbeat as offline. A failure to publish
 Usage unavailable; no agent account observation has been collected.
 
 ### Tracked Discussions
-- [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting native acknowledgement; 1 inputs waiting
+- [Discussion #2](https://github.com/owner/repository/discussions/2): awaiting agent acknowledgement; 1 inputs waiting
 - [Discussion #3](https://github.com/owner/repository/discussions/3): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 2 inputs waiting
 - [Discussion #1](https://github.com/owner/repository/discussions/1): 1 inputs held until the Codex account credentials are replaced
 - [Discussion #4](https://github.com/owner/repository/discussions/4): 3 inputs held until the Codex account credentials are replaced

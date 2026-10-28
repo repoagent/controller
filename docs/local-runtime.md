@@ -72,7 +72,7 @@ can prevent that optional attempt; broker closure then remains unconfirmed.
 Supplied source enrollment and host Codex auth/key files are never deleted.
 
 A supplied-enrollment installation can pass complete nonsecret coordinates using
-`-Repository`, `-ExpectedRepositoryId`, `-DeviceId`, `-AppId`, `-InstallationId`,
+`-Repository`, `-ExpectedRepositoryId`, `-EnrollmentId`, `-AppId`, `-InstallationId`,
 `-BrokerOrigin`, `-EnrollmentProfile`, `-ApprovalVariable` and
 `-ExpectedValueSha256`. Without saved state these name an Actions-variable
 approval; add `-ApprovalLocation AgentVariable` for a legacy Agent-variable

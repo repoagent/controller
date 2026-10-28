@@ -87,7 +87,7 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         "a1":{"thread":"S1","turn":"T1","since":3,"confirmed":true,"later":1},
         "a2":{"thread":"S2","turn":"","since":5,"confirmed":false,"unconfirmed":true},
         "a3":{"thread":"","turn":"","since":6,"confirmed":false}},
-        "blocked":true,"running":0,"reason":"Agent activity or checkout update is uncertain; inspect state before recovery",
+        "blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery",
         "applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":4,"later":1},
         "later":{"version":2}}
         """;
@@ -318,7 +318,7 @@ public sealed class RefreshJournalGoldenTests : IDisposable
     const string LeftByStartOverApplying = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"Agent activity or checkout update is uncertain; inspect state before recovery"}""";
     // What this controller writes at the same two starts.
     const string WrittenByBlockedStart = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":0,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Agent activity or checkout update is uncertain; inspect state before recovery"}""";
-    const string WrittenByStartOverApplying = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Agent activity or checkout update is uncertain; inspect state before recovery","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""";
+    const string WrittenByStartOverApplying = """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""";
     const string ThenAStart = ", then a start", ThenARequest = ", then a request";
 
     public static TheoryData<string, string, string> Written() => new()

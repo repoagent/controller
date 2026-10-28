@@ -1,5 +1,7 @@
 # Controller credential protocol v1
 
+Setup v5 uses the glossary spellings `enrollmentId` and `controllerSecret` in the private enrollment document, with `enrollmentId` in the public approval marker. It keeps runtime protocol versions 1–3 and their permission profiles, with distinct setup v5 approval policies. Canonical runtime routes are `POST /v{runtimeVersion}/controller-enrollments/{enrollmentId}/github-token` and `DELETE /v{runtimeVersion}/controller-enrollments/{enrollmentId}`. Frozen setup v1–v4 documents and `/devices/...` routes remain supported as described below. See [upgrade order and explicit setup selection](controller-enrollment.md#canonical-names-and-upgrade-order); existing credentials and approval markers must not be edited or translated in place.
+
 This is the consumer contract for [deployment plan #28](https://github.com/repoagent/controller/issues/28). It does not establish that an enrollment service or hosted broker exists. Direct App authentication remains available for an operator's own App.
 
 The approved provider/installer design is now [controller approval with a UI-free credential broker](auth-repository-approval.md). It supersedes the earlier browser/personal-administrator ceremony below without changing the frozen v1 consumer fields, runtime permission profiles or credential lifecycle.
