@@ -378,7 +378,7 @@ try {
         if (Test-Path -LiteralPath $enrollmentPath) {
             $binding = Read-Document $enrollmentPath
             Show-Binding $binding
-        } else { Write-Host 'Device and installation: pending enrollment; no identity has been allocated.' }
+        } else { Write-Host 'Controller enrollment and App installation: pending; no identity has been allocated.' }
     }
     if (-not $Apply) { Write-Host 'Read-only preview. Rerun with -Apply to enroll, prepare the image, configure, verify and start.'; exit 0 }
     $stage = 'save launch coordinates'

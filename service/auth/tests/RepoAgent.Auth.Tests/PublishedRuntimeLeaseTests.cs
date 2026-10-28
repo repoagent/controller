@@ -99,7 +99,7 @@ public sealed class PublishedRuntimeLeaseTests
         var f = IssuanceFixture.Create();
         Assert.Equal(200, (await f.IssueAsync(Token)).Status);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        f.GitHub.BeforeAuthorize = async () => Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
+        f.GitHub.BeforeAuthorize = async () => Assert.Equal(204, await f.Revocation().RevokeAsync(f.Credentials.EnrollmentId, f.Credentials.ControllerSecret, Token));
 
         var result = await f.IssueAsync(Token);
 
@@ -338,7 +338,7 @@ public sealed class PublishedRuntimeLeaseTests
         if (settled)
         {
             var store = f.Store();
-            var grant = await store.AuthenticateAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token);
+            var grant = await store.AuthenticateAsync(f.Credentials.EnrollmentId, f.Credentials.ControllerSecret, Token);
             await store.MarkRevokedAsync(grant, new(key, f.State.Get(key)!, f.State.Version(key)!), Token);
         }
 

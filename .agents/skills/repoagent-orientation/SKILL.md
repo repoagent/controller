@@ -26,7 +26,7 @@ Controller instructions are your developer instructions and the packaged repoage
 
 ## Fetching context
 
-Inputs are compact on purpose. When you need text the input leaves out (an unchanged body, another thread, a linked issue or pull request, another Discussion), fetch it with gh using the IDs you were given. Your native history is private and can be compacted; GitHub is the authority for what participants actually wrote. To read a Discussion with its threads:
+Inputs are compact on purpose. When you need text the input leaves out (an unchanged body, another thread, a linked issue or pull request, another Discussion), fetch it with gh using the IDs you were given. Your agent session history is private and can be compacted; GitHub is the authority for what participants actually wrote. To read a Discussion with its threads:
 
 ```sh
 gh api graphql -f id=DISCUSSION_ID -f query='query($id: ID!) { node(id: $id) { ... on Discussion { title body author { login } comments(first: 50) { nodes { id author { login } body replies(first: 50) { nodes { id author { login } body } } } } } } }'

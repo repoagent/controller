@@ -56,7 +56,7 @@ public sealed class GitHubTokenIssuerTests
     public async Task Invalid_authority_is_denied_before_GitHub_work_or_a_write(string scenario, int status)
     {
         var f = IssuanceFixture.Create();
-        var (enrollmentId, secret, runtimeVersion) = (f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, 1);
+        var (enrollmentId, controllerSecret, runtimeVersion) = (f.Credentials.EnrollmentId, f.Credentials.ControllerSecret, 1);
         var other = Guid.NewGuid().ToString("N");
         string Marker(ApprovalContract approval, string repositoryId, string epoch, bool environment) => ApprovalMarker.Create(approval,
             repositoryId, "owner/project", 789, enrollmentId, new string('a', 43), "polling", epoch, "APPROVAL",
@@ -64,7 +64,7 @@ public sealed class GitHubTokenIssuerTests
         switch (scenario)
         {
             case "enrollment-id": enrollmentId += "."; break;
-            case "secret": secret = new string('s', 43); break;
+            case "secret": controllerSecret = new string('s', 43); break;
             case "locator-enrollment": f.State.Change(EnrollmentLocator.Key(enrollmentId), row => row["DeviceId"] = other); break;
             case "retained-owner": f.State.Change(IssuanceFixture.GateKey, row => row["OwnerDeviceId"] = other); break;
             case "runtime-version": runtimeVersion = 2; break;
@@ -103,7 +103,7 @@ public sealed class GitHubTokenIssuerTests
         }
         var (reads, commits) = (f.State.Reads, f.State.Commits);
 
-        var result = await f.Issuer().IssueAsync(enrollmentId, secret, Token, runtimeVersion);
+        var result = await f.Issuer().IssueAsync(enrollmentId, controllerSecret, Token, runtimeVersion);
 
         Assert.Equal(status, result.Status);
         Assert.Null(result.Body);
@@ -141,7 +141,7 @@ public sealed class GitHubTokenIssuerTests
             {
                 row["Epoch"] = epoch;
                 row["Marker"] = ApprovalMarker.Create(ApprovalContract.Legacy, IssuanceFixture.RepositoryId,
-                    "owner/project", 789, f.EnrollmentId.DeviceId, new string('a', 43), "polling", epoch, "APPROVAL",
+                    "owner/project", 789, f.Credentials.EnrollmentId, new string('a', 43), "polling", epoch, "APPROVAL",
                     "approval/environment", 987);
             });
         }
@@ -163,7 +163,7 @@ public sealed class GitHubTokenIssuerTests
         var store = new IssuanceStore(f.State, "restored-epoch", 4096, f.Secrets, f.Clock);
         var issuer = new GitHubTokenIssuer(store, f.GitHub, f.GitHub, f.GitHub, f.Clock);
 
-        var result = await issuer.IssueAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token);
+        var result = await issuer.IssueAsync(f.Credentials.EnrollmentId, f.Credentials.ControllerSecret, Token);
 
         Assert.Equal(503, result.Status);
         Assert.Null(result.Body);
@@ -212,7 +212,7 @@ public sealed class GitHubTokenIssuerTests
         Assert.NotEqual(200, (await f.IssueAsync(Token)).Status);
         Assert.Equal(1, f.GitHub.Mints);
         // Closing left the revocation receipt, so the controller's own revocation of the closed grant still succeeds.
-        Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
+        Assert.Equal(204, await f.Revocation().RevokeAsync(f.Credentials.EnrollmentId, f.Credentials.ControllerSecret, Token));
     }
 
     // Which answers are unverifiable is the core's rule (ApprovalObserverTests); this is the issuer's outcome.
@@ -233,7 +233,7 @@ public sealed class GitHubTokenIssuerTests
         var f = IssuanceFixture.Create();
         f.GitHub.BeforeMint = async mint =>
         {
-            if (mint.Number == 2) Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
+            if (mint.Number == 2) Assert.Equal(204, await f.Revocation().RevokeAsync(f.Credentials.EnrollmentId, f.Credentials.ControllerSecret, Token));
         };
         Assert.NotEqual(200, (await f.IssueAsync(Token)).Status);
         Assert.Equal("closed", f.Gate.State);
@@ -248,7 +248,7 @@ public sealed class GitHubTokenIssuerTests
     {
         var f = IssuanceFixture.Create();
         Assert.Equal(200, (await f.IssueAsync(Token)).Status);
-        Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
+        Assert.Equal(204, await f.Revocation().RevokeAsync(f.Credentials.EnrollmentId, f.Credentials.ControllerSecret, Token));
         Assert.Equal("released", f.Attempt("runtime").State);
         Assert.Equal(3, f.Gate.OutstandingTokenCount);
     }
