@@ -47,7 +47,7 @@ public sealed class RetainedDecisionTests
             var journey = await Retained.ActiveAgent(f);
             id = journey.Id;
             Assert.Equal("active", f.State.Get(PendingKey(id))!.State);
-            f.State.Change(ControllerEnrollment.Key(Retained.Repository, journey.Device), row => row["Acknowledged"] = false);
+            f.State.Change(ControllerEnrollment.Key(Retained.Repository, journey.EnrollmentId), row => row["Acknowledged"] = false);
         }
         var before = Versions(f).ToList();
 
@@ -64,7 +64,7 @@ public sealed class RetainedDecisionTests
     {
         var f = new InMemoryBroker();
         var journey = await Retained.ActiveAgent(f);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(journey.Device, journey.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(journey.EnrollmentId, journey.Secret)).StatusCode);
         var verifier = Assert.Single(Retained.IssuanceLedgers(f), ledger => ledger.Value.Purpose == "verification").Value;
         var attemptKey = Retained.Attempt(verifier);
         f.Clock.Advance(f.State.Get(attemptKey)!.ExpiresAt!.Value.AddMinutes(5) - f.Clock.GetUtcNow());
@@ -249,7 +249,7 @@ public sealed class RetainedDecisionTests
     {
         var f = new InMemoryBroker();
         var journey = await Retained.ActiveAgent(f);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(journey.Device, journey.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(journey.EnrollmentId, journey.Secret)).StatusCode);
         var runtime = Assert.Single(Retained.IssuanceLedgers(f), ledger => ledger.Value.Purpose == "runtime").Value;
         var attemptKey = Retained.Attempt(runtime);
         Assert.NotNull(f.State.Get(attemptKey)!.SendClaimedAt);

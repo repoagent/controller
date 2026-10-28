@@ -39,17 +39,17 @@ public sealed class ActionsVariableEnrollmentTests
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var receipt = completion.Json;
         Assert.True(receipt.TryGetProperty("enrollment", out var enrollment), "Fresh Actions approval did not complete: " + receipt);
-        var device = enrollment.GetProperty("deviceId").GetString()!;
+        var enrollmentId = enrollment.GetProperty("deviceId").GetString()!;
         var secret = enrollment.GetProperty("deviceSecret").GetString()!;
         Assert.Equal(1, enrollment.GetProperty("protocolVersion").GetInt32());
         Assert.DoesNotContain(secret, marker);
         Assert.DoesNotContain(github.Actions.Values, value => value.Contains(secret, StringComparison.Ordinal));
 
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var ack = await f.Acknowledge(device, receipt.GetProperty("completionId").GetString()!, secret, 3);
+        var ack = await f.Acknowledge(enrollmentId, receipt.GetProperty("completionId").GetString()!, secret, 3);
         Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var runtime = await f.Issue(device, secret);
+        var runtime = await f.Issue(enrollmentId, secret);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
         // The issuer's exact v1 body. The adapter's no-store header is untested until #204.
         Assert.Equal(9, runtime.Json.EnumerateObject().Count());
@@ -60,11 +60,11 @@ public sealed class ActionsVariableEnrollmentTests
 
         github.Actions.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var removed = await f.Issue(device, secret);
+        var removed = await f.Issue(enrollmentId, secret);
         Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
         github.Actions["REPOAGENT_APPROVAL"] = marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var restored = await f.Issue(device, secret);
+        var restored = await f.Issue(enrollmentId, secret);
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
 
@@ -82,16 +82,16 @@ public sealed class ActionsVariableEnrollmentTests
         var active = await Active(f, github);
         if (!beforeEnrollment) Unrelated();
 
-        var renewed = await f.Issue(active.Device, active.Secret);
+        var renewed = await f.Issue(active.EnrollmentId, active.Secret);
         Assert.Equal(HttpStatusCode.OK, renewed.StatusCode);
 
         github.Actions.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var removed = await f.Issue(active.Device, active.Secret);
+        var removed = await f.Issue(active.EnrollmentId, active.Secret);
         Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
         github.Actions["REPOAGENT_APPROVAL"] = active.Marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var restored = await f.Issue(active.Device, active.Secret);
+        var restored = await f.Issue(active.EnrollmentId, active.Secret);
         Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
     }
 
@@ -171,13 +171,13 @@ public sealed class ActionsVariableEnrollmentTests
         if (observation == "changed") github.Actions["REPOAGENT_APPROVAL"] = active.Marker.Replace("\"version\":3", "\"version\":2", StringComparison.Ordinal);
         if (observation == "removed") github.Actions.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var observed = await f.Issue(active.Device, active.Secret);
+        var observed = await f.Issue(active.EnrollmentId, active.Secret);
         Assert.Equal(terminal ? HttpStatusCode.Unauthorized : HttpStatusCode.ServiceUnavailable, observed.StatusCode);
 
         f.GitHub.VariableAnswer = null;
         github.Actions["REPOAGENT_APPROVAL"] = active.Marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var after = await f.Issue(active.Device, active.Secret);
+        var after = await f.Issue(active.EnrollmentId, active.Secret);
         Assert.Equal(terminal ? HttpStatusCode.Unauthorized : HttpStatusCode.OK, after.StatusCode);
     }
 
@@ -205,18 +205,18 @@ public sealed class ActionsVariableEnrollmentTests
         var completion = await f.Complete(pending, 2);
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var receipt = completion.Json;
-        var device = receipt.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        var enrollmentId = receipt.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
         var secret = receipt.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
         var completionId = receipt.GetProperty("completionId").GetString()!;
         reads = f.GitHub.Reads;
-        var crossedAck = await f.Acknowledge(device, completionId, secret, 3);
+        var crossedAck = await f.Acknowledge(enrollmentId, completionId, secret, 3);
         Assert.Equal(HttpStatusCode.Conflict, crossedAck.StatusCode);
         Assert.Equal(reads, f.GitHub.Reads);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var ack = await f.Acknowledge(device, completionId, secret, 2);
+        var ack = await f.Acknowledge(enrollmentId, completionId, secret, 2);
         Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var runtime = await f.Issue(device, secret);
+        var runtime = await f.Issue(enrollmentId, secret);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
         Assert.Equal("agent_variables", github.VerifierPermission);
         Assert.DoesNotContain(f.GitHub.Requests, r => r.Contains(" actions ", StringComparison.Ordinal));
@@ -225,7 +225,7 @@ public sealed class ActionsVariableEnrollmentTests
         github.Actions["APPROVAL"] = marker;
         github.Agent.Remove("APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var moved = await f.Issue(device, secret);
+        var moved = await f.Issue(enrollmentId, secret);
         Assert.Equal(HttpStatusCode.Unauthorized, moved.StatusCode);
         Assert.DoesNotContain(f.GitHub.Requests, r => r.Contains(" actions ", StringComparison.Ordinal));
     }
@@ -247,9 +247,9 @@ public sealed class ActionsVariableEnrollmentTests
         Assert.Equal(expected, active.Enrollment.GetProperty("permissions").EnumerateObject().Select(p => p.Name).Order());
 
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var v1 = await f.Issue(active.Device, active.Secret);
+        var v1 = await f.Issue(active.EnrollmentId, active.Secret);
         Assert.Equal(HttpStatusCode.Unauthorized, v1.StatusCode);
-        var lease = await f.Issue(active.Device, active.Secret, 2);
+        var lease = await f.Issue(active.EnrollmentId, active.Secret, 2);
         Assert.Equal(HttpStatusCode.OK, lease.StatusCode);
         var body = lease.Json;
         Assert.Equal(policy, body.GetProperty("policyVersion").GetString());
@@ -272,7 +272,7 @@ public sealed class ActionsVariableEnrollmentTests
         Assert.Equal("pending", response.Json.GetProperty("state").GetString());
     }
 
-    internal sealed record ActiveGrant(RepositoryVariableEnrollmentRequest Request, string Pending, string Marker, string Device, string Secret, string Completion, JsonElement Enrollment);
+    internal sealed record ActiveGrant(RepositoryVariableEnrollmentRequest Request, string Pending, string Marker, string EnrollmentId, string Secret, string Completion, JsonElement Enrollment);
 
     // Setup v2 and v4 use the Agent location; setup v3 the Actions location. A v2 grant keeps its
     // legacy APPROVAL variable, so it can be compared with copied v3 and v4 coordinates.
@@ -289,7 +289,7 @@ public sealed class ActionsVariableEnrollmentTests
         var grant = new ActiveGrant(request, pending, marker, enrollment.GetProperty("deviceId").GetString()!,
             enrollment.GetProperty("deviceSecret").GetString()!, receipt.GetProperty("completionId").GetString()!, enrollment);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(grant.Device, grant.Completion, grant.Secret, version)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(grant.EnrollmentId, grant.Completion, grant.Secret, version)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         return grant;
     }

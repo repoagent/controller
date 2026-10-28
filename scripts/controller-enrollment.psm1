@@ -3,13 +3,13 @@
 Set-StrictMode -Version Latest
 # File contents are flushed before rename; the directory/rename itself is also
 # flushed before the host may acknowledge a credential to the broker.
-if (-not ('RepoAgent.HostPersistence' -as [type])) {
+if (-not ('RepoAgent.OperatorPersistence' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
 namespace RepoAgent {
-    public static class HostPersistence {
+    public static class OperatorPersistence {
         [DllImport("libc", SetLastError = true)] static extern int open(string path, int flags);
         [DllImport("libc", SetLastError = true)] static extern int fsync(int fd);
         [DllImport("libc", SetLastError = true)] static extern int close(int fd);
@@ -32,7 +32,7 @@ namespace RepoAgent {
 '@
 }
 
-function Read-HostJson([string]$Text, [switch]$ControllerDocument) {
+function Read-OperatorJson([string]$Text, [switch]$ControllerDocument) {
     if ([Text.Encoding]::UTF8.GetByteCount($Text) -gt 65536) { throw 'Document exceeds 64 KiB.' }
     $document = [Text.Json.JsonDocument]::Parse($Text, [Text.Json.JsonDocumentOptions]@{ MaxDepth = 8 })
     try {
@@ -151,7 +151,7 @@ function Get-ApprovalStateKind($State) {
 # settings changes can never overwrite or delete an approval marker.
 function Test-RepositoryApprovalName([string]$Name) {
     if (-not $Name.StartsWith('REPOAGENT_', [StringComparison]::OrdinalIgnoreCase)) { return $true }
-    $catalogue = Read-HostJson ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/RepoAgentController/repository-settings.json')))
+    $catalogue = Read-OperatorJson ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/RepoAgentController/repository-settings.json')))
     if ($catalogue.reserved -isnot [array]) { throw 'Unsupported repository settings catalogue.' }
     return [bool]@($catalogue.reserved | Where-Object { $_ -is [string] -and $_ -ieq $Name }).Count
 }
@@ -185,7 +185,7 @@ function Assert-PrivatePath([string]$Path, [switch]$Directory) {
         if ($LASTEXITCODE -ne 0) { throw 'Cannot verify enrollment ownership.' }
         $current = & /usr/bin/id -u
         if ($LASTEXITCODE -ne 0 -or $owner -cne $current) { throw 'Enrollment state belongs to another user.' }
-    } else { throw 'Host enrollment supports Windows and Linux.' }
+    } else { throw 'Controller enrollment supports Windows and Linux.' }
 }
 function Initialize-PrivateDirectory([string]$Path) {
     $Path = [IO.Path]::GetFullPath($Path)
@@ -201,7 +201,7 @@ function Initialize-PrivateDirectory([string]$Path) {
             $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
             [IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($Path), $acl)
         } elseif ($IsLinux) { [IO.Directory]::CreateDirectory($Path, [IO.UnixFileMode]448) | Out-Null }
-        else { throw 'Host enrollment supports Windows and Linux.' }
+        else { throw 'Controller enrollment supports Windows and Linux.' }
     }
     Assert-PrivatePath $Path -Directory
     return $Path
@@ -230,7 +230,7 @@ function Write-PrivateJson([string]$Path, $Value) {
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Value | ConvertTo-Json -Depth 8 -Compress))
         $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
     } finally { $stream.Dispose() }
-    try { [RepoAgent.HostPersistence]::Commit($temporary, $Path); Assert-PrivatePath $Path }
+    try { [RepoAgent.OperatorPersistence]::Commit($temporary, $Path); Assert-PrivatePath $Path }
     finally { if (Test-Path -LiteralPath $temporary) { [IO.File]::Delete($temporary) } }
     $null = Read-PrivateJson $Path
 }
@@ -241,11 +241,11 @@ function Read-PrivateJson([string]$Path) {
     try {
         if ($file.Length -gt 65536) { throw 'Private document exceeds 64 KiB.' }
         $reader = [IO.StreamReader]::new($file, [Text.UTF8Encoding]::new($false, $true))
-          try { return Read-HostJson $reader.ReadToEnd() -ControllerDocument } finally { $reader.Dispose() }
+          try { return Read-OperatorJson $reader.ReadToEnd() -ControllerDocument } finally { $reader.Dispose() }
     } finally { $file.Dispose() }
 }
 
-function Invoke-HostGitHub([string]$Method, [string]$Endpoint, $Body = $null) {
+function Invoke-OperatorGitHub([string]$Method, [string]$Endpoint, $Body = $null) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = (Get-Command gh -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $start.UseShellExecute = $false; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true; $start.RedirectStandardInput = $true

@@ -2,13 +2,13 @@ using static RepoAgent.Auth.IssuancePolicy;
 
 namespace RepoAgent.Auth;
 
-public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens tokens, IAppInstallations installations,
+public sealed class GitHubTokenIssuer(IssuanceStore store, IGitHubTokens tokens, IAppInstallations installations,
     IControllerApprovals approvals, TimeProvider clock)
 {
     private readonly ApprovalObserver observer = new(installations, approvals, clock);
     private readonly GitHubTokenMinter minter = new(tokens, clock);
 
-    public async Task<IssuanceResult> IssueAsync(string deviceId, string? secret, CancellationToken caller, int runtimeVersion = 1)
+    public async Task<IssuanceResult> IssueAsync(string enrollmentId, string? secret, CancellationToken caller, int runtimeVersion = 1)
     {
         using var work = new IssuanceWork(clock);
         GrantSnapshot? grant = null;
@@ -18,15 +18,15 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
         try
         {
             caller.ThrowIfCancellationRequested();
-            grant = await store.AuthenticateAsync(deviceId, secret, work.Cancellation);
+            grant = await store.AuthenticateAsync(enrollmentId, secret, work.Cancellation);
             if (grant.Approval.RuntimeVersion != runtimeVersion) throw new IssuanceDenied(401);
             if (await store.ReclaimForRenewalAsync(grant, work))
-                grant = await store.AuthenticateAsync(deviceId, secret, work.Cancellation);
+                grant = await store.AuthenticateAsync(enrollmentId, secret, work.Cancellation);
             var verifier = await store.VerifierAsync(grant, work.Cancellation);
             if (verifier is null)
             {
                 // This internal capability never requires runtime approval, reaches the caller,
-                // activates a device or renews inactivity. Public enrollment consumes this in #52.
+                // activates a controller enrollment or renews inactivity. Public enrollment consumes this in #52.
                 verifier = await AcquireVerifierAsync(grant, work);
                 grant = await store.SnapshotAsync(grant.PartitionRepositoryId, grant.EnrollmentId, work.Cancellation);
             }

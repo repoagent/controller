@@ -12,7 +12,7 @@ _Avoid_: admin, host, user
 
 **Controller enrollment**:
 A binding of one logical controller to an immutable GitHub repository, App installation and permission profile, authorized by a controller approval. Its controller secret permits bounded renewal and self-revocation; it is not the shared App signing key. It is not Discussion enrollment, which starts a Discussion's agent session.
-_Avoid_: host enrollment, device enrollment
+_Avoid_: controller enrollment, device enrollment
 
 **Controller secret**:
 The secret a controller presents to the credential broker to renew and self-revoke its controller enrollment.

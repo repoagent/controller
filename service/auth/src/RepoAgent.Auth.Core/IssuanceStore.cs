@@ -15,29 +15,29 @@ public sealed partial class IssuanceStore(IBrokerState state, string epoch, long
     private readonly IssuanceCapacity capacity = new(state, retainedIssuanceLimit);
     private readonly IssuanceLimits limits = configuredLimits ?? new();
 
-    public async Task<GrantSnapshot> AuthenticateAsync(string deviceId, string? secret, CancellationToken ct)
+    public async Task<GrantSnapshot> AuthenticateAsync(string enrollmentId, string? secret, CancellationToken ct)
     {
-        var hash = DeviceSecret.Hash(secret);
-        if (!DeviceSecret.IsDeviceId(deviceId) || hash is null) throw new IssuanceDenied(401);
-        var locator = (await state.ReadAsync(EnrollmentLocator.Key(deviceId), ct) ?? throw new IssuanceDenied(401)).Value;
-        if (Text(locator.EnrollmentId) != deviceId) throw new IssuanceDenied(401);
+        var hash = ControllerSecret.Hash(secret);
+        if (!ControllerSecret.IsEnrollmentId(enrollmentId) || hash is null) throw new IssuanceDenied(401);
+        var locator = (await state.ReadAsync(EnrollmentLocator.Key(enrollmentId), ct) ?? throw new IssuanceDenied(401)).Value;
+        if (Text(locator.EnrollmentId) != enrollmentId) throw new IssuanceDenied(401);
         var repository = Text(locator.RepositoryId);
         _ = Id(repository);
-        var grant = await SnapshotAsync(repository, deviceId, ct);
-        if (grant.RepositoryId != repository || !DeviceSecret.Matches(hash, Text(grant.Enrollment.ControllerSecretHash)))
+        var grant = await SnapshotAsync(repository, enrollmentId, ct);
+        if (grant.RepositoryId != repository || !ControllerSecret.Matches(hash, Text(grant.Enrollment.ControllerSecretHash)))
             throw new IssuanceDenied(401);
         grant.RequireActive(clock.GetUtcNow());
         return grant;
     }
 
-    public async Task<GrantSnapshot> SnapshotAsync(string repositoryId, string deviceId, CancellationToken ct)
+    public async Task<GrantSnapshot> SnapshotAsync(string repositoryId, string enrollmentId, CancellationToken ct)
     {
         var gate = await state.ReadAsync(RepositoryGate.Key(repositoryId), ct) ?? throw new IssuanceDenied(401);
-        var enrollment = await state.ReadAsync(ControllerEnrollment.Key(repositoryId, deviceId), ct) ?? throw new IssuanceDenied(401);
-        var snapshot = new GrantSnapshot(repositoryId, deviceId, gate, enrollment);
-        if (snapshot.EnrollmentId != deviceId || repositoryId != snapshot.RepositoryId) throw new IssuanceDenied();
+        var enrollment = await state.ReadAsync(ControllerEnrollment.Key(repositoryId, enrollmentId), ct) ?? throw new IssuanceDenied(401);
+        var snapshot = new GrantSnapshot(repositoryId, enrollmentId, gate, enrollment);
+        if (snapshot.EnrollmentId != enrollmentId || repositoryId != snapshot.RepositoryId) throw new IssuanceDenied();
         // Retained old enrollments remain readable after owner recovery, but are no longer grants.
-        if (gate.Value.OwnerEnrollmentId != deviceId) throw new IssuanceDenied(401);
+        if (gate.Value.OwnerEnrollmentId != enrollmentId) throw new IssuanceDenied(401);
         snapshot.RequireBinding(epoch);
         return snapshot;
     }

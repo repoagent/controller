@@ -12,7 +12,7 @@ public static class CheckoutRecovery
         if (journal.Root != binding.Root || journal.Owner != binding.Owner || journal.RepositoryId != binding.RepositoryId ||
             journal.Completed < 0 || journal.Requested < journal.Completed || journal.Running < 0)
             throw Refused("journal binding or generations differ");
-        if (!journal.Blocked || journal.Applying is not null || !NativeEvidenceReadable(journal))
+        if (!journal.Blocked || journal.Applying is not null || !AgentEvidenceReadable(journal))
             throw Refused("only valid non-applying native uncertainty is supported; retain applying or malformed evidence and use an isolated fresh instance");
         if (!CanNormalize(state))
             throw Refused("Discussion state cannot be normalized safely");
@@ -48,7 +48,7 @@ public static class CheckoutRecovery
                 waiting.Retry?.AsRead is null && waiting.Inputs.All(input => input.ObservedAtAsRead is null && input.Receipt?.AsRead is null)));
 
     /// <summary>Native records whose identities and state are forms this controller can have written.</summary>
-    public static bool NativeEvidenceReadable(RefreshJournal journal) => !journal.RunningUnreadable && !journal.ActiveUnreadable &&
+    public static bool AgentEvidenceReadable(RefreshJournal journal) => !journal.RunningUnreadable && !journal.ActiveUnreadable &&
         journal.Running >= 0 && journal.ReasonAsRead is null &&
         journal.Active.Values.All(item => item.AsRead is null && item.Since > 0 &&
             !(item.Confirmed && item.Unconfirmed) &&

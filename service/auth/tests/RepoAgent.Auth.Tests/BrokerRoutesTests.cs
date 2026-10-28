@@ -49,7 +49,7 @@ public sealed class BrokerRoutesTests
         else Assert.Equal((503, 1), (answer.Status, route.Composed));
     }
 
-    // The device routes leave the controller secret's grammar to the operation; the enrollment routes require it.
+    // The enrollmentId routes leave the controller secret's grammar to the operation; the enrollment routes require it.
     [Theory]
     [InlineData(null)]
     [InlineData("short")]
@@ -216,8 +216,8 @@ public sealed class BrokerRoutesTests
         f.State.BeforeRead = _ => cancellation.CancelAsync();
         var commits = f.State.Commits;
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => BrokerRoutes.RevokeAsync(
-            new([Bearer(active.Secret)], false, InMemoryBroker.Body([]), cancellation.Token), active.Device,
-            new DeviceRevocation(f.State, f.DeploymentEpoch, f.Clock), 1));
+            new([Bearer(active.Secret)], false, InMemoryBroker.Body([]), cancellation.Token), active.EnrollmentId,
+            new ControllerSelfRevocation(f.State, f.DeploymentEpoch, f.Clock), 1));
         Assert.Equal(commits, f.State.Commits);
         Assert.Equal("active", f.Gate.State);
     }
@@ -281,18 +281,18 @@ public sealed class BrokerRoutesTests
             _ => null,
         };
 
-        // The route over a broker with an active enrollment: the device routes name it with its controller secret, the
+        // The route over a broker with an active enrollment: the enrollmentId routes name it with its controller secret, the
         // setup routes take setup v3 and name its pending enrollment, and acknowledgment takes its completion ID.
         public static async Task<Route> ForActiveEnrollment(RouteName name)
         {
             var f = new InMemoryBroker();
             var active = await ActionsVariableEnrollmentTests.Active(f, ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub));
-            var device = name is RouteName.Revoke or RouteName.Issue or RouteName.Acknowledge;
+            var enrollmentId = name is RouteName.Revoke or RouteName.Issue or RouteName.Acknowledge;
             return new(name, f)
             {
-                Id = device ? active.Device : active.Pending,
+                Id = enrollmentId ? active.EnrollmentId : active.Pending,
                 Version = name is RouteName.Revoke or RouteName.Issue ? 1 : 3,
-                Secret = device ? active.Secret : BrokerRoutesTests.Secret,
+                Secret = enrollmentId ? active.Secret : BrokerRoutesTests.Secret,
                 Body = name switch
                 {
                     RouteName.Start => JsonSerializer.SerializeToUtf8Bytes(ActionsVariableEnrollmentTests.Request(), JsonSerializerOptions.Web),
@@ -304,7 +304,7 @@ public sealed class BrokerRoutesTests
 
         public Task<IssuanceResult> Call(BrokerRequest request) => name switch
         {
-            RouteName.Revoke => BrokerRoutes.RevokeAsync(request, Id, new DeviceRevocation(Broker.State, Broker.DeploymentEpoch, Broker.Clock), Version),
+            RouteName.Revoke => BrokerRoutes.RevokeAsync(request, Id, new ControllerSelfRevocation(Broker.State, Broker.DeploymentEpoch, Broker.Clock), Version),
             RouteName.Issue => BrokerRoutes.IssueAsync(request, Id, () => Compose(Broker.Issuer) is { } issuer ? issuer.IssueAsync : null, Version),
             RouteName.Start => BrokerRoutes.StartAsync(request, () => Compose(Broker.Enrollment), Version),
             RouteName.Status => BrokerRoutes.StatusAsync(request, Id, () => Compose(Broker.Enrollment), Version),

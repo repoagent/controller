@@ -8,9 +8,9 @@ namespace RepoAgent.Auth.Tests;
 public sealed class TelemetryPrivacyTests
 {
     [Theory]
-    [InlineData("/v2/devices/{deviceId}/installation-token", "POST", 401, "POST /v2/devices/{deviceId}/installation-token")]
+    [InlineData("/v2/devices/{enrollmentId}/installation-token", "POST", 401, "POST /v2/devices/{enrollmentId}/installation-token")]
     [InlineData(null, "GET", 404, "GET unmatched")]
-    [InlineData("/v1/devices/{deviceId}", "DELETE", 204, "DELETE /v1/devices/{deviceId}")]
+    [InlineData("/v1/devices/{enrollmentId}", "DELETE", 204, "DELETE /v1/devices/{enrollmentId}")]
     [InlineData("/v1/enrollments/{id}", "PROPFIND", 405L, "OTHER /v1/enrollments/{id}")]
     [InlineData("/v1/enrollments", null, "200", "OTHER /v1/enrollments")]
     public void A_request_span_keeps_only_its_route_a_known_method_and_an_integer_status(string? route, string? method, object status, string name)

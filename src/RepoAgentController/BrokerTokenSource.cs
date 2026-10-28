@@ -35,7 +35,7 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
     public long? RepositoryId => clone ? Id(enrollment.RootElement, "repositoryId") : null;
     public string? GitRepository => clone ? Text(enrollment.RootElement, "repository") : null;
     public string? GitProfile => clone ? Text(enrollment.RootElement, "profile") : null;
-    readonly string deviceId;
+    readonly string enrollmentId;
     readonly string secret;
     readonly bool canonicalNames;
     public string AppSlug => enrollment.RootElement.GetProperty("appSlug").GetString()!;
@@ -76,10 +76,10 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
             if (expectedRepositoryId is { } expected && (!clone || expected <= 0 || Id(root, "repositoryId") != expected))
                 throw Invalid("CLI repository ID differs from enrollment");
             ValidateInstallation(expectedInstallationId);
-            deviceId = Text(root, canonicalNames ? "enrollmentId" : "deviceId");
+            enrollmentId = Text(root, canonicalNames ? "enrollmentId" : "deviceId");
             secret = Text(root, canonicalNames ? "controllerSecret" : "deviceSecret");
-            if (!Regex.IsMatch(deviceId, @"\A[A-Za-z0-9_-]{1,128}\z") || !Regex.IsMatch(secret, @"\A[A-Za-z0-9_-]{43,128}\z"))
-                throw Invalid("invalid device credential format");
+            if (!Regex.IsMatch(enrollmentId, @"\A[A-Za-z0-9_-]{1,128}\z") || !Regex.IsMatch(secret, @"\A[A-Za-z0-9_-]{43,128}\z"))
+                throw Invalid("invalid controller credential format");
             Log.Protect(secret);
         }
         catch { enrollment.Dispose(); throw; }
@@ -155,7 +155,7 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60), clock);
         using var acquisition = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
         ct = acquisition.Token;
-        var route = canonicalNames ? $"/v{version}/controller-enrollments/{deviceId}/github-token" : $"/v{version}/devices/{deviceId}/installation-token";
+        var route = canonicalNames ? $"/v{version}/controller-enrollments/{enrollmentId}/github-token" : $"/v{version}/devices/{enrollmentId}/installation-token";
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, route));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));

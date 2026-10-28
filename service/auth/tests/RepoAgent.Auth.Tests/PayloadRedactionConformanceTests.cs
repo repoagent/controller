@@ -42,12 +42,12 @@ public sealed partial class PayloadRedactionTests
         var f = new InMemoryBroker();
         var j = await Retained.ActiveAgent(f);
         var ledger = Retained.EnrollmentLedger(f, j.Id).Value;
-        var key = EnrollmentKey(j.Device);
+        var key = EnrollmentKey(j.EnrollmentId);
         var initial = f.State.Row(key)!;
         var before = f.Rows();
         f.Clock.Advance(TimeSpan.FromDays(31));
         await RedactEnrollment(f, j.Id, ledger);
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(j.Device, j.Completion, j.Secret, 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(j.EnrollmentId, j.Completion, j.Secret, 2)).StatusCode);
         var current = f.State.Row(key)!;
         foreach (var field in new[] { "SecretHash", "Marker", "Challenge", "CompletionId", "PendingId", "LastActivityAt", "ExpiresAt" })
             Assert.Equal(initial[field], current[field]);
@@ -67,19 +67,19 @@ public sealed partial class PayloadRedactionTests
         var f = new InMemoryBroker();
         var j = await Retained.ActiveAgent(f);
         var ledger = Retained.EnrollmentLedger(f, j.Id).Value;
-        var key = EnrollmentKey(j.Device);
+        var key = EnrollmentKey(j.EnrollmentId);
         DateTimeOffset terminal;
         if (revoke)
         {
-            Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(j.Device, j.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(j.EnrollmentId, j.Secret)).StatusCode);
             terminal = f.State.Get(key)!.FirstTerminalAt!.Value;
             f.Clock.Advance(TimeSpan.FromHours(1));
-            Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(j.Device, j.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(j.EnrollmentId, j.Secret)).StatusCode);
         }
         else terminal = f.State.Get(key)!.ExpiresAt!.Value;
         var before = f.Rows();
         f.Clock.Advance(terminal.AddHours(24).AddTicks(-1) - f.Clock.GetUtcNow());
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(j.Device, j.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(j.EnrollmentId, j.Secret)).StatusCode);
         await RedactEnrollment(f, j.Id, ledger);
         Assert.True(f.State.Row(key)!.ContainsKey("SecretHash"));
         f.Clock.Advance(TimeSpan.FromTicks(1));
@@ -164,7 +164,7 @@ public sealed partial class PayloadRedactionTests
         var attemptKey = Retained.Attempt(ledger);
         var attempt = f.State.Row(attemptKey)!;
         Assert.True(attempt.ContainsKey("ProtectedToken"));
-        Assert.Equal(j.Device, f.Gate.OwnerEnrollmentId);
+        Assert.Equal(j.EnrollmentId, f.Gate.OwnerEnrollmentId);
         f.State.Change(GateKey, row => row["Epoch"] = "new-deployment");
         var gate = f.State.Row(GateKey)!;
         f.Clock.Advance(ledger.PayloadPurgeAt!.Value - f.Clock.GetUtcNow());

@@ -20,7 +20,7 @@ param(
     [switch]$NonInteractive
 )
 $ErrorActionPreference = 'Stop'
-Import-Module "$PSScriptRoot/host-enrollment.psm1" -Force -DisableNameChecking
+Import-Module "$PSScriptRoot/controller-enrollment.psm1" -Force -DisableNameChecking
 $script:Diagnostic = 'Repository settings could not be inspected. Check host gh authentication and the selected repository.'
 $script:Calls = 0
 $script:CallLimit = 0
@@ -28,12 +28,12 @@ function Stop-Settings([string]$Message) { $script:Diagnostic = $Message; throw 
 function GitHub([string]$Method, [string]$Endpoint, $Body = $null) {
     $script:Calls++
     if ($script:Calls -gt $script:CallLimit) { Stop-Settings 'GitHub work limit reached; inspect before retrying.' }
-    $result = Invoke-HostGitHub $Method $Endpoint $Body
+    $result = Invoke-OperatorGitHub $Method $Endpoint $Body
     if ($result.Status -in @(401, 403)) { Stop-Settings "GitHub denied this operation (HTTP $($result.Status)). The host gh account needs repository Agent variables read access to inspect, and write access to change, settings; -Move also needs Variables (Actions) read and write access." }
     return $result
 }
 function Read-Catalogue {
-    $catalogue = Read-HostJson ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/RepoAgentController/repository-settings.json')))
+    $catalogue = Read-OperatorJson ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../src/RepoAgentController/repository-settings.json')))
     Assert-Fields $catalogue @('schemaVersion', 'reserved', 'settings')
     if ($catalogue.schemaVersion -ne 1 -or $catalogue.settings -isnot [array] -or $catalogue.reserved -isnot [array]) { throw 'Unsupported repository settings catalogue.' }
     foreach ($name in $catalogue.reserved) { Assert-Text $name '\AREPOAGENT_[A-Z0-9_]{1,90}\z' }
@@ -88,7 +88,7 @@ function Read-Setting($Entry, [string]$Path = $variablesPath) {
     # GitHub confirms absence with 404; any other failure leaves the current value unknown.
     if ($r.Status -eq 404) { return [ordered]@{ name = $Entry.name; state = 'absent' } }
     if ($r.Status -ne 200) { return [ordered]@{ name = $Entry.name; state = 'read-failed'; reason = "HTTP $($r.Status)" } }
-    $variable = Read-HostJson $r.Body
+    $variable = Read-OperatorJson $r.Body
     if ($variable.name -isnot [string] -or $variable.name -ine $Entry.name -or $variable.value -isnot [string]) { Stop-Settings 'GitHub returned a malformed repository variable.' }
     $value = Get-Normalized $Entry $variable.value
     if ($null -eq $value) { return [ordered]@{ name = $Entry.name; state = 'invalid'; reason = (Get-Reason $Entry); raw = $variable.value } }
@@ -128,7 +128,7 @@ try {
     $script:Diagnostic = 'GitHub transport or response validation failed. Nothing is retried automatically; inspect and rerun.'
     $r = GitHub GET $repoPath
     if ($r.Status -ne 200) { Stop-Settings 'Repository access could not be verified.' }
-    $repo = Read-HostJson $r.Body
+    $repo = Read-OperatorJson $r.Body
     if ($repo.full_name -isnot [string] -or $repo.full_name -ine $Repository) { Stop-Settings 'Repository identity differs from the selected repository.' }
     $current = [ordered]@{}
     foreach ($entry in $catalogue) { $current[$entry.name] = Read-Setting $entry }

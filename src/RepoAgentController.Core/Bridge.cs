@@ -4,13 +4,13 @@ namespace RepoAgentController;
 
 /// <summary>
 /// Observes Discussions into an ordered per-Discussion waiting queue in the state store, then dispatches the next
-/// size-bounded batch only to a natively idle session. EYES follow native acceptance of the batch carrying the source.
+/// size-bounded batch only to a idle at the agent runtime session. EYES follow agent acceptance of the batch carrying the source.
 /// A failed or unacknowledged delivery keeps its batch first in line and retries it with backoff; input that may already
 /// have reached the native is sent again marked as a redelivery, accepting possible duplicate processing.
 /// </summary>
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "Managed-only semaphores have no wait handles; callbacks and dispatch share their lifetime and may still unwind during controller shutdown.")]
 public sealed class Bridge(string repository, IDiscussions discussions, AppIdentity identity, AgentSessions sessions, StateStore store, GitHubOutbox outbox,
-    HashSet<int> enroll, RepositorySettings settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? admission = null)
+    HashSet<int> enroll, RepositorySettingsRefresh settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? admission = null)
 {
     // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
@@ -555,12 +555,12 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         // Labels in a form no writer leaves threw when read for selection before the records were typed.
         if (record.UnreadableKeys.GetValueOrDefault(RecordKey.Labels) is { } unreadable) throw new InvalidDataException(unreadable.Reason);
         var labels = record.Labels ?? [];
-        var (nativeModel, nativeReasoning) = await sessions.ConfiguredModel(ct);
+        var (agentModel, agentReasoning) = await sessions.ConfiguredModel(ct);
         var catalogue = await sessions.Models(ct);
         try
         {
             var selection = ModelSelection.Resolve(labels, settings[ModelSelection.ModelSetting], settings[ModelSelection.ReasoningSetting],
-                nativeModel, nativeReasoning, catalogue);
+                agentModel, agentReasoning, catalogue);
             Report("selection-error", record.Url, null);
             return selection;
         }

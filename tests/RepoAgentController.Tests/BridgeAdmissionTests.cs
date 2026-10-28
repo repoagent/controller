@@ -520,7 +520,7 @@ public sealed class BridgeAdmissionTests
         var log = new RecordingLog();
         var runtime = new HeldAcknowledgement();
         var sessions = new AgentSessions(runtime, log);
-        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, null, state, clock, log);
         await using var outbox = new GitHubOutbox(BridgeWorld.Repository, github, InMemoryDiscussions.App, state, clock, log);
         var bridge = new Bridge(BridgeWorld.Repository, github, InMemoryDiscussions.App, sessions,
             new StateStore(saved, BridgeWorld.Repository), outbox, [], settings, new AgentInputJson(), log, clock);
@@ -734,7 +734,7 @@ public sealed class BridgeAdmissionTests
         var log = new RecordingLog();
         var runtime = new FakeAgentRuntime();
         var sessions = new AgentSessions(runtime, log);
-        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, null, state, clock, log);
         await using var outbox = new GitHubOutbox(BridgeWorld.Repository, github, InMemoryDiscussions.App, state, clock, log);
         var bridge = new Bridge(BridgeWorld.Repository, github, InMemoryDiscussions.App, sessions,
             new StateStore(persisting, BridgeWorld.Repository), outbox, [], settings, new AgentInputJson(), log, clock);
@@ -778,7 +778,7 @@ public sealed class BridgeAdmissionTests
         var log = new RecordingLog();
         var runtime = new FakeAgentRuntime();
         var sessions = new AgentSessions(runtime, log);
-        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, null, state, clock, log);
         await using var outbox = new GitHubOutbox(BridgeWorld.Repository, github, InMemoryDiscussions.App, state, clock, log);
         var bridge = new Bridge(BridgeWorld.Repository, github, InMemoryDiscussions.App, sessions,
             new StateStore(persisting, BridgeWorld.Repository), outbox, [], settings, new AgentInputJson(), log, clock);
@@ -838,7 +838,7 @@ public sealed class BridgeAdmissionTests
         public Task<(string SessionId, AgentSessionStatus Status)> StartSession(CancellationToken ct) => Inner.StartSession(ct);
         public Task<AgentSessionStatus> ResumeSession(string sessionId, CancellationToken ct) => Inner.ResumeSession(sessionId, ct);
         public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => Inner.ConfiguredModel(ct);
-        public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => Inner.Models(ct);
+        public Task<IReadOnlyList<AgentModel>> Models(CancellationToken ct) => Inner.Models(ct);
         public async Task<AgentTurnAccepted> StartTurn(AgentTurnRequest request, CancellationToken ct)
         {
             Activity = ct;

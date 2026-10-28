@@ -6,7 +6,7 @@ The approved provider/installer design is now [controller approval with a UI-fre
 
 ## Enrollment file
 
-The PowerShell installer writes this file atomically after the broker verifies controller approval. Fresh [setup v4](../service/auth/README.md#repository-agent-variable-enrollment-v4) creates or safely reuses a user-named direct repository Agent variable through admin authority; saved v2/v3 state retains its original contract. Assembled installation, private-file and native Windows acceptance remain separate [release gates](host-enrollment.md#verification-boundary). Treat it as a secret: owner-only access (0600 on Unix, a private user ACL on Windows), never an image build input or command-line argument value. The CLI receives its path through `--enrollment-file`, or receives the same document as an injected secret through the environment variable named by `--enrollment-environment`, and separately requires `--broker-url`. Marker coordinates belong in broker state and separate nonsecret installer configuration, preserving this v1 schema.
+The PowerShell installer writes this file atomically after the broker verifies controller approval. Fresh [setup v4](../service/auth/README.md#repository-agent-variable-enrollment-v4) creates or safely reuses a user-named direct repository Agent variable through admin authority; saved v2/v3 state retains its original contract. Assembled installation, private-file and native Windows acceptance remain separate [release gates](controller-enrollment.md#verification-boundary). Treat it as a secret: owner-only access (0600 on Unix, a private user ACL on Windows), never an image build input or command-line argument value. The CLI receives its path through `--enrollment-file`, or receives the same document as an injected secret through the environment variable named by `--enrollment-environment`, and separately requires `--broker-url`. Marker coordinates belong in broker state and separate nonsecret installer configuration, preserving this v1 schema.
 
 ```json
 {
@@ -84,7 +84,7 @@ Renewal uses empty-body `POST /v2/devices/{id}/installation-token`; self-revocat
 
 ### Managed Git operations
 
-The authenticated `gh` wrapper supports `gh repo clone OWNER/REPO [DESTINATION]` for the approved repository, normalized to its HTTPS URL with `--no-upstream`. No arbitrary clone flags are accepted. A private Git shim exists only inside that clone child to replace gh's injected host-wide helper. It recognizes the supported clone shape and the fixed local fork bookkeeping command, and rejects other shapes. Ordinary native-session Git is unchanged.
+The authenticated `gh` wrapper supports `gh repo clone OWNER/REPO [DESTINATION]` for the approved repository, normalized to its HTTPS URL with `--no-upstream`. No arbitrary clone flags are accepted. A private Git shim exists only inside that clone child to replace gh's injected host-wide helper. It recognizes the supported clone shape and the fixed local fork bookkeeping command, and rejects other shapes. Ordinary agent-session Git is unchanged.
 
 Use the sibling `repoagent-git fetch --directory CHECKOUT` wrapper for later fetches. The approved URL is implicit; caller URLs, remotes and Git flags are not accepted. Fetch refuses repository authentication/header/rewrite/include configuration and does not recurse into submodules. Checkout selection, trust and update scheduling remain separate work.
 

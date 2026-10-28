@@ -53,13 +53,13 @@ Controller and credential broker versions are proposed independently through rev
 - [Repository settings](docs/repository-settings.md): model defaults, model labels, concurrency and category enrollment.
 - [Container setup](docs/container-setup.md): skills, tools, storage and runtime commands.
 - [Controller operations](docs/controller-operations.md): status, dashboard, logs, credential replacement and recovery.
-- [Enrollment and revocation](docs/host-enrollment.md): repository approval and controller access.
+- [Enrollment and revocation](docs/controller-enrollment.md): repository approval and controller access.
 - [Image updates and rollback](docs/local-runtime.md#update-an-immutable-image-or-restore-the-prior-image): replace the selected image while retaining your data.
 - Hosting lifecycle is outside the controller ([ADR 0009](docs/adr/0009-keep-hosting-lifecycle-out-of-the-controller.md)). Hosted operation will be redesigned around the status endpoint.
 
 When repository settings are enabled, the controller and its agent can read **all direct repository Agent variables**, and GitHub also gives them to Copilot cloud agent sessions. Keep secrets in GitHub Secrets or private runtime storage. See the [settings permission details](docs/repository-settings.md#broker-enrollments). Settings kept in Actions variables by an earlier version must be [moved](docs/repository-settings.md#move-settings-from-actions-variables) once.
 
-The broker and guided PowerShell installer support [setup v4](service/auth/README.md#repository-agent-variable-enrollment-v4) with `REPOAGENT_APPROVAL` in Agent variables, including repository-settings profiles. Existing grants keep their original contracts: migration requires revocation, broker closure, token settlement and a fresh enrollment. Revocation can resume failed broker closure with the original saved files after approval withdrawal. [Installation acceptance and the settlement-preflight limitation](docs/host-enrollment.md#verification-boundary) remain explicit; a device DELETE acknowledgment alone does not make replacement safe.
+The broker and guided PowerShell installer support [setup v4](service/auth/README.md#repository-agent-variable-enrollment-v4) with `REPOAGENT_APPROVAL` in Agent variables, including repository-settings profiles. Existing grants keep their original contracts: migration requires revocation, broker closure, token settlement and a fresh enrollment. Revocation can resume failed broker closure with the original saved files after approval withdrawal. [Installation acceptance and the settlement-preflight limitation](docs/controller-enrollment.md#verification-boundary) remain explicit; a device DELETE acknowledgment alone does not make replacement safe.
 
 The broker's `--version --json` command reports its compiled service version and source revision without loading credentials. [Broker releases](docs/broker-releases.md) use independent semantic versions and verified immutable images for deliberate deployment and rollback; service versions remain separate from enrollment protocol and storage schema versions.
 

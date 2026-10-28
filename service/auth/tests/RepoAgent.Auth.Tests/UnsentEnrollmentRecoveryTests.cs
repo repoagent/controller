@@ -41,13 +41,13 @@ public sealed class UnsentEnrollmentRecoveryTests
         var completion = await f.Complete(pending, 2);
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var enrollment = completion.Json.GetProperty("enrollment");
-        var device = enrollment.GetProperty("deviceId").GetString()!;
+        var enrollmentId = enrollment.GetProperty("deviceId").GetString()!;
         var secret = enrollment.GetProperty("deviceSecret").GetString()!;
-        Assert.Equal(before.EnrollmentId, device);
+        Assert.Equal(before.EnrollmentId, enrollmentId);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(device, completion.Json.GetProperty("completionId").GetString()!, secret, 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId, completion.Json.GetProperty("completionId").GetString()!, secret, 2)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(device, secret, profile == "polling-clone" ? 2 : 1)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(enrollmentId, secret, profile == "polling-clone" ? 2 : 1)).StatusCode);
     }
 
     [Theory]

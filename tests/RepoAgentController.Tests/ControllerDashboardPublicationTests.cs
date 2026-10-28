@@ -41,9 +41,9 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         }
     }
 
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "ControllerDashboard owns and asynchronously disposes its BaselineReleases.")]
-    ControllerDashboard Dashboard(BaselineReleases? releases = null, IControllerLog? reported = null) => new(Category, status, outbox,
-            releases ?? new BaselineReleases(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, new RecordingLog(), text => text),
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "ControllerDashboard owns and asynchronously disposes its BaselineReleaseCheck.")]
+    ControllerDashboard Dashboard(BaselineReleaseCheck? releases = null, IControllerLog? reported = null) => new(Category, status, outbox,
+            releases ?? new BaselineReleaseCheck(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, new RecordingLog(), text => text),
             clock, reported ?? log, Redact);
 
     // As the controller's redaction removes the secrets it knows.
@@ -387,7 +387,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         var published = new InMemoryBaselineReleases();
         var current = Release(101, image: "running");
         published.Publish(current);
-        var releases = new BaselineReleases(published, _ => Task.FromResult<string?>(Inventory("running")), clock, new RecordingLog(), text => text);
+        var releases = new BaselineReleaseCheck(published, _ => Task.FromResult<string?>(Inventory("running")), clock, new RecordingLog(), text => text);
         await using var dashboard = Dashboard(releases);
 
         dashboard.Start(TestContext.Current.CancellationToken);
@@ -445,14 +445,14 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         state.FailWrites = true;
         dashboard.Start(TestContext.Current.CancellationToken);
         await clock.Armed();
-        Assert.Equal([("dashboard-error", "No space left on device; publication is retried at the next heartbeat")], log.Entries);
+        Assert.Equal([("dashboard-error", "No space left on enrollmentId; publication is retried at the next heartbeat")], log.Entries);
         Assert.Null(state.Outbox);
 
         state.FailWrites = false;
         clock.Advance(ControllerDashboard.HeartbeatInterval);
         await clock.Armed();
         Assert.Single(log.Entries);
-        Assert.Contains("\n- 2026-10-24T10:00:00Z `dashboard-error`: `No space left on device; publication is retried at the next heartbeat`\n", Published().Body);
+        Assert.Contains("\n- 2026-10-24T10:00:00Z `dashboard-error`: `No space left on enrollmentId; publication is retried at the next heartbeat`\n", Published().Body);
     }
 
     [Fact]
@@ -604,7 +604,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         using var restarted = new ControllerStatus("owner/repository", "polling", previous, discussions, state, checkout, clock);
         restarted.Record(new(clock.GetUtcNow(), "app-token-refreshed", "token renewed"));
         await using var dashboard = new ControllerDashboard(Category, restarted, outbox,
-            new BaselineReleases(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, log, text => text),
+            new BaselineReleaseCheck(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, log, text => text),
             clock, log, Redact);
         dashboard.Start(TestContext.Current.CancellationToken);
         await clock.Armed();
@@ -774,12 +774,12 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     }
 
     [Fact]
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The dashboard owns and asynchronously disposes the inline BaselineReleases after its worker ends.")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The dashboard owns and asynchronously disposes the inline BaselineReleaseCheck after its worker ends.")]
     public async Task Before_the_lifetime_is_ready_its_state_and_mode_are_published_and_a_turn_without_waiting_input_is_listed()
     {
         Store(("D1", new(Url(1)) { SessionId = "s1", Running = new("t1", Start.AddMinutes(-30)) }));
         using var starting = new ControllerStatus("owner/repository", "webhook", new InMemoryStatusRecord(), discussions, state, checkout, clock);
-        await using var dashboard = new ControllerDashboard(Category, starting, outbox, new BaselineReleases(new InMemoryBaselineReleases(),
+        await using var dashboard = new ControllerDashboard(Category, starting, outbox, new BaselineReleaseCheck(new InMemoryBaselineReleases(),
             async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, new RecordingLog(), text => text), clock, log, Redact);
         dashboard.Start(TestContext.Current.CancellationToken);
         await clock.Armed();
@@ -876,7 +876,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     [InlineData("""{"failures":[{"url":"https://github.com/ghs_secret/repository/discussions/1"}]}""", "none recorded", "- an unknown time (none): (none)")]
     [InlineData("""{"failures":[5]}""", "none recorded", "None recorded.")]
     [InlineData("""{"latestActivity":{}}""", "input delivered from an unlinked Discussion at an unknown time", "None recorded.")]
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The dashboard owns and asynchronously disposes the inline BaselineReleases after its worker ends.")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The dashboard owns and asynchronously disposes the inline BaselineReleaseCheck after its worker ends.")]
     public async Task Damaged_failures_and_latest_activity_carried_from_an_earlier_lifetime_are_shown_from_what_reads_from_them(string record, string activity, string failures)
     {
         var json = System.Text.Json.Nodes.JsonNode.Parse(record)!.AsObject();
@@ -884,7 +884,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         json["repository"] = "owner/repository";
         using var restarted = new ControllerStatus("owner/repository", "polling", new InMemoryStatusRecord { Recorded = OperatorStatusJson.ReadRecord(json) },
             discussions, state, checkout, clock);
-        await using (var dashboard = new ControllerDashboard(Category, restarted, outbox, new BaselineReleases(new InMemoryBaselineReleases(),
+        await using (var dashboard = new ControllerDashboard(Category, restarted, outbox, new BaselineReleaseCheck(new InMemoryBaselineReleases(),
             async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, new RecordingLog(), text => text), clock, log, Redact))
         {
             dashboard.Start(TestContext.Current.CancellationToken);

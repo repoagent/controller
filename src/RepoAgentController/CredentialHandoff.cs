@@ -6,7 +6,7 @@ using System.Text.Json.Nodes;
 namespace RepoAgentController;
 
 /// <summary>A validated repository-bound App installation credential, held only in controller memory.</summary>
-internal sealed record InstallationCredential(string Token, DateTimeOffset ExpiresAt, string? Repository = null, string? Profile = null);
+internal sealed record GitHubToolToken(string Token, DateTimeOffset ExpiresAt, string? Repository = null, string? Profile = null);
 
 /// <summary>
 /// Hands the running controller's current in-memory App credential to its own gh and Git child commands.
@@ -97,7 +97,7 @@ internal sealed class CredentialHandoff : IDisposable
     }
 
     /// <summary>The current credential of the running controller that owns <paramref name="credentialDirectory"/>.</summary>
-    public static async Task<InstallationCredential> Request(string credentialDirectory, CancellationToken ct)
+    public static async Task<GitHubToolToken> Request(string credentialDirectory, CancellationToken ct)
     {
         var response = await Exchange(credentialDirectory, Json.Object(("operation", "get")), ct);
         var token = response["token"].OptionalText() ?? "";

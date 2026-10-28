@@ -37,7 +37,7 @@ public sealed record RepositorySetting(string Name, string Type, long Minimum, l
 /// <remarks>Without a GitHub adapter the runtime has no explicit Agent variables: read permission; every setting stays disabled.
 /// Each refresh records the observed settings in the controller state for status, and a later lifetime starts from the
 /// effective values recorded there, so a failed or invalid read never discards a known value.</remarks>
-public sealed class RepositorySettings
+public sealed class RepositorySettingsRefresh
 {
     /// <summary>Changes apply within one interval; each refresh is one read per catalogue entry.</summary>
     public static readonly TimeSpan RefreshInterval = TimeSpan.FromMinutes(1);
@@ -49,7 +49,7 @@ public sealed class RepositorySettings
     IReadOnlyDictionary<string, SettingValue> values;
 
     /// <param name="variables">The repository's settings, or null when the controller runs without repository settings.</param>
-    public RepositorySettings(IReadOnlyList<RepositorySetting> catalogue, IRepositorySettings? variables, IControllerState state, TimeProvider clock,
+    public RepositorySettingsRefresh(IReadOnlyList<RepositorySetting> catalogue, IRepositorySettings? variables, IControllerState state, TimeProvider clock,
         IControllerLog log)
     {
         (this.catalogue, this.variables, this.state, this.clock, this.log) = (catalogue, variables, state, clock, log);

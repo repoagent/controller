@@ -10,11 +10,11 @@ namespace RepoAgentController;
 public sealed class CategoryEnrollment
 {
     public const string Setting = "REPOAGENT_ENROLLMENT_CATEGORIES";
-    readonly RepositorySettings settings;
+    readonly RepositorySettingsRefresh settings;
     readonly AppIdentity identity;
     readonly StateStore store;
 
-    public CategoryEnrollment(RepositorySettings settings, AppIdentity identity, StateStore store)
+    public CategoryEnrollment(RepositorySettingsRefresh settings, AppIdentity identity, StateStore store)
     {
         (this.settings, this.identity, this.store) = (settings, identity, store);
         Starts();

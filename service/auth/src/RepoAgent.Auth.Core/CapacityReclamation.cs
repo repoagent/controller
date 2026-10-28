@@ -166,25 +166,25 @@ public sealed class CapacityReclamation(IBrokerState state, string deploymentEpo
         var pendingRead = await state.ReadAsync(pendingKey, ct) ?? throw new IssuanceDenied();
         var enrollment = await EnrollmentAsync(repository, Text(ledger.EnrollmentId), ct) ?? throw new IssuanceDenied();
         var pending = pendingRead.Value;
-        var device = enrollment.Value;
+        var controllerEnrollment = enrollment.Value;
         binding.Bind(RetainedAllocation.Of(pending), true);
-        binding.Bind(RetainedAllocation.Of(device), false);
-        var acknowledged = device.Acknowledged;
+        binding.Bind(RetainedAllocation.Of(controllerEnrollment), false);
+        var acknowledged = controllerEnrollment.Acknowledged;
         if (acknowledged is null || acknowledged == false && deadline > clock.GetUtcNow()) return;
-        new GrantSnapshot(Text(ledger.RepositoryId), Text(ledger.EnrollmentId), new(gate.Value, gate.Version), new(device, enrollment.Version!))
+        new GrantSnapshot(Text(ledger.RepositoryId), Text(ledger.EnrollmentId), new(gate.Value, gate.Version), new(controllerEnrollment, enrollment.Version!))
             .RequireBinding(deploymentEpoch);
         if (pending.PendingCapacityReleased != true || Date(pending.Deadline) != deadline
-            || Text(device.PendingId) != Text(ledger.PendingId)
-            || Text(pending.CompletionId) != Text(device.CompletionId)
-            || Text(pending.Marker) != Text(device.Marker)
-            || Text(pending.Repository) != Text(device.Repository)
-            || Number(pending.InstallationId) != Number(device.InstallationId)
-            || Text(pending.Profile) != Text(device.Profile)
-            || Number(device.OutstandingTokenCount) != 0
+            || Text(controllerEnrollment.PendingId) != Text(ledger.PendingId)
+            || Text(pending.CompletionId) != Text(controllerEnrollment.CompletionId)
+            || Text(pending.Marker) != Text(controllerEnrollment.Marker)
+            || Text(pending.Repository) != Text(controllerEnrollment.Repository)
+            || Number(pending.InstallationId) != Number(controllerEnrollment.InstallationId)
+            || Text(pending.Profile) != Text(controllerEnrollment.Profile)
+            || Number(controllerEnrollment.OutstandingTokenCount) != 0
             || (acknowledged.Value
-                ? Text(pending.State) is not ("active" or "closed") || Text(gate.Value.State) != "closed" || Text(device.State) != "revoked"
-                : Text(pending.State) != "closed" || Date(device.ExpiresAt) != deadline
-                    || (Text(gate.Value.State), Text(device.State)) is not (("unacknowledged", "unacknowledged") or ("closed", "revoked"))))
+                ? Text(pending.State) is not ("active" or "closed") || Text(gate.Value.State) != "closed" || Text(controllerEnrollment.State) != "revoked"
+                : Text(pending.State) != "closed" || Date(controllerEnrollment.ExpiresAt) != deadline
+                    || (Text(gate.Value.State), Text(controllerEnrollment.State)) is not (("unacknowledged", "unacknowledged") or ("closed", "revoked"))))
             throw new IssuanceDenied();
         // Zero on the common gate is maintained only by positive issuance settlement.
         // Pending release has its own durable proof and is not token settlement.
@@ -211,8 +211,8 @@ public sealed class CapacityReclamation(IBrokerState state, string deploymentEpo
             : new(receiptKey, stored.Value, stored.Version);
         receipt.Value.OwnerReleasedAt = clock.GetUtcNow();
         receipt.Value.Reason = acknowledged.Value ? "revoked-acknowledged" : "expired-unacknowledged";
-        device.State = "revoked";
-        device.FirstTerminalAt ??= acknowledged.Value ? Date(receipt.Value.RevokedAt) : deadline;
+        controllerEnrollment.State = "revoked";
+        controllerEnrollment.FirstTerminalAt ??= acknowledged.Value ? Date(receipt.Value.RevokedAt) : deadline;
         gate.Value.OwnerEnrollmentId = null;
         gate.Value.State = "vacant";
         // Fence the authorization records. The generation-bound release proof is immutable

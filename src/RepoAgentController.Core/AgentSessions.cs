@@ -207,7 +207,7 @@ public sealed class AgentSessions
         return id;
     }
 
-    /// <summary>Loads a stored session into this runtime process if needed; returns its native-reported status.</summary>
+    /// <summary>Loads a stored session into this runtime process if needed; returns its agent-reported status.</summary>
     public async Task<AgentSessionStatus> Load(string id, CancellationToken ct)
     {
         long before;
@@ -228,7 +228,7 @@ public sealed class AgentSessions
         return status;
     }
 
-    public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => runtime.Models(ct);
+    public Task<IReadOnlyList<AgentModel>> Models(CancellationToken ct) => runtime.Models(ct);
 
     public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => runtime.ConfiguredModel(ct);
 
@@ -258,7 +258,7 @@ public sealed class AgentSessions
             TurnsChanged?.Invoke([.. Running()]);
         }
         accepted?.Invoke(id, turn);
-        log.Write("native-accepted", $"session={id} model={selection.Model} effort={selection.Effort} selection={selection.Source} turn={turn}");
+        log.Write("agent-accepted", $"session={id} model={selection.Model} effort={selection.Effort} selection={selection.Source} turn={turn}");
         return turn;
     }
 }

@@ -15,8 +15,8 @@ public sealed class EnrollmentPreflightTests
     {
         var f = new InMemoryBroker();
         var owner = await Retained.ActiveAgent(f);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(owner.Device, owner.Secret)).StatusCode);
-        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(owner.Device, owner.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(owner.EnrollmentId, owner.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(owner.EnrollmentId, owner.Secret)).StatusCode);
         var before = f.Rows().Select(row => (row.Key, row.Version)).ToList();
         var mints = f.GitHub.VerifierMints;
         var request = Retained.AgentRequest(Guid.NewGuid().ToString("N"));
@@ -37,7 +37,7 @@ public sealed class EnrollmentPreflightTests
     {
         var f = new InMemoryBroker();
         var owner = await Retained.ActiveAgent(f);
-        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(owner.Device, owner.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(owner.EnrollmentId, owner.Secret)).StatusCode);
         var request = Retained.AgentRequest(Guid.NewGuid().ToString("N"));
         var oldDeadline = f.Pending(owner.Pending).Deadline;
         for (var retry = 0; retry < 2; retry++)
@@ -50,7 +50,7 @@ public sealed class EnrollmentPreflightTests
         foreach (var ledger in Retained.IssuanceLedgers(f)) await Retained.ReclaimIssuance(f, ledger.Value);
         Assert.Equal(0, f.Gate.OutstandingTokenCount);
         Assert.Equal(HttpStatusCode.Conflict, (await f.Start(request, 4)).StatusCode);
-        Assert.Equal(owner.Device, f.Gate.OwnerEnrollmentId);
+        Assert.Equal(owner.EnrollmentId, f.Gate.OwnerEnrollmentId);
         await Retained.ReclaimEnrollment(f, owner.Id);
         var admittedAt = f.Clock.GetUtcNow();
 

@@ -58,7 +58,7 @@ public static class IssuanceServices
         builder.Services.AddSingleton<IAppInstallations, GitHubAppInstallations>();
         builder.Services.AddSingleton<IControllerApprovals, GitHubControllerApprovals>();
         builder.Services.AddSingleton<IGitHubTokens, GitHubTokens>();
-        builder.Services.AddSingleton<InstallationTokenIssuer>();
+        builder.Services.AddSingleton<GitHubTokenIssuer>();
         if (settings.Enrolls) builder.Services.AddSingleton(CreateEnrollmentService);
         return settings;
     }

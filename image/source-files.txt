@@ -48,9 +48,9 @@ src/RepoAgentController.Core/SettingValue.cs
 src/RepoAgentController.Core/IRepositorySettings.cs
 src/RepoAgentController.Core/IControllerState.cs
 src/RepoAgentController.Core/DiscussionState.cs
-src/RepoAgentController.Core/RepositorySettings.cs
+src/RepoAgentController.Core/RepositorySettingsRefresh.cs
 src/RepoAgentController.Core/IBaselineReleases.cs
-src/RepoAgentController.Core/BaselineReleases.cs
+src/RepoAgentController.Core/BaselineReleaseCheck.cs
 src/RepoAgentController.Core/CategoryEnrollmentStarts.cs
 src/RepoAgentController.Core/GitHubRequestException.cs
 src/RepoAgentController.Core/GitHubResponse.cs

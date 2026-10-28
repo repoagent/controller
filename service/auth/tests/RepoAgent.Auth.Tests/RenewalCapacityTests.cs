@@ -12,7 +12,7 @@ public sealed class RenewalCapacityTests
         var controller = await Retained.ActiveAgent(f);
         for (var renewal = 0; renewal < 9; renewal++)
         {
-            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
             Assert.InRange(f.Gate.OutstandingTokenCount!.Value, 1, 8);
             f.Clock.Advance(TimeSpan.FromMinutes(55));
         }
@@ -24,17 +24,17 @@ public sealed class RenewalCapacityTests
     {
         var f = new InMemoryBroker();
         var controller = await Retained.ActiveAgent(f);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
-        var unknown = IssuanceAttempt.Key(Retained.Repository, f.Enrollment(controller.Device).RuntimeAttempt!);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
+        var unknown = IssuanceAttempt.Key(Retained.Repository, f.Enrollment(controller.EnrollmentId).RuntimeAttempt!);
         f.Clock.Advance(TimeSpan.FromMinutes(55));
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
         f.State.Change(unknown, row => row["State"] = "outstanding");
         var version = f.State.Version(unknown);
 
         for (var renewal = 0; renewal < 8; renewal++)
         {
             f.Clock.Advance(TimeSpan.FromMinutes(55));
-            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
         }
 
         Assert.Equal(version, f.State.Version(unknown));
@@ -47,17 +47,17 @@ public sealed class RenewalCapacityTests
     {
         var f = new InMemoryBroker { Limits = new(RepositoryAttempts: 2) };
         var controller = await Retained.ActiveAgent(f);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
-        var runtime = IssuanceAttempt.Key(Retained.Repository, f.Enrollment(controller.Device).RuntimeAttempt!);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
+        var runtime = IssuanceAttempt.Key(Retained.Repository, f.Enrollment(controller.EnrollmentId).RuntimeAttempt!);
         f.Clock.Advance(TimeSpan.FromMinutes(55));
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
         Assert.NotEqual(true, f.State.Get(runtime)!.CapacityReleased);
         f.Clock.Advance(TimeSpan.FromMinutes(7)); // The older verifier is safe, but the runtime's expiry margin is not.
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
         Assert.NotEqual(true, f.State.Get(runtime)!.CapacityReleased);
         f.Clock.Advance(TimeSpan.FromMinutes(3));
 
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
         Assert.True(f.State.Get(runtime)!.CapacityReleased);
     }
 
@@ -68,7 +68,7 @@ public sealed class RenewalCapacityTests
         var controller = await Retained.ActiveAgent(f);
         for (var renewal = 0; renewal < 3; renewal++)
         {
-            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
             f.Clock.Advance(TimeSpan.FromMinutes(55));
         }
         string? interrupted = null;
@@ -81,7 +81,7 @@ public sealed class RenewalCapacityTests
             }
             return Task.CompletedTask;
         };
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
         Assert.NotNull(interrupted);
         Assert.True(f.State.Get(IssuanceAttempt.Key(Retained.Repository, interrupted))!.CapacityReleased);
         Assert.NotEqual("released", f.State.Get(IssuanceLedger.Key(interrupted))!.CapacityState);
@@ -90,7 +90,7 @@ public sealed class RenewalCapacityTests
         for (var renewal = 0; renewal < 2; renewal++)
         {
             f.Clock.Advance(TimeSpan.FromMinutes(55));
-            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
         }
         Assert.Equal("released", f.State.Get(IssuanceLedger.Key(interrupted))!.CapacityState);
         Assert.InRange(f.Gate.OutstandingTokenCount!.Value, 1, 8);
@@ -103,14 +103,14 @@ public sealed class RenewalCapacityTests
         var controller = await Retained.ActiveAgent(f);
         for (var renewal = 0; renewal < 3; renewal++)
         {
-            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
             f.Clock.Advance(TimeSpan.FromMinutes(55));
         }
         var lists = f.State.Lists;
         var commits = f.State.Commits;
         f.State.EmptyPages = 100;
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
 
         Assert.InRange(f.State.Lists - lists, 1, 8);
         Assert.Equal(commits, f.State.Commits);
@@ -123,7 +123,7 @@ public sealed class RenewalCapacityTests
         var controller = await Retained.ActiveAgent(f);
         for (var renewal = 0; renewal < 3; renewal++)
         {
-            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
             f.Clock.Advance(TimeSpan.FromMinutes(55));
         }
         var competed = false;
@@ -138,11 +138,11 @@ public sealed class RenewalCapacityTests
             await f.Reclamation().ReclaimIssuanceAsync(attempt.OperationId!, attempt.Generation!, TestContext.Current.CancellationToken);
         };
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
         Assert.True(competed);
         Assert.True(f.State.Conflicts > 0);
         f.State.BeforeCommit = null;
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.Device, controller.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(controller.EnrollmentId, controller.Secret)).StatusCode);
         Assert.Equal(f.Gate.OutstandingTokenCount, f.State.Get(IssuanceQuota.Key)!.Slots);
         Assert.InRange(f.Gate.OutstandingTokenCount!.Value, 1, 8);
     }
@@ -167,7 +167,7 @@ public sealed class RenewalCapacityTests
         if (limit == "retained") f.State.Change(IssuanceQuota.Key, row => row["RetainedIssuanceCount"] = 4096L);
         var issuer = f.Issuer(limits);
 
-        var result = await BrokerRoutes.IssueAsync(InMemoryBroker.Request(f.Device.Secret), f.Device.DeviceId, () => issuer.IssueAsync, 1);
+        var result = await BrokerRoutes.IssueAsync(InMemoryBroker.Request(f.EnrollmentId.Secret), f.EnrollmentId.DeviceId, () => issuer.IssueAsync, 1);
 
         Assert.Equal(429, result.Status);
         Assert.Null(result.Body);

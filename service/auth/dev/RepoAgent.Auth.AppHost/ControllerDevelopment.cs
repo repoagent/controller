@@ -38,7 +38,7 @@ internal static class ControllerDevelopment
             "--status-port", statusPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
         };
         if (configuration.GetValue("Clone", false)) arguments.Add("--clone");
-        if (configuration.GetValue("RepositorySettings", false)) arguments.Add("--repository-settings");
+        if (configuration.GetValue("RepositorySettingsRefresh", false)) arguments.Add("--repository-settings");
         foreach (var (key, option) in new[] { ("MentionUser", "--mention-user"), ("DashboardCategory", "--dashboard-category") })
             if (configuration[key] is { Length: > 0 } value) arguments.AddRange([option, value]);
         if (configuration["CodexAuthFile"] is { Length: > 0 }) arguments.AddRange(["--codex-auth", Absolute(configuration, "CodexAuthFile")]);

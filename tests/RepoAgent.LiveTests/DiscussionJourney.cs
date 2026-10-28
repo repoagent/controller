@@ -49,7 +49,7 @@ public sealed class DiscussionJourney
                 await Until(async () =>
                 {
                     var log = await Logs();
-                    return log.Split('\n').Any(line => IsEvent(line, "native-accepted") && line.Contains(" session=" + session + " ", StringComparison.Ordinal)) && NativeTurnsFinished(log);
+                    return log.Split('\n').Any(line => IsEvent(line, "agent-accepted") && line.Contains(" session=" + session + " ", StringComparison.Ordinal)) && NativeTurnsFinished(log);
                 }, "the accepted smoke turn completed before credential closure");
                 Pass("HOSTED_INSTALLER", new { discussion = fixture["url"]!.ToString(), reply = reply["url"]!.ToString(), actor, webhook = "observed", receipt = "EYES" });
                 await Api("mutation($id:ID!){deleteDiscussion(input:{id:$id}){clientMutationId}}", new { id = fixture["id"]!.ToString() });
@@ -322,7 +322,7 @@ public sealed class DiscussionJourney
     public void Retry_evidence_matches_the_source_and_the_invalid_session()
     {
         const string log = """
-            2026-10-20T00:26:25.2314303+00:00 delivery-retry https://github.com/egil/repoagent/discussions/23 session=invalid-native-session attempt=1 redelivery=false inputs=2 sources=DC_kwDOVQFj7c4BIsCJ,DC_kwDOVQFj7c4BIsCK retry-at=2026-10-20T00:26:30.2314303+00:00: Native request failed: {
+            2026-10-20T00:26:25.2314303+00:00 delivery-retry https://github.com/egil/repoagent/discussions/23 session=invalid-agent-session attempt=1 redelivery=false inputs=2 sources=DC_kwDOVQFj7c4BIsCJ,DC_kwDOVQFj7c4BIsCK retry-at=2026-10-20T00:26:30.2314303+00:00: Native request failed: {
               "code": -32600,
               "message": "thread not found"
             }
@@ -334,11 +334,11 @@ public sealed class DiscussionJourney
         Assert.False(HasRetryForSource(log, url, "DC_kwDOVQFj7c4BIsC"));
         Assert.False(HasRetryForSource(log.Replace(" delivery-retry ", " observation-error quoted: delivery-retry "), url, "DC_kwDOVQFj7c4BIsCK"));
         Assert.False(HasRetryForSource(log, url + "0", "DC_kwDOVQFj7c4BIsCK"));
-        Assert.False(HasRetryForSource(log.Replace("session=invalid-native-session", "session=other"), url, "DC_kwDOVQFj7c4BIsCK"));
+        Assert.False(HasRetryForSource(log.Replace("session=invalid-agent-session", "session=other"), url, "DC_kwDOVQFj7c4BIsCK"));
     }
 
     static bool HasRetryForSource(string log, string url, string sourceId) => log.Split('\n').Any(line =>
-        IsEvent(line, "delivery-retry") && line.Contains(" delivery-retry " + url + " session=invalid-native-session ", StringComparison.Ordinal) &&
+        IsEvent(line, "delivery-retry") && line.Contains(" delivery-retry " + url + " session=invalid-agent-session ", StringComparison.Ordinal) &&
         Regex.Match(line, @" sources=(\S*) ") is { Success: true } sources && sources.Groups[1].Value.Split(',').Contains(sourceId));
 
     static bool IsEvent(string line, string kind)
@@ -358,10 +358,10 @@ public sealed class DiscussionJourney
         var completed = new HashSet<string>();
         foreach (var line in current)
         {
-            if (IsEvent(line, "native-accepted")) accepted.Add(line[(line.LastIndexOf("turn=", StringComparison.Ordinal) + 5)..].Trim());
-            if (!IsEvent(line, "native-event")) continue;
+            if (IsEvent(line, "agent-accepted")) accepted.Add(line[(line.LastIndexOf("turn=", StringComparison.Ordinal) + 5)..].Trim());
+            if (!IsEvent(line, "agent-event")) continue;
             // The controller logs only redacted fields of native events, never the raw message.
-            var completion = Regex.Match(line, @" native-event method=turn/completed thread=\S* turn=(\S+) ");
+            var completion = Regex.Match(line, @" agent-event method=turn/completed thread=\S* turn=(\S+) ");
             if (completion.Success) completed.Add(completion.Groups[1].Value);
         }
         return accepted.IsSubsetOf(completed);

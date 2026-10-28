@@ -220,7 +220,7 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
             || Text(g.RepositoryId) != parts[0] || Text(g.Epoch) != epoch
             || Text(p.Epoch) != epoch) throw new IssuanceDenied(401);
         if (setupSecretHash is not null && (p.SetupSecretHash is not { } hash
-            || !DeviceSecret.Matches(Convert.FromHexString(setupSecretHash), hash))) throw new IssuanceDenied(401);
+            || !ControllerSecret.Matches(Convert.FromHexString(setupSecretHash), hash))) throw new IssuanceDenied(401);
         var snapshot = new PendingSnapshot(parts[0], parts[1], gate, pending);
         if (!snapshot.Approval.Allows(Text(p.Profile))) throw new IssuanceDenied();
         if (snapshot.Approval.SetupVersion != setupVersion) throw new IssuanceDenied(409);

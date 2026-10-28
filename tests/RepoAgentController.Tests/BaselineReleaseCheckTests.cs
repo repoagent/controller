@@ -5,7 +5,7 @@ using Xunit;
 
 namespace RepoAgentController.Tests;
 
-// BaselineReleases in-process: the core's comparison of this controller's image with the published baseline releases, what it
+// BaselineReleaseCheck in-process: the core's comparison of this controller's image with the published baseline releases, what it
 // claims after a failed read, and what it logs. Release metadata parsing is the GitHub adapter's.
 public sealed class BaselineReleaseCheckTests
 {
@@ -14,7 +14,7 @@ public sealed class BaselineReleaseCheckTests
     readonly InMemoryBaselineReleases published = new();
     readonly RecordingLog log = new();
 
-    BaselineReleases Check(string? inventory, TimeProvider? time = null, Func<string, string>? redact = null) =>
+    BaselineReleaseCheck Check(string? inventory, TimeProvider? time = null, Func<string, string>? redact = null) =>
         new(published, _ => Task.FromResult(inventory), time ?? clock, log, redact ?? (text => text));
 
     /// <summary>A baseline release as the release publisher describes it; its image inventory digest is derived from <paramref name="image"/>.</summary>
@@ -120,7 +120,7 @@ public sealed class BaselineReleaseCheckTests
     public async Task An_unreadable_image_inventory_fails_the_check_like_an_unreadable_release_list()
     {
         published.Publish(Release(101));
-        await using var releases = new BaselineReleases(published, _ => throw new FileNotFoundException("Could not find file '/opt/repoagent/image-inventory.json'."),
+        await using var releases = new BaselineReleaseCheck(published, _ => throw new FileNotFoundException("Could not find file '/opt/repoagent/image-inventory.json'."),
             clock, log, text => text);
 
         await releases.Check(TestContext.Current.CancellationToken);

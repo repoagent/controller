@@ -46,12 +46,12 @@ public sealed class RepositorySettingsProfileTests
         var mints = f.GitHub.Mints;
         foreach (var frozen in new[] { 1, 2 })
         {
-            var refused = await f.Issue(active.Device, active.Secret, frozen);
+            var refused = await f.Issue(active.EnrollmentId, active.Secret, frozen);
             Assert.Equal(HttpStatusCode.Unauthorized, refused.StatusCode);
         }
         Assert.Equal(mints, f.GitHub.Mints);
 
-        var runtime = await f.Issue(active.Device, active.Secret, 3);
+        var runtime = await f.Issue(active.EnrollmentId, active.Secret, 3);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
         var lease = runtime.Json;
         Assert.Equal((3, profile, policy), (lease.GetProperty("protocolVersion").GetInt32(),
@@ -64,7 +64,7 @@ public sealed class RepositorySettingsProfileTests
         // Observed approval withdrawal closes a repository-settings profile like any other grant.
         approvals.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var removed = await f.Issue(active.Device, active.Secret, 3);
+        var removed = await f.Issue(active.EnrollmentId, active.Secret, 3);
         Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
     }
 
@@ -105,13 +105,13 @@ public sealed class RepositorySettingsProfileTests
         Assert.Equal(expected, Map(active.Enrollment.GetProperty("permissions")));
 
         var mints = f.GitHub.Mints;
-        var settingsRoute = await f.Issue(active.Device, active.Secret, 3);
+        var settingsRoute = await f.Issue(active.EnrollmentId, active.Secret, 3);
         Assert.Equal(HttpStatusCode.Unauthorized, settingsRoute.StatusCode);
-        var settingsRevoke = await f.Revoke(active.Device, active.Secret, 3);
+        var settingsRevoke = await f.Revoke(active.EnrollmentId, active.Secret, 3);
         Assert.Equal(HttpStatusCode.Unauthorized, settingsRevoke.StatusCode);
         Assert.Equal(mints, f.GitHub.Mints);
 
-        var runtime = await f.Issue(active.Device, active.Secret, runtimeVersion);
+        var runtime = await f.Issue(active.EnrollmentId, active.Secret, runtimeVersion);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
         Assert.Equal(expected, Map(runtime.Json.GetProperty("permissions")));
         Assert.Equal(expected, Assert.Single(github.RuntimePermissions));
@@ -133,12 +133,12 @@ public sealed class RepositorySettingsProfileTests
         var f = new InMemoryBroker();
         var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
         var active = await ActionsVariableEnrollmentTests.Active(f, github, setupVersion, "polling-settings");
-        f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, active.Device), row => row[field] = value);
+        f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, active.EnrollmentId), row => row[field] = value);
         var requests = f.GitHub.Requests.Count;
 
         foreach (var route in new[] { 1, 2, 3 })
         {
-            var denied = await f.Issue(active.Device, active.Secret, route);
+            var denied = await f.Issue(active.EnrollmentId, active.Secret, route);
             Assert.NotEqual(HttpStatusCode.OK, denied.StatusCode);
             Assert.Equal("", denied.Text);
         }
@@ -149,7 +149,7 @@ public sealed class RepositorySettingsProfileTests
     [Theory]
     [InlineData(3)]
     [InlineData(4)]
-    public async Task Settings_device_self_revokes_only_through_its_own_runtime_route(int setupVersion)
+    public async Task Settings_controller_enrollment_self_revokes_only_through_its_own_runtime_route(int setupVersion)
     {
         var f = new InMemoryBroker();
         var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
@@ -157,13 +157,13 @@ public sealed class RepositorySettingsProfileTests
 
         foreach (var frozen in new[] { 1, 2 })
         {
-            var refused = await f.Revoke(active.Device, active.Secret, frozen);
+            var refused = await f.Revoke(active.EnrollmentId, active.Secret, frozen);
             Assert.Equal(HttpStatusCode.Unauthorized, refused.StatusCode);
         }
-        var revoke = await f.Revoke(active.Device, active.Secret, 3);
+        var revoke = await f.Revoke(active.EnrollmentId, active.Secret, 3);
         Assert.Equal(HttpStatusCode.NoContent, revoke.StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var after = await f.Issue(active.Device, active.Secret, 3);
+        var after = await f.Issue(active.EnrollmentId, active.Secret, 3);
         Assert.Equal(HttpStatusCode.Unauthorized, after.StatusCode);
     }
 

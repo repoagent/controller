@@ -19,12 +19,12 @@ public sealed class RevokedOwnerRecoveryTests
         var f = new InMemoryBroker();
         var old = await AcknowledgedOwner(f, profile);
         var version = profile == "polling-clone" ? 2 : 1;
-        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.Device, old.Secret, version)).StatusCode);
-        var device = f.Enrollment(old.Device);
+        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.EnrollmentId, old.Secret, version)).StatusCode);
+        var enrollmentId = f.Enrollment(old.EnrollmentId);
         var receipt = f.State.Get(ReceiptKey(old))!;
         await Retained.ReclaimEnrollment(f, old.Id);
         await Retained.ReclaimEnrollment(f, old.Id);
-        Assert.Equal(old.Device, f.Gate.OwnerEnrollmentId);
+        Assert.Equal(old.EnrollmentId, f.Gate.OwnerEnrollmentId);
         var before = f.Rows().Select(row => (row.Key, row.Version)).ToList();
         var mints = f.GitHub.Mints;
         Assert.Equal(HttpStatusCode.Conflict, (await f.Start(Retained.AgentRequest(Guid.NewGuid().ToString("N")), 2)).StatusCode);
@@ -35,14 +35,14 @@ public sealed class RevokedOwnerRecoveryTests
         await Retained.ReclaimEnrollment(f, old.Id);
 
         var replacement = await Retained.ActiveAgent(f);
-        Assert.NotEqual(old.Device, replacement.Device);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.Device, replacement.Secret)).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.Device, old.Secret, version)).StatusCode);
+        Assert.NotEqual(old.EnrollmentId, replacement.EnrollmentId);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.EnrollmentId, replacement.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.EnrollmentId, old.Secret, version)).StatusCode);
         var gate = f.State.Version(GateKey);
         await Retained.ReclaimEnrollment(f, old.Id);
         Assert.Equal(gate, f.State.Version(GateKey));
-        var released = f.Enrollment(old.Device);
-        Assert.Equal((device.ExpiresAt, device.LastActivityAt, device.FirstTerminalAt, device.Acknowledged, device.State),
+        var released = f.Enrollment(old.EnrollmentId);
+        Assert.Equal((enrollmentId.ExpiresAt, enrollmentId.LastActivityAt, enrollmentId.FirstTerminalAt, enrollmentId.Acknowledged, enrollmentId.State),
             (released.ExpiresAt, released.LastActivityAt, released.FirstTerminalAt, released.Acknowledged, released.State));
         var audit = f.State.Get(ReceiptKey(old))!;
         Assert.Equal(receipt.RevokedAt, audit.RevokedAt);
@@ -63,14 +63,14 @@ public sealed class RevokedOwnerRecoveryTests
         var f = new InMemoryBroker();
         var old = await AcknowledgedOwner(f);
         if (barrier is not ("active" or "expired-active"))
-            Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.Device, old.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.EnrollmentId, old.Secret)).StatusCode);
         await Retained.ReclaimEnrollment(f, old.Id);
         await SettleOwnerCapabilities(f);
         if (barrier == "expired-active") f.Clock.Advance(TimeSpan.FromDays(91));
         if (barrier == "missing-receipt") Assert.True(f.State.Remove(ReceiptKey(old)));
         if (barrier == "missing-release") Assert.True(f.State.Remove(ReleaseProof.Enrollment(Retained.Repository, old.Id)));
         if (barrier == "binding")
-            f.State.Change(ControllerEnrollment.Key(Retained.Repository, old.Device), row => row["CompletionId"] = Guid.NewGuid().ToString("N"));
+            f.State.Change(ControllerEnrollment.Key(Retained.Repository, old.EnrollmentId), row => row["CompletionId"] = Guid.NewGuid().ToString("N"));
         var before = f.State.Version(GateKey);
         Assert.NotNull(before);
         if (barrier == "epoch") f.DeploymentEpoch = "restored-epoch";
@@ -80,7 +80,7 @@ public sealed class RevokedOwnerRecoveryTests
         else await Retained.ReclaimEnrollment(f, old.Id);
 
         Assert.Equal(before, f.State.Version(GateKey));
-        Assert.Equal(old.Device, f.Gate.OwnerEnrollmentId);
+        Assert.Equal(old.EnrollmentId, f.Gate.OwnerEnrollmentId);
     }
 
     [Fact]
@@ -92,15 +92,15 @@ public sealed class RevokedOwnerRecoveryTests
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var normal = f.GitHub.BeforeMint;
         f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("Uncertain provider response");
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(old.Device, old.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
         f.GitHub.BeforeMint = normal;
-        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.Device, old.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.EnrollmentId, old.Secret)).StatusCode);
         await Retained.ReclaimEnrollment(f, old.Id);
         await SettleOwnerCapabilities(f);
 
         await Retained.ReclaimEnrollment(f, old.Id);
 
-        Assert.Equal(old.Device, f.Gate.OwnerEnrollmentId);
+        Assert.Equal(old.EnrollmentId, f.Gate.OwnerEnrollmentId);
         Assert.Equal(1L, f.Gate.OutstandingTokenCount);
         var receipt = f.State.Row(ReceiptKey(old));
         Assert.NotNull(receipt);
@@ -117,7 +117,7 @@ public sealed class RevokedOwnerRecoveryTests
     {
         var f = new InMemoryBroker();
         var old = await AcknowledgedOwner(f);
-        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.Device, old.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.EnrollmentId, old.Secret)).StatusCode);
         await Retained.ReclaimEnrollment(f, old.Id);
         await SettleOwnerCapabilities(f);
         // The first owner release to commit is the stale worker's; it is held until another worker released the owner
@@ -135,7 +135,7 @@ public sealed class RevokedOwnerRecoveryTests
             await Assert.ThrowsAsync<StateConflict>(() => stale);
 
             Assert.Equal(gate, f.State.Version(GateKey));
-            Assert.Equal(replacement.Device, f.Gate.OwnerEnrollmentId);
+            Assert.Equal(replacement.EnrollmentId, f.Gate.OwnerEnrollmentId);
         }
         finally
         {
@@ -144,13 +144,13 @@ public sealed class RevokedOwnerRecoveryTests
         }
     }
 
-    private static StateKey<RevocationReceipt> ReceiptKey(Retained.Journey owner) => RevocationReceipt.Key(Retained.Repository, owner.Device);
+    private static StateKey<RevocationReceipt> ReceiptKey(Retained.Journey owner) => RevocationReceipt.Key(Retained.Repository, owner.EnrollmentId);
 
     // An acknowledged controller enrollment that was issued one GitHub token, with a minute passed after each step.
     private static async Task<Retained.Journey> AcknowledgedOwner(InMemoryBroker f, string profile = "polling")
     {
         var owner = await Retained.ActiveAgent(f, profile);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(owner.Device, owner.Secret, profile == "polling-clone" ? 2 : 1)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(owner.EnrollmentId, owner.Secret, profile == "polling-clone" ? 2 : 1)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         return owner;
     }

@@ -30,8 +30,8 @@ FIXTURE_MODEL = 'model = "gpt-6.1-sol"\nmodel_provider = "fixture"\n[model_provi
 
 
 def native_event(line):
-    """Fields of the controller's redacted native-event log line; the raw native message is never logged."""
-    return re.search(r' native-event method=(?P<method>\S*) thread=(?P<thread>\S*) turn=(?P<turn>\S*) status=(?P<status>\S*)'
+    """Fields of the controller's redacted agent-event log line; the raw native message is never logged."""
+    return re.search(r' agent-event method=(?P<method>\S*) thread=(?P<thread>\S*) turn=(?P<turn>\S*) status=(?P<status>\S*)'
                      r' will-retry=(?P<willRetry>\S*) error=(?P<error>.*)$', line.rstrip('\n')).groupdict()
 
 
@@ -444,7 +444,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             request = self.rpc(f, 'thread/start')
             self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
             request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-            self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+            self.terminal(f, 'S1', 'T1'); f.wait('agent-event')
             initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
             f.provider.comments = {'D1': [self.comment(1, 'alice', 'please answer')]}
             request = self.rpc(f, 'turn/start')
@@ -524,12 +524,12 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.pending(f)
                     self.assertEqual(len(f.provider.git_tokens), requests)
                     self.terminal(f, 'S1', 'T1')
-                    f.wait('native-event')
+                    f.wait('agent-event')
                     self.pending(f)
                     self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
                     self.assertEqual(len(f.provider.git_tokens), requests)
                     self.terminal(f, 'S1', 'T1')  # Known duplicate cannot release session2.
-                    f.wait('native-event')
+                    f.wait('agent-event')
                     if hold_reload: (f.directory / 'hold-reload').touch()
                     self.terminal(f, 'S2', 'T2')
                     f.wait('checkout-refreshed')
@@ -600,7 +600,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             request = self.rpc(f, 'turn/start')
             self.assertIn(' changed', self.dispatched(request)['changes'][0]['subject']['body'])
             self.terminal(f, 'S1', 'T2')  # The native can complete a turn before its acknowledgement arrives.
-            f.wait('native-event')
+            f.wait('agent-event')
             journal = json.loads(f.journal.read_text())
             self.assertEqual(len(journal['active']), 1, 'Early terminal cleared admission before acknowledgement')
             self.assertFalse(next(iter(journal['active'].values()))['confirmed'])
@@ -688,7 +688,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             f.wait('poll-completed success=True')
             self.assertNotEqual(initial, target)
             self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
-            self.terminal(f, 'S1', 'T2'); f.wait('native-event')
+            self.terminal(f, 'S1', 'T2'); f.wait('agent-event')
 
 
 
@@ -759,10 +759,10 @@ class CheckoutRefreshTests(unittest.TestCase):
                     f.wait('webhook-observed discussion=' + str(number) + ' success=True')
                     session = json.loads(f.state.read_text())['discussions']['D' + str(number)]['sessionId']
                     # The actual pinned native creates and completes every session; no manufactured session IDs.
-                    while not any(' native-event ' in line and native_event(line)['method'] == 'turn/completed'
+                    while not any(' agent-event ' in line and native_event(line)['method'] == 'turn/completed'
                                   and native_event(line)['thread'] == session for line in f.lines):
-                        f.wait('native-event')
-                    completion = next(native_event(line) for line in f.lines if ' native-event ' in line
+                        f.wait('agent-event')
+                    completion = next(native_event(line) for line in f.lines if ' agent-event ' in line
                                       and native_event(line)['method'] == 'turn/completed' and native_event(line)['thread'] == session)
                     self.assertEqual(completion['status'], 'completed', completion)
                 # A completed observation settles the final running marker before the retained snapshot is read.
@@ -881,7 +881,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 finally:
                     # Normal stop drains accepted work; retain S1, but explicitly finish its genuine T1 first.
                     self.terminal(f, 'S1', 'T1')
-                f.wait('native-event method=turn/completed thread=S1 turn=T1 status=completed')
+                f.wait('agent-event method=turn/completed thread=S1 turn=T1 status=completed')
             self.assertEqual(f.process.returncode, 0)
             self.assertTrue(any(' turn-ended https://github.com/owner/project/discussions/1 session=S1 turn=T1 status=completed' in line
                                 for line in f.lines), 'Normal drain did not durably settle the correlated completed turn')
@@ -962,7 +962,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                         request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
                         f.wait('poll-completed success=True')
                         if case == 'resume':
-                            self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+                            self.terminal(f, 'S1', 'T1'); f.wait('agent-event')
                             self.assertEqual(json.loads(f.journal.read_text())['active'], {})
                     if case == 'active-restart':
                         saved = json.loads(f.journal.read_text())
@@ -1060,7 +1060,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                         self.assertEqual(envelope['_bridge']['mode'], 'bootstrap')
                         self.assertNotIn('redelivery', envelope['_bridge'], 'No earlier turn/start carried this input')
                         self.reply(f, request, dict(turn=dict(id='T1')))
-                        self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+                        self.terminal(f, 'S1', 'T1'); f.wait('agent-event')
                     else:
                         request = self.rpc(f, 'turn/start')
                         turn = 'T2' if case == 'resume' else 'T1'
@@ -1088,7 +1088,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             with self.controller(f):
                 f.provider.discussions = [self.discussion(1)]
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_FIRST'
-                first = native_event(f.wait('native-event'))
+                first = native_event(f.wait('agent-event'))
                 self.assertEqual(first['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(first), flush=True)
                 self.settled(f)
                 self.assertEqual(first['status'], 'completed')
@@ -1119,7 +1119,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertIn('NATIVE_DESCRIPTION_B', listed)
                 self.assertNotIn('NATIVE_DESCRIPTION_A', listed); self.assertNotIn('NATIVE_DESCRIPTION_LOCAL', listed)
                 f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_SECOND'
-                second = native_event(f.wait('native-event'))
+                second = native_event(f.wait('agent-event'))
                 self.assertEqual(second['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(second), flush=True)
                 self.settled(f)
                 self.assertEqual(second['status'], 'completed')

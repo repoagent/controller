@@ -31,7 +31,7 @@ builder.Services.AddSingleton(services =>
 });
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IBrokerState>(services => new TableBrokerState(services.GetRequiredService<TableClient>()));
-builder.Services.AddSingleton(services => new DeviceRevocation(services.GetRequiredService<IBrokerState>(),
+builder.Services.AddSingleton(services => new ControllerSelfRevocation(services.GetRequiredService<IBrokerState>(),
     services.GetRequiredService<BrokerOptions>().DeploymentEpoch, services.GetRequiredService<TimeProvider>()));
 RequestProtection.Add(builder);
 var ready = BrokerSettings.Ready(IssuanceServices.Add(builder));

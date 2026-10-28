@@ -5,7 +5,7 @@ namespace RepoAgentController.Tests;
 // ModelSelection.Resolve in-process, with the model catalogue that ModelSelectionTests' peer copies from pinned Codex 0.163.0 model/list.
 public sealed class ModelSelectionResolveTests
 {
-    static readonly NativeModel[] Catalogue =
+    static readonly AgentModel[] Catalogue =
     [
         new("gpt-6.1-sol", true, "low", ["low", "medium", "high", "xhigh", "max", "ultra"]),
         new("gpt-6-luna", false, "medium", ["low", "medium", "high", "xhigh", "max"]),

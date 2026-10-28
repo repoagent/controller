@@ -5,7 +5,7 @@ namespace RepoAgentController;
 /// <summary>Dispatches gh with current App credentials, including from an already-running agent.</summary>
 public static class AppGitHubCommand
 {
-    internal static ProcessStartInfo Create(string executable, InstallationCredential credential, string credentialDirectory,
+    internal static ProcessStartInfo Create(string executable, GitHubToolToken credential, string credentialDirectory,
         IEnumerable<string> arguments)
     {
         Log.Protect(credential.Token);

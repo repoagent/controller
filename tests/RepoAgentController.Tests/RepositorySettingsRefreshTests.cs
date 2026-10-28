@@ -3,7 +3,7 @@ using Xunit;
 
 namespace RepoAgentController.Tests;
 
-// RepositorySettings in-process, with the controller's own catalogue: the core's decisions over what GitHub reports for each
+// RepositorySettingsRefresh in-process, with the controller's own catalogue: the core's decisions over what GitHub reports for each
 // REPOAGENT_ variable, what it records for status and the next lifetime, and what it logs.
 public sealed class RepositorySettingsRefreshTests
 {
@@ -15,7 +15,7 @@ public sealed class RepositorySettingsRefreshTests
     readonly InMemoryControllerState state = new();
     readonly RecordingLog log = new();
 
-    RepositorySettings Lifetime(TimeProvider? time = null) => new(RepositorySettingsCatalogue.Settings, github, state, time ?? clock, log);
+    RepositorySettingsRefresh Lifetime(TimeProvider? time = null) => new(RepositorySettingsCatalogue.Settings, github, state, time ?? clock, log);
 
     // The repository-setting lines logged for one setting, without the kind.
     List<string> Reported(string name = Setting) =>
@@ -250,7 +250,7 @@ public sealed class RepositorySettingsRefreshTests
     public async Task Without_repository_settings_nothing_is_read_and_every_setting_is_recorded_disabled()
     {
         state.WriteSettings(new(new Dictionary<string, SettingValue> { [Setting] = new(SettingState.Configured, "6") { Since = Start } }));
-        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, null, state, clock, log);
 
         Assert.False(await settings.Refresh(TestContext.Current.CancellationToken));
 

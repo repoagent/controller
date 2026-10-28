@@ -52,10 +52,10 @@ elif command in ('invalidate-session', 'restore-session'):
     state = json.loads(state_path.read_text())
     discussion = sys.argv[2]
     record = state['discussions'][discussion]
-    backup = root / 'native-session-backup.json'
+    backup = root / 'agent-session-backup.json'
     if command == 'invalidate-session':
         backup.write_text(json.dumps({'discussion': discussion, 'sessionId': record['sessionId']}))
-        record['sessionId'] = 'invalid-native-session'
+        record['sessionId'] = 'invalid-agent-session'
     else:
         saved = json.loads(backup.read_text())
         assert saved['discussion'] == discussion

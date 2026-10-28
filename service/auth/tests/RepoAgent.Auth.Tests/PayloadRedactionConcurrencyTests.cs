@@ -22,7 +22,7 @@ public sealed partial class PayloadRedactionTests
         var id = Guid.NewGuid().ToString("N");
         var pause = new CommitPause(f.State, t => t.Writes("State", stage == "pending" ? "discovering" : "reserved"));
         var writer = Task.Run(() => active is null ? f.Start(Retained.AgentRequest(id), 2)
-            : f.Issue(active.Device, active.Secret), Token);
+            : f.Issue(active.EnrollmentId, active.Secret), Token);
         try
         {
             await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
@@ -67,7 +67,7 @@ public sealed partial class PayloadRedactionTests
                     Assert.Equal(row.Row[field], current.Row[field]);
             }
             Assert.DoesNotContain(after, r => r.Name.StartsWith("device:", StringComparison.Ordinal)
-                && (active is null || r.Name != EnrollmentKey(active.Device).Name));
+                && (active is null || r.Name != EnrollmentKey(active.EnrollmentId).Name));
             Assert.Equal(active is null ? 0 : 1, f.GitHub.Mints);
         }
         finally
@@ -80,7 +80,7 @@ public sealed partial class PayloadRedactionTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Paused_known_ciphertext_or_device_completion_cannot_rehydrate_after_cleanup(bool completion)
+    public async Task Paused_known_ciphertext_or_controller_enrollment_completion_cannot_rehydrate_after_cleanup(bool completion)
     {
         var f = new InMemoryBroker();
         string id, pendingId = "";
@@ -169,12 +169,12 @@ public sealed partial class PayloadRedactionTests
         var f = new InMemoryBroker();
         var j = await Retained.ActiveAgent(f);
         var ledger = Retained.EnrollmentLedger(f, j.Id).Value;
-        var key = EnrollmentKey(j.Device);
-        var device = f.State.Row(key)!;
+        var key = EnrollmentKey(j.EnrollmentId);
+        var enrollmentId = f.State.Row(key)!;
         var originalExpiry = f.State.Get(key)!.ExpiresAt!.Value;
         f.Clock.Advance(originalExpiry.AddMinutes(-1) - f.Clock.GetUtcNow());
         var releasePause = new CommitPause(f.State, t => t.Writes("State", "released"));
-        var writer = Task.Run(() => f.Issue(j.Device, j.Secret), Token);
+        var writer = Task.Run(() => f.Issue(j.EnrollmentId, j.Secret), Token);
         CommitPause? cleanupPause = null;
         Task? cleanup = null;
         try
@@ -192,7 +192,7 @@ public sealed partial class PayloadRedactionTests
             await Assert.ThrowsAsync<StateConflict>(() => cleanup);
             var renewed = f.State.Row(key)!;
             Assert.True(f.State.Get(key)!.ExpiresAt > f.Clock.GetUtcNow());
-            Assert.Equal(device["SecretHash"], renewed["SecretHash"]);
+            Assert.Equal(enrollmentId["SecretHash"], renewed["SecretHash"]);
             Assert.False(renewed.ContainsKey("PayloadRedacted"));
             AssertCharges(before, f.Rows());
         }
@@ -217,7 +217,7 @@ public sealed partial class PayloadRedactionTests
         // The runtime attempt's known outcome, with its protected GitHub token.
         var pause = new CommitPause(f.State, t => t.Writes.Any(write => write.Row is { } row && row.ContainsKey("ProtectedToken")
             && Equals(row.GetValueOrDefault("Purpose"), "runtime") && Equals(row.GetValueOrDefault("State"), "known")));
-        var writer = Task.Run(() => f.Issue(j.Device, j.Secret), Token);
+        var writer = Task.Run(() => f.Issue(j.EnrollmentId, j.Secret), Token);
         try
         {
             await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);

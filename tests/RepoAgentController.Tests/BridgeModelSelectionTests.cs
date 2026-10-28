@@ -33,7 +33,7 @@ public sealed class BridgeModelSelectionTests
         Assert.True(await world.RunOnce(1));
 
         Assert.Equal([("gpt-6-luna", "xhigh")], Selected(world));
-        Assert.Contains("session=S1 model=gpt-6-luna effort=xhigh selection=label turn=T1", world.Logged("native-accepted"));
+        Assert.Contains("session=S1 model=gpt-6-luna effort=xhigh selection=label turn=T1", world.Logged("agent-accepted"));
     }
 
     [Fact]

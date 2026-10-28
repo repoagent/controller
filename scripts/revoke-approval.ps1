@@ -124,7 +124,7 @@ function Invoke-GitHub([string]$Method, [string]$Endpoint) {
 function Read-Identity([string]$Endpoint, [string]$Expected, [string]$Kind) {
     $response = Invoke-GitHub GET $Endpoint
     if ($response.Status -ne 200) { Stop-Revoke "$Kind could not be verified (HTTP $($response.Status)); absence is not confirmed." }
-    $value = Read-HostJson $response.Body
+    $value = Read-OperatorJson $response.Body
     Assert-Id $value.id
     $id = $value.id
     if ($Kind -eq 'Repository' -and -not $script:Legacy -and ($value.full_name -isnot [string] -or $value.full_name -ine $Repository)) { Stop-Revoke 'Repository name differs from the selected target.' }
@@ -137,7 +137,7 @@ function Confirm-ApprovalAbsent([string]$Endpoint) {
     # same store confirms access; a page showing the selected name contradicts it.
     $response = Invoke-GitHub GET ($Endpoint + '?per_page=1&page=1')
     if ($response.Status -ne 200) { Stop-Revoke 'Approval absence could not be verified; inspect the selected variable before retrying.' }
-    $listing = Read-HostJson $response.Body
+    $listing = Read-OperatorJson $response.Body
     Assert-Fields $listing @('total_count','variables')
     if (($listing.total_count -isnot [long] -and $listing.total_count -isnot [int]) -or $listing.total_count -lt 0 -or
         $listing.variables -isnot [array] -or $listing.variables.Count -ne [Math]::Min(1, $listing.total_count)) {
@@ -152,7 +152,7 @@ function Confirm-ApprovalAbsent([string]$Endpoint) {
 }
 
 try {
-    Import-Module "$PSScriptRoot/host-enrollment.psm1" -Force -DisableNameChecking
+    Import-Module "$PSScriptRoot/controller-enrollment.psm1" -Force -DisableNameChecking
     if ($ApprovalVariable) { $ApprovalVariable = $ApprovalVariable.ToUpperInvariant() }
     $script:Legacy = -not [string]::IsNullOrEmpty($GitHubEnvironment)
     if ($script:Legacy -and $ApprovalLocation) { Stop-Revoke 'A GitHub Environment cannot be combined with a repository variable location.' }
@@ -161,7 +161,7 @@ try {
     if ($ExpectedEnvironmentId -and -not $GitHubEnvironment -and -not $ApprovalStatePath) { Stop-Revoke 'Legacy Environment ID requires an explicit GitHub Environment or matching saved legacy state.' }
     if ($ApprovalStatePath) {
         if ([IO.FileInfo]::new([IO.Path]::GetFullPath($ApprovalStatePath)).Length -gt 65536) { Stop-Revoke 'Saved approval exceeds 64 KiB.' }
-        $saved = Read-HostJson ([IO.File]::ReadAllText([IO.Path]::GetFullPath($ApprovalStatePath)))
+        $saved = Read-OperatorJson ([IO.File]::ReadAllText([IO.Path]::GetFullPath($ApprovalStatePath)))
         $kind = Get-ApprovalStateKind $saved
         if ($kind -ne 'environment-variable' -and ($GitHubEnvironment -or $ExpectedEnvironmentId)) { Stop-Revoke 'Repository-variable state cannot be combined with Environment arguments.' }
         # The saved location is authoritative; a conflicting explicit location never reinterprets it.
@@ -236,7 +236,7 @@ try {
         $fingerprint = ''
     } else {
         if ($response.Status -ne 200) { Stop-Revoke "Approval could not be verified (HTTP $($response.Status)); absence or removal is not confirmed." }
-        $variable = Read-HostJson $response.Body
+        $variable = Read-OperatorJson $response.Body
         if ($variable.name -isnot [string] -or $variable.name -ine $ApprovalVariable -or $variable.value -isnot [string]) { Stop-Revoke 'GitHub returned an unexpected approval name or value.' }
         $approvalValue = $variable.value
         $sha256 = [Security.Cryptography.SHA256]::Create()
@@ -277,7 +277,7 @@ try {
             if ($enrollment.protocolVersion -notin @(1,2,3) -or $enrollment.githubHost -cne 'github.com' -or $enrollment.repositoryId -ne $repositoryId -or $enrollment.repository -ine $Repository) { throw 'Private enrollment differs.' }
             # Only a trusted saved setup origin may receive the optional credential.
             if (-not $ApprovalStatePath -or (Get-BrokerOrigin $enrollment.brokerOrigin) -cne (Get-BrokerOrigin $saved.brokerOrigin)) { throw 'Trusted broker origin is required.' }
-            $marker = Read-HostJson $saved.marker -ControllerDocument
+            $marker = Read-OperatorJson $saved.marker -ControllerDocument
             if ($marker.enrollmentId -cne $enrollment.enrollmentId -or $marker.repositoryId -ne $repositoryId -or
                 $marker.repository -ine $Repository -or $marker.variable -cne $ApprovalVariable -or
                 $marker.appId -ne $enrollment.appId -or $marker.appSlug -cne $enrollment.appSlug -or

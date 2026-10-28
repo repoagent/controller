@@ -163,7 +163,7 @@ public static class BridgeCommand
                         return await new GitHubWebhookRegistration(github, statePath).Deactivate() ? 0 : 1;
                     if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentialDirectory);
                     var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentialDirectory);
-                    var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, !result.GetValue(repositorySettings) ? null
+                    var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, !result.GetValue(repositorySettings) ? null
                         : credentials.SettingsUnreadable is { } unreadable ? new UnreadableRepositorySettings(unreadable) : new GitHubRepositorySettings(github), new ControllerStateFiles(statePath), time, new ControllerLog());
                     await settings.Refresh(cancellationToken);
                     if (result.GetValue(checkAuth)) return 0;
@@ -173,7 +173,7 @@ public static class BridgeCommand
                     // Disposed before the outbox: a stop this lifetime handles is published, then delivery drains within a bound.
                     await using var dashboard = result.GetValue(dashboardCategory) is { } category
                         ? new ControllerDashboard(category, status, outbox,
-                            new BaselineReleases(new GitHubBaselineReleases(github), ImageInventory.Sha256(result.GetValue(imageInventory)?.FullName), time, new ControllerLog(), Log.Redact),
+                            new BaselineReleaseCheck(new GitHubBaselineReleases(github), ImageInventory.Sha256(result.GetValue(imageInventory)?.FullName), time, new ControllerLog(), Log.Redact),
                             time, new ControllerLog(), Log.Redact) : null;
                     using var abort = CancellationTokenSource.CreateLinkedTokenSource(credentials.BrokerCredentialLost);
                     using var failedAuthority = abort.Token.UnsafeRegister(_ => Volatile.Write(ref authorityFailed, true), null);
@@ -189,16 +189,16 @@ public static class BridgeCommand
                     {
                         using var checkout = result.GetValue(clone)
                             ? await ManagedCheckout.Open(cwd, statePath, github, credentials, executable, runtimeToken) : null;
-                        var nativeRoot = checkout?.Root ?? cwd;
-                        var nativeConfig = Path.Combine(credentialDirectory, "gh-config");
-                        if (checkout is not null) await Codex.TrustWorkspace(nativeRoot, wrapper, nativeConfig, runtimeToken, credentials.BrokerCredentialLost);
+                        var agentRoot = checkout?.Root ?? cwd;
+                        var agentConfig = Path.Combine(credentialDirectory, "gh-config");
+                        if (checkout is not null) await Codex.TrustWorkspace(agentRoot, wrapper, agentConfig, runtimeToken, credentials.BrokerCredentialLost);
                         // Read retained evidence before the constructor can archive this lifetime. Forgetting the final
                         // Discussion cannot prove prior tools stopped, so a missing journal must remain fenced.
                         var reconciliation = checkout is null ? null : new CheckoutRefresh(checkout,
                             new CheckoutBinding(checkout.Root, checkout.Owner, checkout.RepositoryId, checkout.DefaultRef), new RefreshJournalFile(statePath),
                             store.Discussions.Values.Any(record => record.HoldsSession) || Directory.Exists(statePath + ".checkout-evidence"),
                             store.Discussions.Values.Any(record => record.HoldsPending), time, new ControllerLog());
-                        await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, credentials.BrokerCredentialLost,
+                        await using var codex = new Codex(agentRoot, wrapper, agentConfig, checkout is not null, credentials.BrokerCredentialLost,
                             suppliedCredentials: agentCredentials is not null);
                         var sessions = new AgentSessions(codex, new ControllerLog(), reconciliation, credentials.BrokerCredentialLost, agentCredentials is not null);
                         // Status counts a turn by its session too, so it stays running after its Discussion record is forgotten.

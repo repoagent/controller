@@ -11,16 +11,16 @@ internal static class BrokerEndpoints
         // Runtime v1: frozen non-clone, v2: frozen clone, v3: repository-settings profiles.
         foreach (var version in new[] { 1, 2, 3 })
         {
-            app.MapDelete($"/v{version}/devices/{{deviceId}}", (string deviceId, HttpContext context, DeviceRevocation revocation) =>
-                AnswerAsync(context, request => BrokerRoutes.RevokeAsync(request, deviceId, revocation, version)));
-            app.MapPost($"/v{version}/devices/{{deviceId}}/installation-token", (string deviceId, HttpContext context) =>
-                AnswerAsync(context, request => BrokerRoutes.IssueAsync(request, deviceId, () =>
-                    context.RequestServices.GetService<InstallationTokenIssuer>() is { } issuer ? issuer.IssueAsync : null, version)));
-            app.MapDelete($"/v{version}/controller-enrollments/{{enrollmentId}}", (string enrollmentId, HttpContext context, DeviceRevocation revocation) =>
+            app.MapDelete($"/v{version}/devices/{{enrollmentId}}", (string enrollmentId, HttpContext context, ControllerSelfRevocation revocation) =>
+                AnswerAsync(context, request => BrokerRoutes.RevokeAsync(request, enrollmentId, revocation, version)));
+            app.MapPost($"/v{version}/devices/{{enrollmentId}}/installation-token", (string enrollmentId, HttpContext context) =>
+                AnswerAsync(context, request => BrokerRoutes.IssueAsync(request, enrollmentId, () =>
+                    context.RequestServices.GetService<GitHubTokenIssuer>() is { } issuer ? issuer.IssueAsync : null, version)));
+            app.MapDelete($"/v{version}/controller-enrollments/{{enrollmentId}}", (string enrollmentId, HttpContext context, ControllerSelfRevocation revocation) =>
                 AnswerAsync(context, request => BrokerRoutes.RevokeAsync(request, enrollmentId, revocation, version)));
             app.MapPost($"/v{version}/controller-enrollments/{{enrollmentId}}/github-token", (string enrollmentId, HttpContext context) =>
                 AnswerAsync(context, request => BrokerRoutes.IssueAsync(request, enrollmentId, () =>
-                    context.RequestServices.GetService<InstallationTokenIssuer>() is { } issuer ? issuer.IssueAsync : null, version)));
+                    context.RequestServices.GetService<GitHubTokenIssuer>() is { } issuer ? issuer.IssueAsync : null, version)));
         }
         // Setup v1: approval environment, v2: repository Agent variable, v3: repository Actions variable,
         // v4: repository Agent variable for every profile. Its policies reuse the runtime versions above.

@@ -12,7 +12,7 @@ sealed class GitHubBaselineReleases(GitHub github) : IBaselineReleases
 
     public async Task<IReadOnlyList<BaselineRelease>> Published(CancellationToken ct)
     {
-        var (status, body) = await github.Get($"repos/{BaselineReleases.Repository}/releases?per_page=100", "releases", ct);
+        var (status, body) = await github.Get($"repos/{BaselineReleaseCheck.Repository}/releases?per_page=100", "releases", ct);
         if (status != 200) throw Rejected(status);
         JsonArray releases;
         try { releases = JsonNode.Parse(body) as JsonArray ?? throw new IOException("Malformed GitHub releases response"); }

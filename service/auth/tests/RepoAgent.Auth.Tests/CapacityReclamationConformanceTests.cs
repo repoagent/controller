@@ -28,7 +28,7 @@ public sealed class CapacityReclamationConformanceTests
         // Hold the repository publication that follows the committed global admission.
         var pause = new CommitPause(f.State, t => t.Writes("State", stage == "pending" ? "discovering" : "reserved"));
         var id = NewId();
-        var writer = active is null ? f.Start(Retained.AgentRequest(id), 2) : f.Issue(active.Device, active.Secret);
+        var writer = active is null ? f.Start(Retained.AgentRequest(id), 2) : f.Issue(active.EnrollmentId, active.Secret);
         try
         {
             await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(8), Token);
@@ -140,7 +140,7 @@ public sealed class CapacityReclamationConformanceTests
             }
             if (previous is not null) await previous(mint);
         };
-        var writer = runtime ? f.Issue(active!.Device, active.Secret) : f.Start(Retained.AgentRequest(NewId()), 2);
+        var writer = runtime ? f.Issue(active!.EnrollmentId, active.Secret) : f.Start(Retained.AgentRequest(NewId()), 2);
         try
         {
             await send.Entered.Task.WaitAsync(TimeSpan.FromSeconds(8), Token);
@@ -160,7 +160,7 @@ public sealed class CapacityReclamationConformanceTests
             if (runtime && !sendWins)
             {
                 f.Clock.Advance(TimeSpan.FromMinutes(1));
-                Assert.Equal(HttpStatusCode.OK, (await f.Issue(active!.Device, active.Secret)).StatusCode);
+                Assert.Equal(HttpStatusCode.OK, (await f.Issue(active!.EnrollmentId, active.Secret)).StatusCode);
                 var slot = IssuanceSlot.Key(1);
                 var replacement = f.State.Read(slot)!;
                 Assert.NotEqual(ledger.Generation, replacement.Value.Generation);
@@ -181,9 +181,9 @@ public sealed class CapacityReclamationConformanceTests
         var f = new InMemoryBroker();
         var active = await Retained.ActiveAgent(f);
         var generation = Retained.EnrollmentLedger(f, active.Id).Value.Generation!;
-        var deviceKey = ControllerEnrollment.Key(Retained.Repository, active.Device);
+        var deviceKey = ControllerEnrollment.Key(Retained.Repository, active.EnrollmentId);
         var gateKey = RepositoryGate.Key(Retained.Repository);
-        var device = f.State.Row(deviceKey)!;
+        var enrollmentId = f.State.Row(deviceKey)!;
         var gate = f.State.Row(gateKey)!;
         // The repository settlement is the first commit and the global release the second.
         var commits = 0;
@@ -204,12 +204,12 @@ public sealed class CapacityReclamationConformanceTests
         Assert.NotNull(release);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         await f.Reclamation().ReclaimEnrollmentAsync(active.Id, generation, Token);
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(active.Device, active.Completion, active.Secret, 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(active.EnrollmentId, active.Completion, active.Secret, 2)).StatusCode);
         Assert.Equal(released, f.State.Version(pendingKey));
         Assert.Equal(release, f.State.Version(proofKey));
         var currentDevice = f.State.Row(deviceKey)!;
         foreach (var field in new[] { "LastActivityAt", "ExpiresAt", "CompletionId", "Acknowledged" })
-            Assert.Equal(device[field], currentDevice[field]);
+            Assert.Equal(enrollmentId[field], currentDevice[field]);
         var currentGate = f.State.Row(gateKey)!;
         foreach (var field in new[] { "OwnerDeviceId", "Epoch", "State", "OutstandingTokenCount" })
             Assert.Equal(gate[field], currentGate[field]);
@@ -326,17 +326,17 @@ public sealed class CapacityReclamationConformanceTests
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
-    public async Task Released_runtime_cleanup_recovers_each_lost_commit_without_refunding_device_twice(int lostCommit)
+    public async Task Released_runtime_cleanup_recovers_each_lost_commit_without_refunding_controller_enrollment_twice(int lostCommit)
     {
         var f = new InMemoryBroker();
         var active = await Retained.ActiveAgent(f);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(active.Device, active.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(active.EnrollmentId, active.Secret)).StatusCode);
         var runtime = Assert.Single(Retained.IssuanceLedgers(f), x => x.Value.Purpose == "runtime").Value;
         var attempt = f.State.Get(Retained.Attempt(runtime))!;
         Assert.Equal("released", attempt.State);
-        var deviceKey = ControllerEnrollment.Key(Retained.Repository, active.Device);
-        var device = f.State.Row(deviceKey)!;
-        Assert.Equal(1L, device["OutstandingTokenCount"]);
+        var deviceKey = ControllerEnrollment.Key(Retained.Repository, active.EnrollmentId);
+        var enrollmentId = f.State.Row(deviceKey)!;
+        Assert.Equal(1L, enrollmentId["OutstandingTokenCount"]);
         f.Clock.Advance(attempt.ExpiresAt!.Value.AddMinutes(5).AddTicks(-1) - f.Clock.GetUtcNow());
         await Retained.ReclaimIssuance(f, runtime);
         Assert.Equal(2L, Quota(f).Slots);
@@ -364,29 +364,29 @@ public sealed class CapacityReclamationConformanceTests
         Assert.Equal(1L, f.Gate.OutstandingTokenCount);
         var current = f.State.Row(deviceKey)!;
         Assert.Equal(0L, current["OutstandingTokenCount"]);
-        foreach (var field in new[] { "LastActivityAt", "ExpiresAt", "State" }) Assert.Equal(device[field], current[field]);
+        foreach (var field in new[] { "LastActivityAt", "ExpiresAt", "State" }) Assert.Equal(enrollmentId[field], current[field]);
     }
 
     [Fact]
-    public async Task Provider_unknown_send_stays_charged_after_deadline_and_device_receipt()
+    public async Task Provider_unknown_send_stays_charged_after_deadline_and_controller_enrollment_receipt()
     {
         var f = new InMemoryBroker();
         var active = await Retained.ActiveAgent(f);
         f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("Provider send outcome unknown");
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(active.Device, active.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(active.EnrollmentId, active.Secret)).StatusCode);
         var runtime = Assert.Single(Retained.IssuanceLedgers(f), x => x.Value.Purpose == "runtime").Value;
         var attemptKey = Retained.Attempt(runtime);
         var attempt = f.State.Row(attemptKey)!;
         Assert.Equal("sending", attempt["State"]);
         Assert.False(attempt.ContainsKey("ExpiresAt"));
         var version = f.State.Version(attemptKey);
-        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(active.Device, active.Secret)).StatusCode);
-        Assert.Equal(active.Device, f.State.Get(RevocationReceipt.Key(Retained.Repository, active.Device))!.EnrollmentId);
+        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(active.EnrollmentId, active.Secret)).StatusCode);
+        Assert.Equal(active.EnrollmentId, f.State.Get(RevocationReceipt.Key(Retained.Repository, active.EnrollmentId))!.EnrollmentId);
         f.Clock.Advance(TimeSpan.FromDays(2));
         await Retained.ReclaimIssuance(f, runtime);
         Assert.Equal(version, f.State.Version(attemptKey));
         Assert.Equal(2L, Quota(f).Slots);
-        Assert.Equal(1L, f.Enrollment(active.Device).OutstandingTokenCount);
+        Assert.Equal(1L, f.Enrollment(active.EnrollmentId).OutstandingTokenCount);
     }
 
     [Fact]

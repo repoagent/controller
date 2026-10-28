@@ -14,7 +14,7 @@ param(
     [switch]$NonInteractive
 )
 $ErrorActionPreference = 'Stop'
-Import-Module "$PSScriptRoot/host-enrollment.psm1" -Force -DisableNameChecking
+Import-Module "$PSScriptRoot/controller-enrollment.psm1" -Force -DisableNameChecking
 $script:Diagnostic = 'Enrollment could not be verified. Inspect host authentication, selected coordinates and private state before retrying.'
 $script:Calls = 0
 $script:Clock = [Diagnostics.Stopwatch]::StartNew()
@@ -23,14 +23,14 @@ function Stop-Enrollment([string]$Message) { $script:Diagnostic = $Message; thro
 function GitHub([string]$Method, [string]$Endpoint, $Body = $null) {
     $script:Calls++
     if ($script:Calls -gt 12 -or $script:Clock.Elapsed.TotalMinutes -gt 15) { Stop-Enrollment 'GitHub work limit reached; inspect before retrying.' }
-    $result = Invoke-HostGitHub $Method $Endpoint $Body
+    $result = Invoke-OperatorGitHub $Method $Endpoint $Body
     if ($result.Status -in @(401, 403, 422)) { Stop-Enrollment "GitHub denied this operation (HTTP $($result.Status)). Check host gh access, repository $($script:LocationName) variables read/write permission and API availability." }
     return $result
 }
 function Read-Repository {
     $r = GitHub GET $repoPath
     if ($r.Status -ne 200) { Stop-Enrollment 'Repository access could not be verified.' }
-    $repo = Read-HostJson $r.Body; Assert-Id $repo.id
+    $repo = Read-OperatorJson $r.Body; Assert-Id $repo.id
     if ($repo.full_name -isnot [string] -or $repo.full_name -ine $Repository -or ($config.repositoryId -and $config.repositoryId -ne $repo.id)) { Stop-Enrollment 'Repository identity changed.' }
     return $repo.id
 }
@@ -39,7 +39,7 @@ function Read-VariableAccess {
     # never limits enrollment; unrelated variables may share the selected store.
     $r = GitHub GET ($variablesPath + '?per_page=1&page=1')
     if ($r.Status -ne 200) { Stop-Enrollment "Direct repository $($script:LocationName) variables are unavailable; absence and write access are unconfirmed." }
-    $v = Read-HostJson $r.Body
+    $v = Read-OperatorJson $r.Body
     Assert-Fields $v @('total_count','variables')
     if (($v.total_count -isnot [long] -and $v.total_count -isnot [int]) -or $v.total_count -lt 0 -or $v.variables -isnot [array] -or $v.variables.Count -ne [Math]::Min(1, $v.total_count)) { Stop-Enrollment "$($script:LocationName)-variable listing is malformed or incomplete." }
     foreach ($item in $v.variables) {
@@ -108,7 +108,7 @@ function Broker([string]$Method, [string]$Path, [string]$Secret, $Body = $null) 
     if ($Method -ceq 'POST' -and $Path -ceq "/v$setupVersion/enrollments" -and $r.Status -in @(409,503)) {
         $startDiagnostic = $null
         try {
-            $denial = Read-HostJson $r.Body
+            $denial = Read-OperatorJson $r.Body
             if ($r.Status -eq 409) {
                 Assert-Fields $denial @('code','retryAfterSeconds')
                 if ($denial.code -is [string] -and $denial.code -ceq 'enrollment_not_ready' -and
@@ -125,7 +125,7 @@ function Broker([string]$Method, [string]$Path, [string]$Secret, $Body = $null) 
         if ($startDiagnostic) { Stop-Enrollment $startDiagnostic }
     }
     if ($r.Status -ne 200) { Stop-Enrollment "Broker operation failed (HTTP $($r.Status)); private state is retained. Retry the same enrollment after inspection; no new identity was created." }
-    return Read-HostJson $r.Body -ControllerDocument
+    return Read-OperatorJson $r.Body -ControllerDocument
 }
 function Save-State { Write-PrivateJson $configPath $config; Write-PrivateJson $recoveryPath $recovery }
 function Check-Status($Status) {
@@ -142,7 +142,7 @@ function Check-Status($Status) {
     $config.pendingId = $Status.pendingId; $config.deadline = $Status.deadline
 }
 function Check-Marker([string]$Text) {
-    $m = Read-HostJson $Text -ControllerDocument
+    $m = Read-OperatorJson $Text -ControllerDocument
     Assert-Fields $m @('version','approvalKind','githubHost','appId','appSlug','repositoryId','repository','installationId','enrollmentId','challenge','profile','policyVersion','epoch','variable')
     foreach ($key in @('version','appId','repositoryId','installationId')) { Assert-Id $m[$key] }
     if ($m.version -ne $setupVersion -or $m.approvalKind -cne $approvalKind -or $m.githubHost -cne 'github.com' -or $m.appId -ne 5387625 -or $m.appSlug -cne 'repo-agent-connector' -or $m.repositoryId -ne $config.repositoryId -or $m.repository -ine $Repository -or $m.variable -cne $ApprovalVariable -or $m.profile -cne $Profile -or $m.policyVersion -cne $policy) { Stop-Enrollment 'Broker approval marker differs from the trusted host intent.' }
@@ -245,7 +245,7 @@ try {
     Write-Host "Setup/marker: $setupVersion; controller/runtime: $runtimeVersion; policy: $policy; permissions: $permissionPreview"
     Write-Host "Repository $($script:LocationName)-variable approval: $ApprovalVariable; state: $StateDirectory"
     if ($location.Legacy) { Write-Host 'Saved legacy setup retains its original approval and authority. Moving to setup v4 requires revocation, settlement and a fresh enrollment in a new state directory.' }
-    Write-Host "Apply may start one pending $($script:LocationName)-variable enrollment, write its validated public marker, save a private device credential and acknowledge it. Existing matching approval is reused; conflicts stop."
+    Write-Host "Apply may start one pending $($script:LocationName)-variable enrollment, write its validated public marker, save a private controller credential and acknowledge it. Existing matching approval is reused; conflicts stop."
     if (-not $Apply) { Write-Host 'Read-only plan. Use -Apply to execute. The fresh marker is available only after start.'; exit 0 }
     $script:Diagnostic = 'Private enrollment state could not be verified. Use an owned local directory with mode 0700/0600 on Linux or a current-user-only protected DACL on Windows; do not discard recovery state.'
     $null = Initialize-PrivateDirectory $StateDirectory
@@ -270,7 +270,7 @@ try {
         Check-Enrollment $enrollment $marker
         $r = GitHub GET $varPath
         if ($r.Status -ne 200) { Stop-Enrollment 'Saved approval is unavailable; do not recreate it.' }
-        $variable = Read-HostJson $r.Body
+        $variable = Read-OperatorJson $r.Body
         if ($variable.name -isnot [string] -or $variable.name -ine $ApprovalVariable -or $variable.value -isnot [string] -or $variable.value -cne $config.marker) { Stop-Enrollment 'Saved approval changed; do not restore it.' }
     } else {
         Assert-Text $recovery.setupSecret '\A[A-Za-z0-9_-]{43}\z'
@@ -282,11 +282,11 @@ try {
         $marker = Check-Marker $status.marker
         $config.marker = $status.marker; $config.expectedValueSha256 = Get-ValueHash $status.marker
         Save-State
-        Write-Host "Validated approval: repository ID $($marker.repositoryId), installation $($marker.installationId), device $($marker.enrollmentId), profile $Profile; policy $policy; controller/runtime $runtimeVersion; permissions $permissionPreview."
+        Write-Host "Validated approval: repository ID $($marker.repositoryId), installation $($marker.installationId), controller enrollment $($marker.enrollmentId), profile $Profile; policy $policy; controller/runtime $runtimeVersion; permissions $permissionPreview."
         $null = Read-Repository
         $r = GitHub GET $varPath
         if ($r.Status -eq 200) {
-            $variable = Read-HostJson $r.Body
+            $variable = Read-OperatorJson $r.Body
             if ($variable.name -isnot [string] -or $variable.name -ine $ApprovalVariable -or $variable.value -isnot [string] -or $variable.value -cne $config.marker) { Stop-Enrollment 'Approval conflicts with this enrollment. Nothing was replaced; resolve old authority manually.' }
         } elseif ($r.Status -eq 404) {
             if ($config.approvalWriteAttempted -or $config.approvalObserved) { Stop-Enrollment 'A previous approval write was attempted and its marker is now absent. Inspect manually; it will not be restored.' }
@@ -333,7 +333,7 @@ try {
     $identityRoute = if ($setupVersion -ge 5) { '/controller-enrollments/' } else { '/devices/' }
     $receipt = Broker POST ($brokerSetup + $identityRoute + $enrollment.enrollmentId + '/acknowledgment') $enrollment.controllerSecret @{ completionId=$recovery.completionId }
     Assert-Fields $receipt @('state')
-    if ($receipt.state -cne 'active') { Stop-Enrollment 'Activation is unconfirmed; retry acknowledgment using the persisted device credential.' }
+    if ($receipt.state -cne 'active') { Stop-Enrollment 'Activation is unconfirmed; retry acknowledgment using the persisted controller credential.' }
     $recovery.acknowledged = $true; $recovery.setupSecret = $null
     Write-PrivateJson $recoveryPath $recovery
     [ordered]@{ state='active'; enrollmentFile=$enrollmentPath; approvalFile=$configPath; brokerClosure='not-requested'; outstandingTokens='unsettled' } | ConvertTo-Json -Compress

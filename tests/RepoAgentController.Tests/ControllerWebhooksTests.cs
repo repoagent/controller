@@ -194,7 +194,7 @@ public sealed class ControllerWebhooksTests
             GitHub = new(Clock);
             Runtime = new(Native, holdAcceptance);
             var sessions = new AgentSessions(Runtime, Log);
-            var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, State, Clock, Log);
+            var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, null, State, Clock, Log);
             Outbox = new(Repository, GitHub, InMemoryDiscussions.App, State, Clock, Log);
             var bridge = new Bridge(Repository, GitHub, InMemoryDiscussions.App, sessions, new StateStore(Durable, Repository),
                 Outbox, [], settings, new AgentInputJson(), Log, Clock);
@@ -252,7 +252,7 @@ public sealed class ControllerWebhooksTests
         public Task<(string SessionId, AgentSessionStatus Status)> StartSession(CancellationToken ct) => inner.StartSession(ct);
         public Task<AgentSessionStatus> ResumeSession(string sessionId, CancellationToken ct) => inner.ResumeSession(sessionId, ct);
         public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => inner.ConfiguredModel(ct);
-        public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => inner.Models(ct);
+        public Task<IReadOnlyList<AgentModel>> Models(CancellationToken ct) => inner.Models(ct);
         public async Task<AgentTurnAccepted> StartTurn(AgentTurnRequest request, CancellationToken ct)
         {
             if (hold)

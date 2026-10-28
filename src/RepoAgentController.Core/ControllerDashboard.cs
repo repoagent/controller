@@ -18,7 +18,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
     readonly string category;
     readonly ControllerStatus status;
     readonly GitHubOutbox outbox;
-    readonly BaselineReleases releases;
+    readonly BaselineReleaseCheck releases;
     readonly TimeProvider clock;
     readonly IControllerLog log;
     readonly Func<string, string> redact;
@@ -30,7 +30,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
     string? failure;
 
     /// <param name="redact">Removes the secrets the controller knows from the failure that ends a lifetime, before it is published.</param>
-    public ControllerDashboard(string category, ControllerStatus status, GitHubOutbox outbox, BaselineReleases releases, TimeProvider clock, IControllerLog log,
+    public ControllerDashboard(string category, ControllerStatus status, GitHubOutbox outbox, BaselineReleaseCheck releases, TimeProvider clock, IControllerLog log,
         Func<string, string> redact)
     {
         this.category = category;
@@ -314,13 +314,13 @@ public sealed class ControllerDashboard : IAsyncDisposable
         text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- Image {Image(newest)} with gh {Code(newest.Gh)} and Codex {Code(newest.Codex)}.");
         text.AppendLine("- Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.");
         text.AppendLine("- To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see " +
-            $"[baseline releases](https://github.com/{BaselineReleases.Repository}/blob/{newest.Commit}/docs/ci-cd.md#baseline-releases).");
+            $"[baseline releases](https://github.com/{BaselineReleaseCheck.Repository}/blob/{newest.Commit}/docs/ci-cd.md#baseline-releases).");
     }
 
     // Release fields are validated before use, so these links only reach repoagent/controller's release and package pages.
     static string Release(BaselineRelease release) => $"[{release.Tag}]({release.Url})";
 
-    static string Image(BaselineRelease release) => $"`{release.Image}` ([package](https://github.com/{BaselineReleases.Repository}/pkgs/container/controller))";
+    static string Image(BaselineRelease release) => $"`{release.Image}` ([package](https://github.com/{BaselineReleaseCheck.Repository}/pkgs/container/controller))";
 
     static string Time(DateTimeOffset value) => value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture);
 

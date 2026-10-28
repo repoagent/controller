@@ -3,7 +3,7 @@ namespace RepoAgentController;
 /// <summary>One published baseline release, as its machine-readable release metadata describes it.</summary>
 public sealed record BaselineRelease(string Tag, long Run, int Attempt, string Image, string InventorySha256, string Commit, string Gh, string Codex)
 {
-    public string Url => $"https://github.com/{BaselineReleases.Repository}/releases/tag/{Tag}";
+    public string Url => $"https://github.com/{BaselineReleaseCheck.Repository}/releases/tag/{Tag}";
 }
 
 /// <summary>
@@ -21,7 +21,7 @@ public sealed record ReleaseNotice(DateTimeOffset CheckedAt, BaselineRelease? Ru
 /// controller was started without one. A delegate rather than a port: it is one local file read, not a provider.</param>
 /// <param name="redact">Removes the secrets the controller knows from a failure's message. A failure is kept redacted, so
 /// failures that differ only in a secret are the same outcome.</param>
-public sealed class BaselineReleases(IBaselineReleases published, Func<CancellationToken, Task<string?>> inventorySha256,
+public sealed class BaselineReleaseCheck(IBaselineReleases published, Func<CancellationToken, Task<string?>> inventorySha256,
     TimeProvider clock, IControllerLog log, Func<string, string> redact) : IAsyncDisposable
 {
     public const string Repository = "repoagent/controller";

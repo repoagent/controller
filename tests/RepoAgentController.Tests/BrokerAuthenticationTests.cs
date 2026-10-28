@@ -21,7 +21,7 @@ public sealed class BrokerAuthenticationTests
         try
         {
             Assert.Equal(0, await fixture.Start("--enrollment-environment", variable));
-            Assert.Single(fixture.Transport.Requests); // The transport accepts only the enrolled device secret.
+            Assert.Single(fixture.Transport.Requests); // The transport accepts only the enrolled enrollmentId secret.
             Assert.Null(Environment.GetEnvironmentVariable(variable));
             var inherited = File.ReadAllText(childEnvironment);
             Assert.Contains("GH_TOKEN=opaque-token-1", inherited);
@@ -76,14 +76,25 @@ public sealed class BrokerAuthenticationTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Real_startup_accepts_the_enrolled_bot_without_a_PEM_and_leaves_no_usable_credential(bool webhooks)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Real_startup_accepts_legacy_and_canonical_enrollments_without_a_PEM_and_leaves_no_usable_credential(bool webhooks, bool canonical)
     {
         using var fixture = new Fixture(webhooks);
+        if (canonical)
+        {
+            fixture.Enrollment["enrollmentId"] = fixture.Enrollment["deviceId"]!.DeepClone();
+            fixture.Enrollment["controllerSecret"] = fixture.Enrollment["deviceSecret"]!.DeepClone();
+            fixture.Enrollment.Remove("deviceId");
+            fixture.Enrollment.Remove("deviceSecret");
+            fixture.SaveEnrollment();
+        }
         fixture.SeedCache(); // An earlier controller version persisted its token here.
         Assert.Equal(0, await fixture.Start());
-        Assert.Single(fixture.Transport.Requests);
+        Assert.Equal(canonical ? "/v1/controller-enrollments/device-1/github-token" : "/v1/devices/device-1/installation-token",
+            Assert.Single(fixture.Transport.Requests).AbsolutePath);
         Assert.False(File.Exists(fixture.LegacyTokenFile));
         Assert.False(File.Exists(fixture.LegacyTokenFile + ".tmp"));
         // The checked lifetime has ended: its wrapper neither reuses that lease nor falls back to ambient sign-in.
@@ -721,13 +732,15 @@ public sealed class BrokerAuthenticationTests
             Requests.Add(request.RequestUri!);
             Requested?.TrySetResult();
             if (ResponseGate is not null) await ResponseGate.WaitAsync(cancellationToken);
-            Assert.Equal($"https://credentials.example.org/v{enrollment["protocolVersion"]!.GetValue<int>()}/devices/device-1/installation-token", request.RequestUri!.AbsoluteUri);
+            var canonical = enrollment.ContainsKey("enrollmentId");
+            var route = canonical ? "/controller-enrollments/device-1/github-token" : "/devices/device-1/installation-token";
+            Assert.Equal($"https://credentials.example.org/v{enrollment["protocolVersion"]!.GetValue<int>()}{route}", request.RequestUri!.AbsoluteUri);
             Assert.Equal(HttpMethod.Post, request.Method);
             Assert.Null(request.Content);
             Assert.Equal("application/json", request.Headers.Accept.Single().MediaType);
-            Assert.Equal(enrollment["deviceSecret"]!.GetValue<string>(), request.Headers.Authorization!.Parameter);
+            Assert.Equal(enrollment[canonical ? "controllerSecret" : "deviceSecret"]!.GetValue<string>(), request.Headers.Authorization!.Parameter);
             var result = enrollment.DeepClone().AsObject();
-            foreach (var name in new[] { "brokerOrigin", "githubHost", "deviceId", "deviceSecret" }) result.Remove(name);
+            foreach (var name in new[] { "brokerOrigin", "githubHost", "deviceId", "deviceSecret", "enrollmentId", "controllerSecret" }) result.Remove(name);
             result["token"] = "opaque-token-" + Requests.Count;
             result["expiresAt"] = clock.GetUtcNow().AddHours(1).ToString("O");
             switch (Defect)

@@ -57,8 +57,8 @@ public sealed class GitHubAppCredentials : IDisposable
     public AppIdentity Identity => lifetime.Identity;
     public bool IsAgentActor(JsonNode? actor) => Identity.IsAgentActor(DiscussionJson.ReadActor(actor));
     public Task<string> GetToken(CancellationToken ct) => lifetime.GetToken(ct);
-    internal async Task<InstallationCredential> GetCredential(CancellationToken ct) => Credential(await lifetime.GetCredential(ct));
-    static InstallationCredential Credential(GitHubToken token) => new(token.Token, token.ExpiresAt, token.Repository, token.Profile);
+    internal async Task<GitHubToolToken> GetCredential(CancellationToken ct) => Credential(await lifetime.GetCredential(ct));
+    static GitHubToolToken Credential(GitHubToken token) => new(token.Token, token.ExpiresAt, token.Repository, token.Profile);
     public Task RefreshUntilCancelled(CancellationToken ct) => lifetime.RefreshUntilCancelled(ct);
 
     internal static void SecureDirectory(string path)

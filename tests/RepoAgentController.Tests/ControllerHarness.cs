@@ -360,7 +360,7 @@ static class ControllerHarness
         public async Task Finish(Turn turn, bool failed = false)
         {
             Native.Finish(turn, failed);
-            await Logged($" native-event method=turn/completed thread={turn.Thread} turn={turn.Id} ");
+            await Logged($" agent-event method=turn/completed thread={turn.Thread} turn={turn.Id} ");
         }
 
         /// <summary>The <paramref name="number"/>th native turn, once the controller has checkpointed its delivery.</summary>

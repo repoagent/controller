@@ -15,14 +15,14 @@ public sealed class BrokerEndpointsTests
     {
         var builder = WebApplication.CreateSlimBuilder();
         // Registered only so the revocation handler's parameter binds as a service; no route runs here.
-        builder.Services.AddSingleton<DeviceRevocation>(_ => throw new InvalidOperationException());
+        builder.Services.AddSingleton<ControllerSelfRevocation>(_ => throw new InvalidOperationException());
         var app = builder.Build();
 
         BrokerEndpoints.Map(app);
 
         var mapped = ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints).OfType<RouteEndpoint>()
             .Select(e => string.Join(',', e.Metadata.GetRequiredMetadata<IHttpMethodMetadata>().HttpMethods) + " " + e.RoutePattern.RawText);
-        var runtime = Enumerable.Range(1, 3).SelectMany(v => new[] { $"DELETE /v{v}/devices/{{deviceId}}", $"POST /v{v}/devices/{{deviceId}}/installation-token",
+        var runtime = Enumerable.Range(1, 3).SelectMany(v => new[] { $"DELETE /v{v}/devices/{{enrollmentId}}", $"POST /v{v}/devices/{{enrollmentId}}/installation-token",
             $"DELETE /v{v}/controller-enrollments/{{enrollmentId}}", $"POST /v{v}/controller-enrollments/{{enrollmentId}}/github-token" });
         var setup = Enumerable.Range(1, 5).SelectMany(v => new[] { $"POST /v{v}/enrollments", $"GET /v{v}/enrollments/{{id}}",
             $"POST /v{v}/enrollments/{{id}}/completion", v == 5 ? $"POST /v{v}/controller-enrollments/{{id}}/acknowledgment" : $"POST /v{v}/devices/{{id}}/acknowledgment" });

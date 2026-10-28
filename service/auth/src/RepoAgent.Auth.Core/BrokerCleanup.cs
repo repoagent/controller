@@ -232,7 +232,7 @@ public sealed class BrokerCleanup(IBrokerState state, string deploymentEpoch, IC
         }
         var ledger = refresh ? (await state.ReadAsync(EnrollmentLedger.Key(listed.Id), ct))?.Value : listed.Value;
         var pending = (await state.ReadAsync(PendingControllerEnrollment.Key(repository, listed.Id), ct))?.Value;
-        if (!Guid.TryParseExact(allocation.EnrollmentId, "N", out _)) throw new InvalidDataException("Invalid device.");
+        if (!Guid.TryParseExact(allocation.EnrollmentId, "N", out _)) throw new InvalidDataException("Invalid controller enrollment.");
         var enrollment = (await state.ReadAsync(ControllerEnrollment.Key(repository, allocation.EnrollmentId), ct))?.Value;
         return [ledger, pending, enrollment];
     }
