@@ -14,9 +14,34 @@ import time
 from types import SimpleNamespace
 
 guard = SimpleNamespace(**runpy.run_path(str(Path(__file__).with_name('broker-diagnostics.py'))))
+release_policy = runpy.run_path(str(Path(__file__).with_name('broker-release.py')))
 
 
-def selection(image, revision, replica):
+def published_contract(image, tag):
+    def github(endpoint, asset=False):
+        return guard.document(['gh', 'api', '--hostname', 'github.com', '-H',
+            'Accept:application/octet-stream' if asset else 'Accept:application/vnd.github+json',
+            'repos/repoagent/controller/'+endpoint])
+    released = github('releases/tags/'+tag)
+    if released.get('tag_name') != tag or released.get('draft') is not False or released.get('prerelease') is not False:
+        raise guard.Unavailable('unsupported-release-contract')
+    assets = released.get('assets', [])
+    if not isinstance(assets, list) or len(assets) > 100:
+        raise guard.Unavailable('unsupported-release-contract')
+    selected = [asset for asset in assets if asset.get('name') == 'broker-release.json']
+    if len(selected) != 1 or type(selected[0].get('id')) is not int or selected[0]['id'] <= 0:
+        raise guard.Unavailable('unsupported-release-contract')
+    sha = github('commits/'+tag).get('sha', '')
+    if not re.fullmatch('[0-9a-f]{40}', sha):
+        raise guard.Unavailable('unsupported-release-contract')
+    # Reuse the same strict mapping contract as ordinary broker release resolution.
+    value = release_policy['validate_manifest'](github('releases/assets/'+str(selected[0]['id']), True), tag, sha)
+    if value['image'] != image:
+        raise guard.Unavailable('unsupported-release-contract')
+    return dict(component='broker', version=value['version'], source=sha)
+
+
+def selection(image, revision, replica, discover=False):
     app = guard.read(guard.APP)
     if app.get('id', '').lower() != guard.APP.lower() or any(app.get('tags', {}).get(key) != value for key, value in
             dict(repositoryId='1426154477', ownerId='345029828', managedBy='repoagent-auth').items()):
@@ -33,6 +58,19 @@ def selection(image, revision, replica):
         containers = template.get('containers', [])
         if len(containers) != 1 or containers[0].get('name') != 'auth-service' or containers[0].get('image') != image:
             raise guard.Unavailable('selected-runtime-mismatch')
+    if discover:
+        response = guard.read(revision_id+'/replicas', query="""{value: value[:2].{id: id, name: name,
+properties: {runningState: properties.runningState, containers: properties.containers[].{
+name: name, ready: ready, runningState: runningState}}}, hasNext: nextLink != `null`} """.strip())
+        rows = response.get('value', [])
+        if response.get('hasNext') is not False or not isinstance(rows, list) or len(rows) != 1:
+            raise guard.Unavailable('ambiguous-or-missing-replica')
+        discovered = rows[0].get('name', '')
+        if not re.fullmatch(re.escape(revision)+'-[a-z0-9-]{1,80}', discovered) or (replica and replica != discovered):
+            raise guard.Unavailable('selected-runtime-mismatch')
+        replica = discovered
+        if rows[0].get('id', '').lower() != (revision_id+'/replicas/'+replica).lower():
+            raise guard.Unavailable('selected-runtime-mismatch')
     replica_id = revision_id+'/replicas/'+replica
     snapshot = guard.read(replica_id)
     containers = snapshot['properties'].get('containers', [])
@@ -41,6 +79,7 @@ def selection(image, revision, replica):
             or containers[0].get('name') != 'auth-service' or containers[0].get('ready') is not True \
             or containers[0].get('runningState') != 'Running':
         raise guard.Unavailable('selected-runtime-mismatch')
+    return replica
 
 
 def console(revision, replica):
@@ -103,23 +142,29 @@ def collect(output):
     image = os.environ.get('AUTH_EXPECTED_IMAGE', '')
     revision = os.environ.get('AUTH_EXPECTED_REVISION', '')
     replica = os.environ.get('AUTH_EXPECTED_REPLICA', '')
-    if not re.fullmatch('ghcr.io/repoagent/controller-auth@sha256:[0-9a-f]{64}', image) \
+    tag = os.environ.get('AUTH_RELEASE_TAG', '')
+    if not re.fullmatch(r'ghcr\.io/repoagent/controller-auth@sha256:[0-9a-f]{64}', image) \
             or not re.fullmatch('repoagent-auth--[a-z0-9-]{1,64}', revision) \
-            or not re.fullmatch(re.escape(revision)+'-[a-z0-9-]{1,80}', replica):
+            or (replica and not re.fullmatch(re.escape(revision)+'-[a-z0-9-]{1,80}', replica)) \
+            or not re.fullmatch('broker-v'+release_policy['VERSION'], tag) or int(tag.split('v')[1].split('.')[0]) < 1:
         raise guard.Refused('Expected exact selected immutable image, revision and replica')
     source = guard.checked_source()
     if not output.is_absolute() or output.exists():
         raise guard.Refused('Use a new absolute evidence directory')
     output.mkdir(mode=0o700, parents=True)
     report = dict(schema='repoagent.broker-version-probe/v1', source=source, observedAt=dt.datetime.now(dt.timezone.utc).isoformat(),
-        target=dict(image=image, revision=revision, replica=replica, container='auth-service'),
+        target=dict(image=image, releaseTag=tag, revision=revision, container='auth-service'),
         state='unavailable', remoteExitStatusEstablished=False, settlementProven=False,
         limitations='Version metadata observation only. Azure CLI session completion does not establish remote exit status; '
                     'before/after target checks do not lock resources or prove authority settlement.')
     try:
-        selection(image, revision, replica)
+        expected = published_contract(image, tag)
+        replica = selection(image, revision, replica, discover=True)
+        report['target']['replica'] = replica
         metadata = console(revision, replica)
         selection(image, revision, replica)
+        if metadata != expected:
+            raise guard.Unavailable('unexpected-version-metadata')
         report.update(state='observed', metadata=metadata)
     except (guard.Unavailable, ValueError, TypeError, KeyError, AttributeError) as error:
         report['reason'] = str(error) if isinstance(error, guard.Unavailable) else 'invalid-response'

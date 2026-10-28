@@ -21,7 +21,7 @@ on:
         description: Exact accepted revision (staging stop/resume or version-probe)
         type: string
       replica:
-        description: Exact observed replica of the selected revision (version-probe only)
+        description: Optional exact replica; version-probe otherwise requires one uniquely ready replica
         type: string
   push:
     branches: [main]
@@ -86,6 +86,8 @@ jobs:
       AUTH_EXPECTED_IMAGE: ${{ inputs.image }}
       AUTH_EXPECTED_REVISION: ${{ inputs.revision }}
       AUTH_EXPECTED_REPLICA: ${{ inputs.replica }}
+      AUTH_RELEASE_TAG: ${{ inputs.release-tag }}
+      GH_TOKEN: ${{ github.token }}
       AUTH_SIGNING_KEY_URI: ''
       AUTH_DATA_PROTECTION_KEY_URI: ''
       AUTH_DEPLOYMENT_EPOCH: ''

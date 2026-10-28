@@ -25,9 +25,19 @@ class BrokerConsoleVersionTests(unittest.TestCase):
             fixtures[APP+'/revisions/'+REVISION+'/replicas/'+REPLICA] = dict(
                 id=APP+'/revisions/'+REVISION+'/replicas/'+REPLICA, name=REPLICA,
                 properties=dict(runningState='Running', containers=[dict(name='auth-service',ready=True,runningState='Running')]))
+            fixtures[APP+'/revisions/'+REVISION+'/replicas'] = dict(value=[
+                fixtures[APP+'/revisions/'+REVISION+'/replicas/'+REPLICA]])
+            fixtures['repos/repoagent/controller/releases/tags/broker-v1.0.0'] = dict(
+                tag_name='broker-v1.0.0',draft=False,prerelease=False,assets=[dict(id=7,name='broker-release.json')])
+            fixtures['repos/repoagent/controller/commits/broker-v1.0.0'] = dict(sha='b'*40)
+            fixtures['repos/repoagent/controller/releases/assets/7'] = dict(schema='repoagent.broker-release/v1',
+                component='broker',tag='broker-v1.0.0',version='1.0.0',source='b'*40,image=IMAGE,
+                imageTag='ghcr.io/repoagent/controller-auth:broker-v1.0.0',
+                run='https://github.com/repoagent/controller/actions/runs/42')
             if change:
                 change(fixtures)
-        values = dict(AUTH_EXPECTED_IMAGE=IMAGE, AUTH_EXPECTED_REVISION=REVISION, AUTH_EXPECTED_REPLICA=REPLICA)
+        values = dict(AUTH_EXPECTED_IMAGE=IMAGE, AUTH_EXPECTED_REVISION=REVISION, AUTH_EXPECTED_REPLICA=REPLICA,
+                      AUTH_RELEASE_TAG='broker-v1.0.0')
         values.update(environment)
         return harness.BrokerDiagnosticsTests.invoke(self, setup, script=SCRIPT, report_name='version-probe.json', **values)
 
@@ -49,7 +59,8 @@ class BrokerConsoleVersionTests(unittest.TestCase):
     def test_wrong_source_or_caller_selected_target_is_refused_before_console(self):
         for environment in (dict(GITHUB_SHA='c'*40), dict(GITHUB_REF='refs/heads/other'),
                 dict(AZURE_SUBSCRIPTION_ID='other'), dict(AUTH_EXPECTED_IMAGE=IMAGE+';id'),
-                dict(AUTH_EXPECTED_REVISION='other--revision'), dict(AUTH_EXPECTED_REPLICA=REPLICA+'/other')):
+                dict(AUTH_EXPECTED_REVISION='other--revision'), dict(AUTH_EXPECTED_REPLICA=REPLICA+'/other'),
+                dict(AUTH_RELEASE_TAG='broker-v0.9.0')):
             with self.subTest(environment=environment):
                 result, report, calls, _ = self.invoke(**environment)
                 self.assertNotEqual(result.returncode, 0)
@@ -91,4 +102,35 @@ class BrokerConsoleVersionTests(unittest.TestCase):
         result, report, _, _ = self.invoke(lambda fixtures: fixtures.update(consoleMode='hang'))
         self.assertEqual(result.returncode, 1)
         self.assertEqual(report['reason'], 'console-timeout')
+        self.assertNotIn('metadata', report)
+
+    def test_release_binding_and_unique_replica_are_required_before_any_console(self):
+        for mode in ('draft','prerelease','asset-absent','image','source','multiple','empty'):
+            with self.subTest(mode=mode):
+                def change(fixtures):
+                    release = fixtures['repos/repoagent/controller/releases/tags/broker-v1.0.0']
+                    asset = fixtures['repos/repoagent/controller/releases/assets/7']
+                    if mode in ('draft','prerelease'): release[mode] = True
+                    elif mode == 'asset-absent': release['assets'] = []
+                    elif mode == 'image': asset['image'] = IMAGE.replace('b'*64,'c'*64)
+                    elif mode == 'source': asset['source'] = 'c'*40
+                    else:
+                        rows = fixtures[APP+'/revisions/'+REVISION+'/replicas']['value']
+                        rows[:] = rows*2 if mode == 'multiple' else []
+                result, report, calls, _ = self.invoke(change)
+                self.assertEqual(result.returncode, 1)
+                self.assertNotIn('metadata', report)
+                self.assertFalse(any(call[:3] == ['az','containerapp','exec'] for call in calls))
+
+    def test_unique_replica_can_be_discovered_without_caller_entering_its_name(self):
+        result, report, _, _ = self.invoke(AUTH_EXPECTED_REPLICA='')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(report['target']['replica'], REPLICA)
+
+    def test_console_metadata_must_match_the_published_version_and_source(self):
+        def wrong_contract(fixtures):
+            fixtures['repos/repoagent/controller/releases/assets/7']['source'] = 'c'*40
+            fixtures['repos/repoagent/controller/commits/broker-v1.0.0']['sha'] = 'c'*40
+        result, report, _, _ = self.invoke(wrong_contract)
+        self.assertEqual(result.returncode, 1)
         self.assertNotIn('metadata', report)

@@ -23,6 +23,11 @@ if Path(sys.argv[0]).name == 'git':
  elif args == ['remote','get-url','origin']: print('https://github.com/repoagent/controller.git')
  elif args == ['ls-remote','--exit-code','origin','refs/heads/main']: print('a'*40+'\\trefs/heads/main')
  else: sys.exit(91)
+elif Path(sys.argv[0]).name == 'gh' and args[0]=='api':
+ fixtures=json.loads(Path(os.environ['TEST_FIXTURES']).read_text())
+ value=fixtures[args[-1]]
+ if value=='FAIL': sys.exit('DO_NOT_EXPORT_SECRET provider error')
+ print(json.dumps(value))
 elif args[:2] == ['account','show']:
  print(json.dumps(dict(id='46f7e5d6-05f3-435b-8089-6c63a203dbfa',tenantId='3c356090-bfe9-459b-a2ac-064231707881')))
 elif args[:2] == ['containerapp','exec']:
@@ -68,7 +73,7 @@ class BrokerDiagnosticsTests(unittest.TestCase):
         folder = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='broker-diagnostics-')))
         binaries = folder / 'bin'
         binaries.mkdir()
-        for name in ('az', 'git'):
+        for name in ('az', 'git', 'gh'):
             path = binaries / name
             path.write_text('#!' + sys.executable + '\n' + DOUBLE)
             path.chmod(0o700)
