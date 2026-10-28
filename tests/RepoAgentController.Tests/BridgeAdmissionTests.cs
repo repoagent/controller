@@ -669,11 +669,17 @@ public sealed class BridgeAdmissionTests
         var drain = world.Bridge.StopAndDrain(abort.Token);
         await abort.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => drain);
-        Assert.NotNull(world.Saved(1)!.Running);
-        Assert.Empty(world.Logged("turn-ended"));
-        Assert.Equal([2], world.Waiting());
-        world.Finish(1);
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            Assert.NotNull(world.Saved(1)!.Running);
+            Assert.Empty(world.Logged("turn-ended"));
+            Assert.Equal([2], world.Waiting());
+        }
+        finally
+        {
+            world.Finish(1);
+        }
         await world.Observe(2);
         await world.Dispatch();
         Assert.Single(world.Turns);
