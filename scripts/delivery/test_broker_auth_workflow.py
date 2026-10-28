@@ -16,11 +16,13 @@ def condition(name):
     return re.search(r'^    if: (.+)$', body, re.M)[1].removeprefix('${{').removesuffix('}}').strip()
 
 
-def selected(name, *, event='push', operation='', ref='refs/heads/main', published='success', cancelled=False):
+def selected(name, *, event='push', operation='', ref='refs/heads/main', published='success', cancelled=False,
+             approved=True, verified='success', recorded='success'):
     context = {'github.event_name': event, 'github.ref': ref, 'inputs.operation': operation,
-               'needs.publish.result': published}
+               'needs.publish.result': published, 'needs.verify-service.result': verified,
+               'needs.release-metadata.result': recorded, 'needs.select-release.outputs.release': 'true' if approved else 'false'}
     expression = condition(name).replace('!cancelled()', repr(not cancelled))
-    expression = re.sub(r'(?:github|inputs|needs)\.[a-z_.]+', lambda match: repr(context[match[0]]), expression)
+    expression = re.sub(r'(?:github|inputs|needs)\.[a-z_.-]+', lambda match: repr(context[match[0]]), expression)
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     if not re.fullmatch(r'(?:\s|\(|\)|==|!=|and|or|True|False)*', re.sub(r"'[^']*'", '', expression)):
         raise AssertionError('Unsupported workflow expression: ' + condition(name))
@@ -28,6 +30,11 @@ def selected(name, *, event='push', operation='', ref='refs/heads/main', publish
 
 
 class BrokerWorkflowTests(unittest.TestCase):
+    def test_unreleased_main_source_is_verified_without_republishing_the_previous_version(self):
+        self.assertTrue(selected('verify-service', approved=False))
+        self.assertFalse(selected('publish', approved=False))
+        self.assertFalse(selected('deploy', published='skipped', recorded='skipped', approved=False))
+
     def test_pull_requests_verify_without_publication_or_deployment(self):
         context = dict(event='pull_request', ref='refs/pull/7/merge', published='skipped')
         self.assertTrue(selected('verify-service', **context))
@@ -42,6 +49,9 @@ class BrokerWorkflowTests(unittest.TestCase):
             with self.subTest(publication=result):
                 self.assertFalse(selected('deploy', published=result))
         self.assertFalse(selected('deploy', cancelled=True))
+        for result in ['failure', 'cancelled', 'skipped']:
+            with self.subTest(metadata=result):
+                self.assertFalse(selected('deploy', recorded=result))
 
     def test_explicit_image_rollback_runs_without_build_or_publication(self):
         context = dict(event='workflow_dispatch', operation='deploy-image', published='skipped')
@@ -52,6 +62,13 @@ class BrokerWorkflowTests(unittest.TestCase):
         self.assertFalse(selected('deploy', **context, cancelled=True))
         # Without an explicit status function GitHub skips jobs whose dependency was skipped.
         self.assertIn('!cancelled()', condition('deploy'))
+
+    def test_explicit_version_rollback_resolves_existing_metadata_without_publication(self):
+        context = dict(event='workflow_dispatch', operation='deploy-release', published='skipped', recorded='skipped')
+        self.assertFalse(selected('verify-service', **context))
+        self.assertFalse(selected('publish', **context))
+        self.assertTrue(selected('deploy', **context))
+        self.assertFalse(selected('deploy', **context, ref='refs/heads/feature'))
 
     def test_manual_source_retry_preserves_the_full_delivery_path(self):
         context = dict(event='workflow_dispatch', operation='deploy')

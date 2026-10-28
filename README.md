@@ -59,7 +59,7 @@ When repository settings are enabled, the controller and its agent can read **al
 
 The broker and guided PowerShell installer support [setup v4](service/auth/README.md#repository-agent-variable-enrollment-v4) with `REPOAGENT_APPROVAL` in Agent variables, including repository-settings profiles. Existing grants keep their original contracts: migration requires revocation, broker closure, token settlement and a fresh enrollment. Revocation can resume failed broker closure with the original saved files after approval withdrawal. [Installation acceptance and the settlement-preflight limitation](docs/host-enrollment.md#verification-boundary) remain explicit; a device DELETE acknowledgment alone does not make replacement safe.
 
-The broker's `--version --json` command reports its compiled service version and source revision without loading credentials. Service versions are separate from enrollment protocol and storage schema versions.
+The broker's `--version --json` command reports its compiled service version and source revision without loading credentials. [Broker releases](docs/broker-releases.md) use independent semantic versions and verified immutable images for deliberate deployment and rollback; service versions remain separate from enrollment protocol and storage schema versions.
 
 For implementation and design, see the [architecture decisions](docs/adr/), [domain glossary](GLOSSARY.md), [credential broker documentation](service/auth/README.md) and [Controller and Broker delivery workflows](docs/ci-cd.md).
 

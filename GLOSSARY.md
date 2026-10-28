@@ -122,3 +122,6 @@ The controller-owned Discussion, in an operator-chosen category, where the contr
 **Baseline release**:
 A GitHub Release of `repoagent/controller` that records one anonymously verified public controller image, with its immutable reference and tool versions. Publishing one never changes a running controller; operators adopt it deliberately.
 _Avoid_: latest release
+
+**Broker release**:
+A versioned publication of the credential broker, independent of the controller release, enrollment protocols and retained-state schemas. Operators adopt it deliberately.

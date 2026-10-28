@@ -1,6 +1,6 @@
 # Authentication service: enrollment, accounted issuance and self-revocation
 
-Run `dotnet RepoAgent.Auth.dll --version` or `--version --json` to inspect the compiled broker service version and source revision without configuring storage or credentials. The service version is independent of the enrollment protocol and retained-state schema. HTTP and cleanup telemetry identify the same compiled service version.
+Run `dotnet RepoAgent.Auth.dll --version` or `--version --json` to inspect the compiled broker service version and source revision without configuring storage or credentials. The service version is independent of the enrollment protocol and retained-state schema. HTTP and cleanup telemetry identify the same compiled service version. See [broker release compatibility, publication and rollback](../../docs/broker-releases.md).
 
 For native C# debugging with Aspire, local Azurite and local Key Vault wrapping, including shared-vault App signing through an explicit Development-only Azure CLI credential, see [local development](local-development.md).
 
