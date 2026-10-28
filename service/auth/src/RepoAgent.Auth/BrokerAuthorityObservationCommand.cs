@@ -44,6 +44,11 @@ internal static class BrokerAuthorityObservationCommand
             Console.Error.WriteLine("Retained authority inspection refused: invalid production configuration.");
             return 2;
         }
+        catch (Exception)
+        {
+            Console.Error.WriteLine("Retained authority inspection unavailable; no provider details retained.");
+            return 1;
+        }
         try
         {
             using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(20));
