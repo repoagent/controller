@@ -215,7 +215,7 @@ public static class BridgeCommand
                             // Offline recovery must inspect original pending evidence before it can be normalized away.
                             if (reconciliation?.AdmissionBlocked != true) bridge.ResumeInterrupted();
                             settingsRefresh = settings.RefreshUntilCancelled(bridge.ReconcileCategoryEnrollment, intakeStop.Token);
-                            dashboard?.Start(runtimeToken);
+                            dashboard?.Start(runtimeToken, codex);
                             // Replaced agent credentials apply between dispatches at a global idle boundary: the checkout journal's in
                             // clone mode, else the native's. Dispatch holds its gate before refresh admission, so this order matches.
                             await using var agentRefresh = agentCredentials?.Watch((install, ct) => bridge.ExcludingDispatch(async () =>

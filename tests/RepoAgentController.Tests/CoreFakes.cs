@@ -490,6 +490,10 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
     public void Completed(string session, string turn, AgentTurnStatus status = AgentTurnStatus.Completed, string? rejection = null,
         int? epoch = null, string? reported = null) =>
         Changed?.Invoke(new AgentTurnCompleted(epoch ?? Epoch, session, turn, status, reported ?? status.ToString().ToLowerInvariant(), rejection));
+    public Func<CancellationToken, Task<AgentUsageObservation>> Usage { get; set; } = _ =>
+        Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Unsupported, []));
+    public Task<AgentUsageObservation> ReadUsage(CancellationToken ct) => Usage(ct);
+    public void AccountChanged() => Changed?.Invoke(new AgentUsageContextChanged(Epoch));
     public void Disconnect() => Changed?.Invoke(new AgentRuntimeDisconnected(Epoch));
 }
 

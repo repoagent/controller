@@ -42,6 +42,10 @@ public interface IAgentRuntime
 
     /// <summary>The models the agent account offers for selection, without hidden ones.</summary>
     Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct);
+
+    /// <summary>Reads account usage without starting a turn. Unsupported providers return an explicit unavailable capability.</summary>
+    Task<AgentUsageObservation> ReadUsage(CancellationToken ct) =>
+        Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Unsupported, []));
 }
 
 /// <summary>A turn to start: the bridge envelope as its input text, the selected model and effort, and whether the session still

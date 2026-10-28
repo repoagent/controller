@@ -14,7 +14,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
     public static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
     // Bounded so shutdown cannot hang on GitHub; an undelivered stop stays retained and the next lifetime supersedes it.
     static readonly TimeSpan StopBudget = TimeSpan.FromSeconds(10);
-    const int MaximumSessions = 20, MaximumFailures = 10, MaximumText = 300;
+    const int MaximumSessions = 20, MaximumFailures = 10, MaximumFailureEvents = 20, MaximumText = 300;
     readonly string category;
     readonly ControllerStatus status;
     readonly GitHubOutbox outbox;
@@ -26,6 +26,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
     readonly WakeLoop loop;
     Task running = Task.CompletedTask;
     bool started;
+    AgentUsageCollection? usage;
     string? failure;
 
     /// <param name="redact">Removes the secrets the controller knows from the failure that ends a lifetime, before it is published.</param>
@@ -47,9 +48,15 @@ public sealed class ControllerDashboard : IAsyncDisposable
     void Wake() => loop.Signal();
 
     /// <summary>Publishes the current status now, then on every change, release check and heartbeat until disposal.</summary>
-    public void Start(CancellationToken ct)
+    public void Start(CancellationToken ct, IAgentRuntime? runtime = null)
     {
         started = true;
+        if (runtime is not null)
+        {
+            usage = new(runtime, clock);
+            usage.Changed += Wake;
+            usage.Start(ct);
+        }
         // A failed publication waits for the heartbeat, so reporting that failure cannot spin this loop.
         running = loop.Run(CancellationTokenSource.CreateLinkedTokenSource(ct, stop.Token), _ => Task.FromResult((HeartbeatInterval, Publish(null))));
         releases.Start(ct);
@@ -65,7 +72,8 @@ public sealed class ControllerDashboard : IAsyncDisposable
         {
             var snapshot = status.Snapshot();
             var now = clock.GetUtcNow();
-            outbox.Dashboard(category, Title(snapshot, now, stopped), Render(snapshot, now, stopped, releases.Current));
+            var accountUsage = usage?.Current;
+            outbox.Dashboard(category, Title(snapshot, now, stopped, accountUsage), Render(snapshot, now, stopped, releases.Current, accountUsage));
             return true;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -76,7 +84,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
     }
 
     // Year is always present so a frozen title remains unambiguous across year boundaries.
-    static string Title(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped)
+    static string Title(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, UsageSnapshot? usage)
     {
         var heartbeat = "💓 " + now.UtcDateTime.ToString("dd MMM yyyy HH:mm 'UTC'", CultureInfo.InvariantCulture);
         var summary = stopped is { Failure: not null } ? "🔴 Stopped after failure"
@@ -84,13 +92,14 @@ public sealed class ControllerDashboard : IAsyncDisposable
             : snapshot.Authentication.State == "failed" ? "🔴 GitHub authentication failed"
             : snapshot.CodexAuthentication.State == "failed" ? "🔴 Codex authentication failed"
             : snapshot.Work.AdmissionBlocked == true ? $"🟠 Dispatch blocked · {snapshot.Work.Waiting} queued"
+            : usage?.Fresh(now) == true && usage.Exhausted ? "🟠 Usage exhausted" + (usage.Reset is { } reset ? " · resets " + reset.UtcDateTime.ToString("dd MMM yyyy HH:mm 'UTC'", CultureInfo.InvariantCulture) : "")
             : null;
         return summary is null
             ? $"{heartbeat} · {snapshot.Work.Running}/{snapshot.Work.Limit} active · {snapshot.Work.Waiting} queued — RepoAgent"
             : $"{summary} · {heartbeat} — RepoAgent";
     }
 
-    static string Render(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, ReleaseNotice? release)
+    string Render(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, ReleaseNotice? release, UsageSnapshot? usage)
     {
         var text = new StringBuilder();
         text.AppendLine(AppIdentity.DashboardMarker);
@@ -137,9 +146,18 @@ public sealed class ControllerDashboard : IAsyncDisposable
         text.AppendLine();
         Updates(text, release);
         text.AppendLine();
-        text.AppendLine("### Active and queued sessions");
-        var busy = snapshot.Sessions.Where(session => session.Activity is SessionActivity.Pending or SessionActivity.Running || session.Waiting != 0).ToArray();
-        foreach (var session in busy.Take(MaximumSessions))
+        Usage(text, usage, now, redact);
+        text.AppendLine();
+        text.AppendLine("### Tracked Discussions");
+        var inventory = snapshot.Sessions.OrderBy(session => session.Activity switch
+        {
+            SessionActivity.Running => 0,
+            SessionActivity.Pending => 1,
+            SessionActivity.Retrying => 2,
+            _ when session.Waiting != 0 => 3,
+            _ => 4
+        }).ThenBy(session => session.Discussion, StringComparer.Ordinal).ToArray();
+        foreach (var session in inventory.Take(MaximumSessions))
         {
             var waiting = session.Waiting;
             string? doing = session.Activity switch
@@ -147,7 +165,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
                 SessionActivity.Pending => "awaiting native acknowledgement",
                 SessionActivity.Retrying retry => $"delivery failed or was unacknowledged; attempt {(retry.Attempts ?? 0) + 1} at {Time(retry.RetryAt ?? "")}",
                 SessionActivity.Running turn => stopped is null ? $"running a turn since {Time(turn.Since ?? "")}" : "its turn ended with the controller",
-                _ => null
+                _ => session.Waiting == 0 ? "idle; no input waiting" : null
             };
             // Why idle input still waits, from the most specific cause status shows; others appear under recent failures.
             var reason = waiting == 0 ? null : session.Activity switch
@@ -155,20 +173,102 @@ public sealed class ControllerDashboard : IAsyncDisposable
                 SessionActivity.Running when stopped is null => $"{waiting} inputs waiting for that turn to finish",
                 SessionActivity.Pending or SessionActivity.Retrying or SessionActivity.Running => $"{waiting} inputs waiting",
                 _ when codexFailed => $"{waiting} inputs held until the Codex account credentials are replaced",
+                _ when authentication.State == "failed" => $"{waiting} inputs held until GitHub authentication recovers",
+                _ when work.AdmissionBlocked == true && stopped is null => $"{waiting} inputs held for a checkout refresh",
                 _ when full && stopped is null => $"{waiting} inputs waiting for a free active-session slot",
                 _ => $"{waiting} inputs waiting for dispatch"
             };
             text.AppendLine($"- {Link(session.Discussion)}: " + string.Join("; ", new[] { doing, reason }.OfType<string>()));
         }
-        if (busy.Length > MaximumSessions) text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- and {busy.Length - MaximumSessions} more");
-        if (busy.Length == 0) text.AppendLine("None.");
+        if (inventory.Length > MaximumSessions) text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- and {inventory.Length - MaximumSessions} more");
+        if (inventory.Length == 0) text.AppendLine("None.");
         text.AppendLine();
-        text.AppendLine("### Recent failures");
-        var failures = snapshot.Failures.Select(Listed).OfType<StatusEvent>().Reverse().Take(MaximumFailures).ToArray();
-        foreach (var item in failures) text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- {Time(item.At)} {Code(item.Kind)}: {Code(item.Message)}");
-        if (failures.Length == 0) text.AppendLine("None recorded.");
+        History(text, snapshot);
+
         return text.ToString().ReplaceLineEndings("\n");
     }
+
+    static void Usage(StringBuilder text, UsageSnapshot? usage, DateTimeOffset now, Func<string, string> redact)
+    {
+        string Safe(string value) => Code(redact(value));
+        text.AppendLine("### Agent account usage");
+        if (usage?.Problem is { } problem) text.AppendLine(problem);
+        else if (usage?.Observation is null) text.AppendLine("Usage unavailable; no agent account observation has been collected.");
+        if (usage is { Problem: null, Observation: { Availability: AgentUsageAvailability.Available } } && !usage.Fresh(now)) text.AppendLine("Usage stale; last-known observation is outside the two-minute freshness budget.");
+        if (usage?.Observation is { Availability: AgentUsageAvailability.Available } observation)
+        {
+            text.AppendLine(CultureInfo.InvariantCulture, $"Observed at {Time(usage.ObservedAt!.Value)}. Account allowances can span repositories; they are separate from the active-session limit.");
+            text.AppendLine("Ordinary included usage: " + (observation.OrdinaryUsageAllowed is { } allowed ? (allowed ? "allowed" : "not allowed") : "unknown") + ".");
+            foreach (var bucket in observation.Buckets.Take(20))
+            {
+                text.AppendLine($"- **{Safe(bucket.Name ?? bucket.Id)}**" +
+                    (bucket.Name is null || bucket.Name == bucket.Id ? "" : $"; meter {Safe(bucket.Id)}") +
+                    (bucket.Model is null ? "" : $"; model {Safe(bucket.Model)}") + (bucket.Plan is null ? "" : $"; plan {Safe(bucket.Plan)}"));
+                if (bucket.AdditionalUsageAvailable) text.AppendLine("  - Provider reports additional credits available; depleted included windows do not establish account exhaustion.");
+                if (bucket.SpendControlReached == true) text.AppendLine("  - Provider reports spend control reached.");
+                if (bucket.ReachedType is { } reason) text.AppendLine(CultureInfo.InvariantCulture, $"  - Provider limit reason: {Safe(reason)}.");
+                foreach (var window in bucket.Windows.Take(3))
+                    text.AppendLine(CultureInfo.InvariantCulture, $"  - {Safe(window.Label)}: {window.RemainingPercent:0.##}% remaining{(window.DurationMinutes is null ? "" : $" ({window.DurationMinutes} minutes)")}{(window.ResetsAt is { } reset ? $"; resets {Time(reset)}" : "; reset unknown")}");
+            }
+            if (observation.Buckets.Count > 20) text.AppendLine(CultureInfo.InvariantCulture, $"- {observation.Buckets.Count - 20} more usage buckets omitted.");
+            if (observation.Buckets.Count == 0) text.AppendLine("Usage windows unavailable; no numeric capacity is known.");
+        }
+    }
+
+    void History(StringBuilder text, OperatorStatus snapshot)
+    {
+        text.AppendLine("### Historical failures");
+        var failures = snapshot.Failures.Select(Listed).OfType<StatusEvent>().TakeLast(MaximumFailureEvents)
+            .Select(item => item with { Kind = redact(item.Kind), Message = redact(item.Message), Url = item.Url is null ? null : redact(item.Url) }).Reverse().ToArray();
+        if (failures.Length == 0) { text.AppendLine("None recorded."); return; }
+        text.AppendLine("Historical evidence does not establish recovery or a current blocker. Events before this controller lifetime are identified below.");
+        var groups = failures.GroupBy(item => (Kind: Flat(item.Kind), Message: Flat(item.Message), Links: string.Join(" ", FailureLinks(item))))
+            .Select(group => (group.Key, Events: group.ToArray(), Latest: group.Max(item => At(item.At))))
+            .OrderByDescending(group => group.Latest).ThenBy(group => group.Key.Kind, StringComparer.Ordinal)
+            .ThenBy(group => group.Key.Message, StringComparer.Ordinal).ThenBy(group => group.Key.Links, StringComparer.Ordinal).ToArray();
+        foreach (var group in groups.Take(MaximumFailures))
+        {
+            var latest = group.Latest == DateTimeOffset.MinValue ? "an unknown time" : Time(group.Latest);
+            var count = group.Events.Length;
+            text.AppendLine(CultureInfo.InvariantCulture, $"- **{count} {(count == 1 ? "occurrence" : "occurrences")}; latest {latest}** {Code(group.Key.Kind)}: {FailureMessage(group.Key.Message)}{Links(group.Events[0])}");
+        }
+        if (groups.Length > MaximumFailures)
+        {
+            var omitted = groups.Length - MaximumFailures;
+            text.AppendLine(CultureInfo.InvariantCulture, $"{omitted} additional failure {(omitted == 1 ? "group appears" : "groups appear")} in the retained event details below.");
+        }
+        text.AppendLine();
+        text.AppendLine("<details>");
+        text.AppendLine(CultureInfo.InvariantCulture, $"<summary>All {failures.Length} retained failure {(failures.Length == 1 ? "event" : "events")}</summary>");
+        text.AppendLine();
+        foreach (var item in failures)
+        {
+            var at = At(item.At);
+            var started = At(snapshot.Controller.StartedAt ?? "");
+            var earlier = at != DateTimeOffset.MinValue && started != DateTimeOffset.MinValue && at < started
+                ? " (before this controller lifetime)" : "";
+            text.AppendLine(CultureInfo.InvariantCulture, $"- {Time(item.At)} {Code(item.Kind)}: {FailureMessage(item.Message)}{Links(item)}{earlier}");
+        }
+        text.AppendLine();
+        text.AppendLine("</details>");
+    }
+
+    static DateTimeOffset At(string value) => DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var at)
+        ? at : DateTimeOffset.MinValue;
+
+    static string Flat(string value) => Regex.Replace(value, @"\s+", " ").Trim();
+
+    static string FailureMessage(string message) => Code(message) +
+        (Flat(message).Length > MaximumText ? $" (dashboard text truncated at {MaximumText} characters)" : "") +
+        (message.EndsWith(" <truncated>", StringComparison.Ordinal) ? " (retained status text was truncated)" : "");
+
+    static string[] FailureLinks(StatusEvent item) => Regex.Matches(Flat(item.Message),
+            @"(?<![^\s(])https://github\.com/[\w.-]+/[\w.-]+/discussions/\d+(?:#discussioncomment-\d+)?(?=$|[\s),.;])")
+        .Where(match => match.Index + match.Length <= MaximumText).Select(match => match.Value)
+        .Concat(item.Url is { Length: <= MaximumText } url && Link(url) != "an unlinked Discussion" ? [url] : [])
+        .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+
+    static string Links(StatusEvent item) => FailureLinks(item) is { Length: > 0 } links ? " — " + string.Join(", ", links.Select(Link)) : "";
 
     // An event recorded in a form no writer leaves is shown with what reads from it, unless it is not an object at all.
     static StatusEvent? Listed(StatusEvent? item) => item is { AsRead: not null, AsReadIsObject: false } ? null : item;
@@ -246,6 +346,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
         await stop.CancelAsync();
         await running;
         await releases.DisposeAsync();
+        if (usage is not null) { usage.Changed -= Wake; await usage.DisposeAsync(); }
         if (started)
         {
             // Reached only when this lifetime ends under control; a killed controller leaves its last heartbeat to go stale.

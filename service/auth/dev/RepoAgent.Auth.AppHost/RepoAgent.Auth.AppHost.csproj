@@ -14,6 +14,7 @@
     <PackageReference Include="Aspire.Hosting.Azure.Storage" Version="13.6.2" />
     <PackageReference Include="AzureKeyVaultEmulator.Aspire.Hosting" Version="3.1.5" />
     <ProjectReference Include="../../src/RepoAgent.Auth/RepoAgent.Auth.csproj" />
+    <ProjectReference Include="../../../../src/RepoAgentController/RepoAgentController.csproj" />
     <ProjectReference Include="../RepoAgent.Auth.DevInit/RepoAgent.Auth.DevInit.csproj" />
   </ItemGroup>
 </Project>
