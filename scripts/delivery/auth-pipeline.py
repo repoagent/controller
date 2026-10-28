@@ -65,6 +65,16 @@ def validate_config(config):
         raise ValueError('Auth image must configure an explicit nonzero numeric USER')
 
 
+def broker_version(root=Path('.')):
+    path = Path(root) / 'service/auth/version.txt'
+    if not path.exists():
+        return None  # Historical source archives predate semantic broker versions.
+    version = path.read_text().strip()
+    if not re.fullmatch(r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)', version):
+        raise ValueError('Broker version must be a stable MAJOR.MINOR.PATCH version')
+    return version
+
+
 def attest():
     repo = repository()
     image = os.environ.get('AUTH_IMAGE', '')
@@ -75,10 +85,18 @@ def attest():
     if data.get('os') != 'linux' or data.get('architecture') != 'amd64':
         raise ValueError('Auth image must support Linux amd64')
     validate_config(data.get('config', {}))
-    expected = os.environ.get('AUTH_EXPECTED_SOURCE_SHA')
+    image_source = os.environ.get('AUTH_EXPECTED_IMAGE_SOURCE_SHA')
+    guarded_source = os.environ.get('AUTH_EXPECTED_SOURCE_SHA')
+    if image_source and guarded_source is not None and image_source != guarded_source:
+        raise ValueError('Selected image source conflicts with the guarded activation source')
+    expected = image_source or guarded_source
     if expected is not None and (not re.fullmatch(r'[0-9a-f]{40}', expected)
             or data.get('config', {}).get('Labels', {}).get('org.opencontainers.image.revision') != expected):
         raise ValueError('Image revision differs from the accepted full source SHA')
+    version = os.environ.get('AUTH_EXPECTED_BROKER_VERSION') or None
+    if version is not None and (not re.fullmatch(r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)', version)
+            or data.get('config', {}).get('Labels', {}).get('org.opencontainers.image.version') != version):
+        raise ValueError('Image version differs from the accepted broker release')
 
 
 def publish():
@@ -88,14 +106,22 @@ def publish():
         raise ValueError('GITHUB_SHA must identify the reviewed source commit')
     image = build_publish(sha, '.')
     os.environ.update(AUTH_IMAGE=image, AUTH_EXPECTED_SOURCE_SHA=sha)
+    version = broker_version()
+    if version is not None:
+        os.environ['AUTH_EXPECTED_BROKER_VERSION'] = version
     attest()  # Anonymous pull confirms public access to this exact digest.
     with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
         output.write('image=' + image + '\n')
+        if version is not None:
+            output.write('version=' + version + '\n')
 
 
 def build_publish(sha, context, bootstrap=False, *, before_push=None):
     tag = repository() + ':sha-' + sha
-    command(['docker', 'build', '--platform', 'linux/amd64', '--label',
+    version = broker_version(Path(context))
+    arguments = ['--build-arg', 'BROKER_VERSION=' + version, '--build-arg', 'SOURCE_REVISION=' + sha,
+                 '--label', 'org.opencontainers.image.version=' + version] if version is not None else []
+    command(['docker', 'build', '--platform', 'linux/amd64', *arguments, '--label',
              'org.opencontainers.image.revision=' + sha, '--tag', tag, '--file', str(Path(context) / 'service/auth/Dockerfile'), str(context)], capture=bootstrap)
     data = json.loads(command(['docker', 'image', 'inspect', tag], capture=True))[0]
     validate_config(data.get('Config', {}))
@@ -103,6 +129,13 @@ def build_publish(sha, context, bootstrap=False, *, before_push=None):
         raise ValueError('Built auth image must target Linux amd64')
     if bootstrap and data.get('Config', {}).get('Labels', {}).get('org.opencontainers.image.revision') != sha:
         raise ValueError('Built image revision differs from archived source')
+    if version is not None:
+        labels = data.get('Config', {}).get('Labels', {})
+        if labels.get('org.opencontainers.image.version') != version or labels.get('org.opencontainers.image.revision') != sha:
+            raise ValueError('Built image version/source differs from approved broker source')
+        diagnostic = json.loads(command(['docker', 'run', '--rm', '--network', 'none', tag, '--version', '--json'], capture=True))
+        if diagnostic != dict(component='broker', version=version, source=sha):
+            raise ValueError('Compiled broker diagnostics differ from image version/source')
     if before_push is not None:
         before_push()
     command(['docker', 'push', tag], capture=bootstrap)

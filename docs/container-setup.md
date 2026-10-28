@@ -127,7 +127,7 @@ Device authentication requires enabling device-code login in ChatGPT security or
 ./repoagent check
 ```
 
-Only that selected file is mounted during the import, copied with owner-only permissions, and unmounted afterward. Normal runtime mounts neither host home nor host credential directories. Rerunning `login` reuses a valid container sign-in. Setup errors stop visibly; they never select a human GitHub identity for the agent.
+The host streams only that selected file into a network-disabled import container, which saves it atomically with owner-only permissions. This supports private host files even when the host and container user IDs differ. Normal runtime mounts neither host home nor host credential directories. Rerunning `login` reuses a valid container sign-in. Setup errors stop visibly; they never select a human GitHub identity for the agent.
 
 ### Replace Codex credentials without restarting the container
 

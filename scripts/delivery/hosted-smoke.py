@@ -23,6 +23,7 @@ REPOSITORY = 'repoagent/ControllerTestRepo'
 BROKER = 'https://repoagent-auth.livelydune-309701b4.swedencentral.azurecontainerapps.io'
 APPROVAL = 'SMOKE_CONTROLLER_APPROVAL'
 MARKER = '<!-- repoagent.hosted-smoke/v1 -->'
+DASHBOARD_MARKER = '<!-- repoagent:controller-dashboard -->'
 TITLE = re.compile(r'\A\[RepoAgent hosted smoke [0-9a-f]{12}\] mention\Z')
 
 
@@ -97,7 +98,7 @@ def outcomes(path, name, value):
     private_write(evidence / (name + '.json'), value)
 
 
-def install_failure(path, result):
+def install_failure(path, result, state='failed'):
     # Retain only a short diagnostic, never the private installer log or credential supplies.
     text = re.sub(r'\x1b\[[0-9;]*m', '', result.stdout + result.stderr)
     for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY'):
@@ -107,7 +108,7 @@ def install_failure(path, result):
     text = re.sub(r'[A-Za-z0-9_+/=\-]{32,}', '<redacted>', text)
     text = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', '', text)
     diagnostic = '\n'.join(line[:300] for line in text.splitlines() if line.strip())
-    outcomes(path, 'install-failure', {'stage': 'fresh-install', 'exitCode': result.returncode,
+    outcomes(path, 'install-failure', {'stage': 'fresh-install', 'state': state, 'exitCode': result.returncode,
                                       'diagnostic': diagnostic[-4000:]})
 
 
@@ -180,6 +181,50 @@ def parsed_outcome(result):
     if len(candidates) != 1:
         raise Refused('Revocation did not return one structured closure outcome')
     return candidates[0]
+
+
+def dashboard_discussions(category):
+    value = graphql('''query($category:ID!){repository(owner:"repoagent",name:"ControllerTestRepo"){
+      discussions(first:100,categoryId:$category){nodes{id number url body author{login} category{id}}pageInfo{hasNextPage}}}}''',
+                    {'category': category})['repository']['discussions']
+    if value['pageInfo']['hasNextPage']:
+        raise Refused('Smoke dashboard category exceeds its bounded inventory; no dashboard is adopted or removed')
+    return value['nodes']
+
+
+def prepare_dashboard(path, value):
+    if 'dashboard' in value:
+        return value['dashboard']
+    categories = graphql('''query{repository(owner:"repoagent",name:"ControllerTestRepo"){
+      discussionCategories(first:100){nodes{id name isAnswerable}pageInfo{hasNextPage}}}}''')['repository']['discussionCategories']
+    if categories['pageInfo']['hasNextPage'] or not categories['nodes']:
+        raise Refused('An existing bounded Discussion category inventory is required for dashboard smoke')
+    category = sorted(categories['nodes'], key=lambda item: (item['isAnswerable'], item['name']))[0]
+    before = dashboard_discussions(category['id'])
+    if any((item.get('author') or {}).get('login') in ('repo-agent-connector', 'repo-agent-connector[bot]')
+           and DASHBOARD_MARKER in item['body'] for item in before):
+        raise Refused('Selected smoke category already has an App dashboard; no existing dashboard is adopted')
+    value['dashboard'] = {'categoryId': category['id'], 'category': category['name'], 'before': [item['id'] for item in before]}
+    private_write(path / 'run.json', value)
+    return value['dashboard']
+
+
+def remove_dashboard(path, value):
+    selection = value.get('dashboard')
+    if not selection:
+        return 0
+    candidates = [item for item in dashboard_discussions(selection['categoryId']) if item['id'] not in selection['before'] and
+                  (item.get('author') or {}).get('login') in ('repo-agent-connector', 'repo-agent-connector[bot]') and
+                  DASHBOARD_MARKER in item['body'] and item['category']['id'] == selection['categoryId']]
+    # A marker or a matching author alone never grants deletion authority. This container must have created it.
+    log = command(['docker', 'logs', 'repoagent-' + value['instance']], check=False)
+    for item in candidates:
+        if log.returncode or not any(re.search(r'\bdashboard-created\s+' + re.escape(item['url']) + r'\s*$', line)
+                                     for line in (log.stdout + log.stderr).splitlines()):
+            raise Refused('New dashboard lacks this smoke container creation evidence; retain it for manual inspection')
+    for item in candidates:
+        graphql('mutation($id:ID!){deleteDiscussion(input:{id:$id}){clientMutationId}}', {'id': item['id']})
+    return len(candidates)
 
 
 def revoke(arguments):
@@ -259,18 +304,36 @@ def install(path):
         raise Refused('Candidate platform, role or runtime identity differs from the operator image contract')
     value['imageId'] = image['Id']
     private_write(path / 'run.json', value)
+    # Warm a potentially scaled-to-zero broker before any state-changing setup request. Only this anonymous GET retries.
+    ready = command(['curl', '--fail', '--silent', '--show-error', '--connect-timeout', '10', '--max-time', '30',
+                     '--retry', '2', '--retry-delay', '5', '--retry-all-errors', '--output', '/dev/null',
+                     '--write-out', '%{http_code}', BROKER + '/health/ready'], check=False, timeout=110)
+    available = ready.returncode == 0 and ready.stdout.strip() == '200'
+    outcomes(path, 'broker-readiness', {'state': 'ready' if available else 'unavailable',
+                                       'httpStatus': 200 if available else None, 'exitCode': ready.returncode})
+    if not available:
+        raise Refused('Broker readiness could not be confirmed within the bounded check; no enrollment was started')
+    dashboard = prepare_dashboard(path, value)
     auth = path / 'codex-auth.json'
     private_write(auth, {'OPENAI_API_KEY': key})
     state = path / 'state'
     arguments = ['pwsh', '-NoLogo', '-NoProfile', '-File', ROOT / 'install.ps1', '-Authentication', 'Broker',
                  '-Repository', REPOSITORY, '-BrokerOrigin', BROKER, '-ApprovalVariable', APPROVAL,
                  '-ApprovalLocation', 'AgentVariable', '-Clone', '-Mode', 'quick-tunnel', '-MentionUser', '',
+                 '-DashboardCategory', dashboard['category'],
                  '-Instance', value['instance'], '-StateDirectory', state, '-SkipBuild',
                  '-CodexAuthPath', auth, '-ReconcileInterval', '3600', '-WebSearch', 'disabled', '-NonInteractive', '-Apply']
     deadline = time.monotonic() + 80 * 60
     environment = dict(os.environ, REPOAGENT_IMAGE=value['image'])
     while True:
-        result = command(arguments, check=False, timeout=900, environment=environment)
+        try:
+            # Leave time for the broker's bounded 900-second operation to return its own bookkeeping.
+            result = command(arguments, check=False, timeout=960, environment=environment)
+        except subprocess.TimeoutExpired as error:
+            def text(value):
+                return value.decode('utf-8', errors='replace') if isinstance(value, bytes) else value or ''
+            install_failure(path, subprocess.CompletedProcess(arguments, None, text(error.stdout), text(error.stderr)), 'timed-out')
+            raise Refused('Fresh installation exceeded its bounded command wait; preserve the same private state') from None
         # Raw installer output stays private and is never an uploaded artifact.
         (path / 'installer.log').write_text(result.stdout + result.stderr)
         (path / 'installer.log').chmod(0o600)
@@ -287,7 +350,7 @@ def install(path):
         if time.monotonic() + delay >= deadline:
             install_failure(path, result)
             raise Refused('Replacement is still not ready after the bounded wait; no new request identity is selected')
-        print('Rechecking the same private enrollment request after the required interval; readiness is not promised.')
+        print('Rechecking the same private enrollment request after the required interval; readiness is not promised.', flush=True)
         time.sleep(delay)
     enrollment = json.loads((state / 'enrollment.json').read_text())
     approval = json.loads((state / 'approval.json').read_text())
@@ -307,7 +370,9 @@ def journey(path):
     path = directory(path)
     value = metadata(path)
     environment = dict(os.environ, REPOAGENT_REPOSITORY=REPOSITORY, REPOAGENT_ACTOR=value['actor'],
-                       REPOAGENT_EVIDENCE=str(path / 'evidence'), REPOAGENT_SMOKE_LOG=str(path / 'bridge.log'))
+                       REPOAGENT_EVIDENCE=str(path / 'evidence'), REPOAGENT_SMOKE_LOG=str(path / 'bridge.log'),
+                       REPOAGENT_DASHBOARD_CATEGORY=value['dashboard']['categoryId'],
+                       REPOAGENT_DASHBOARD_BEFORE=json.dumps(value['dashboard']['before']))
     stopped = threading.Event()
 
     def capture():
@@ -365,6 +430,9 @@ def cleanup(path):
                         '-ExpectedValueSha256', digest, '-ExpectedRepositoryId', str(value['repositoryId'])])
         if any(row['name'] == APPROVAL for row in variables()):
             raise Refused('Reserved smoke approval still exists after revocation')
+        dashboards_removed = remove_dashboard(path, value)
+        outcomes(path, 'dashboard-cleanup', {'removed': dashboards_removed,
+                 'ownership': 'pre-install baseline, App marker, category and exact container creation log'})
         command(['docker', 'rm', name], check=False)
         for storage in ('config', 'credentials', 'workspace', 'history', 'state', 'tools', 'enrollment'):
             volume = name + '-' + storage

@@ -33,7 +33,7 @@ public static class BrokerTelemetry
                 value.IncludeFormattedMessage = false;
             });
             builder.Services.AddOpenTelemetry()
-                .ConfigureResource(resource => resource.Clear().AddService("repoagent-auth", serviceInstanceId: "repoagent-auth"))
+                .ConfigureResource(resource => resource.Clear().AddService("repoagent-auth", serviceVersion: BrokerVersion.Version, serviceInstanceId: "repoagent-auth"))
                 .WithTracing(tracing => tracing
                     .AddAspNetCoreInstrumentation(value =>
                     {
@@ -102,7 +102,7 @@ public static class BrokerTelemetry
             var reader = new BaseExportingMetricReader(new AzureMonitorMetricExporter(options))
             { TemporalityPreference = MetricReaderTemporalityPreference.Delta };
             using var provider = Sdk.CreateMeterProviderBuilder().AddMeter(meter.Name)
-                .SetResourceBuilder(ResourceBuilder.CreateEmpty().AddService("repoagent-auth-cleanup", serviceInstanceId: "repoagent-auth-cleanup"))
+                .SetResourceBuilder(ResourceBuilder.CreateEmpty().AddService("repoagent-auth-cleanup", serviceVersion: BrokerVersion.Version, serviceInstanceId: "repoagent-auth-cleanup"))
                 .AddReader(reader).Build();
             foreach (var observation in observations) meter.CreateHistogram<double>(observation.Metric).Record(observation.Value);
             reader.Collect(2000); // This alone is not a deadline: the credential adapter also bounds SDK refresh.

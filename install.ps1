@@ -53,6 +53,7 @@ param(
     [string]$Instance = $(if ($env:REPOAGENT_INSTANCE) { $env:REPOAGENT_INSTANCE } else { 'default' }),
     [string]$InstallationId,
     [string]$MentionUser,
+    [string]$DashboardCategory,
     [string]$Model,
     [ValidateSet('polling', 'fixed-url', 'quick-tunnel')][string]$Mode,
     [string]$PublicUrl,
@@ -198,6 +199,7 @@ try {
         if ($saved.Contains('toolUpdates')) { $fields += 'toolUpdates' }
         if ($saved.Contains('clone')) { $fields += 'clone' }
         if ($saved.Contains('repositorySettings')) { $fields += 'repositorySettings' }
+        if ($saved.Contains('dashboardCategory')) { $fields += 'dashboardCategory' }
         if ($saved.Contains('launchState')) { $fields += 'launchState' }
         Assert-Fields $saved $fields
         if ($saved.schemaVersion -ne 1 -or $saved.instance -cne $Instance -or -not $(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase.Equals($saved.stateDirectory, $StateDirectory) } else { [StringComparer]::Ordinal.Equals($saved.stateDirectory, $StateDirectory) })) { Stop-Install 'Saved launch coordinates differ from the selected instance/state directory.' }
@@ -238,6 +240,8 @@ try {
     $KeyPath = Setting KeyPath
     $InstallationId = Setting InstallationId
     $MentionUser = Setting MentionUser
+    $DashboardCategory = Setting DashboardCategory
+    if ($DashboardCategory -and ($DashboardCategory.Length -gt 100 -or -not $DashboardCategory.Trim())) { Stop-Install 'DashboardCategory must name an existing Discussion category of at most 100 printable characters.' }
     $Model = Setting Model 'gpt-6.1-sol'
     $WebSearch = Setting WebSearch 'live'
     $PublicUrl = Setting PublicUrl
@@ -338,12 +342,14 @@ try {
         brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; enrollmentProfile=$resolvedProfile; imageManifest=$ImageManifest;
         imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
-        listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath }
+        listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath;
+        dashboardCategory=$DashboardCategory }
     if ($saved.launchState) {
         if ($Apply) { Assert-LocalRuntimeAction Install @() $plan }
         $plan['launchState'] = $saved.launchState
     }
     Write-Host "Instance: $Instance; repository: $Repository; authentication: $Authentication; mode: $Mode"
+    Write-Host "Dashboard: $(if ($DashboardCategory) { $DashboardCategory } else { 'disabled' })."
     if ($resolvedClone) {
         Write-Host "Repository context: $resolvedProfile; Contents read, Discussions write$(if ($Mode -ne 'polling') { ', repository hooks write' }). Fresh instance and approval required."
         Write-Host 'Persistent checkout: /workspace/repository. Trust this exact repository root for native instructions, project configuration and local skills.'
@@ -408,6 +414,7 @@ try {
     Write-PrivateJson $launchPath $plan
     $stage = 'configure and privately import enrollment'
     $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--web-search', $WebSearch)
+    if ($DashboardCategory) { $configuration += "--dashboard-category=$DashboardCategory" }
     if ($resolvedClone) { $configuration += '--clone' }
     if ($resolvedSettings) { $configuration += '--repository-settings' }
     if ($InstallationId) { $configuration += @('--installation-id', $InstallationId) }

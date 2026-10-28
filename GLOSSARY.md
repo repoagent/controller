@@ -122,3 +122,6 @@ The controller-owned Discussion, in an operator-chosen category, where the contr
 **Baseline release**:
 A controller release that records one semantic controller version, its verified native archive and public image, immutable image reference and bundled tool versions. Publishing one never changes a running controller; operators adopt it deliberately. Historical releases without semantic versions retain their original identity.
 _Avoid_: latest release
+
+**Broker release**:
+A versioned publication of the credential broker, independent of the controller release, enrollment protocols and retained-state schemas. Operators adopt it deliberately.

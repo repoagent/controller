@@ -123,3 +123,9 @@ case "$operation" in
     done
     printf 'API and cleanup use %s; public live/ready checks passed at %s.\n' "$AUTH_IMAGE" "$origin" ;;
 esac
+
+case "$operation" in
+  apply|promote-staged)
+    printf 'Broker release identity: version=%s source=%s image=%s.\n' \
+      "${AUTH_EXPECTED_BROKER_VERSION:-legacy-unversioned}" "${AUTH_EXPECTED_IMAGE_SOURCE_SHA:-unknown}" "$AUTH_IMAGE" ;;
+esac
