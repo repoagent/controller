@@ -70,7 +70,8 @@ sealed class CheckoutJournalFile(string statePath) : ICheckoutWork
     {
         try
         {
-            if (StatusFiles.ReadObject(path) is not { } journal) return null;
+            if (StatusFiles.ReadObject(path) is not { } journal)
+                return Directory.Exists(statePath + ".checkout-evidence") ? new(new HashSet<string>(), true) : null;
             // The journal names each admitted turn's agent session by its persisted key, thread.
             var sessions = journal["active"] is JsonObject active
                 ? active.Select(entry => (entry.Value as JsonObject)?["thread"].OptionalText()).OfType<string>().ToHashSet(StringComparer.Ordinal)

@@ -161,8 +161,11 @@ public sealed class ControllerStatus : IDisposable
             var marker = discussion.Pending;
             // A failed or unacknowledged delivery waiting for its next attempt.
             var retry = discussion.Waiting?.Retry;
-            var turn = live && (discussion.Running is not null || discussion.UnreadableKeys.GetValueOrDefault(RecordKey.Running) is { IsObject: true } ||
-                session.Length != 0 && journal?.Sessions.Contains(session) == true);
+            // A blocked journal can describe a prior process. Only this lifetime's runtime reports prove a running turn then.
+            var turn = live && (journal?.AdmissionBlocked == true
+                ? session.Length != 0 && recorded!.RunningSessions.Contains(session)
+                : discussion.Running is not null || discussion.UnreadableKeys.GetValueOrDefault(RecordKey.Running) is { IsObject: true } ||
+                    session.Length != 0 && journal?.Sessions.Contains(session) == true);
             // A delivery or retry in a form no writer leaves reports none of its times or counts.
             SessionActivity activity;
             if (marker is not null)
@@ -188,6 +191,7 @@ public sealed class ControllerStatus : IDisposable
         }
         // A turn whose Discussion record was forgotten still runs, and holds its slot, until the agent ends it.
         if (live) running += recorded!.RunningSessions.Count(session => !held.Contains(session));
+        if (journal?.AdmissionBlocked == true) running = live ? recorded!.RunningSessions.Count : 0;
         return new(now, state?.Repository ?? recorded?.Repository, state?.AgentLogin, recorded?.Controller ?? new("unknown"),
             recorded?.Authentication ?? new("unknown"), recorded?.CodexAuthentication ?? new("unknown"), settings,
             // Running agent turns against the effective active-session limit.

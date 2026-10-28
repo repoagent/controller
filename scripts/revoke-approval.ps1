@@ -132,6 +132,25 @@ function Read-Identity([string]$Endpoint, [string]$Expected, [string]$Kind) {
     return $id
 }
 
+function Confirm-ApprovalAbsent([string]$Endpoint) {
+    # A named 404 alone can hide lost access. A later readable page from the
+    # same store confirms access; a page showing the selected name contradicts it.
+    $response = Invoke-GitHub GET ($Endpoint + '?per_page=1&page=1')
+    if ($response.Status -ne 200) { Stop-Revoke 'Approval absence could not be verified; inspect the selected variable before retrying.' }
+    $listing = Read-HostJson $response.Body
+    Assert-Fields $listing @('total_count','variables')
+    if (($listing.total_count -isnot [long] -and $listing.total_count -isnot [int]) -or $listing.total_count -lt 0 -or
+        $listing.variables -isnot [array] -or $listing.variables.Count -ne [Math]::Min(1, $listing.total_count)) {
+        Stop-Revoke 'Approval access proof is malformed or incomplete.'
+    }
+    foreach ($item in $listing.variables) {
+        if ($item -isnot [Collections.IDictionary] -or $item.name -isnot [string] -or [string]::IsNullOrEmpty($item.name) -or $item.value -isnot [string]) {
+            Stop-Revoke 'Approval access proof is malformed.'
+        }
+        if ($item.name -ieq $ApprovalVariable) { Stop-Revoke 'Approval access proof contradicts absence; inspect the selected variable before retrying.' }
+    }
+}
+
 try {
     Import-Module "$PSScriptRoot/host-enrollment.psm1" -Force -DisableNameChecking
     if ($ApprovalVariable) { $ApprovalVariable = $ApprovalVariable.ToUpperInvariant() }
@@ -196,10 +215,12 @@ try {
     $repoEndpoint = 'repos/' + [Uri]::EscapeDataString($parts[0]) + '/' + [Uri]::EscapeDataString($parts[1])
     if ($script:Legacy) {
         $environmentEndpoint = $repoEndpoint + '/environments/' + [Uri]::EscapeDataString($GitHubEnvironment)
-        $variableEndpoint = $environmentEndpoint + '/variables/' + [Uri]::EscapeDataString($ApprovalVariable)
+        $variablesEndpoint = $environmentEndpoint + '/variables'
+        $variableEndpoint = $variablesEndpoint + '/' + [Uri]::EscapeDataString($ApprovalVariable)
         Write-Host 'Inspecting explicitly selected legacy Environment approval using host gh.'
     } else {
-        $variableEndpoint = $repoEndpoint + '/' + $location.Path + '/' + [Uri]::EscapeDataString($ApprovalVariable)
+        $variablesEndpoint = $repoEndpoint + '/' + $location.Path
+        $variableEndpoint = $variablesEndpoint + '/' + [Uri]::EscapeDataString($ApprovalVariable)
         Write-Host "Inspecting $(if ($location.Legacy) { 'legacy ' })repository $($location.Name)-variable approval using host gh."
     }
     Write-Host 'Approval means GitHub-authorized variable management; it does not attest a particular human administrator.'
@@ -208,27 +229,34 @@ try {
     $repositoryId = Read-Identity $repoEndpoint $ExpectedRepositoryId 'Repository'
     if ($script:Legacy) { $environmentId = Read-Identity $environmentEndpoint $ExpectedEnvironmentId 'GitHub environment' }
     $response = Invoke-GitHub GET $variableEndpoint
-    if ($response.Status -ne 200) { Stop-Revoke "Approval could not be verified (HTTP $($response.Status)); absence or removal is not confirmed." }
-    $variable = Read-HostJson $response.Body
-    if ($variable.name -isnot [string] -or $variable.name -ine $ApprovalVariable -or $variable.value -isnot [string]) { Stop-Revoke 'GitHub returned an unexpected approval name or value.' }
-    $approvalValue = $variable.value
-    $sha256 = [Security.Cryptography.SHA256]::Create()
-    try {
-        $digest = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($approvalValue))
-        $fingerprint = [BitConverter]::ToString($digest).Replace('-', '').ToLowerInvariant()
-    } finally { $sha256.Dispose() }
-    if ($ExpectedValueSha256 -and $ExpectedValueSha256 -ine $fingerprint) {
-        Write-Outcome 'conflict' $fingerprint 'The observed value differs from the expected value; nothing was deleted. Inspect the selected approval before retrying.'
-        exit 1
+    $markerResult = 'removed'
+    if ($response.Status -eq 404 -and $Apply -and $ApprovalStatePath -and $EnrollmentFile) {
+        Confirm-ApprovalAbsent $variablesEndpoint
+        $markerResult = 'absent'
+        $fingerprint = ''
+    } else {
+        if ($response.Status -ne 200) { Stop-Revoke "Approval could not be verified (HTTP $($response.Status)); absence or removal is not confirmed." }
+        $variable = Read-HostJson $response.Body
+        if ($variable.name -isnot [string] -or $variable.name -ine $ApprovalVariable -or $variable.value -isnot [string]) { Stop-Revoke 'GitHub returned an unexpected approval name or value.' }
+        $approvalValue = $variable.value
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($approvalValue))
+            $fingerprint = [BitConverter]::ToString($digest).Replace('-', '').ToLowerInvariant()
+        } finally { $sha256.Dispose() }
+        if ($ExpectedValueSha256 -and $ExpectedValueSha256 -ine $fingerprint) {
+            Write-Outcome 'conflict' $fingerprint 'The observed value differs from the expected value; nothing was deleted. Inspect the selected approval before retrying.'
+            exit 1
+        }
+        if (-not $Apply) {
+            Write-Outcome 'preview' $fingerprint 'Read-only preview. Review the target and use -Apply with -ExpectedValueSha256 to withdraw it.'
+            exit 0
+        }
+        # No retry, lock or atomic compare-delete claim: this check deliberately
+        # accepts an independent-writer availability race and manual recovery.
+        $removed = Invoke-GitHub DELETE $variableEndpoint
+        if ($removed.Status -ne 204) { Stop-Revoke "Approval removal is unconfirmed (HTTP $($removed.Status)); inspect GitHub before retrying." }
     }
-    if (-not $Apply) {
-        Write-Outcome 'preview' $fingerprint 'Read-only preview. Review the target and use -Apply with -ExpectedValueSha256 to withdraw it.'
-        exit 0
-    }
-    # No retry, lock or atomic compare-delete claim: this check deliberately
-    # accepts an independent-writer availability race and manual recovery.
-    $removed = Invoke-GitHub DELETE $variableEndpoint
-    if ($removed.Status -ne 204) { Stop-Revoke "Approval removal is unconfirmed (HTTP $($removed.Status)); inspect GitHub before retrying." }
     if ($EnrollmentFile) {
         try {
             $enrollment = Read-PrivateJson ([IO.Path]::GetFullPath($EnrollmentFile))
@@ -250,7 +278,11 @@ try {
             # Only a trusted saved setup origin may receive the optional credential.
             if (-not $ApprovalStatePath -or (Get-BrokerOrigin $enrollment.brokerOrigin) -cne (Get-BrokerOrigin $saved.brokerOrigin)) { throw 'Trusted broker origin is required.' }
             $marker = Read-HostJson $saved.marker
-            if ($marker.deviceId -cne $enrollment.deviceId -or $marker.repositoryId -ne $repositoryId -or $marker.variable -cne $ApprovalVariable -or $marker.appId -ne $enrollment.appId -or $marker.installationId -ne $enrollment.installationId) { throw 'Private enrollment differs from selected approval.' }
+            if ($marker.deviceId -cne $enrollment.deviceId -or $marker.repositoryId -ne $repositoryId -or
+                $marker.repository -ine $Repository -or $marker.variable -cne $ApprovalVariable -or
+                $marker.appId -ne $enrollment.appId -or $marker.appSlug -cne $enrollment.appSlug -or
+                $marker.githubHost -cne $enrollment.githubHost -or $marker.installationId -ne $enrollment.installationId -or
+                $marker.profile -cne $saved.profile) { throw 'Private enrollment differs from selected approval.' }
             if ($script:Legacy) {
                 if ($marker.version -ne 1 -or $marker.environmentId -ne $environmentId -or $marker.environment -cne $GitHubEnvironment -or $marker.policyVersion -cne 'repository-approval-v1') { throw 'Legacy marker differs.' }
             } elseif ($marker.version -ne $location.SetupVersion -or $marker.approvalKind -cne $script:Kind -or $marker.policyVersion -cne $policy -or (($clone -or $settings) -and $marker.profile -cne $enrollment.profile)) { throw 'Repository-variable marker differs.' }
@@ -258,7 +290,11 @@ try {
             if ($closed.Status -eq 204) { $script:BrokerClosure = 'confirmed' }
         } catch { $script:BrokerClosure = 'unconfirmed' }
     }
-    Write-Outcome 'removed' $fingerprint 'GitHub acknowledged deletion at this coordinate; concurrent value and persistent absence are not proven. Check broker closure and outstanding tokens separately. Resolve the old enrollment before manually reapproving.'
+    if ($markerResult -eq 'absent') {
+        Write-Outcome 'absent' '' 'The selected approval was observed absent with verified store access; no GitHub write was attempted. Check broker closure and outstanding tokens separately. Resolve the old enrollment before manually reapproving.'
+    } else {
+        Write-Outcome 'removed' $fingerprint 'GitHub acknowledged deletion at this coordinate; concurrent value and persistent absence are not proven. Check broker closure and outstanding tokens separately. Resolve the old enrollment before manually reapproving.'
+    }
     exit 0
 } catch {
     # Parsing/OS exceptions may contain provider data. Only controlled diagnostics

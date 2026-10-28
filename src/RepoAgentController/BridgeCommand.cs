@@ -61,12 +61,31 @@ public static class BridgeCommand
             return 0;
         });
         root.Subcommands.Add(statusCommand);
+        var recoveryState = new Option<FileInfo>("--state") { Required = true };
+        var recoveryWorkspace = new Option<DirectoryInfo>("--workspace") { Required = true };
+        var recoveryStopped = new Option<bool>("--confirm-runtime-stopped")
+        { Description = "Attest that the previous controller, agent runtime and ALL agent-launched tools using this checkout have stopped" };
+        var recoveryCommand = new Command("recover-checkout", "Explicit offline settlement of native uncertainty; preserves evidence and waiting input, refuses malformed evidence and interrupted checkout applies")
+        { recoveryState, recoveryWorkspace, recoveryStopped };
+        recoveryCommand.SetAction(async (result, ct) =>
+        {
+            try
+            {
+                await CheckoutRecoveryCommand.Recover(result.GetValue(recoveryState)!.FullName, result.GetValue(recoveryWorkspace)!.FullName,
+                    result.GetValue(recoveryStopped), time, ct);
+                return 0;
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            { Log.Write("checkout-recovery-refused", error.Message); return 1; }
+        });
+        root.Subcommands.Add(recoveryCommand);
         var logsState = new Option<FileInfo>("--state") { DefaultValueFactory = _ => new(".bridge-state.json") };
         var logsCommand = new Command("logs", "Print retained controller logs, oldest first; they survive restarts within the configured --log-files × --log-file-bytes bound") { logsState };
         logsCommand.SetAction(result => Console.Write(RetainedLog.Read(RetainedLog.DirectoryFor(result.GetValue(logsState)!.FullName))));
         root.Subcommands.Add(logsCommand);
         root.SetAction(async (result, cancellationToken) =>
         {
+            var authorityFailed = false;
             // Before anything can start a child process; validated below like an enrollment file.
             var injectedEnrollment = BrokerTokenSource.TakeInjected(result.GetValue(enrollmentEnvironment));
             try
@@ -157,8 +176,13 @@ public static class BridgeCommand
                         ? new ControllerDashboard(category, status, outbox,
                             new BaselineReleases(new GitHubBaselineReleases(github), ImageInventory.Sha256(result.GetValue(imageInventory)?.FullName), time, new ControllerLog(), Log.Redact),
                             time, new ControllerLog(), Log.Redact) : null;
-                    using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, credentials.BrokerCredentialLost);
+                    using var abort = CancellationTokenSource.CreateLinkedTokenSource(credentials.BrokerCredentialLost);
+                    using var failedAuthority = abort.Token.UnsafeRegister(_ => Volatile.Write(ref authorityFailed, true), null);
+                    using var refreshCancellation = CancellationTokenSource.CreateLinkedTokenSource(abort.Token);
+                    // Startup can stop immediately. Once Bridge exists, ordinary stop must leave accepted activity alive.
+                    using var startupStop = cancellationToken.UnsafeRegister(_ => refreshCancellation.Cancel(), null);
                     var runtimeToken = refreshCancellation.Token;
+                    using var intakeStop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, runtimeToken);
                     var refresh = credentials.RefreshUntilCancelled(runtimeToken);
                     // Starts with the bridge, which applies each changed category setting before the next refresh.
                     var settingsRefresh = Task.CompletedTask;
@@ -169,9 +193,12 @@ public static class BridgeCommand
                         var nativeRoot = checkout?.Root ?? cwd;
                         var nativeConfig = Path.Combine(credentialDirectory, "gh-config");
                         if (checkout is not null) await Codex.TrustWorkspace(nativeRoot, wrapper, nativeConfig, runtimeToken, credentials.BrokerCredentialLost);
+                        // Read retained evidence before the constructor can archive this lifetime. Forgetting the final
+                        // Discussion cannot prove prior tools stopped, so a missing journal must remain fenced.
                         var reconciliation = checkout is null ? null : new CheckoutRefresh(checkout,
                             new CheckoutBinding(checkout.Root, checkout.Owner, checkout.RepositoryId, checkout.DefaultRef), new RefreshJournalFile(statePath),
-                            store.Discussions.Values.Any(record => record.HoldsSession), store.Discussions.Values.Any(record => record.HoldsPending), time, new ControllerLog());
+                            store.Discussions.Values.Any(record => record.HoldsSession) || Directory.Exists(statePath + ".checkout-evidence"),
+                            store.Discussions.Values.Any(record => record.HoldsPending), time, new ControllerLog());
                         await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, credentials.BrokerCredentialLost,
                             suppliedCredentials: agentCredentials is not null);
                         var sessions = new AgentSessions(codex, new ControllerLog(), reconciliation, credentials.BrokerCredentialLost, agentCredentials is not null);
@@ -180,52 +207,75 @@ public static class BridgeCommand
                         await using var managedRefresh = reconciliation;
                         await codex.Initialize(runtimeToken);
                         if (reconciliation is not null) await reconciliation.Start(sessions,
-                            TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)), runtimeToken);
+                            TimeSpan.FromSeconds(publicUrl is null ? result.GetValue(interval) : result.GetValue(reconcileInterval)), intakeStop.Token);
                         var bridge = new Bridge(github.Repository, discussions, github.Identity, sessions, store, outbox, numbers, settings, new AgentInputJson(), new ControllerLog(),
                             time, reconciliation);
-                        bridge.ResumeInterrupted();
-                        settingsRefresh = settings.RefreshUntilCancelled(bridge.ReconcileCategoryEnrollment, runtimeToken);
-                        dashboard?.Start(runtimeToken);
-                        // Replaced agent credentials apply between dispatches at a global idle boundary: the checkout journal's in
-                        // clone mode, else the native's. Dispatch holds its gate before refresh admission, so this order matches.
-                        await using var agentRefresh = agentCredentials?.Watch((install, ct) => bridge.ExcludingDispatch(async () =>
-                        {
-                            if (reconciliation is null) return await sessions.RestartWhenIdle(install, ct);
-                            var restarted = false;
-                            return await reconciliation.CommitAtIdle(async idle => restarted = await sessions.RestartWhenIdle(install, idle), ct) && restarted;
-                        }, ct), time, refreshCancellation.Cancel, runtimeToken);
-                        if (!result.GetValue(once)) outbox.Start(runtimeToken);
-                        using var dispatchStop = CancellationTokenSource.CreateLinkedTokenSource(runtimeToken);
-                        var dispatcher = bridge.DispatchWhenIdle(dispatchStop.Token, runtimeToken);
+                        if (!result.GetValue(once)) startupStop.Dispose();
                         try
                         {
-                            using var webhooks = publicUrl is null ? null : new DiscussionWebhooks(github, bridge, new GitHubWebhookRegistration(github, statePath),
-                                new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), time, reconciliation);
-                            // A long-running controller reports busy or idle in every mode; --once observes once and exits.
-                            // Disposed after the webhook is deactivated: the HTTP server stops last.
-                            await using var server = result.GetValue(once) ? null : await ControllerHttpServer.Start(result.GetValue(statusPort),
-                                () => StatusSnapshot.From(status.Snapshot()), webhooks is null ? null : (result.GetValue(listenPort), webhooks.Receive), runtimeToken);
-                            if (webhooks is not null)
+                            // Offline recovery must inspect original pending evidence before it can be normalized away.
+                            if (reconciliation?.AdmissionBlocked != true) bridge.ResumeInterrupted();
+                            settingsRefresh = settings.RefreshUntilCancelled(bridge.ReconcileCategoryEnrollment, intakeStop.Token);
+                            dashboard?.Start(runtimeToken);
+                            // Replaced agent credentials apply between dispatches at a global idle boundary: the checkout journal's in
+                            // clone mode, else the native's. Dispatch holds its gate before refresh admission, so this order matches.
+                            await using var agentRefresh = agentCredentials?.Watch((install, ct) => bridge.ExcludingDispatch(async () =>
                             {
-                                await webhooks.Run(runtimeToken);
+                                if (reconciliation is null) return await sessions.RestartWhenIdle(install, ct);
+                                var restarted = false;
+                                return await reconciliation.CommitAtIdle(async idle => restarted = await sessions.RestartWhenIdle(install, idle), ct) && restarted;
+                            }, ct), time, abort.Cancel, intakeStop.Token);
+                            if (!result.GetValue(once)) outbox.Start(runtimeToken);
+                            using var dispatchStop = CancellationTokenSource.CreateLinkedTokenSource(intakeStop.Token);
+                            var dispatcher = bridge.DispatchWhenIdle(dispatchStop.Token, runtimeToken);
+                            try
+                            {
+                                using var webhooks = publicUrl is null ? null : new DiscussionWebhooks(github, bridge, new GitHubWebhookRegistration(github, statePath),
+                                    new WebhookConfiguration(publicUrl, result.GetValue(listenPort), TimeSpan.FromSeconds(result.GetValue(reconcileInterval))), time, reconciliation);
+                                // A long-running controller reports busy or idle in every mode; --once observes once and exits.
+                                // Disposed after the webhook is deactivated: the HTTP server stops last.
+                                await using var server = result.GetValue(once) ? null : await ControllerHttpServer.Start(result.GetValue(statusPort),
+                                    () => StatusSnapshot.From(status.Snapshot(), managedCheckoutExpected: reconciliation is not null),
+                                    webhooks is null ? null : (result.GetValue(listenPort), webhooks.Receive), runtimeToken);
+                                if (webhooks is not null)
+                                {
+                                    await webhooks.Run(intakeStop.Token, runtimeToken);
+                                    return 0;
+                                }
+                                Log.Write("mode", $"polling interval-seconds={result.GetValue(interval)}");
+                                Log.Write("ready", $"repository={repo} actor={credentials.AgentLogin} mode=polling");
+                                do
+                                {
+                                    intakeStop.Token.ThrowIfCancellationRequested();
+                                    var pollStarted = Stopwatch.GetTimestamp();
+                                    var succeeded = await bridge.Poll(runtimeToken);
+                                    Log.Write("poll-completed", $"success={succeeded} elapsed-ms={Stopwatch.GetElapsedTime(pollStarted).TotalMilliseconds:F0}");
+                                    if (result.GetValue(once)) return await outbox.Flush(runtimeToken) && succeeded ? 0 : 1;
+                                    await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), time, intakeStop.Token);
+                                } while (!intakeStop.IsCancellationRequested);
                                 return 0;
                             }
-                            Log.Write("mode", $"polling interval-seconds={result.GetValue(interval)}");
-                            Log.Write("ready", $"repository={repo} actor={credentials.AgentLogin} mode=polling");
-                            do
+                            finally
                             {
-                                var pollStarted = Stopwatch.GetTimestamp();
-                                var succeeded = await bridge.Poll(runtimeToken);
-                                Log.Write("poll-completed", $"success={succeeded} elapsed-ms={Stopwatch.GetElapsedTime(pollStarted).TotalMilliseconds:F0}");
-                                if (result.GetValue(once)) return await outbox.Flush(runtimeToken) && succeeded ? 0 : 1;
-                                await Task.Delay(TimeSpan.FromSeconds(result.GetValue(interval)), time, runtimeToken);
-                            } while (!runtimeToken.IsCancellationRequested);
-                            return 0;
+                                await dispatchStop.CancelAsync();
+                                await dispatcher;
+                            }
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && !abort.IsCancellationRequested)
+                        { return 0; }
+                        catch
+                        {
+                            await abort.CancelAsync();
+                            throw;
                         }
                         finally
                         {
-                            await dispatchStop.CancelAsync();
-                            await dispatcher;
+                            await intakeStop.CancelAsync();
+                            if (!result.GetValue(once) && cancellationToken.IsCancellationRequested && !abort.IsCancellationRequested)
+                            {
+                                Log.Write("shutdown-draining", "New input is held while native work finishes");
+                                await bridge.StopAndDrain(abort.Token);
+                            }
                         }
                     }
                     catch (Exception error) when (dashboard is not null && !cancellationToken.IsCancellationRequested)
@@ -240,15 +290,15 @@ public static class BridgeCommand
                         await refresh;
                     }
                 }
-                catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+                catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested || Volatile.Read(ref authorityFailed))
                 {
                     Log.Write("fatal", error.Message); // While leased, so status and retained logs record it.
                     return 1;
                 }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return 0; }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && !Volatile.Read(ref authorityFailed)) { return 0; }
             catch (Exception error) { Log.Write("fatal", error.Message); return 1; }
         });
-        return await root.Parse(args).InvokeAsync(cancellationToken: shutdownToken);
+        return await root.Parse(args).InvokeAsync(new InvocationConfiguration { ProcessTerminationTimeout = Timeout.InfiniteTimeSpan }, shutdownToken);
     }
 }

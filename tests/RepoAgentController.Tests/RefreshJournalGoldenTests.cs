@@ -19,6 +19,65 @@ public sealed class RefreshJournalGoldenTests : IDisposable
 
     string JournalPath => statePath + ".refresh.json";
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task A_missing_journal_with_prior_native_work_stays_missing_and_blocked_across_starts_requests_and_offline_recovery(bool priorSessions, bool pendingDiscussion)
+    {
+        var files = new ControllerStateFiles(statePath);
+        var clock = new SteppedClock(DateTimeOffset.UnixEpoch);
+        var state = new DiscussionState("owner/repository");
+        var record = new DiscussionRecord("https://github.com/owner/repository/discussions/1") { SessionId = priorSessions ? "S1" : null };
+        if (pendingDiscussion)
+        {
+            record.Waiting = new WaitingInput("{}");
+            record.Waiting.Inputs.Add(new(clock.GetUtcNow(), "{}", null));
+            record.Pending = new("create-and-send", clock.GetUtcNow(), ["D1"], 1);
+        }
+        state.Discussions["D1"] = record;
+        files.WriteDiscussions(state);
+        for (var lifetime = 0; lifetime < 2; lifetime++)
+        {
+            await using var refresh = Open(priorSessions, pendingDiscussion);
+            await refresh.Start(new AgentSessions(new FakeAgentRuntime(), new RecordingLog(), refresh), TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken);
+            Assert.True(refresh.AdmissionBlocked);
+            Assert.Throws<IOException>(refresh.Request);
+            await Assert.ThrowsAsync<IOException>(() => refresh.Admit(TestContext.Current.CancellationToken));
+            Assert.False(File.Exists(JournalPath));
+            Assert.True(new CheckoutJournalFile(statePath).Read()!.AdmissionBlocked);
+            var refused = Assert.Throws<IOException>(() => CheckoutRecovery.Recover(new(Root, Owner, 345, "refs/heads/main"),
+                files, new RefreshJournalFile(statePath), true, clock));
+            Assert.Contains("missing", refused.Message, StringComparison.Ordinal);
+            Assert.False(File.Exists(JournalPath));
+            var retained = files.ReadDiscussions()!.Discussions["D1"];
+            Assert.Equal(record.SessionId, retained.SessionId);
+            Assert.Equal(pendingDiscussion, retained.Pending is not null);
+        }
+    }
+
+    [Fact]
+    public async Task Startup_keeps_the_exact_original_journal_and_Discussion_bytes_before_normalizing_a_pending_delivery()
+    {
+        const string original = "{ \"version\":1, \"root\":\"/workspace/repository\", \"owner\":\"0123456789abcdef0123456789abcdef\", \"repositoryId\":345, \"requested\":4, \"completed\":3, \"active\":{}, \"blocked\":false, \"running\":1 }\n";
+        const string originalState = "{\"version\":1,\"repository\":\"owner/repository\",\"discussions\":{}}\n";
+        Record(original);
+        File.WriteAllText(statePath, originalState);
+
+        await using (Open(pendingDiscussion: true)) { }
+
+        var snapshot = Assert.Single(Directory.GetDirectories(statePath + ".checkout-evidence"));
+        Assert.Equal(original, File.ReadAllText(Path.Combine(snapshot, "refresh.json")));
+        Assert.Equal(originalState, File.ReadAllText(Path.Combine(snapshot, "state.json")));
+        Assert.True(File.Exists(Path.Combine(snapshot, "complete")));
+        Assert.True(new RefreshJournalFile(statePath).Read()!.Blocked);
+        Assert.Equal(1, new RefreshJournalFile(statePath).Read()!.Running);
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(Path.Combine(snapshot, "state.json")));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(snapshot));
+        }
+    }
+
     // As the refresh journal wrote it: keys in the order its writers add them, an admission per resolution its writers record
     // (bound, acknowledged and confirmed, unconfirmed) and one still unbound, a refresh applying, and a reason. Every object a
     // key could be added to carries one this controller does not write ("later"). With admissions recorded it reads as blocked.
@@ -197,10 +256,10 @@ public sealed class RefreshJournalGoldenTests : IDisposable
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false},\"b\":5},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
         // f742e2b wrote every admission back as read, and recorded the error reading them as the reason.
         { "an admission ID repeated", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{Entry},\"b\":{Entry},\"a\":5}},\"blocked\":true,\"running\":0"),
-            "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":5,\"b\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
+            "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false},\"b\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false},\"a\":5},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
         // f742e2b stopped with ArgumentException: without a recorded block, it counted the admissions.
         { "an admission ID repeated, unblocked", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{Entry},\"a\":{Entry}}},\"blocked\":false,\"running\":0"),
-            "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
+            "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false},\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
         { "admission since text", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{{\"thread\":\"S1\",\"turn\":\"\",\"since\":\"3\",\"confirmed\":false}}}},\"blocked\":true,\"running\":0"),
             "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":\"3\",\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"" },
         { "admission unconfirmed false", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false,\"unconfirmed\":false}}}},\"blocked\":true,\"running\":0"),
@@ -209,7 +268,7 @@ public sealed class RefreshJournalGoldenTests : IDisposable
 
     // A running count no writer leaves, beside a record that blocks the start before it: a recorded block, an admission, a refresh
     // applying, or all three. f742e2b read the count only when nothing before it blocked, so each of these started blocked and
-    // wrote the count of running turns, 0; the same JSON as below. With nothing before it, the count stops the start (the
+    // rewrote the count to 0. Recovery now preserves its invalid representation instead. With nothing before it, the count stops the start (the
     // "running text" and "running 1.5" rows).
     public static TheoryData<string, string?, string> RunningNoWriterLeavesBehindABlock()
     {
@@ -217,21 +276,22 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         foreach (var running in new[] { "\"0\"", "1.5", "true", "{}", "[]", "3000000000" })
         {
             rows.Add($"running {running} with a recorded block", Journal($"{Bound},{Settled},\"blocked\":true,\"running\":{running}"),
-                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Unmatched native lifecycle event\"");
+                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Unmatched native lifecycle event\"".Replace("\"running\":0", "\"running\":" + running, StringComparison.Ordinal));
             rows.Add($"running {running} with an admission", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{Entry}}},\"blocked\":false,\"running\":{running}"),
-                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"");
+                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\"} | \"Native activity or checkout update is uncertain; inspect state before recovery\"".Replace("\"running\":0", "\"running\":" + running, StringComparison.Ordinal));
             rows.Add($"running {running} with a refresh applying", Journal($"{Bound},{Settled},\"blocked\":false,\"running\":{running},\"applying\":{{\"previous\":\"1111111111111111111111111111111111111111\",\"target\":\"2222222222222222222222222222222222222222\",\"generation\":4}}"),
-                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\",\"applying\":{\"previous\":\"1111111111111111111111111111111111111111\",\"target\":\"2222222222222222222222222222222222222222\",\"generation\":4}} | \"Unmatched native lifecycle event\"");
+                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\",\"applying\":{\"previous\":\"1111111111111111111111111111111111111111\",\"target\":\"2222222222222222222222222222222222222222\",\"generation\":4}} | \"Unmatched native lifecycle event\"".Replace("\"running\":0", "\"running\":" + running, StringComparison.Ordinal));
             rows.Add($"running {running} with all three", Journal($"{Bound},\"requested\":4,\"completed\":4,\"active\":{{\"a\":{Entry}}},\"blocked\":true,\"running\":{running},\"applying\":{{\"previous\":\"1111111111111111111111111111111111111111\",\"target\":\"2222222222222222222222222222222222222222\",\"generation\":4}}"),
-                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\",\"applying\":{\"previous\":\"1111111111111111111111111111111111111111\",\"target\":\"2222222222222222222222222222222222222222\",\"generation\":4}} | \"Native activity or checkout update is uncertain; inspect state before recovery\"");
+                "{\"version\":1,\"root\":\"/workspace/repository\",\"owner\":\"0123456789abcdef0123456789abcdef\",\"repositoryId\":345,\"requested\":4,\"completed\":4,\"active\":{\"a\":{\"thread\":\"S1\",\"turn\":\"\",\"since\":3,\"confirmed\":false}},\"blocked\":true,\"running\":0,\"reason\":\"Native activity or checkout update is uncertain; inspect state before recovery\",\"applying\":{\"previous\":\"1111111111111111111111111111111111111111\",\"target\":\"2222222222222222222222222222222222222222\",\"generation\":4}} | \"Native activity or checkout update is uncertain; inspect state before recovery\"".Replace("\"running\":0", "\"running\":" + running, StringComparison.Ordinal));
         }
         return rows;
     }
 
+
     [Theory]
     [MemberData(nameof(Damaged))]
     [MemberData(nameof(RunningNoWriterLeavesBehindABlock))]
-    public async Task A_journal_in_a_form_no_writer_leaves_starts_as_pinned(string form, string? journal, string expected)
+    public async Task A_journal_in_a_form_no_writer_leaves_is_preserved_or_refused(string form, string? journal, string expected)
     {
         Assert.NotEmpty(form);
         if (journal is not null) Record(journal);
@@ -263,11 +323,6 @@ public sealed class RefreshJournalGoldenTests : IDisposable
 
     public static TheoryData<string, string, string> Written() => new()
     {
-        { "a first start after earlier sessions", LeftByBlockedStart, WrittenByBlockedStart },
-        { "a first start after earlier sessions, then a start", LeftByBlockedStart, WrittenByBlockedStart },
-        { "a first start after earlier sessions, then a start, then a start", LeftByBlockedStart, WrittenByBlockedStart },
-        { "a first start with a Discussion delivery pending", LeftByBlockedStart, WrittenByBlockedStart },
-        { "a first start with a Discussion delivery pending, then a start", LeftByBlockedStart, WrittenByBlockedStart },
         // The one row whose bytes match f742e2b's: the journal a process killed mid-refresh leaves, which the next row starts over.
         { "the applying record saved before applying",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":false,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""",
@@ -309,9 +364,6 @@ public sealed class RefreshJournalGoldenTests : IDisposable
         { "an unsafe failure after applying began, then a request",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":2,"completed":0,"active":{},"blocked":true,"running":0,"applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1},"reason":"boom"}""",
             """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":2,"completed":0,"active":{},"blocked":true,"running":0,"reason":"boom","applying":{"previous":"1111111111111111111111111111111111111111","target":"2222222222222222222222222222222222222222","generation":1}}""" },
-        { "a first start after earlier sessions, then a request",
-            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":0}""",
-            """{"version":1,"root":"/workspace/repository","owner":"0123456789abcdef0123456789abcdef","repositoryId":345,"requested":1,"completed":0,"active":{},"blocked":true,"running":0,"reason":"Native activity or checkout update is uncertain; inspect state before recovery"}""" },
         { "the next start after f742e2b's unsafe failure after applying", LeftByStartOverApplying, WrittenByStartOverApplying },
         { "the next start after f742e2b's first start after earlier sessions", LeftByBlockedStart, WrittenByBlockedStart },
     };

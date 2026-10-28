@@ -23,6 +23,8 @@ sealed class RefreshJournalFile(string statePath) : IRefreshJournal
 
     public void Write(RefreshJournal journal) => ManagedCheckout.SavePrivate(path, Serialize(journal));
 
+    public void PreserveStartupEvidence() => CheckoutEvidence.Preserve(statePath);
+
     static readonly string[] Keys = ["version", "root", "owner", "repositoryId", "requested", "completed", "active", "blocked", "running", "reason", "applying"];
     static readonly string[] AdmissionKeys = ["thread", "turn", "since", "confirmed", "unconfirmed"];
 
@@ -51,6 +53,7 @@ sealed class RefreshJournalFile(string statePath) : IRefreshJournal
             Blocked = blocked,
             Running = running ?? 0,
             RunningUnreadable = running is null,
+            RunningAsRead = running is null ? Encode(journal["running"]) : null,
             Unknown = [.. journal.Where(key => !Keys.Contains(key.Key)).Select(key => new UnknownKey(key.Key, Encode(key.Value)))]
         };
         if (journal.ContainsKey("reason"))
@@ -59,7 +62,16 @@ sealed class RefreshJournalFile(string statePath) : IRefreshJournal
             else result.ReasonAsRead = Encode(journal["reason"]);
         }
         if (journal["applying"] is { } applying) result.Applying = new("", "", 0) { AsRead = Encode(applying) };
-        foreach (var (id, admission) in Admissions(active, text)) result.Active[id] = Admission(admission);
+        foreach (var (id, admission) in Admissions(active, text))
+        {
+            if (result.Active.ContainsKey(id)) result.ActiveUnreadable = true;
+            result.Active[id] = Admission(admission);
+        }
+        if (result.ActiveUnreadable)
+        {
+            using var original = JsonDocument.Parse(text);
+            result.ActiveAsRead = original.RootElement.GetProperty("active").GetRawText();
+        }
         return result;
     }
 
@@ -109,6 +121,8 @@ sealed class RefreshJournalFile(string statePath) : IRefreshJournal
         foreach (var (id, admission) in journal.Active) active[id] = Admission(admission);
         var json = Json.Object(("version", 1), ("root", journal.Root), ("owner", journal.Owner), ("repositoryId", journal.RepositoryId),
             ("requested", journal.Requested), ("completed", journal.Completed), ("active", active), ("blocked", journal.Blocked), ("running", journal.Running));
+        if (journal.RunningUnreadable) json["running"] = Decode(journal.RunningAsRead ?? "\"unreadable\"");
+        if (journal.ActiveUnreadable && journal.ActiveAsRead is { } rawActive) json["active"] = Decode(rawActive);
         if (journal.Reason is { } reason) json["reason"] = reason;
         else if (journal.ReasonAsRead is { } asRead) json["reason"] = Decode(asRead);
         if (journal.Applying is { } applying)

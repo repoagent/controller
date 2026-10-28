@@ -40,15 +40,16 @@ public abstract record SessionActivity(string State)
 public sealed record WorkCounts(int Sessions, int Pending, int Retrying, int Waiting, int Running, int Limit, bool? AdmissionBlocked);
 
 /// <summary>
-/// What GET /status reports (ADR 0009): busy while an agent turn runs or input is pending, retrying or waiting, else idle,
+/// What GET /status reports (ADR 0009): busy while an agent turn runs, input is pending, retrying or waiting, or checkout admission is blocked; else idle,
 /// with the work counts of the operator status. A hosting environment decides what busy means for it.
 /// </summary>
 public sealed record StatusSnapshot(string State, WorkCounts Work)
 {
-    public static StatusSnapshot From(OperatorStatus status)
+    public static StatusSnapshot From(OperatorStatus status, bool managedCheckoutExpected = false)
     {
         var counts = status.Work;
-        var busy = counts.Running + counts.Pending + counts.Retrying + counts.Waiting > 0;
+        var busy = counts.AdmissionBlocked == true || managedCheckoutExpected && counts.AdmissionBlocked is null ||
+            counts.Running + counts.Pending + counts.Retrying + counts.Waiting > 0;
         return new(busy ? "busy" : "idle", counts);
     }
 }
