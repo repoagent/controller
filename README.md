@@ -63,6 +63,8 @@ The broker and guided PowerShell installer support [setup v4](service/auth/READM
 
 The broker's `--version --json` command reports its compiled service version and source revision without loading credentials. [Broker releases](docs/broker-releases.md) use independent semantic versions and verified immutable images for deliberate deployment and rollback; service versions remain separate from enrollment protocol and storage schema versions.
 
+Broker source also includes a maintainer-only [retained-authority observation command](service/auth/README.md#internal-retained-authority-observation), fixed to the accepted production identity/Table and one operational test repository. It requires a reviewed release containing the command; existing 1.0.0 images do not support it. Its bounded read-only report never establishes settlement or replacement readiness.
+
 For implementation and design, see the [architecture decisions](docs/adr/), [domain glossary](GLOSSARY.md), [credential broker documentation](service/auth/README.md) and [Controller and Broker delivery workflows](docs/ci-cd.md).
 
 For local development, the [Aspire AppHost](service/auth/local-development.md) runs the broker, local storage and key-ring wrapping. It can also run a [configured native controller on Linux or macOS](docs/local-apphost.md) against a disposable repository. Real GitHub authentication requires an authorized developer's Azure CLI sign-in to the shared signing key; its private key is never copied.
