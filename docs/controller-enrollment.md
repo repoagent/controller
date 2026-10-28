@@ -6,6 +6,16 @@ Public `-Action Enroll -Apply` also requires the Docker CLI and a working local
 engine to check the selected instance’s disable state. Enroll preview and
 standalone `-Action Revoke` do not require Docker.
 
+## Canonical names and upgrade order
+
+Deploy the upgraded broker before selecting `-ControllerEnrollmentVersion 5` on `install.ps1` or `scripts/enroll-controller.ps1`. This explicit option creates a fresh setup v5 enrollment with `enrollmentId` and `controllerSecret` in its private file and `enrollmentId` in its approval marker. The controller renews through `/v{runtimeVersion}/controller-enrollments/{enrollmentId}/github-token` and self-revokes through the same identity route. Runtime versions 1–3 and their permission profiles are unchanged. Setup v5 has distinct approval policies and uses repository Agent variables.
+
+The default remains setup v4 during the compatibility window so the installer continues to work with already deployed brokers. There is no automatic downgrade or replacement after a failed or ambiguous setup request. A saved request always resumes its original setup version; choosing a conflicting version fails before broker work. Use a new state directory for a deliberately fresh enrollment after revocation and settlement.
+
+Existing private enrollment files and raw approval markers retain their exact frozen formats. Legacy `/devices/...` and `/installation-token` routes remain supported, and old approvals renew with their original permissions. The owned document readers accept either spelling, reject ambiguous alias pairs, and keep provider JSON separate. Recovery journals use `setupSecret`, accepting historical `secret` on read. Do not edit credentials or markers to rename their fields manually.
+
+In code, the public domain names are `ControllerSecret`, `ControllerSelfRevocation`, `GitHubTokenIssuer`, `AgentModel`, `RepositorySettingsRefresh` and `BaselineReleaseCheck`. Agent log events use `agent-accepted`, `agent-event`, `agent-disconnected` and `agent-request-blocked`; update operator filters accordingly. The setup helper is `controller-enrollment.psm1`. Azure resource, assembly/project and `service/auth`/`infra/auth` artifact names are retained. Legacy field literals, durable row keys and frozen compatibility fixtures deliberately remain at the storage and protocol boundaries; changing them would invalidate live enrollments.
+
 ```powershell
 # Read-only preview: no GitHub/broker writes or private state allocation.
 ./install.ps1 -Action Enroll -Repository owner/project `

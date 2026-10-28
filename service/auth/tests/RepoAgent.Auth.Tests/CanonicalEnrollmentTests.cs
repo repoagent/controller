@@ -6,12 +6,15 @@ namespace RepoAgent.Auth.Tests;
 
 public sealed class CanonicalEnrollmentTests
 {
-    [Fact]
-    public async Task Canonical_setup_uses_enrollment_identity_and_controller_secret_without_widening_authority()
+    [Theory]
+    [InlineData("polling", 1)]
+    [InlineData("polling-clone", 2)]
+    [InlineData("webhook-clone-settings", 3)]
+    public async Task Canonical_setup_uses_enrollment_identity_and_controller_secret_without_widening_authority(string profile, int runtimeVersion)
     {
         var f = new InMemoryBroker();
         var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
-        var request = ActionsVariableEnrollmentTests.Request();
+        var request = ActionsVariableEnrollmentTests.Request(profile);
         var start = await f.Start(request, 5);
         Assert.Equal(HttpStatusCode.OK, start.StatusCode);
         var pendingId = start.Json.GetProperty("pendingId").GetString()!;
@@ -32,9 +35,15 @@ public sealed class CanonicalEnrollmentTests
         Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId,
             complete.Json.GetProperty("completionId").GetString()!, secret, 5)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(enrollmentId, secret)).StatusCode);
-        Assert.Equal(new Dictionary<string, string> { ["discussions"] = "write" }, github.RuntimePermissions[^1]);
-        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(enrollmentId, secret)).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(enrollmentId, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(enrollmentId, secret, runtimeVersion)).StatusCode);
+        var expected = profile switch
+        {
+            "polling" => new Dictionary<string, string> { ["discussions"] = "write" },
+            "polling-clone" => new Dictionary<string, string> { ["discussions"] = "write", ["contents"] = "read" },
+            _ => new Dictionary<string, string> { ["discussions"] = "write", ["contents"] = "read", ["repository_hooks"] = "write", ["agent_variables"] = "read" }
+        };
+        Assert.Equal(expected, github.RuntimePermissions[^1]);
+        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(enrollmentId, secret, runtimeVersion)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(enrollmentId, secret, runtimeVersion)).StatusCode);
     }
 }
