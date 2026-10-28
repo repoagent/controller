@@ -30,17 +30,20 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, IWebhookRegistrati
 
     /// <summary>Registers the webhook, then observes deliveries and reconciles until <paramref name="ct"/> stops the controller.</summary>
     /// <remarks>The HTTP server must already serve <see cref="Receive"/>: GitHub pings a newly registered hook at once.</remarks>
-    public async Task Run(CancellationToken ct)
+    public Task Run(CancellationToken ct) => Run(ct, ct);
+
+    /// <summary>Stops intake on <paramref name="stoppingToken"/> without cancelling an entered observation on <paramref name="ct"/>.</summary>
+    public async Task Run(CancellationToken stoppingToken, CancellationToken ct)
     {
-        using var stopping = ct.UnsafeRegister(_ => stop.Cancel(), null);
+        using var stopping = stoppingToken.UnsafeRegister(_ => stop.Cancel(), null);
         Task worker = Task.CompletedTask, reconcile = Task.CompletedTask;
         try
         {
-            await registration.Configure(configuration.Endpoint, refresh is not null, ct);
+            await registration.Configure(configuration.Endpoint, refresh is not null, stoppingToken);
             Log.Write("mode", $"webhook-fixed public-url={configuration.Endpoint} port={configuration.Port} reconcile-seconds={configuration.ReconcileInterval.TotalSeconds:F0}");
             Log.Write("ready", $"repository={github.Repository} actor={github.AgentLogin} mode=webhook-fixed");
             Schedule(0);
-            worker = Observe(stop.Token);
+            worker = Observe(stop.Token, ct);
             reconcile = Reconcile(stop.Token);
             var completed = await Task.WhenAny(worker, reconcile);
             await completed;
@@ -48,7 +51,7 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, IWebhookRegistrati
         finally
         {
             await stop.CancelAsync();
-            // The runtime token is cancelled: remote cleanup gets its own bounded budget.
+            // Remote cleanup gets its own bounded budget, including during a normal native drain.
             await registration.Deactivate();
             work.Writer.TryComplete();
             try { await Task.WhenAll(worker, reconcile); }
@@ -67,10 +70,11 @@ sealed class DiscussionWebhooks(GitHub github, Bridge bridge, IWebhookRegistrati
         }
     }
 
-    async Task Observe(CancellationToken ct)
+    async Task Observe(CancellationToken stopping, CancellationToken ct)
     {
-        await foreach (var number in work.Reader.ReadAllAsync(ct))
+        await foreach (var number in work.Reader.ReadAllAsync(stopping))
         {
+            stopping.ThrowIfCancellationRequested();
             // Remove before reading: a delivery during this observation schedules another read.
             lock (queued) queued.Remove(number);
             var started = System.Diagnostics.Stopwatch.GetTimestamp();

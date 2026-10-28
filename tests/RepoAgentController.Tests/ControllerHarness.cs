@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -149,6 +150,7 @@ static class ControllerHarness
         readonly CancellationTokenSource shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         LogCapture? capture;
         Task<int>? run;
+        Process? child;
 
         /// <summary>The port of the webhook receiver, once started in webhook mode.</summary>
         public int WebhookPort { get; private set; }
@@ -211,6 +213,84 @@ static class ControllerHarness
                     "--status-port", StatusPort.ToString(System.Globalization.CultureInfo.InvariantCulture), .. options],
                     http, gh, clock, shutdown.Token);
             });
+        }
+
+        /// <summary>Starts a real child CLI invocation using this fixture's existing provider and native peer.</summary>
+        public async Task StartChild()
+        {
+            Save();
+            capture = new LogCapture();
+            var start = new ProcessStartInfo(AppGitHubCommand.FindExecutable("dotnet"))
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+#if CONTROLLER_SHUTDOWN_CHILD
+            var childAssembly = typeof(ControllerShutdownTests).Assembly.Location;
+#else
+            var fixture = typeof(ControllerShutdownTests).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+                .Cast<System.Reflection.AssemblyMetadataAttribute>().Single(attribute => attribute.Key == "ControllerShutdownFixture").Value!;
+            var childAssembly = Path.Combine(AppContext.BaseDirectory, "shutdown-child", fixture, "RepoAgentController.Tests.dll");
+#endif
+            Assert.True(File.Exists(childAssembly), "The normal test build must prepare its complete shutdown child fixture.");
+            foreach (var argument in new[] { childAssembly, "--controller-shutdown-child", gh,
+                "--repo", "owner/repository", "--app-id", "123", "--private-key", privateKey,
+                "--state", state, "--workspace", directory, "--interval", "3600", "--status-port",
+                StatusPort.ToString(System.Globalization.CultureInfo.InvariantCulture) }) start.ArgumentList.Add(argument);
+            start.Environment["PATH"] = tools + Path.PathSeparator + path;
+            child = Process.Start(start) ?? throw new IOException("Could not start child controller");
+            run = ChildResult();
+            await Logged(" poll-completed success=True");
+        }
+
+        async Task<int> ChildResult()
+        {
+            var output = Capture(child!.StandardOutput);
+            var errors = Capture(child.StandardError);
+            await child.WaitForExitAsync(CancellationToken.None);
+            await Task.WhenAll(output, errors);
+            return child.ExitCode;
+        }
+
+        async Task Capture(StreamReader reader)
+        {
+            while (await reader.ReadLineAsync(CancellationToken.None) is { } line) capture!.WriteLine(line);
+        }
+
+        /// <summary>Signals only the fixture-owned controller PID, never the test runner or its process group.</summary>
+        public void TerminateChild() => Assert.Equal(0, Kill(child!.Id, 15));
+
+        [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+        static extern int Kill(int process, int signal);
+
+        public bool ChildExited => child!.HasExited;
+        public Task<int> ChildExit => run!;
+        public JsonNode DiscussionState(int discussion) => JsonNode.Parse(File.ReadAllText(state))!["discussions"]!["D" + discussion]!.DeepClone();
+
+        /// <summary>Exercises the generated gh wrapper and real credential socket without exposing its bearer.</summary>
+        public async Task<int> InvokeWrapper()
+        {
+            var start = new ProcessStartInfo(Path.Combine(state + ".github-app", "bin", "gh"))
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            start.ArgumentList.Add("api");
+            start.ArgumentList.Add("graphql");
+            start.ArgumentList.Add("--input");
+            start.ArgumentList.Add("-");
+            start.RedirectStandardInput = true;
+            using var wrapper = Process.Start(start) ?? throw new IOException("Could not start App wrapper");
+            var output = wrapper.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+            var errors = wrapper.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await wrapper.StandardInput.WriteLineAsync("{\"query\":\"query { viewer { login } }\"}".AsMemory(), TestContext.Current.CancellationToken);
+            wrapper.StandardInput.Close();
+            try { await wrapper.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken); }
+            catch { if (!wrapper.HasExited) wrapper.Kill(true); throw; }
+            await Task.WhenAll(output, errors);
+            return wrapper.ExitCode;
         }
 
         /// <summary>The controller's answer to GET /status.</summary>
@@ -372,10 +452,13 @@ static class ControllerHarness
         public async ValueTask DisposeAsync()
         {
             await shutdown.CancelAsync();
+            // A failing signal test may leave the drain waiting intentionally; force only its owned child during cleanup.
+            if (child is not null && !child.HasExited) child.Kill(true);
             try { if (run is not null) await run.WaitAsync(TimeSpan.FromSeconds(20), CancellationToken.None); }
             finally
             {
                 await Native.DisposeAsync();
+                child?.Dispose();
                 capture?.Dispose();
                 Environment.SetEnvironmentVariable("PATH", path);
                 shutdown.Dispose();

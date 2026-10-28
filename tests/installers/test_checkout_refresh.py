@@ -875,10 +875,23 @@ class CheckoutRefreshTests(unittest.TestCase):
                 request = self.rpc(f, 'thread/start')
                 self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
                 request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-                f.wait('reconciliation-completed discussion=all success=True')
+                try:
+                    f.wait('reconciliation-completed discussion=all success=True')
+                    self.assertTrue(json.loads(f.journal.read_text())['active'])
+                finally:
+                    # Normal stop drains accepted work; retain S1, but explicitly finish its genuine T1 first.
+                    self.terminal(f, 'S1', 'T1')
+                f.wait('native-event method=turn/completed thread=S1 turn=T1 status=completed')
             self.assertEqual(f.process.returncode, 0)
-            self.assertTrue(json.loads(f.journal.read_text())['active'])
+            self.assertTrue(any(' turn-ended https://github.com/owner/project/discussions/1 session=S1 turn=T1 status=completed' in line
+                                for line in f.lines), 'Normal drain did not durably settle the correlated completed turn')
+            settled = json.loads(f.journal.read_text())
+            self.assertEqual(settled['active'], {})
+            self.assertEqual(settled['running'], 0)
             original = f.state.read_bytes()
+            self.assertNotIn('pending', json.loads(original)['discussions']['D1'])
+            self.assertNotIn('running', json.loads(original)['discussions']['D1'])
+            print('MISSING_FENCE seed=accepted-active correlated-completion=S1/T1 durable-settlement=true normal-exit=0 retained-session=S1', flush=True)
             self.assertEqual(json.loads(original)['discussions']['D1']['sessionId'], 'S1')
             before = self.local_state(f)
             requests = len(f.provider.git_tokens)
