@@ -261,7 +261,7 @@ def install(path):
         (path / 'installer.log').chmod(0o600)
         if result.returncode == 0:
             break
-        text = result.stdout + result.stderr
+        text = ' '.join(re.sub(r'\x1b\[[0-9;]*m', '', result.stdout + result.stderr).split())
         if 'Old repository authority is not ready for replacement. Recheck using this same private state after at least 60 seconds;' in text:
             delay = 60
         elif 'Broker discovery is still pending. Rerun the same request after at least five seconds.' in text:
