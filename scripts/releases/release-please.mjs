@@ -20,7 +20,9 @@ export function attribute(github) {
   const iterator = github.mergeCommitIterator.bind(github);
   github.mergeCommitIterator = async function* (...args) {
     for await (const commit of iterator(...args)) {
-      yield { ...commit, files: owners(commit.files).map(component => `${components[component]}/.runtime-change`) };
+      const files = owners(commit.files).map(component => `${components[component]}/.runtime-change`);
+      // Upstream includeEmpty means an empty file list would release every component.
+      yield { ...commit, files: files.length ? files : ['repoagent-internal/.no-runtime-change'] };
     }
   };
   return github;

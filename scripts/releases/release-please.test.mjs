@@ -36,3 +36,22 @@ test('real manifest keeps independent cutoffs when a shared change predates the 
   const prs = await manifest.buildPullRequests();
   assert.deepEqual(prs.map(pr => pr.version.toString()), ['1.0.1', '1.1.0']);
 });
+
+test('real manifest never turns an internal-only feature commit into an empty release for every component', async () => {
+  const { Manifest, setLogger } = await import('release-please');
+  const { Version } = await import('release-please/build/src/version.js');
+  const { attribute } = await import('./release-please.mjs');
+  const quiet = { info() {}, warn() {}, error() {}, debug() {}, trace() {} };
+  setLogger(quiet);
+  const github = attribute({ repository: { owner: 'repoagent', repo: 'controller' },
+    async *releaseIterator() { yield { tagName: 'controller-v1.0.0', sha: 'c'.repeat(40) }; yield { tagName: 'broker-v1.0.0', sha: 'b'.repeat(40) }; },
+    async *mergeCommitIterator() {
+      yield { sha: 'd'.repeat(40), message: 'feat(controller): document release policy', files: ['docs/releases.md'] };
+      yield { sha: 'c'.repeat(40), message: 'chore: release controller', files: ['releases/controller/version.txt'] };
+      yield { sha: 'b'.repeat(40), message: 'chore: release broker', files: ['service/auth/version.txt'] };
+    },
+  });
+  const manifest = new Manifest(github, 'main', { 'releases/controller': { releaseType: 'simple', component: 'controller' }, 'service/auth': { releaseType: 'simple', component: 'broker' } },
+    { 'releases/controller': Version.parse('1.0.0'), 'service/auth': Version.parse('1.0.0') }, { separatePullRequests: true, logger: quiet });
+  assert.deepEqual(await manifest.buildPullRequests(), []);
+});
