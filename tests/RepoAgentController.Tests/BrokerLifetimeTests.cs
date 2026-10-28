@@ -60,8 +60,12 @@ public sealed class BrokerLifetimeTests
         Directory.CreateDirectory(tools);
         File.WriteAllText(settingsPath, new JsonObject
         {
-            ["port"] = ((IPEndPoint)ready.LocalEndpoint).Port, ["stage"] = "accepted", ["history"] = history,
-            ["requests"] = requests, ["eof"] = eof, ["graceful"] = !brokerDenied
+            ["port"] = ((IPEndPoint)ready.LocalEndpoint).Port,
+            ["stage"] = "accepted",
+            ["history"] = history,
+            ["requests"] = requests,
+            ["eof"] = eof,
+            ["graceful"] = !brokerDenied
         }.ToJsonString());
         WriteExecutable(Path.Combine(tools, "codex"), Native);
         WriteExecutable(fixture.Gh, GitHub);
