@@ -25,6 +25,7 @@ src/RepoAgentController/CodexCredentials.cs
 src/RepoAgentController/OperatorStatusJson.cs
 src/RepoAgentController/StatusFiles.cs
 src/RepoAgentController/ControllerHttpServer.cs
+src/RepoAgentController/ControllerPolling.cs
 src/RepoAgentController/GitHubBaselineReleases.cs
 src/RepoAgentController/ImageInventory.cs
 src/RepoAgentController/RenderedMentions.cs
