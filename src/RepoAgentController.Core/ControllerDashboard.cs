@@ -14,7 +14,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
     public static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
     // Bounded so shutdown cannot hang on GitHub; an undelivered stop stays retained and the next lifetime supersedes it.
     static readonly TimeSpan StopBudget = TimeSpan.FromSeconds(10);
-    const int MaximumSessions = 20, MaximumFailures = 10, MaximumText = 300;
+    const int MaximumSessions = 20, MaximumFailures = 10, MaximumFailureEvents = 20, MaximumText = 300;
     readonly string category;
     readonly ControllerStatus status;
     readonly GitHubOutbox outbox;
@@ -180,7 +180,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
     void History(StringBuilder text, OperatorStatus snapshot)
     {
         text.AppendLine("### Historical failures");
-        var failures = snapshot.Failures.Select(Listed).OfType<StatusEvent>().TakeLast(20)
+        var failures = snapshot.Failures.Select(Listed).OfType<StatusEvent>().TakeLast(MaximumFailureEvents)
             .Select(item => item with { Kind = redact(item.Kind), Message = redact(item.Message), Url = item.Url is null ? null : redact(item.Url) }).Reverse().ToArray();
         if (failures.Length == 0) { text.AppendLine("None recorded."); return; }
         text.AppendLine("Historical evidence does not establish recovery or a current blocker. Events before this controller lifetime are identified below.");
@@ -195,10 +195,13 @@ public sealed class ControllerDashboard : IAsyncDisposable
             text.AppendLine(CultureInfo.InvariantCulture, $"- **{count} {(count == 1 ? "occurrence" : "occurrences")}; latest {latest}** {Code(group.Key.Kind)}: {FailureMessage(group.Key.Message)}{Links(group.Events[0])}");
         }
         if (groups.Length > MaximumFailures)
-            text.AppendLine(CultureInfo.InvariantCulture, $"{groups.Length - MaximumFailures} additional failure groups appear in the retained event details below.");
+        {
+            var omitted = groups.Length - MaximumFailures;
+            text.AppendLine(CultureInfo.InvariantCulture, $"{omitted} additional failure {(omitted == 1 ? "group appears" : "groups appear")} in the retained event details below.");
+        }
         text.AppendLine();
         text.AppendLine("<details>");
-        text.AppendLine(CultureInfo.InvariantCulture, $"<summary>All {failures.Length} retained failure events</summary>");
+        text.AppendLine(CultureInfo.InvariantCulture, $"<summary>All {failures.Length} retained failure {(failures.Length == 1 ? "event" : "events")}</summary>");
         text.AppendLine();
         foreach (var item in failures)
         {
@@ -221,9 +224,10 @@ public sealed class ControllerDashboard : IAsyncDisposable
         (Flat(message).Length > MaximumText ? $" (dashboard text truncated at {MaximumText} characters)" : "") +
         (message.EndsWith(" <truncated>", StringComparison.Ordinal) ? " (retained status text was truncated)" : "");
 
-    static string[] FailureLinks(StatusEvent item) => Regex.Matches(item.Message,
-            @"https://github\.com/[\w.-]+/[\w.-]+/discussions/\d+(?:#discussioncomment-\d+)?(?=$|[\s),.;])")
-        .Select(match => match.Value).Concat(item.Url is { } url && Link(url) != "an unlinked Discussion" ? [url] : [])
+    static string[] FailureLinks(StatusEvent item) => Regex.Matches(Flat(item.Message),
+            @"(?<![^\s(])https://github\.com/[\w.-]+/[\w.-]+/discussions/\d+(?:#discussioncomment-\d+)?(?=$|[\s),.;])")
+        .Where(match => match.Index + match.Length <= MaximumText).Select(match => match.Value)
+        .Concat(item.Url is { Length: <= MaximumText } url && Link(url) != "an unlinked Discussion" ? [url] : [])
         .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
 
     static string Links(StatusEvent item) => FailureLinks(item) is { Length: > 0 } links ? " — " + string.Join(", ", links.Select(Link)) : "";
