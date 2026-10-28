@@ -12,7 +12,7 @@ function plan(input) {
   return JSON.parse(result.stdout);
 }
 
-test('the first broker publication starts at1.0.0 independently of controller history', () => {
+test('the first broker publication starts at 1.0.0 independently of controller history', () => {
   const result = plan({ component: 'broker', commits: [commit('feat(broker): add renewal observations')] });
   assert.equal(result.version, '1.0.0');
   assert.equal(result.tag, 'broker-v1.0.0');
