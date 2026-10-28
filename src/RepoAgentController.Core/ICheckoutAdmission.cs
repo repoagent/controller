@@ -9,6 +9,12 @@ public interface ICheckoutAdmission
 {
     /// <summary>Admits one delivery, first applying any due refresh at the global idle boundary.</summary>
     Task<ICheckoutTurn> Admit(CancellationToken ct);
+
+    /// <summary>
+    /// Applies a change only while all admitted checkout activity is settled and no refresh is outstanding. An admission
+    /// that cannot establish global idle refuses the change; it never assumes that no running turn means no tool activity.
+    /// </summary>
+    Task<bool> CommitAtIdle(Func<CancellationToken, Task> commit, CancellationToken ct) => Task.FromResult(false);
 }
 
 /// <summary>

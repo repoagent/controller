@@ -218,12 +218,7 @@ public static class BridgeCommand
                             dashboard?.Start(runtimeToken, codex);
                             // Replaced agent credentials apply between dispatches at a global idle boundary: the checkout journal's in
                             // clone mode, else the native's. Dispatch holds its gate before refresh admission, so this order matches.
-                            await using var agentRefresh = agentCredentials?.Watch((install, ct) => bridge.ExcludingDispatch(async () =>
-                            {
-                                if (reconciliation is null) return await sessions.RestartWhenIdle(install, ct);
-                                var restarted = false;
-                                return await reconciliation.CommitAtIdle(async idle => restarted = await sessions.RestartWhenIdle(install, idle), ct) && restarted;
-                            }, ct), time, abort.Cancel, intakeStop.Token);
+                            await using var agentRefresh = agentCredentials?.Watch(bridge.ReplaceAgentCredentials, time, abort.Cancel, intakeStop.Token);
                             if (!result.GetValue(once)) outbox.Start(runtimeToken);
                             using var dispatchStop = CancellationTokenSource.CreateLinkedTokenSource(intakeStop.Token);
                             var dispatcher = bridge.DispatchWhenIdle(dispatchStop.Token, runtimeToken);
