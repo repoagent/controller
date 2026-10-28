@@ -51,10 +51,17 @@ test('shared maintenance reaches both components and highest owned change wins',
   assert.equal(plan({ component: 'controller', currentVersion: '1.2.3', commits }).version, '1.2.4');
 });
 
+test('broker Docker build-context changes remain broker release inputs', () => {
+  assert.equal(plan({ component: 'broker', currentVersion: '1.2.3', commits: [
+    commit('fix(broker): include required runtime source', ['service/auth/Dockerfile.dockerignore']),
+  ] }).version, '1.2.4');
+});
+
 test('internal-only broker docs, tests and refactors do not automatically publish', () => {
   for (const item of [
     commit('feat(broker): document broker behavior', ['service/auth/README.md']),
     commit('fix(broker): improve regression evidence', ['service/auth/tests/RepoAgent.Auth.Tests/BrokerCoreTests.cs']),
+    commit('feat(broker): expand release-tool regression coverage', ['scripts/releases/broker-release-please.test.mjs']),
     commit('refactor(broker): rearrange the unchanged adapter'),
   ]) assert.equal(plan({ component: 'broker', currentVersion: '1.2.3', commits: [item] }), null);
 });
