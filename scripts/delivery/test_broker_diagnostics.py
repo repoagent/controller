@@ -33,7 +33,11 @@ elif args[:3] == ['rest','--method','get']:
  value=fixtures[key]
  if value == 'FAIL': sys.exit('DO_NOT_EXPORT_SECRET provider error')
  if value == 'OVERSIZE': sys.stdout.write('x'*2100000)
- else: print(json.dumps(value))
+ else:
+  if '--query' in args:
+   import jmespath
+   value=jmespath.search(args[args.index('--query')+1], value)
+  print(json.dumps(value))
 else: sys.exit(93)
 '''
 
@@ -190,6 +194,43 @@ class BrokerDiagnosticsTests(unittest.TestCase):
         self.assertEqual(len(report['executions']['observations']['items']), 20)
         self.assertTrue(report['executions']['observations']['truncated'])
         self.assertEqual(sum('/replicas?' in ' '.join(call) for call in calls), 3)
+
+    def test_verbose_execution_snapshots_are_projected_before_the_bounded_output_pipe(self):
+        def verbose(fixtures, job):
+            first = fixtures[job+'/executions']['value'][0]
+            first['properties']['template'] = dict(containers=[dict(
+                image='ghcr.io/repoagent/controller-auth@sha256:'+'b'*64,
+                env=[dict(name='PRIVATE', value=SECRET*200000)], args=[SECRET])])
+        result, report, calls, _ = self.invoke(verbose)
+        self.assertEqual(result.returncode, 0, report['executions'])
+        execution = report['executions']['observations']['items'][0]
+        self.assertEqual(execution['name'], 'repoagent-auth-cleanup-123')
+        self.assertEqual(execution['status'], 'Failed')
+        self.assertEqual(execution['images'], ['ghcr.io/repoagent/controller-auth@sha256:'+'b'*64])
+        self.assertNotIn(SECRET, json.dumps(report) + result.stdout + result.stderr)
+
+    def test_recent_failed_execution_is_retained_when_newer_successes_fill_the_page(self):
+        def history(fixtures, job):
+            image = 'ghcr.io/repoagent/controller-auth@sha256:'+'c'*64
+            rows = [dict(name='repoagent-auth-cleanup-'+str(i), properties=dict(
+                status='Succeeded' if i < 25 else 'Failed',
+                startTime='2026-10-28T20:'+str(59-i).zfill(2)+':00Z',
+                template=dict(containers=[dict(image=image)]))) for i in range(30)]
+            fixtures[job+'/executions'] = dict(value=rows)
+            for row in rows:
+                fixtures[job+'/executions/'+row['name']+'/replicas'] = dict(value=[])
+        result, report, calls, _ = self.invoke(history)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        evidence = report['executions']['observations']
+        self.assertEqual(len(evidence['items']), 20)
+        self.assertEqual([row['name'] for row in evidence['items'] if row['status'] == 'Failed'],
+                         ['repoagent-auth-cleanup-25', 'repoagent-auth-cleanup-26'])
+        self.assertEqual(evidence['items'][0]['name'], 'repoagent-auth-cleanup-0')
+        self.assertEqual(evidence['items'][-1]['images'], ['ghcr.io/repoagent/controller-auth@sha256:'+'c'*64])
+        self.assertEqual({row['execution'] for row in evidence['replicas']},
+                         {'repoagent-auth-cleanup-0', 'repoagent-auth-cleanup-1', 'repoagent-auth-cleanup-25'})
+        self.assertEqual(sum('/replicas?' in ' '.join(call) for call in calls), 3)
+        self.assertTrue(evidence['truncated'])
 
     def test_oversized_or_denied_metrics_are_explicitly_unavailable_without_raw_errors(self):
         for failure in ('FAIL','OVERSIZE'):

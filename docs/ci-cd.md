@@ -6,9 +6,9 @@ The **Controller** workflow (`controller.yml`) verifies controller changes on pu
 bash scripts/delivery/verify.sh /tmp/controller-verification
 ```
 
-Local prerequisites are the pinned SDK, Python 3, clang and zlib development headers.
+Local prerequisites are the pinned SDK, Python 3 with its `venv` module, clang and zlib development headers. The shared `scripts/delivery/test-python.sh` launcher creates a temporary isolated environment and downloads checksum-pinned JMESPath 1.0.1 for delivery tests; it requires HTTPS access to files.pythonhosted.org and does not require pip or global package installation. Both controller verification and Broker CI use that launcher. To run a focused suite locally, use `bash scripts/delivery/test-python.sh scripts.delivery.test_broker_diagnostics -v`.
 
-The installer (`install.*`, `repoagent*`, `scripts/*.ps1`) and the container runtime (`container/`) have no automated tests ([ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)). They are tested manually against the local AppHost ([#204](https://github.com/repoagent/controller/issues/204), not built yet) when they change.
+The installer (`install.*`, `repoagent*`, `scripts/*.ps1`) and the container runtime (`container/`) have no automated tests ([ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)). Test changes manually against the local AppHost using the [run steps](local-apphost.md); credential-dependent live acceptance remains tracked in [#204](https://github.com/repoagent/controller/issues/204).
 
 The repository has four workflow entry points: **Controller**, **Broker**, the scheduled **Baseline tool refresh** (with a reusable per-tool helper), and **Hosted installer smoke**. Controller owns verification, image publication and native tagged releases. Broker owns verification, deployment and recovery operations. Superseded read-only checks are cancelled; publication and deployment writes finish once started.
 
