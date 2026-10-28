@@ -10,6 +10,8 @@ This partial credential broker implements `DELETE /v1/devices/{deviceId}`. A val
 
 ## Configuration
 
+Normal renewals can reclaim positively known expired issuance capacity under pressure without waiting for the scheduled cleanup sweep. The eight-attempt repository and 128-attempt global ceilings remain unchanged; unknown outcomes stay charged. Optional monitoring exports unsampled rejection counts using a fixed reason taxonomy, including request concurrency/minute limits and issuance capacity. See [pressure relief and rejection diagnostics](retained-state.md#renewal-pressure-relief-and-rejection-diagnostics) for the bounds, expiry margin and operational limitations.
+
 Production requires these environment variables:
 
 | Variable | Value |

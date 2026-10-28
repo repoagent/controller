@@ -39,7 +39,7 @@ public static class BrokerRoutes
         if (!Bearer(request, out var secret)) return new(401);
         if (issuer() is not { } issue) return new(503);
         var result = await issue(enrollmentId, secret, request.Aborted, runtimeVersion);
-        return result.Status == 200 ? result : new(result.Status);
+        return result.Status == 200 ? result : new(result.Status) { Rejection = result.Rejection };
     }
 
     // POST /v{setupVersion}/enrollments. Setup v1 takes the approval environment's body; v2 to v4 the approval variable's.

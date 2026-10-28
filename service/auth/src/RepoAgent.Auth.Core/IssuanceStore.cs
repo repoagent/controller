@@ -123,7 +123,7 @@ public sealed partial class IssuanceStore(IBrokerState state, string epoch, long
                 var quota = await state.ReadAsync(quotaKey, ct);
                 var charged = quota?.Value ?? RepositoryQuota.New();
                 charged.Charge(now, reads, limits.RepositoryAdmissions, limits.RepositoryReads, limits.RepositorySigns, limits.RepositoryMints);
-                if (Number(grant.Gate.OutstandingTokenCount) >= limits.RepositoryAttempts) throw new IssuanceDenied(429);
+                if (Number(grant.Gate.OutstandingTokenCount) >= limits.RepositoryAttempts) throw new IssuanceDenied(429, BrokerRejectionReason.RepositoryAttempts);
                 grant.Gate.OutstandingTokenCount = Number(grant.Gate.OutstandingTokenCount) + 1;
                 if (purpose == "verification") grant.Gate.VerifierAttempt = operation;
                 else grant.Enrollment.OutstandingTokenCount = checked(Number(grant.Enrollment.OutstandingTokenCount) + 1);
@@ -172,7 +172,7 @@ public sealed partial class IssuanceStore(IBrokerState state, string epoch, long
         await capacity.RequireCandidateAsync(repository, ct);
         // One fixed partition and exactly 128 possible slot keys. No attacker-controlled quota keys.
         var occupancy = Number(quota.Value.Slots);
-        if (occupancy >= limits.GlobalAttempts) throw new IssuanceDenied(429);
+        if (occupancy >= limits.GlobalAttempts) throw new IssuanceDenied(429, BrokerRejectionReason.GlobalAttempts);
         quota.Value.Charge(now, reads, limits.GlobalAdmissions, limits.GlobalReads, limits.GlobalSigns, limits.GlobalMints);
         var slot = await capacity.FreeSlotAsync(limits.GlobalAttempts, ct);
         quota.Value.Slots = occupancy + 1;

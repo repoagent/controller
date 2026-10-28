@@ -45,6 +45,7 @@ internal static class BrokerEndpoints
         IssuanceResult answer;
         try { answer = await route(request); }
         catch (BadHttpRequestException) { return Results.StatusCode(StatusCodes.Status400BadRequest); } // A body Kestrel can't deliver.
+        if (answer.Status == StatusCodes.Status429TooManyRequests) BrokerRejections.Record(answer.Rejection ?? BrokerRejectionReason.Other);
         return answer.Body is null ? Results.StatusCode(answer.Status) : Results.Json(answer.Body, statusCode: answer.Status);
     }
 

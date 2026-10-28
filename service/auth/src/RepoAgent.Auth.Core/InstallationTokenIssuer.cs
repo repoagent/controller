@@ -20,6 +20,8 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
             caller.ThrowIfCancellationRequested();
             grant = await store.AuthenticateAsync(deviceId, secret, work.Cancellation);
             if (grant.Approval.RuntimeVersion != runtimeVersion) throw new IssuanceDenied(401);
+            if (await store.ReclaimForRenewalAsync(grant, work))
+                grant = await store.AuthenticateAsync(deviceId, secret, work.Cancellation);
             var verifier = await store.VerifierAsync(grant, work.Cancellation);
             if (verifier is null)
             {
@@ -59,7 +61,7 @@ public sealed class InstallationTokenIssuer(IssuanceStore store, IGitHubTokens t
             // an already committed release can be shared and must remain valid.
             if (!released && known is not null && grant is not null && runtime is not null)
                 await RevokeKnownAsync(grant, runtime, known.Token);
-            return new(ex is IssuanceDenied denial ? denial.Status : 503);
+            return ex is IssuanceDenied denial ? new(denial.Status) { Rejection = denial.Reason } : new(503);
         }
     }
 

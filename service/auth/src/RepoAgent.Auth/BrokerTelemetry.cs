@@ -42,6 +42,7 @@ public static class BrokerTelemetry
                     })
                     .AddProcessor(new BrokerActivityPrivacy())
                     .AddAzureMonitorTraceExporter())
+                .WithMetrics(metrics => metrics.AddMeter(BrokerRejections.MeterName).AddAzureMonitorMetricExporter())
                 .WithLogging(logging => logging.AddProcessor(new BrokerLogPrivacy()).AddAzureMonitorLogExporter());
         }
         catch (Exception)

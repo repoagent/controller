@@ -76,7 +76,8 @@ public abstract class ChargedQuota : BrokerRecord
         var (admissions, used, signs, mints) = (IssuanceValues.Number(Admissions), IssuanceValues.Number(Reads),
             IssuanceValues.Number(Signs), IssuanceValues.Number(Mints));
         if (admissions + 1 > admissionLimit || used + reads > readLimit || signs + 1 > signLimit
-            || mints + (mint ? 1 : 0) > mintLimit) throw new IssuanceDenied(429);
+            || mints + (mint ? 1 : 0) > mintLimit) throw new IssuanceDenied(429,
+                this is IssuanceQuota ? BrokerRejectionReason.GlobalMinuteBudget : BrokerRejectionReason.RepositoryMinuteBudget);
         Admissions = admissions + 1;
         Reads = used + reads;
         Signs = signs + 1;

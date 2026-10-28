@@ -92,7 +92,7 @@ While renewal is throttled, an existing token remains available only until 30 se
 
 Startup has no token to fall back to: it waits and retries on the same paced schedule until acquisition succeeds or the operator cancels. It does not initialize the receiver or admit agent work without credentials. This avoids turning a temporary 429 into rapid controller/tunnel restarts. Authentication status reports `degraded` with the next retry time during throttling and returns to `healthy` after successful acquisition; the dashboard describes automatic retries without claiming that credentials were rejected.
 
-This mitigates the confirmed controller amplification in issue #269. It does not identify the historical production rejection or fix broker capacity reclamation. Unknown issuance attempts remain charged until safely settled; increasing limits is not a recovery procedure.
+The broker also attempts [bounded pressure relief](../service/auth/retained-state.md#renewal-pressure-relief-and-rejection-diagnostics) for known expired issuance attempts before normal renewal reaches its outstanding-token ceiling. Unknown attempts remain charged; increasing limits is not a recovery procedure. Optional broker monitoring distinguishes request throttles, minute budgets and retained/outstanding capacity denials without publishing caller identities. These changes mitigate reproducible failure mechanisms from issue #269; they do not identify the historical production rejection or establish deployed recovery.
 
 ### Managed checkout startup recovery
 

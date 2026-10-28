@@ -333,7 +333,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
             var status = ex is IssuanceDenied denied ? denied.Status : 503;
             return start && status == 503
                 ? new(503, new { code = "enrollment_settlement_unconfirmed" })
-                : new(status);
+                : new(status) { Rejection = ex is IssuanceDenied rejection ? rejection.Reason : null };
         }
     }
 }
