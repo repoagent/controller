@@ -38,7 +38,7 @@ dotnet_diagnostic.RS0030.severity = error
 [service/auth/src/RepoAgent.Auth.Core/*.cs]
 dotnet_diagnostic.RS0030.severity = error
 
-[{tests/RepoAgentController.Tests,tests/RepoAgent.LiveTests,service/auth/tests/RepoAgent.Auth.Tests}/*.cs]
+[{tests/RepoAgentController.Tests,tests/RepoAgent.LiveTests,tests/RepoAgent.AppHostTests,service/auth/tests/RepoAgent.Auth.Tests}/*.cs]
 # Public test names are executable stories, not production API identifiers.
 dotnet_code_quality.CA1707.api_surface = private, internal
 dotnet_diagnostic.xUnit1030.severity = warning

@@ -8,6 +8,7 @@
   <Project Path="src/RepoAgentController/RepoAgentController.csproj" />
   <Project Path="tests/NativeSmoke/NativeSmoke.csproj" />
   <Project Path="tests/RepoAgent.LiveTests/RepoAgent.LiveTests.csproj" />
+  <Project Path="tests/RepoAgent.AppHostTests/RepoAgent.AppHostTests.csproj" />
   <Project Path="tests/RepoAgentController.Tests/RepoAgentController.Tests.csproj" />
   <Project Path="tests/installers/CredentialDriver/CredentialDriver.csproj" />
 </Solution>
