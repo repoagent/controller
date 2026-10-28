@@ -64,6 +64,7 @@
     "scripts/delivery/broker-release.py",
     "scripts/delivery/broker-diagnostics.py",
     "scripts/delivery/broker-console-version.py",
+    "scripts/delivery/broker-console-authority.py",
     ".github/workflows/broker.yml"
   ]
 }
