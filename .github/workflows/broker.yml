@@ -5,11 +5,11 @@ on:
       operation:
         description: Select broker delivery, rollback, access check or guarded recovery
         type: choice
-        options: [access-check, verify, deploy, release, deploy-release, deploy-image, bootstrap-publish, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume, cleanup-identity-plan, cleanup-identity-apply, cleanup-plan, cleanup-apply]
+        options: [access-check, diagnostics, verify, deploy, release, deploy-release, deploy-image, bootstrap-publish, foundation-plan, foundation-apply, stage-plan, stage-apply, promote-staged, stage-stop, stage-resume, cleanup-identity-plan, cleanup-identity-apply, cleanup-plan, cleanup-apply]
         default: access-check
         required: true
       expected-source-sha:
-        description: Exact accepted current main commit (required for bootstrap and activation operations)
+        description: Exact accepted current main commit (required for diagnostics, bootstrap and activation operations)
         type: string
       image:
         description: Accepted immutable broker image digest (deploy-image or runtime recovery)
@@ -27,6 +27,8 @@ on:
       - 'infra/auth/**'
       - 'scripts/delivery/auth-pipeline.py'
       - 'scripts/delivery/broker-release.py'
+      - 'scripts/delivery/broker-diagnostics.py'
+      - 'scripts/delivery/test_broker_diagnostics.py'
       - 'scripts/delivery/test_broker_release.py'
       - 'scripts/delivery/test_broker_version.py'
       - 'scripts/delivery/test_*auth*.py'
@@ -66,6 +68,39 @@ env:
   AUTH_CONCURRENT_REQUEST_LIMIT: ${{ vars.AUTH_CONCURRENT_REQUEST_LIMIT }}
   AUTH_REQUEST_TIMEOUT_SECONDS: ${{ vars.AUTH_REQUEST_TIMEOUT_SECONDS }}
 jobs:
+  diagnostics:
+    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'diagnostics'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AUTH_EXPECTED_SOURCE_SHA: ${{ inputs.expected-source-sha }}
+      # Do not carry unrelated live configuration into the diagnostics process or step logs.
+      AUTH_SIGNING_KEY_URI: ''
+      AUTH_DATA_PROTECTION_KEY_URI: ''
+      AUTH_DEPLOYMENT_EPOCH: ''
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Sign in with the existing resource-group identity
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Collect bounded read-only operator evidence
+        run: python3 scripts/delivery/broker-diagnostics.py "$RUNNER_TEMP/broker-diagnostics"
+      - name: Retain only the allowlisted report, including partial evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: broker-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/broker-diagnostics/diagnostics.json
+          if-no-files-found: warn
+          retention-days: 7
   access-check:
     if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'access-check'
     runs-on: ubuntu-latest
