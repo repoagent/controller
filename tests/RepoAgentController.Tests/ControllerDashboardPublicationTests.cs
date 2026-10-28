@@ -349,7 +349,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
                 ### Tracked Discussions
                 None.
 
-                ### Recent failures
+                ### Historical failures
                 None recorded.
 
                 """.ReplaceLineEndings("\n"), Published().Body);
@@ -452,7 +452,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         clock.Advance(ControllerDashboard.HeartbeatInterval);
         await clock.Armed();
         Assert.Single(log.Entries);
-        Assert.Contains("\n### Recent failures\n- 2026-10-24T10:00:00Z `dashboard-error`: `No space left on device; publication is retried at the next heartbeat`\n", Published().Body);
+        Assert.Contains("\n- 2026-10-24T10:00:00Z `dashboard-error`: `No space left on device; publication is retried at the next heartbeat`\n", Published().Body);
     }
 
     [Fact]
@@ -493,7 +493,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         var recovered = Published();
         Assert.Equal(Title, recovered.Title);
         Assert.Contains("\n- **GitHub authentication:** healthy\n", recovered.Body);
-        Assert.Matches(@"### Recent failures\n- \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials <redacted>`\n$",
+        Assert.Matches(@"- \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials <redacted>`\n",
             recovered.Body);
 
         // The Codex account's credentials hold every turn, so they need the operator too; the App stays healthy.
@@ -509,6 +509,111 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         await clock.Armed();
         Assert.Equal(Title, Published().Title);
         Assert.Contains("\n- **Codex authentication:** supplied credentials installed; not yet verified by a completed turn\n", Published().Body);
+    }
+
+    [Fact]
+    public async Task Repeated_historical_failures_have_a_compact_count_and_every_retained_event_in_expandable_details()
+    {
+        Record("poll-error", First + " request failed");
+        clock.Advance(TimeSpan.FromSeconds(10));
+        Record("poll-error", First + " request failed");
+        clock.Advance(TimeSpan.FromSeconds(10));
+        Record("poll-error", Url(2) + " request failed");
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+
+        var publication = Published();
+        Assert.Equal(Title, publication.Title);
+        Assert.Contains("### Historical failures\nHistorical evidence does not establish recovery", publication.Body);
+        Assert.Contains("**2 occurrences; latest 2026-10-24T10:00:10Z** `poll-error`", publication.Body);
+        Assert.Contains("**1 occurrence; latest 2026-10-24T10:00:20Z** `poll-error`", publication.Body);
+        Assert.Contains("[Discussion #1](" + First + ")", publication.Body);
+        var details = publication.Body.Split("<summary>All 3 retained failure events</summary>\n\n")[1].Split("\n</details>")[0];
+        Assert.Contains("- 2026-10-24T10:00:00Z `poll-error`", details);
+        Assert.Contains("- 2026-10-24T10:00:10Z `poll-error`", details);
+        Assert.Contains("- 2026-10-24T10:00:20Z `poll-error`", details);
+        Assert.Equal(3, details.Split('\n').Count(line => line.StartsWith("- ", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData(350, false)]
+    [InlineData(2100, true)]
+    public async Task Historical_details_disclose_truncation_and_keep_hostile_text_and_known_secrets_protected(int length, bool retainedTruncated)
+    {
+        Record("poll-error", First + " [hostile](javascript:alert(1)) </summary> `escape` ghs_secret " + new string('x', length));
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+
+        var body = Published().Body;
+        Assert.DoesNotContain("ghs_secret", body);
+        Assert.Contains("[Discussion #1](" + First + ")", body);
+        Assert.Contains("(dashboard text truncated at 300 characters)", body);
+        Assert.Equal(retainedTruncated, body!.Contains("(retained status text was truncated)", StringComparison.Ordinal));
+        Assert.Contains("`https://github.com/owner/repository/discussions/1 [hostile](javascript:alert(1)) </summary> 'escape' <redacted>", body);
+        Assert.Single(Regex.Matches(body!, "(?m)^</details>$"));
+        Assert.DoesNotContain("](javascript:", Regex.Replace(body!, "`[^`]*`", ""));
+    }
+
+    [Fact]
+    public async Task Historical_failure_text_does_not_invent_links_from_embedded_or_malformed_urls()
+    {
+        Record("poll-error", "fakehttps://github.com/owner/repository/discussions/91 https://evil.example/https://github.com/owner/repository/discussions/92 https://github.com/owner/repository/discussions/93/invalid");
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+
+        Assert.DoesNotContain("[Discussion #91]", Published().Body);
+        Assert.DoesNotContain("[Discussion #92]", Published().Body);
+        Assert.DoesNotContain("[Discussion #93]", Published().Body);
+    }
+
+    [Fact]
+    public async Task History_summaries_are_bounded_without_losing_the_twenty_retained_events()
+    {
+        for (var occurrence = 1; occurrence <= 23; occurrence++)
+        {
+            Record("poll-error", new string('x', 310) + occurrence.ToString(CultureInfo.InvariantCulture));
+            clock.Advance(TimeSpan.FromSeconds(1));
+        }
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+
+        var body = Published().Body!;
+        var summary = body.Split("### Historical failures\n")[1].Split("<details>")[0];
+        Assert.Equal(10, Regex.Count(summary, "(?m)^- "));
+        Assert.Contains("10 additional failure groups", summary);
+        Assert.DoesNotContain("**2 occurrences", summary);
+        var details = body.Split("<summary>All 20 retained failure events</summary>\n\n")[1].Split("\n</details>")[0];
+        Assert.Equal(20, Regex.Count(details, "(?m)^- "));
+        Assert.DoesNotContain("2026-10-24T10:00:02Z", details);
+        for (var second = 3; second < 23; second++)
+            Assert.Contains(Start.AddSeconds(second).ToString("yyyy-MM-ddTHH:mm:ss'Z'", CultureInfo.InvariantCulture), details);
+    }
+
+    [Fact]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The dashboard owns the inline release checker and disposes it asynchronously.")]
+    public async Task Earlier_lifetime_failures_remain_historical_without_claiming_checkout_recovery()
+    {
+        var previous = new InMemoryStatusRecord();
+        using (var earlier = new ControllerStatus("owner/repository", "polling", previous, discussions, state, checkout, clock))
+            earlier.Record(new(Start.AddMinutes(-1), "refresh-blocked", First + " checkout state uncertain"));
+        clock.Advance(TimeSpan.FromMinutes(1));
+        using var restarted = new ControllerStatus("owner/repository", "polling", previous, discussions, state, checkout, clock);
+        restarted.Record(new(clock.GetUtcNow(), "app-token-refreshed", "token renewed"));
+        await using var dashboard = new ControllerDashboard(Category, restarted, outbox,
+            new BaselineReleases(new InMemoryBaselineReleases(), async ct => { await Task.Delay(Timeout.InfiniteTimeSpan, ct); return null; }, clock, log, text => text),
+            clock, log, Redact);
+        dashboard.Start(TestContext.Current.CancellationToken);
+        await clock.Armed();
+
+        Assert.Equal("💓 24 Oct 2026 10:01 UTC · 0/4 active · 0 queued — RepoAgent", Published().Title);
+        Assert.Contains("(before this controller lifetime)", Published().Body);
+        Assert.Contains("Historical evidence does not establish recovery or a current blocker.", Published().Body);
+        Assert.DoesNotContain("recovered", Published().Body);
+        Assert.Contains("checkout state uncertain", Published().Body);
     }
 
     [Fact]
@@ -612,7 +717,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         Assert.Equal([$"updateDiscussion {created.Id}", $"updateDiscussion {created.Id}"], github.Calls.Skip(3));
         var recovered = Assert.Single(github.Dashboards);
         Assert.Contains("\n**Last heartbeat:** 2026-10-24T10:02:30Z.", recovered.Body);
-        Assert.Contains($"`dashboard-error`: `{created.Url} attempt=1 RateLimited: You have exceeded a secondary rate limit.; retained for retry at 2026-10-24T10:02:30.0000000+00:00`\n",
+        Assert.Contains($"`dashboard-error`: `{created.Url} attempt=1 RateLimited: You have exceeded a secondary rate limit.; retained for retry at 2026-10-24T10:02:30.0000000+00:00`",
             recovered.Body);
         Assert.Empty(state.Outbox!.Operations);
     }
@@ -767,7 +872,8 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     [InlineData("""{"latestActivity":{"kind":"forwarded","at":7}}""", "input delivered from an unlinked Discussion at an unknown time", "None recorded.")]
     // Forms the JSON rendering also showed so.
     [InlineData("""{"failures":[{}]}""", "none recorded", "- an unknown time (none): (none)")]
-    [InlineData("""{"failures":[{"url":"https://github.com/owner/repository/discussions/1"}]}""", "none recorded", "- an unknown time (none): (none)")]
+    [InlineData("""{"failures":[{"url":"https://github.com/owner/repository/discussions/1"}]}""", "none recorded", "- an unknown time (none): (none) — [Discussion #1](https://github.com/owner/repository/discussions/1)")]
+    [InlineData("""{"failures":[{"url":"https://github.com/ghs_secret/repository/discussions/1"}]}""", "none recorded", "- an unknown time (none): (none)")]
     [InlineData("""{"failures":[5]}""", "none recorded", "None recorded.")]
     [InlineData("""{"latestActivity":{}}""", "input delivered from an unlinked Discussion at an unknown time", "None recorded.")]
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The dashboard owns and asynchronously disposes the inline BaselineReleases after its worker ends.")]
@@ -784,15 +890,23 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
             dashboard.Start(TestContext.Current.CancellationToken);
             await clock.Armed();
             Assert.Contains($"\n- **Latest activity:** {activity}\n", Published().Body);
-            Assert.EndsWith($"\n### Recent failures\n{failures}\n", Published().Body);
+            Assert.Equal(failures, RetainedFailureDetails(Published().Body!));
         }
-        Assert.EndsWith($"\n### Recent failures\n{failures}\n", Assert.Single(github.Dashboards).Body);
+        Assert.Equal(failures, RetainedFailureDetails(Assert.Single(github.Dashboards).Body));
+    }
+
+    static string RetainedFailureDetails(string body)
+    {
+        const string start = "</summary>\n\n";
+        var index = body.IndexOf(start, StringComparison.Ordinal);
+        return index < 0 ? "None recorded." : body[(index + start.Length)..].Split("\n\n</details>")[0]
+            .Replace(" (before this controller lifetime)", "", StringComparison.Ordinal);
     }
 
     static string Url(int number) => $"https://github.com/owner/repository/discussions/{number}";
 
     // The dashboard's session list, from the last publication handed to the outbox unless another body is given.
-    string Listed(string? body = null) => (body ?? Published().Body!).ReplaceLineEndings("\n").Split("\n### Tracked Discussions\n")[1].Split("\n\n### Recent failures\n")[0];
+    string Listed(string? body = null) => (body ?? Published().Body!).ReplaceLineEndings("\n").Split("\n### Tracked Discussions\n")[1].Split("\n\n### Historical failures\n")[0];
 
     // Discussion records as the bridge saves them in the Discussion state the status reads.
     void Store(params (string Id, DiscussionRecord Record)[] records)

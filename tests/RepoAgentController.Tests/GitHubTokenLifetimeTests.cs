@@ -213,6 +213,60 @@ public sealed class GitHubTokenLifetimeTests
         Assert.Equal("token-3", world.Lifetime.ForAgent()!.Token);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_cutoff_log_failure_cannot_prevent_authority_loss_or_escape_the_timer(bool throttleLogFails)
+    {
+        var clock = new FakeTimeProvider(Start);
+        using var source = new Source(clock, finalFailure: true);
+        using var lifetime = new GitHubTokenLifetime(source, clock, new FailingCutoffLog(throttleLogFails));
+        using var observer = lifetime.AuthorityLost.Register(() => throw new InvalidOperationException("observer failed after cancellation"));
+        await lifetime.Initialize(234, Token);
+        clock.Advance(TimeSpan.FromMinutes(56));
+        source.AcquireNext = _ => Task.FromException<GitHubTokenLease>(new GitHubTokenThrottledException(TimeSpan.FromDays(1)));
+        await lifetime.GetToken(Token);
+
+        var escaped = Record.Exception(() => clock.Advance(TimeSpan.FromMinutes(3.5)));
+
+        Assert.Null(escaped);
+        Assert.True(lifetime.AuthorityLost.IsCancellationRequested);
+        Assert.Null(lifetime.ForAgent());
+    }
+
+    sealed class FailingCutoffLog(bool throttleLogFails) : IControllerLog
+    {
+        public void Write(string kind, string message)
+        {
+            if (kind == "app-refresh-error" || throttleLogFails && kind == "app-token-throttled") throw new IOException("status disk unavailable");
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_late_acquisition_cannot_publish_after_caller_cancellation_or_expiry(bool expiry)
+    {
+        using var world = new World(finalFailure: true);
+        await world.Initialize();
+        world.Clock.Advance(TimeSpan.FromMinutes(56));
+        world.Source.AcquireNext = _ => Task.FromException<GitHubTokenLease>(new GitHubTokenThrottledException(TimeSpan.FromMinutes(1)));
+        await world.Lifetime.GetToken(Token);
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        var lease = new TaskCompletionSource<GitHubTokenLease>(TaskCreationOptions.RunContinuationsAsynchronously);
+        world.Source.AcquireNext = _ => lease.Task; // A provider may complete despite cancellation.
+        using var caller = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        var pending = world.Lifetime.GetToken(caller.Token);
+        if (expiry) world.Clock.Advance(TimeSpan.FromMinutes(2.5));
+        else await caller.CancelAsync();
+        lease.SetResult(new("late-token", world.Clock.GetUtcNow().AddHours(1)));
+
+        if (expiry) await Assert.ThrowsAsync<InvalidOperationException>(() => pending);
+        else await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        Assert.Null(world.Lifetime.ForAgent());
+        Assert.Single(world.Log.Entries, entry => entry.Kind == "app-token-refreshed");
+    }
+
     [Fact]
     public async Task Definitive_failure_after_throttling_still_ends_authority_and_cannot_reuse_the_held_token()
     {

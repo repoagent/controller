@@ -33,10 +33,26 @@ Usage unavailable; no agent account observation has been collected.
 - an unlinked Discussion: 1 inputs held until GitHub authentication recovers
 - [Discussion #5](https://github.com/owner/repository/discussions/5): idle; no input waiting
 
-### Recent failures
+### Historical failures
+Historical evidence does not establish recovery or a current blocker. Events before this controller lifetime are identified below.
+- **1 occurrence; latest 2026-10-24T10:00:02Z** `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`
+- **1 occurrence; latest 2026-10-24T10:00:01Z** `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...` (dashboard text truncated at 300 characters)
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing` — [Discussion #3](https://github.com/owner/repository/discussions/3)
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 1`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 2`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 3`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 4`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 5`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 6`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 7`
+1 additional failure group appears in the retained event details below.
+
+<details>
+<summary>All 11 retained failure events</summary>
+
 - 2026-10-24T10:00:02Z `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`
-- 2026-10-24T10:00:01Z `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...`
-- 2026-10-24T10:00:00Z `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing`
+- 2026-10-24T10:00:01Z `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...` (dashboard text truncated at 300 characters)
+- 2026-10-24T10:00:00Z `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing` — [Discussion #3](https://github.com/owner/repository/discussions/3)
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 8`
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 7`
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 6`
@@ -44,6 +60,9 @@ Usage unavailable; no agent account observation has been collected.
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 4`
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 3`
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 2`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 1`
+
+</details>
 --- stopped ---
 ⏹ Stopped · 💓 24 Oct 2026 10:00 UTC — RepoAgent
 <!-- repoagent:controller-dashboard -->
@@ -79,10 +98,26 @@ Usage unavailable; no agent account observation has been collected.
 - an unlinked Discussion: 1 inputs held until GitHub authentication recovers
 - [Discussion #5](https://github.com/owner/repository/discussions/5): idle; no input waiting
 
-### Recent failures
+### Historical failures
+Historical evidence does not establish recovery or a current blocker. Events before this controller lifetime are identified below.
+- **1 occurrence; latest 2026-10-24T10:00:02Z** `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`
+- **1 occurrence; latest 2026-10-24T10:00:01Z** `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...` (dashboard text truncated at 300 characters)
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing` — [Discussion #3](https://github.com/owner/repository/discussions/3)
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 1`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 2`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 3`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 4`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 5`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 6`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 7`
+1 additional failure group appears in the retained event details below.
+
+<details>
+<summary>All 11 retained failure events</summary>
+
 - 2026-10-24T10:00:02Z `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`
-- 2026-10-24T10:00:01Z `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...`
-- 2026-10-24T10:00:00Z `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing`
+- 2026-10-24T10:00:01Z `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...` (dashboard text truncated at 300 characters)
+- 2026-10-24T10:00:00Z `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing` — [Discussion #3](https://github.com/owner/repository/discussions/3)
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 8`
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 7`
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 6`
@@ -90,6 +125,9 @@ Usage unavailable; no agent account observation has been collected.
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 4`
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 3`
 - 2026-10-24T10:00:00Z `dispatch-error`: `failure 2`
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 1`
+
+</details>
 --- failed ---
 🔴 Stopped after failure · 💓 24 Oct 2026 10:01 UTC — RepoAgent
 <!-- repoagent:controller-dashboard -->
@@ -125,14 +163,34 @@ Usage unavailable; no agent account observation has been collected.
 - an unlinked Discussion: 1 inputs held until the Codex account credentials are replaced
 - [Discussion #5](https://github.com/owner/repository/discussions/5): idle; no input waiting
 
-### Recent failures
+### Historical failures
+Historical evidence does not establish recovery or a current blocker. Events before this controller lifetime are identified below.
+- **1 occurrence; latest 2026-10-24T10:01:15Z** `codex-auth-failed`: `turn failed: unexpected status 401 Unauthorized`
+- **1 occurrence; latest 2026-10-24T10:00:02Z** `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`
+- **1 occurrence; latest 2026-10-24T10:00:01Z** `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...` (dashboard text truncated at 300 characters)
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing` — [Discussion #3](https://github.com/owner/repository/discussions/3)
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 1`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 2`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 3`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 4`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 5`
+- **1 occurrence; latest 2026-10-24T10:00:00Z** `dispatch-error`: `failure 6`
+2 additional failure groups appear in the retained event details below.
+
+<details>
+<summary>All 12 retained failure events</summary>
+
 - 2026-10-24T10:01:15Z `codex-auth-failed`: `turn failed: unexpected status 401 Unauthorized`
-- 2026-10-24T10:00:02Z `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)`
-- 2026-10-24T10:00:01Z `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...`
-- 2026-10-24T10:00:00Z `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing`
-- 2026-10-24T10:00:00Z `dispatch-error`: `failure 8`
-- 2026-10-24T10:00:00Z `dispatch-error`: `failure 7`
-- 2026-10-24T10:00:00Z `dispatch-error`: `failure 6`
-- 2026-10-24T10:00:00Z `dispatch-error`: `failure 5`
-- 2026-10-24T10:00:00Z `dispatch-error`: `failure 4`
-- 2026-10-24T10:00:00Z `dispatch-error`: `failure 3`
+- 2026-10-24T10:00:02Z `app-refresh-error`: `GitHub App credential renewal failed: HTTP 401 Bad credentials @someone [link](https://example.org)` (before this controller lifetime)
+- 2026-10-24T10:00:01Z `poll-error`: `GitHub said xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...` (dashboard text truncated at 300 characters) (before this controller lifetime)
+- 2026-10-24T10:00:00Z `delivery-retry`: `https://github.com/owner/repository/discussions/3 session=S3 attempt=2: delivery refused 'the input' with spacing` — [Discussion #3](https://github.com/owner/repository/discussions/3) (before this controller lifetime)
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 8` (before this controller lifetime)
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 7` (before this controller lifetime)
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 6` (before this controller lifetime)
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 5` (before this controller lifetime)
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 4` (before this controller lifetime)
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 3` (before this controller lifetime)
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 2` (before this controller lifetime)
+- 2026-10-24T10:00:00Z `dispatch-error`: `failure 1` (before this controller lifetime)
+
+</details>

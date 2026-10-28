@@ -93,7 +93,7 @@ public sealed class ControllerDashboardGoldenTests
         Log(status, 0, "app-token-refreshed", "installation=234");
         Log(status, 0, "codex-auth-supplied", "account credentials installed");
         Log(status, 0, "forwarded", Url + "1 session=S1 changes=1 sources=DC_7 waiting=0 latest=" + Url + "1#discussioncomment-7");
-        // Eleven failures: the dashboard lists the newest ten, newest first.
+        // Eleven retained failures: ten compact groups and every individual event in expandable details.
         for (var failure = 1; failure <= 8; failure++) Log(status, 0, "dispatch-error", $"failure {failure}");
         Log(status, 0, "delivery-retry", Url + "3 session=S3 attempt=2: delivery refused `the input`\n  with   spacing");
         Log(status, 1, "poll-error", "GitHub said " + new string('x', 320));

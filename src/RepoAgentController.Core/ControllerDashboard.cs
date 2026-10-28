@@ -14,7 +14,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
     public static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
     // Bounded so shutdown cannot hang on GitHub; an undelivered stop stays retained and the next lifetime supersedes it.
     static readonly TimeSpan StopBudget = TimeSpan.FromSeconds(10);
-    const int MaximumSessions = 20, MaximumFailures = 10, MaximumText = 300;
+    const int MaximumSessions = 20, MaximumFailures = 10, MaximumFailureEvents = 20, MaximumText = 300;
     readonly string category;
     readonly ControllerStatus status;
     readonly GitHubOutbox outbox;
@@ -73,7 +73,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
             var snapshot = status.Snapshot();
             var now = clock.GetUtcNow();
             var accountUsage = usage?.Current;
-            outbox.Dashboard(category, Title(snapshot, now, stopped, accountUsage), Render(snapshot, now, stopped, releases.Current, accountUsage, redact));
+            outbox.Dashboard(category, Title(snapshot, now, stopped, accountUsage), Render(snapshot, now, stopped, releases.Current, accountUsage));
             return true;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -99,7 +99,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
             : $"{summary} · {heartbeat} — RepoAgent";
     }
 
-    static string Render(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, ReleaseNotice? release, UsageSnapshot? usage, Func<string, string> redact)
+    string Render(OperatorStatus snapshot, DateTimeOffset now, (DateTimeOffset At, string? Failure)? stopped, ReleaseNotice? release, UsageSnapshot? usage)
     {
         var text = new StringBuilder();
         text.AppendLine(AppIdentity.DashboardMarker);
@@ -183,10 +183,8 @@ public sealed class ControllerDashboard : IAsyncDisposable
         if (inventory.Length > MaximumSessions) text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- and {inventory.Length - MaximumSessions} more");
         if (inventory.Length == 0) text.AppendLine("None.");
         text.AppendLine();
-        text.AppendLine("### Recent failures");
-        var failures = snapshot.Failures.Select(Listed).OfType<StatusEvent>().Reverse().Take(MaximumFailures).ToArray();
-        foreach (var item in failures) text.AppendLine(System.Globalization.CultureInfo.CurrentCulture, $"- {Time(item.At)} {Code(item.Kind)}: {Code(item.Message)}");
-        if (failures.Length == 0) text.AppendLine("None recorded.");
+        History(text, snapshot);
+
         return text.ToString().ReplaceLineEndings("\n");
     }
 
@@ -215,6 +213,62 @@ public sealed class ControllerDashboard : IAsyncDisposable
             if (observation.Buckets.Count == 0) text.AppendLine("Usage windows unavailable; no numeric capacity is known.");
         }
     }
+
+    void History(StringBuilder text, OperatorStatus snapshot)
+    {
+        text.AppendLine("### Historical failures");
+        var failures = snapshot.Failures.Select(Listed).OfType<StatusEvent>().TakeLast(MaximumFailureEvents)
+            .Select(item => item with { Kind = redact(item.Kind), Message = redact(item.Message), Url = item.Url is null ? null : redact(item.Url) }).Reverse().ToArray();
+        if (failures.Length == 0) { text.AppendLine("None recorded."); return; }
+        text.AppendLine("Historical evidence does not establish recovery or a current blocker. Events before this controller lifetime are identified below.");
+        var groups = failures.GroupBy(item => (Kind: Flat(item.Kind), Message: Flat(item.Message), Links: string.Join(" ", FailureLinks(item))))
+            .Select(group => (group.Key, Events: group.ToArray(), Latest: group.Max(item => At(item.At))))
+            .OrderByDescending(group => group.Latest).ThenBy(group => group.Key.Kind, StringComparer.Ordinal)
+            .ThenBy(group => group.Key.Message, StringComparer.Ordinal).ThenBy(group => group.Key.Links, StringComparer.Ordinal).ToArray();
+        foreach (var group in groups.Take(MaximumFailures))
+        {
+            var latest = group.Latest == DateTimeOffset.MinValue ? "an unknown time" : Time(group.Latest);
+            var count = group.Events.Length;
+            text.AppendLine(CultureInfo.InvariantCulture, $"- **{count} {(count == 1 ? "occurrence" : "occurrences")}; latest {latest}** {Code(group.Key.Kind)}: {FailureMessage(group.Key.Message)}{Links(group.Events[0])}");
+        }
+        if (groups.Length > MaximumFailures)
+        {
+            var omitted = groups.Length - MaximumFailures;
+            text.AppendLine(CultureInfo.InvariantCulture, $"{omitted} additional failure {(omitted == 1 ? "group appears" : "groups appear")} in the retained event details below.");
+        }
+        text.AppendLine();
+        text.AppendLine("<details>");
+        text.AppendLine(CultureInfo.InvariantCulture, $"<summary>All {failures.Length} retained failure {(failures.Length == 1 ? "event" : "events")}</summary>");
+        text.AppendLine();
+        foreach (var item in failures)
+        {
+            var at = At(item.At);
+            var started = At(snapshot.Controller.StartedAt ?? "");
+            var earlier = at != DateTimeOffset.MinValue && started != DateTimeOffset.MinValue && at < started
+                ? " (before this controller lifetime)" : "";
+            text.AppendLine(CultureInfo.InvariantCulture, $"- {Time(item.At)} {Code(item.Kind)}: {FailureMessage(item.Message)}{Links(item)}{earlier}");
+        }
+        text.AppendLine();
+        text.AppendLine("</details>");
+    }
+
+    static DateTimeOffset At(string value) => DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var at)
+        ? at : DateTimeOffset.MinValue;
+
+    static string Flat(string value) => Regex.Replace(value, @"\s+", " ").Trim();
+
+    static string FailureMessage(string message) => Code(message) +
+        (Flat(message).Length > MaximumText ? $" (dashboard text truncated at {MaximumText} characters)" : "") +
+        (message.EndsWith(" <truncated>", StringComparison.Ordinal) ? " (retained status text was truncated)" : "");
+
+    static string[] FailureLinks(StatusEvent item) => Regex.Matches(Flat(item.Message),
+            @"(?<![^\s(])https://github\.com/[\w.-]+/[\w.-]+/discussions/\d+(?:#discussioncomment-\d+)?(?=$|[\s),.;])")
+        .Where(match => match.Index + match.Length <= MaximumText).Select(match => match.Value)
+        .Concat(item.Url is { Length: <= MaximumText } url && Link(url) != "an unlinked Discussion" ? [url] : [])
+        .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+
+    static string Links(StatusEvent item) => FailureLinks(item) is { Length: > 0 } links ? " — " + string.Join(", ", links.Select(Link)) : "";
+
     // An event recorded in a form no writer leaves is shown with what reads from it, unless it is not an object at all.
     static StatusEvent? Listed(StatusEvent? item) => item is { AsRead: not null, AsReadIsObject: false } ? null : item;
 
