@@ -114,7 +114,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
                 ### Recent failures
                 None recorded.
 
-                """, Published().Body);
+                """.ReplaceLineEndings("\n"), Published().Body);
 
             // Nothing changes; the heartbeat alone republishes, once.
             var writes = state.OutboxWrites;
@@ -316,7 +316,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
             - **Repository settings:** 2 unusable
               - `REPOAGENT_MAX_ACTIVE_SESSIONS` is invalid: `must be an integer from 1 to 64`; no repository value applies
               - `REPOAGENT_MODEL` could not be read: `HTTP 503`; the earlier value `gpt-5.5` still applies
-            """, Published().Body);
+            """.ReplaceLineEndings("\n"), Published().Body);
         Assert.Equal(Title, Published().Title);
 
         state.WriteSettings(new(new Dictionary<string, SettingValue> { ["REPOAGENT_MODEL"] = new(SettingState.Configured, "gpt-5.5") { Since = Start } }));
@@ -381,7 +381,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
                 - [Discussion #2]({Url(2)}): awaiting native acknowledgement
                 - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
                 - [Discussion #4]({Url(4)}): 2 inputs waiting for a free active-session slot
-                """, Listed());
+                """.ReplaceLineEndings("\n"), Listed());
 
             // Rejected Codex credentials hold idle input; input behind a turn or a delivery keeps its own reason.
             status.Record(new(Start, "codex-auth-failed", "turn failed: unexpected status 401 Unauthorized"));
@@ -391,7 +391,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
                 - [Discussion #2]({Url(2)}): awaiting native acknowledgement
                 - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
                 - [Discussion #4]({Url(4)}): 2 inputs held until the Codex account credentials are replaced
-                """, Listed());
+                """.ReplaceLineEndings("\n"), Listed());
 
             Limit(4);
             status.Record(new(Start, "codex-auth-verified", "turn completed"));
@@ -406,7 +406,7 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
             - [Discussion #2]({Url(2)}): awaiting native acknowledgement
             - [Discussion #3]({Url(3)}): delivery failed or was unacknowledged; attempt 3 at 2026-10-24T10:05:00Z; 1 inputs waiting
             - [Discussion #4]({Url(4)}): 2 inputs waiting for dispatch
-            """, Listed(Assert.Single(github.Dashboards).Body));
+            """.ReplaceLineEndings("\n"), Listed(Assert.Single(github.Dashboards).Body));
     }
 
     [Fact]
