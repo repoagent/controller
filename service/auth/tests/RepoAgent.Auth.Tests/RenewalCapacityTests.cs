@@ -167,7 +167,7 @@ public sealed class RenewalCapacityTests
         if (limit == "retained") f.State.Change(IssuanceQuota.Key, row => row["RetainedIssuanceCount"] = 4096L);
         var issuer = f.Issuer(limits);
 
-        var result = await BrokerRoutes.IssueAsync(InMemoryBroker.Request(f.EnrollmentId.Secret), f.EnrollmentId.DeviceId, () => issuer.IssueAsync, 1);
+        var result = await BrokerRoutes.IssueAsync(InMemoryBroker.Request(f.Credentials.ControllerSecret), f.Credentials.EnrollmentId, () => issuer.IssueAsync, 1);
 
         Assert.Equal(429, result.Status);
         Assert.Null(result.Body);

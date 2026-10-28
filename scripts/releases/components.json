@@ -9,7 +9,6 @@
     "nuget.config",
     ".globalconfig",
     "scripts/releases/release-please.mjs",
-    "scripts/releases/components.json",
     "scripts/releases/package.json",
     "scripts/releases/package-lock.json",
     "release-please-config.json",
