@@ -290,7 +290,13 @@ Always specify `--execution`; omission selects latest, not all executions. The [
 
 Before restoring storage, fence cleanup AND HTTP at actual zero replicas, all old writers/signing, and require positive settlement/publication proofs, a fresh external epoch and repository approval. Do not reset cursors/epochs to infer those proofs. Existing backups/key retention remain separately owned. This source procedure needs real suspension/drain/restore acceptance before relying on it.
 
-In an isolated rehearsal, prove a consistent current-epoch enrollment and credential authorize through the broker before backup. After restore under a fresh external epoch, the same well-formed old grant must answer401 to runtime issuance, without provider work or storage writes. Corrupt or incomplete stored bindings still answer503. Preserve and inspect a pre-backup revocation separately so epoch denial alone is not mistaken for revocation evidence. An issuance401 does not prove old GitHub capabilities were settled, permit owner reassignment or replace the worker/signing/publication fences above. These are source expectations; the live restore rehearsal and actual failure-alert notification/resolution remain open under #230.
+In an isolated rehearsal, prove a consistent current-epoch enrollment and credential authorize through the broker before backup. After restore under a fresh external epoch, the same well-formed old grant must answer401 to runtime issuance, without provider work or storage writes. Corrupt or incomplete stored bindings still answer503. Preserve and inspect a pre-backup revocation separately so epoch denial alone is not mistaken for revocation evidence. An issuance401 does not prove old GitHub capabilities were settled, permit owner reassignment or replace the worker/signing/publication fences above. These are source expectations; the isolated live restore rehearsal and deliberate cleanup-failure execution proof remain open under #230.
+
+## Observed cleanup alert delivery
+
+On 2026-10-28, the operator mailbox received both Fired and Resolved notifications for `repoagent-auth-cleanup-execution-failed`, alert ID `acdb87f2-5f5e-41f7-b568-848ebab9f000`. The condition fired at 13:40:05 UTC with `Executions`, `state=Failed`, value 1, and resolved at 16:06:54 UTC with value 0. Both emails passed the mailbox-recorded Microsoft SPF, DKIM and DMARC checks. See the [evidence recorded on #230](https://github.com/repoagent/controller/issues/230#issuecomment-6474823348).
+
+This proves delivery and resolution of an observed production alert. The failed execution, its cause and a corresponding successful execution have not been identified; it is not evidence of a deliberate isolated rehearsal. No production cleanup failure or restore was initiated for this observation. The isolated restore, retained-revocation proof and execution-level alert rehearsal remain open.
 
 ## Cleanup acceptance remains open
 
