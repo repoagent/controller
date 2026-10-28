@@ -1,4 +1,5 @@
 using AzureKeyVaultEmulator.Aspire.Hosting;
+using RepoAgent.Auth.Development;
 
 var builder = DistributedApplication.CreateBuilder(args);
 if (builder.ExecutionContext.IsPublishMode)
@@ -27,7 +28,7 @@ var initialize = builder.AddProject<Projects.RepoAgent_Auth_DevInit>("initialize
     .WithEnvironment("SharedSigningKeyUri", builder.Configuration["SharedSigningKeyUri"] ?? "")
     .WaitFor(storage).WaitFor(vault);
 
-builder.AddProject<Projects.RepoAgent_Auth>("auth", launchProfileName: "https")
+var auth = builder.AddProject<Projects.RepoAgent_Auth>("auth", launchProfileName: "https")
     .WithEnvironment("Broker__DevelopmentSettingsFile", settingsFile)
     .WithAzureKeyVaultEmulatorCredentials(vault)
     .WithHttpHealthCheck("/health/ready", endpointName: "https")
@@ -38,5 +39,7 @@ builder.AddProject<Projects.RepoAgent_Auth>("cleanup", launchProfileName: null)
     .WithEnvironment("DOTNET_ENVIRONMENT", "Development")
     .WithEnvironment("Broker__DevelopmentSettingsFile", settingsFile)
     .WaitForCompletion(initialize);
+
+ControllerDevelopment.Add(builder, auth);
 
 builder.Build().Run();

@@ -13,7 +13,7 @@ public sealed class ControllerStatus : IDisposable
     const int MaximumFailures = 20, MaximumMessage = 2000;
     // Events that report failed or blocked work. New failure events become visible by adding their kind here.
     static readonly HashSet<string> FailureKinds = ["fatal", "poll-error", "observation-error", "dispatch-error", "delivery-retry", "receipt-error", "outbox-error",
-        "app-refresh-error", "native-request-blocked", "refresh-blocked", "webhook-error", "webhook-disable-error", "dashboard-error",
+        "app-refresh-error", "agent-request-blocked", "refresh-blocked", "webhook-error", "webhook-disable-error", "dashboard-error",
         "codex-auth-failed", "codex-auth-invalid", "codex-auth-error", "selection-error", "label-read-error"];
     static readonly HashSet<string> ActivityKinds = ["session-created", "forwarded"];
     // Events after which the saved state holds different work, such as input now waiting for its session.
@@ -61,6 +61,7 @@ public sealed class ControllerStatus : IDisposable
                 case "ready": lifetime = lifetime with { Controller = controller with { State = "running" } }; break;
                 case "fatal": lifetime = lifetime with { Controller = controller with { State = "failed" } }; break;
                 case "app-token-refreshed": lifetime = lifetime with { Authentication = new("healthy") { UpdatedAt = at } }; break;
+                case "app-token-throttled": lifetime = lifetime with { Authentication = new("degraded") { UpdatedAt = at, Error = item.Message } }; break;
                 case "app-refresh-error": lifetime = lifetime with { Authentication = new("failed") { UpdatedAt = at, Error = item.Message } }; break;
                 // Agent account credentials, separate from the GitHub App: supplied, healthy (a turn completed) or failed.
                 case "codex-auth-supplied" or "codex-auth-applied": lifetime = lifetime with { CodexAuthentication = new("supplied") { UpdatedAt = at } }; break;

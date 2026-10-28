@@ -39,7 +39,7 @@ public sealed class AgentSessionsTests
         Assert.Equal("T1", await Accept(session));
 
         Assert.Equal(["journal started S1 T1", "turns []", "journal completed S1 T1 completed", "wake failure=none", "turns []", "accepted S1 T1"], order);
-        Assert.Equal(("native-accepted", "session=S1 model=gpt-6-luna effort=xhigh selection=label turn=T1"), log.Entries[^1]);
+        Assert.Equal(("agent-accepted", "session=S1 model=gpt-6-luna effort=xhigh selection=label turn=T1"), log.Entries[^1]);
         // The completion already ended the turn, so the acceptance does not hold the session.
         Assert.Equal((AgentSessionStatus.Idle, 0), (sessions.Status(session), sessions.ActiveTurns));
         var (ended, running) = sessions.TakeTurns();
@@ -61,7 +61,7 @@ public sealed class AgentSessionsTests
         Assert.Equal((AgentSessionStatus.Active, 1), (sessions.Status(session), sessions.ActiveTurns));
         Assert.Equal("turns [S1]", order[^2]);
 
-        // The pinned native reports idle before turn/completed.
+        // The pinned agent reports idle before turn/completed.
         runtime.Report(session, AgentSessionStatus.Idle);
         Assert.Equal((AgentSessionStatus.Active, 1), (sessions.Status(session), sessions.ActiveTurns));
         Assert.Equal(("session-status", "session=S1 status=Idle"), log.Entries[^1]);
@@ -109,7 +109,7 @@ public sealed class AgentSessionsTests
     {
         var ct = TestContext.Current.CancellationToken;
         var session = await sessions.Start(ct);
-        runtime.Answer(_ => throw new AgentRequestRejected("Native request failed: {\"code\":-32600}"));
+        runtime.Answer(_ => throw new AgentRequestRejected("Agent request failed: {\"code\":-32600}"));
 
         var refused = await Assert.ThrowsAsync<AgentRequestRejected>(() => Accept(session));
 
@@ -117,7 +117,7 @@ public sealed class AgentSessionsTests
         Assert.True(AgentSessions.Refused(refused));
         Assert.Equal((AgentSessionStatus.Idle, 0), (sessions.Status(session), sessions.ActiveTurns));
         Assert.DoesNotContain(order, entry => entry.StartsWith("accepted", StringComparison.Ordinal));
-        Assert.DoesNotContain(log.Entries, entry => entry.Kind == "native-accepted");
+        Assert.DoesNotContain(log.Entries, entry => entry.Kind == "agent-accepted");
         runtime.Answer(_ => throw new TimeoutException("The operation has timed out."));
 
         var timedOut = await Assert.ThrowsAsync<TimeoutException>(() => Accept(session));
@@ -150,7 +150,7 @@ public sealed class AgentSessionsTests
         // The lost process may have started the turn, so unlike a refusal the admission stays unconfirmed.
         Assert.False(AgentSessions.Refused(lost));
         Assert.Equal((AgentSessionStatus.Unknown, false, 0), (sessions.Status(session), sessions.Loaded(session), sessions.ActiveTurns));
-        Assert.DoesNotContain(log.Entries, entry => entry.Kind == "native-accepted");
+        Assert.DoesNotContain(log.Entries, entry => entry.Kind == "agent-accepted");
     }
 
     [Fact]
@@ -161,9 +161,9 @@ public sealed class AgentSessionsTests
 
         // A refresh journal blocked by a lost process refuses to record the acceptance.
         await Assert.ThrowsAsync<IOException>(() => sessions.Accept(session, """{"changes":[]}""", Selection,
-            (_, _) => throw new IOException("Checkout/native state uncertain; manual recovery required"), ct));
+            (_, _) => throw new IOException("Checkout/agent state uncertain; manual recovery required"), ct));
 
-        Assert.DoesNotContain(log.Entries, entry => entry.Kind == "native-accepted");
+        Assert.DoesNotContain(log.Entries, entry => entry.Kind == "agent-accepted");
         Assert.Equal((AgentSessionStatus.Active, 1), (sessions.Status(session), sessions.ActiveTurns));
     }
 
@@ -270,7 +270,7 @@ public sealed class AgentSessionsTests
     }
 
     [Theory]
-    [InlineData(false, "Supply fresh credentials with --codex-auth, or renew the native sign-in and restart.")]
+    [InlineData(false, "Supply fresh credentials with --codex-auth, or renew the agent sign-in and restart.")]
     [InlineData(true, "Replace the --codex-auth file; the controller applies it at the next idle boundary.")]
     public async Task A_credential_rejection_names_the_remedy_for_how_the_agent_account_credentials_are_supplied(bool supplied, string remedy)
     {

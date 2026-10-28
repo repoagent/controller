@@ -2,9 +2,9 @@ using System.Security.Cryptography;
 
 namespace RepoAgent.Auth;
 
-public static class DeviceSecret
+public static class ControllerSecret
 {
-    public static bool IsDeviceId(string value) => value.Length is >= 1 and <= 128
+    public static bool IsEnrollmentId(string value) => value.Length is >= 1 and <= 128
         && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 
     public static byte[]? Hash(string? secret)

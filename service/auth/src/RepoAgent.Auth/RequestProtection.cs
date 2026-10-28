@@ -40,8 +40,11 @@ internal static class RequestProtection
             limiter.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             limiter.OnRejected = (context, _) =>
             {
-                context.HttpContext.Response.Headers.RetryAfter = BrokerRoutes.RetryAfter(
-                    context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var delay) ? delay : null);
+                // Of this fixed two-limiter chain, the replenishing minute limiter supplies RetryAfter;
+                // the concurrency limiter cannot predict when a currently running request will release a permit.
+                var minute = context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var delay);
+                BrokerRejections.Record(minute ? BrokerRejectionReason.RequestMinute : BrokerRejectionReason.RequestConcurrency);
+                context.HttpContext.Response.Headers.RetryAfter = BrokerRoutes.RetryAfter(minute ? delay : null);
                 return ValueTask.CompletedTask;
             };
         });

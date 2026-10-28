@@ -29,7 +29,7 @@ public sealed class BlockedControllerHostTests
         github.Category("Controller status");
         await using var outbox = new GitHubOutbox("owner/repository", github, InMemoryDiscussions.App, state, clock, log);
         await using var dashboard = new ControllerDashboard("Controller status", status, outbox,
-            new BaselineReleases(new InMemoryBaselineReleases(), _ => Task.FromResult<string?>(null), clock, log, text => text), clock, log, text => text);
+            new BaselineReleaseCheck(new InMemoryBaselineReleases(), _ => Task.FromResult<string?>(null), clock, log, text => text), clock, log, text => text);
         dashboard.Start(TestContext.Current.CancellationToken);
         await outbox.Flush(TestContext.Current.CancellationToken);
         var port = ControllerHarness.FreePort();

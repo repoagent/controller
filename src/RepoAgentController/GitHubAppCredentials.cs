@@ -6,7 +6,6 @@ namespace RepoAgentController;
 public sealed class GitHubAppCredentials : IDisposable
 {
     readonly GitHubTokenLifetime lifetime;
-    readonly CredentialHandoff handoff;
 
     public string AgentLogin => Identity.AgentLogin;
     /// <summary>Private gh/Git configuration, generated wrappers and the nonsecret pointer to this lifetime's credential handoff.</summary>
@@ -27,9 +26,7 @@ public sealed class GitHubAppCredentials : IDisposable
         SecureDirectory(credentialDirectory);
         CredentialDirectory = credentialDirectory;
         ClearCache(credentialDirectory);
-        lifetime = new(createSource(clock), clock, new ControllerLog());
-        try { handoff = new CredentialHandoff(credentialDirectory, Handoff, lifetime.Reject); }
-        catch { lifetime.Dispose(); throw; }
+        lifetime = new(createSource(clock), clock, new ControllerLog(), new SocketAgentToolCredentials(credentialDirectory));
     }
 
     public static GitHubAppCredentials FromBroker(HttpClient http, string brokerOrigin, string enrollmentFile,
@@ -60,9 +57,8 @@ public sealed class GitHubAppCredentials : IDisposable
     public AppIdentity Identity => lifetime.Identity;
     public bool IsAgentActor(JsonNode? actor) => Identity.IsAgentActor(DiscussionJson.ReadActor(actor));
     public Task<string> GetToken(CancellationToken ct) => lifetime.GetToken(ct);
-    internal async Task<InstallationCredential> GetCredential(CancellationToken ct) => Credential(await lifetime.GetCredential(ct));
-    InstallationCredential? Handoff() => lifetime.ForAgent() is { } current ? Credential(current) : null;
-    static InstallationCredential Credential(GitHubToken token) => new(token.Token, token.ExpiresAt, token.Repository, token.Profile);
+    internal async Task<GitHubToolToken> GetCredential(CancellationToken ct) => Credential(await lifetime.GetCredential(ct));
+    static GitHubToolToken Credential(GitHubToken token) => new(token.Token, token.ExpiresAt, token.Repository, token.Profile);
     public Task RefreshUntilCancelled(CancellationToken ct) => lifetime.RefreshUntilCancelled(ct);
 
     internal static void SecureDirectory(string path)
@@ -71,5 +67,5 @@ public sealed class GitHubAppCredentials : IDisposable
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
-    public void Dispose() { handoff.Dispose(); lifetime.Dispose(); }
+    public void Dispose() => lifetime.Dispose();
 }

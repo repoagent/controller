@@ -17,7 +17,7 @@ public sealed class ActionsVariableMigrationTests
         var f = new InMemoryBroker();
         var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
         var old = await ActionsVariableEnrollmentTests.Active(f, github, version: 2);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.Device, old.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
 
         var before = f.Rows().Select(row => (row.Key, row.Version)).ToList();
         var mints = f.GitHub.Mints;
@@ -27,23 +27,23 @@ public sealed class ActionsVariableMigrationTests
         Assert.Equal(before, f.Rows().Select(row => (row.Key, row.Version)));
         Assert.Equal(mints, f.GitHub.Mints);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.Device, old.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
 
         // Operator revocation: host removes the Agent marker; the controller self-revokes.
         github.Agent.Remove("APPROVAL");
         github.Actions.Clear();
-        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.Device, old.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.EnrollmentId, old.Secret)).StatusCode);
         await Retained.ReclaimEnrollment(f, old.Request.IdempotencyId);
         await SettleOwnerCapabilities(f);
         await Retained.ReclaimEnrollment(f, old.Request.IdempotencyId);
 
         var replacement = await ActionsVariableEnrollmentTests.Active(f, github);
-        Assert.NotEqual(old.Device, replacement.Device);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.Device, replacement.Secret)).StatusCode);
+        Assert.NotEqual(old.EnrollmentId, replacement.EnrollmentId);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.EnrollmentId, replacement.Secret)).StatusCode);
         github.Agent["APPROVAL"] = old.Marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.Device, old.Secret)).StatusCode);
-        Assert.Equal(replacement.Device, f.Gate.OwnerEnrollmentId);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
+        Assert.Equal(replacement.EnrollmentId, f.Gate.OwnerEnrollmentId);
     }
 
     // Opting in to repository settings is a fresh enrollment. The frozen v3 owner keeps its exact
@@ -54,7 +54,7 @@ public sealed class ActionsVariableMigrationTests
         var f = new InMemoryBroker();
         var github = ActionsVariableEnrollmentTests.Repository.Configure(f.GitHub);
         var old = await ActionsVariableEnrollmentTests.Active(f, github);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.Device, old.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
 
         var before = f.Rows().Select(row => (row.Key, row.Version)).ToList();
         var mints = f.GitHub.Mints;
@@ -64,22 +64,22 @@ public sealed class ActionsVariableMigrationTests
         Assert.Equal(before, f.Rows().Select(row => (row.Key, row.Version)));
         Assert.Equal(mints, f.GitHub.Mints);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.Device, old.Secret, 3)).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.Device, old.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.EnrollmentId, old.Secret, 3)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
         Assert.All(github.RuntimePermissions, grants => Assert.DoesNotContain("actions_variables", grants.Keys));
 
         github.Actions.Clear();
-        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.Device, old.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.EnrollmentId, old.Secret)).StatusCode);
         await Retained.ReclaimEnrollment(f, old.Request.IdempotencyId);
         await SettleOwnerCapabilities(f);
         await Retained.ReclaimEnrollment(f, old.Request.IdempotencyId);
 
         var replacement = await ActionsVariableEnrollmentTests.Active(f, github, profile: "polling-settings");
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.Device, replacement.Secret, 3)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.EnrollmentId, replacement.Secret, 3)).StatusCode);
         Assert.Equal("read", github.RuntimePermissions[^1]["actions_variables"]);
         github.Actions["REPOAGENT_APPROVAL"] = old.Marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.Device, old.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
     }
 
     // StoryBeam's shape: a setup v2 webhook-clone owner keeps renewing exactly as before setup v4 existed, and blocks
@@ -100,7 +100,7 @@ public sealed class ActionsVariableMigrationTests
             Assert.Equal(frozen, github.RuntimePermissions[^1]);
             Assert.Equal("agent_variables", github.VerifierPermission);
         }
-        AssertV2Lease(await f.Issue(old.Device, old.Secret, 2));
+        AssertV2Lease(await f.Issue(old.EnrollmentId, old.Secret, 2));
 
         var before = f.Rows().Select(row => (row.Key, row.Version)).ToList();
         var mints = f.GitHub.Mints;
@@ -110,20 +110,20 @@ public sealed class ActionsVariableMigrationTests
         Assert.Equal(before, f.Rows().Select(row => (row.Key, row.Version)));
         Assert.Equal(mints, f.GitHub.Mints);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        AssertV2Lease(await f.Issue(old.Device, old.Secret, 2));
+        AssertV2Lease(await f.Issue(old.EnrollmentId, old.Secret, 2));
 
         github.Agent.Remove("APPROVAL");
-        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.Device, old.Secret, 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.EnrollmentId, old.Secret, 2)).StatusCode);
         await Retained.ReclaimEnrollment(f, old.Request.IdempotencyId);
         await SettleOwnerCapabilities(f);
         await Retained.ReclaimEnrollment(f, old.Request.IdempotencyId);
 
         var replacement = await ActionsVariableEnrollmentTests.Active(f, github, 4, "webhook-clone-settings");
-        var lease = await f.Issue(replacement.Device, replacement.Secret, 3);
+        var lease = await f.Issue(replacement.EnrollmentId, replacement.Secret, 3);
         Assert.Equal(HttpStatusCode.OK, lease.StatusCode);
         Assert.Equal("repository-agent-settings-approval-v4", lease.Json.GetProperty("policyVersion").GetString());
         Assert.Equal(new Dictionary<string, string>(frozen) { ["agent_variables"] = "read" }, github.RuntimePermissions[^1]);
-        Assert.Equal(replacement.Device, f.Gate.OwnerEnrollmentId);
+        Assert.Equal(replacement.EnrollmentId, f.Gate.OwnerEnrollmentId);
     }
 
     // Past the owner's GitHub token expiry plus the five-minute margin, reclamation settles every issuance attempt.

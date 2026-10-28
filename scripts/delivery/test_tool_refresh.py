@@ -189,7 +189,7 @@ class RefreshStepTests(unittest.TestCase):
     def commit(self, temporary, moved=False, **environment):
         # The commit job checks out the selection's base again and downloads the selection artifact.
         _, copy = self.checkout(temporary, 'commit-checkout', moved=moved)
-        return self.run_step('commit', 'Pin the verified version on main and publish a baseline',
+        return self.run_step('commit', 'Pin the verified version on main and propose a semantic release',
                              temporary, copy, {}, **environment)
 
     def composed(self, copy):
@@ -349,10 +349,10 @@ class RefreshStepTests(unittest.TestCase):
                                                      for artifact in artifacts},
                                  'Only the verified tool changes; every other pin stays as reviewed')
                 label = 'Codex' if tool == 'codex' else tool
-                self.assertEqual(change['message']['headline'], f'chore: refresh baseline {label} to {version}')
+                self.assertEqual(change['message']['headline'], f'fix(controller): refresh bundled {label} from {current} to {version}')
                 self.assertIn(f'{label} {current} -> {version}', change['message']['body'])
                 self.assertIn('https://github.com/repoagent/controller/actions/runs/4242', change['message']['body'])
-                self.assertEqual(calls[1]['argv'], ['workflow', 'run', 'controller.yml', '--ref', 'main'])
+                self.assertEqual(calls[1]['argv'], ['workflow', 'run', 'release-please.yml', '--ref', 'main'])
 
     def test_moved_main_or_another_commit_pins_and_publishes_nothing(self):
         for name, moved, environment, attempted in [
@@ -401,7 +401,7 @@ class RefreshStepTests(unittest.TestCase):
         result, calls, _ = self.commit(temporary, GH_DISPATCH_FAILS='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual([call['argv'][:2] for call in calls], [['api', 'graphql'], ['workflow', 'run']])
-        self.assertIn('gh workflow run controller.yml --ref main', result.stderr)
+        self.assertIn('gh workflow run release-please.yml --ref main', result.stderr)
 
 
 def needs(name, workflow=PIPELINE):
@@ -439,7 +439,7 @@ def checkout_ref(name):
 class RefreshWorkflowTests(unittest.TestCase):
     def test_a_scheduled_workflow_refreshes_the_baseline_from_upstream_tool_releases(self):
         refreshing = [workflow.name for workflow in sorted(WORKFLOWS.glob('*.yml')) if 'schedule' in events(workflow)
-                      and any('controller.yml' in (WORKFLOWS / called).read_text()
+                      and any('release-please.yml' in (WORKFLOWS / called).read_text()
                               for called in re.findall(r'(?m)^    uses: \./\.github/workflows/(\S+)$', workflow.read_text()))]
         self.assertTrue(refreshing, 'No workflow checks upstream gh/Codex releases and feeds baseline publication')
         self.assertEqual(events(WORKFLOW), {'schedule', 'workflow_dispatch'},
@@ -494,6 +494,44 @@ class RefreshWorkflowTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn(command, smoke)
 
+    def test_only_a_successful_hosted_installer_smoke_allows_the_verified_pin(self):
+        self.assertGreaterEqual(needs('commit'), {'select', 'verify', 'smoke'},
+                                'A tools-only image check cannot authorize a pin without the hosted installer journey')
+        smoke = job('smoke')
+        self.assertIn('uses: ./.github/workflows/e2e-smoke.yml', smoke)
+        self.assertIn('secrets: inherit', smoke)
+        self.assertIn('needs.select.outputs.selection', smoke)
+    def test_branch_dispatch_reuses_the_same_global_smoke_without_publication(self):
+        controller = WORKFLOWS / 'controller.yml'
+        smoke = job('hosted-smoke', controller)
+        self.assertIn('uses: ./.github/workflows/e2e-smoke.yml', smoke)
+        self.assertIn('secrets: inherit', smoke)
+        self.assertIn('inputs.smoke', smoke)
+        self.assertNotIn("github.ref == 'refs/heads/main'", smoke)
+        for name in ('build', 'verify'):
+            self.assertIn('inputs.smoke != true', job(name, controller))
+        reusable = WORKFLOWS / 'e2e-smoke.yml'
+        self.assertEqual(events(reusable), {'workflow_dispatch', 'workflow_call'})
+        body = job('smoke', reusable)
+        self.assertIn('group: e2e-smoke\n', body)
+        self.assertIn('cancel-in-progress: false', body)
+        self.assertNotIn('environment:', body)
+        cleanup = body.split('      - name: Close enrollment and remove every owned Discussion\n', 1)[1]
+        self.assertIn('if: always()', cleanup.split('      - name:', 1)[0])
+        # runner context is unavailable at jobs.<job>.env; only the live-test step needs this variable.
+        self.assertNotIn('runner.', body.split('    steps:', 1)[0])
+        self.assertNotIn('REPOAGENT_SMOKE_DIRECTORY', cleanup.split('      - name:', 1)[0])
+        self.assertIn('cleanup "$RUNNER_TEMP/hosted-smoke"', cleanup)
+        live = body.split('      - name: Observe the real Quick Tunnel, receipt and App reply\n', 1)[1]
+        self.assertIn('REPOAGENT_SMOKE_DIRECTORY: ${{ runner.temp }}/hosted-smoke', live.split('      - name:', 1)[0])
+    def test_selection_or_verification_failure_is_reported_without_pinning(self):
+        reporting = job('report-failure')
+        self.assertGreaterEqual(needs('report-failure'), {'select', 'verify', 'smoke', 'commit'})
+        self.assertIn("if: failure()", reporting)
+        self.assertIn("needs.smoke.result != 'failure'", reporting)
+        self.assertIn('issues: write', reporting)
+        self.assertNotIn('contents: write', reporting)
+        self.assertIn('gh issue', reporting)
     def test_write_privileges_stay_in_the_main_only_commit_job(self):
         for workflow in (WORKFLOW, PIPELINE):
             with self.subTest(workflow=workflow.name):
@@ -501,7 +539,7 @@ class RefreshWorkflowTests(unittest.TestCase):
                 self.assertNotIn('persist-credentials: true', workflow.read_text())
                 self.assertNotIn('id-token', workflow.read_text())
         # The scheduled refresh grants only the ceiling the called commit job needs.
-        self.assertEqual(set(re.findall(r'(?m)^      ([a-z-]+): write$', job('refresh', WORKFLOW))), {'contents', 'actions'})
+        self.assertEqual(set(re.findall(r'(?m)^      ([a-z-]+): write$', job('refresh', WORKFLOW))), {'contents', 'actions', 'issues'})
         for name in ['select', 'verify']:
             with self.subTest(job=name):
                 self.assertNotIn('write', job(name))

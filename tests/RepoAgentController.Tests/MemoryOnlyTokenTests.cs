@@ -8,7 +8,7 @@ using Xunit;
 
 namespace RepoAgentController.Tests;
 
-// Real controller lifetimes, wrapper processes, files and logs; only the broker, GitHub and native peers are
+// Real controller lifetimes, wrapper processes, files and logs; only the broker, GitHub and agent peers are
 // controlled. Every broker-issued token is a canary: consumers must see it, persistent outputs must not.
 [Collection("Managed checkout environment")]
 public sealed class MemoryOnlyTokenTests
@@ -27,7 +27,7 @@ public sealed class MemoryOnlyTokenTests
         var bodySucceeded = false;
         try
         {
-            // A fresh start: the agent's gh, launched by the native session through its wrapper, and the
+            // A fresh start: the agent's gh, launched by the agent session through its wrapper, and the
             // controller's own GitHub calls both carry the newly acquired App token.
             await peers.Eventually(calls => calls.Any(call => call.Agent));
             Assert.All(peers.Calls(), call => Assert.Equal(Canary + "1", call.Token));
@@ -63,9 +63,9 @@ public sealed class MemoryOnlyTokenTests
             }
             catch when (!bodySucceeded)
             {
-                // Preserve the original assertion while bounding cleanup to this fixture's retained native identity.
+                // Preserve the original assertion while bounding cleanup to this fixture's retained agent identity.
                 try { peers.KillOwned(); }
-                catch (Exception error) { Console.Error.WriteLine("Owned native cleanup failed: " + error.GetType().Name); }
+                catch (Exception error) { Console.Error.WriteLine("Owned agent cleanup failed: " + error.GetType().Name); }
                 await shutdown.CancelAsync();
                 try { await run.WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None); }
                 catch (Exception error) when (error is TimeoutException or OperationCanceledException) { }
@@ -74,7 +74,7 @@ public sealed class MemoryOnlyTokenTests
         var settled = JsonNode.Parse(File.ReadAllText(fixture.State))!["discussions"]!["D1"]!;
         Assert.Null(settled["pending"]);
         Assert.Null(settled["running"]);
-        Assert.Contains("turn=native-turn status=completed", fixture.RetainedLog);
+        Assert.Contains("turn=agent-turn status=completed", fixture.RetainedLog);
 
 
         // A stopped controller leaves no usable credential behind, and the wrapper never falls back to ambient sign-in.
@@ -91,7 +91,7 @@ public sealed class MemoryOnlyTokenTests
         AssertNotPersisted(fixture, peers);
     }
 
-    // Every file the controller and its native peer own: state, logs, credential directory, workspace and history.
+    // Every file the controller and its agent peer own: state, logs, credential directory, workspace and history.
     static void AssertNotPersisted(BrokerAuthenticationTests.Fixture fixture, Peers peers)
     {
         var canary = Encoding.UTF8.GetBytes(Canary);
@@ -140,22 +140,22 @@ public sealed class MemoryOnlyTokenTests
         }
     }
 
-    // Controlled GitHub (gh) and native peers. Observations go to a test-owned file outside every controller path.
+    // Controlled GitHub (gh) and agent peers. Observations go to a test-owned file outside every controller path.
     sealed class Peers : IDisposable
     {
         readonly string observations = Path.Combine(Path.GetTempPath(), "memory-token-observations-" + Guid.NewGuid().ToString("N"));
         readonly Dictionary<string, string?> previous = new();
-        readonly string ready = Path.Combine(Path.GetTempPath(), "memory-token-native-" + Guid.NewGuid().ToString("N"));
-        readonly string native;
+        readonly string ready = Path.Combine(Path.GetTempPath(), "memory-token-agent-" + Guid.NewGuid().ToString("N"));
+        readonly string agent;
         SafeFileHandle? identity;
         bool completionSent;
 
         public Peers(BrokerAuthenticationTests.Fixture fixture)
         {
-            var tools = Path.Combine(fixture.Directory, "native-tools");
+            var tools = Path.Combine(fixture.Directory, "agent-tools");
             Directory.CreateDirectory(tools);
-            native = Path.Combine(tools, "codex");
-            WriteExecutable(native, Native);
+            agent = Path.Combine(tools, "codex");
+            WriteExecutable(agent, Agent);
             WriteExecutable(fixture.Gh, GitHub);
             Set("PATH", tools + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"));
             Set("MEMORY_TOKEN_OBSERVATIONS", observations);
@@ -192,12 +192,12 @@ public sealed class MemoryOnlyTokenTests
             if (identity is not null) return;
             var pid = int.Parse(File.ReadAllText(ready), System.Globalization.CultureInfo.InvariantCulture);
             var descriptor = OpenIdentity(pid, 0);
-            Assert.True(descriptor >= 0, "The ready native peer must still exist");
+            Assert.True(descriptor >= 0, "The ready agent peer must still exist");
             var retained = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
             try
             {
                 // Validate after opening the pidfd: even a PID reuse cannot redirect subsequent signals.
-                Assert.Contains(native, File.ReadAllText($"/proc/{pid}/cmdline").Split('\0'));
+                Assert.Contains(agent, File.ReadAllText($"/proc/{pid}/cmdline").Split('\0'));
                 identity = retained;
             }
             finally { if (identity is null) retained.Dispose(); }
@@ -231,7 +231,7 @@ public sealed class MemoryOnlyTokenTests
         }
 
         // An agent turn asks its gh for the token, as an agent's own GitHub work would.
-        const string Native = """
+        const string Agent = """
             #!/usr/bin/python3
             import json,os,signal,subprocess,sys
             active=False;finished=False
@@ -240,8 +240,8 @@ public sealed class MemoryOnlyTokenTests
              global active
              if not active:return
              active=False
-             print(json.dumps({'method':'thread/status/changed','params':{'threadId':'native-T1','status':{'type':'idle'}}}),flush=True)
-             print(json.dumps({'method':'turn/completed','params':{'threadId':'native-T1','turn':{'id':'native-turn','status':'completed'}}}),flush=True)
+             print(json.dumps({'method':'thread/status/changed','params':{'threadId':'agent-T1','status':{'type':'idle'}}}),flush=True)
+             print(json.dumps({'method':'turn/completed','params':{'threadId':'agent-T1','turn':{'id':'agent-turn','status':'completed'}}}),flush=True)
              open(ready+'.completed','w').close()
             def finish(*_):
              global finished
@@ -253,7 +253,7 @@ public sealed class MemoryOnlyTokenTests
              request=json.loads(line);method=request.get('method')
              if 'id' not in request:continue
              if method=='turn/start':subprocess.run(['gh','auth','token'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-             result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'turn':{'id':'native-turn'}} if method=='turn/start' else {'thread':{'id':'native-T1','status':{'type':'idle'}}}
+             result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'turn':{'id':'agent-turn'}} if method=='turn/start' else {'thread':{'id':'agent-T1','status':{'type':'idle'}}}
              print(json.dumps({'id':request['id'],'result':result}),flush=True)
              if method=='turn/start':
               active=True

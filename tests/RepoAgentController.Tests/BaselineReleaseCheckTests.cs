@@ -5,7 +5,7 @@ using Xunit;
 
 namespace RepoAgentController.Tests;
 
-// BaselineReleases in-process: the core's comparison of this controller's image with the published baseline releases, what it
+// BaselineReleaseCheck in-process: the core's comparison of this controller's image with the published baseline releases, what it
 // claims after a failed read, and what it logs. Release metadata parsing is the GitHub adapter's.
 public sealed class BaselineReleaseCheckTests
 {
@@ -14,7 +14,7 @@ public sealed class BaselineReleaseCheckTests
     readonly InMemoryBaselineReleases published = new();
     readonly RecordingLog log = new();
 
-    BaselineReleases Check(string? inventory, TimeProvider? time = null, Func<string, string>? redact = null) =>
+    BaselineReleaseCheck Check(string? inventory, TimeProvider? time = null, Func<string, string>? redact = null) =>
         new(published, _ => Task.FromResult(inventory), time ?? clock, log, redact ?? (text => text));
 
     /// <summary>A baseline release as the release publisher describes it; its image inventory digest is derived from <paramref name="image"/>.</summary>
@@ -26,6 +26,35 @@ public sealed class BaselineReleaseCheckTests
 
     static string Digest(string seed) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(seed)));
 
+    [Fact]
+    public async Task Legacy_image_identity_is_preserved_without_claiming_semantic_downgrade_or_currentness()
+    {
+        var legacy = Release(999, image: "running");
+        var semantic = Release(1) with { Tag = "controller-v1.0.0" };
+        published.Publish(semantic);
+        published.Publish(legacy);
+        await using var releases = Check(Inventory("running"));
+
+        await releases.Check(TestContext.Current.CancellationToken);
+
+        Assert.Equal(legacy, releases.Current!.Running);
+        Assert.Equal(semantic, releases.Current.Newest);
+        Assert.Equal(0, releases.Current.Newer);
+        Assert.Contains("legacy baseline", releases.Current.Uncertainty, StringComparison.Ordinal);
+    }
+    [Fact]
+    public async Task Stable_controller_versions_are_compared_numerically_and_other_components_are_ignored()
+    {
+        var running = Release(500, image: "running") with { Tag = "controller-v1.2.0" };
+        var newest = Release(100) with { Tag = "controller-v1.10.0" };
+        foreach (var release in new[] { running, newest, Release(999) with { Tag = "broker-v99.0.0" },
+            Release(998) with { Tag = "controller-v2.0.0-rc.1" }, Release(997) }) published.Publish(release);
+        await using var releases = Check(Inventory("running"));
+
+        await releases.Check(TestContext.Current.CancellationToken);
+
+        Assert.Equal(new ReleaseNotice(Start, running, newest, 1, null), releases.Current);
+    }
     [Fact]
     public async Task Newer_baseline_release_is_offered_with_how_many_are_newer_while_the_running_release_claims_no_update()
     {
@@ -120,7 +149,7 @@ public sealed class BaselineReleaseCheckTests
     public async Task An_unreadable_image_inventory_fails_the_check_like_an_unreadable_release_list()
     {
         published.Publish(Release(101));
-        await using var releases = new BaselineReleases(published, _ => throw new FileNotFoundException("Could not find file '/opt/repoagent/image-inventory.json'."),
+        await using var releases = new BaselineReleaseCheck(published, _ => throw new FileNotFoundException("Could not find file '/opt/repoagent/image-inventory.json'."),
             clock, log, text => text);
 
         await releases.Check(TestContext.Current.CancellationToken);
@@ -131,7 +160,7 @@ public sealed class BaselineReleaseCheckTests
 
     [Theory]
     [InlineData("derived image", "its image inventory matches none of the newest published baseline releases, so it is a derived, local, unreleased or much older image")]
-    [InlineData("native run", "this controller was not started with a baseline image inventory, for example in a native or development run")]
+    [InlineData("agent run", "this controller was not started with a baseline image inventory, for example in a standalone or development run")]
     public async Task Uncertain_image_identity_is_reported_instead_of_a_replacement(string image, string reason)
     {
         var baseline = Release(101, image: "baseline");

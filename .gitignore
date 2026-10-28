@@ -9,3 +9,5 @@ __pycache__/
 
 .claude/worktrees/
 .archify/
+
+scripts/releases/node_modules/

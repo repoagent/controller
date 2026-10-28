@@ -19,7 +19,7 @@ public sealed class ControllerPollingTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => world.Run(once: true));
 
-        Assert.Empty(world.Native.Requests);
+        Assert.Empty(world.Agent.Requests);
         Assert.Null(world.Durable.Saved);
         Assert.Single(world.State.Outbox!.Operations);
         Assert.DoesNotContain("addReaction retained", world.GitHub.Calls);
@@ -35,24 +35,24 @@ public sealed class ControllerPollingTests
         var run = world.Run();
         await world.Clock.Armed();
         Assert.NotNull(world.Saved(1).Running);
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         AssertPoll(Assert.Single(world.Polls), succeeded: true);
         world.Open(2);
 
         world.Clock.Advance(Interval - TimeSpan.FromTicks(1));
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         Assert.False(world.Durable.Saved!.Discussions.ContainsKey("D2"));
         world.Clock.Advance(TimeSpan.FromTicks(1));
         await world.Clock.Armed();
 
-        Assert.Equal(2, world.Native.Requests.Count);
+        Assert.Equal(2, world.Agent.Requests.Count);
         Assert.NotNull(world.Saved(2).Running);
         Assert.Equal([Interval, Interval], world.Clock.Delays);
         await world.Stop.CancelAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Bounded(run));
         world.Open(3);
         world.Clock.Advance(Interval + Interval);
-        Assert.Equal(2, world.Native.Requests.Count);
+        Assert.Equal(2, world.Agent.Requests.Count);
         Assert.Equal(2, world.Polls.Count);
     }
 
@@ -67,20 +67,20 @@ public sealed class ControllerPollingTests
         world.Open(2);
 
         world.Clock.Advance(Interval + Interval + Interval);
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         Assert.False(world.Durable.Saved!.Discussions.ContainsKey("D2"));
         Assert.Empty(world.Polls);
         Assert.Empty(world.Clock.Delays); // The interval cannot run concurrently with this observation.
         world.Runtime.Release.TrySetResult();
         await world.Clock.Armed();
         Assert.NotNull(world.Saved(1).Running);
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         world.Clock.Advance(Interval - TimeSpan.FromTicks(1));
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         world.Clock.Advance(TimeSpan.FromTicks(1));
         await world.Clock.Armed();
 
-        Assert.Equal(2, world.Native.Requests.Count);
+        Assert.Equal(2, world.Agent.Requests.Count);
         Assert.NotNull(world.Saved(2).Running);
         Assert.Equal([Interval, Interval], world.Clock.Delays);
         await world.Stop.CancelAsync();
@@ -95,17 +95,17 @@ public sealed class ControllerPollingTests
         var run = world.Run();
         await world.Clock.Armed();
         AssertPoll(Assert.Single(world.Polls), succeeded: false);
-        Assert.Empty(world.Native.Requests);
+        Assert.Empty(world.Agent.Requests);
         world.GitHub.FailReads("List", null);
         world.Open(1);
 
         world.Clock.Advance(Interval - TimeSpan.FromTicks(1));
-        Assert.Empty(world.Native.Requests);
+        Assert.Empty(world.Agent.Requests);
         world.Clock.Advance(TimeSpan.FromTicks(1));
         await world.Clock.Armed();
 
         Assert.NotNull(world.Saved(1).Running);
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         AssertPoll(world.Polls[1], succeeded: true);
         Assert.Equal([Interval, Interval], world.Clock.Delays);
         await world.Stop.CancelAsync();
@@ -134,11 +134,11 @@ public sealed class ControllerPollingTests
         Assert.Empty(world.Clock.Delays);
         if (observed)
         {
-            Assert.Single(world.Native.Requests);
+            Assert.Single(world.Agent.Requests);
             Assert.NotNull(world.Saved(1).Running); // --once does not drain an unfinished, genuinely accepted turn.
             Assert.Null(world.Saved(1).Pending);
         }
-        else Assert.Empty(world.Native.Requests);
+        else Assert.Empty(world.Agent.Requests);
     }
 
     [Fact]
@@ -160,7 +160,7 @@ public sealed class ControllerPollingTests
         Assert.True(await world.GitHub.HasEyesReceipt("retained", TestToken));
         Assert.Empty(world.State.Outbox!.Operations);
         Assert.Empty(world.Clock.Delays);
-        Assert.Empty(world.Native.Requests);
+        Assert.Empty(world.Agent.Requests);
     }
 
     [Fact]
@@ -180,12 +180,12 @@ public sealed class ControllerPollingTests
 
         Assert.NotNull(world.Saved(1).Running);
         Assert.Null(world.Saved(1).Pending);
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
         AssertPoll(Assert.Single(world.Polls), succeeded: true);
         Assert.DoesNotContain(world.Log.Entries, entry => entry.Kind == "turn-ended");
         world.Open(2);
         world.Clock.Advance(Interval);
-        Assert.Single(world.Native.Requests);
+        Assert.Single(world.Agent.Requests);
     }
 
     [Fact]
@@ -201,7 +201,7 @@ public sealed class ControllerPollingTests
 
         Assert.True(world.Runtime.RequestToken.IsCancellationRequested);
         Assert.False(world.Stop.IsCancellationRequested);
-        Assert.NotNull(world.Saved(1).Pending); // Issued native input may have executed; retain its unresolved evidence.
+        Assert.NotNull(world.Saved(1).Pending); // Issued agent input may have executed; retain its unresolved evidence.
         Assert.Null(world.Saved(1).Running);
         Assert.Empty(world.Polls);
         Assert.Empty(world.Clock.Delays);
@@ -222,7 +222,7 @@ public sealed class ControllerPollingTests
         public RecordingLog Log { get; } = new();
         public InMemoryDiscussionStore Durable { get; } = new();
         public InMemoryControllerState State { get; } = new();
-        public FakeAgentRuntime Native { get; } = new();
+        public FakeAgentRuntime Agent { get; } = new();
         public InMemoryDiscussions GitHub { get; }
         public HeldRuntime Runtime { get; }
         public HeldReceipts Discussions { get; }
@@ -235,10 +235,10 @@ public sealed class ControllerPollingTests
         public World(bool holdAcknowledgement = false, bool holdReceipt = false)
         {
             GitHub = new(Clock);
-            Runtime = new(Native, holdAcknowledgement);
+            Runtime = new(Agent, holdAcknowledgement);
             Discussions = new(GitHub, holdReceipt);
             var sessions = new AgentSessions(Runtime, Log);
-            var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, State, Clock, Log);
+            var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, null, State, Clock, Log);
             Outbox = new(Repository, Discussions, InMemoryDiscussions.App, State, Clock, Log);
             var bridge = new Bridge(Repository, Discussions, InMemoryDiscussions.App, sessions, new StateStore(Durable, Repository),
                 Outbox, [], settings, new AgentInputJson(), Log, Clock);
@@ -272,7 +272,7 @@ public sealed class ControllerPollingTests
         }
     }
 
-    // Only the acknowledgement is held; real fake-native request/event behavior remains unchanged.
+    // Only the acknowledgement is held; real fake-agent request/event behavior remains unchanged.
     sealed class HeldRuntime(IAgentRuntime inner, bool hold) : IAgentRuntime
     {
         bool entered;
@@ -284,7 +284,7 @@ public sealed class ControllerPollingTests
         public Task<(string SessionId, AgentSessionStatus Status)> StartSession(CancellationToken ct) => inner.StartSession(ct);
         public Task<AgentSessionStatus> ResumeSession(string sessionId, CancellationToken ct) => inner.ResumeSession(sessionId, ct);
         public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => inner.ConfiguredModel(ct);
-        public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => inner.Models(ct);
+        public Task<IReadOnlyList<AgentModel>> Models(CancellationToken ct) => inner.Models(ct);
         public async Task<AgentTurnAccepted> StartTurn(AgentTurnRequest request, CancellationToken ct)
         {
             var accepted = await inner.StartTurn(request, ct);

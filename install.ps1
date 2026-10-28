@@ -47,12 +47,14 @@ param(
     [string[]]$BuildArg = @(),
     [string]$Repository,
     [string]$AppId,
-    [string]$DeviceId,
+    [Alias('DeviceId')][string]$EnrollmentId,
+    [ValidateSet(4, 5)][int]$ControllerEnrollmentVersion = 4,
     [string]$KeyPath,
     [string]$CodexAuthPath,
     [string]$Instance = $(if ($env:REPOAGENT_INSTANCE) { $env:REPOAGENT_INSTANCE } else { 'default' }),
     [string]$InstallationId,
     [string]$MentionUser,
+    [string]$DashboardCategory,
     [string]$Model,
     [ValidateSet('polling', 'fixed-url', 'quick-tunnel')][string]$Mode,
     [string]$PublicUrl,
@@ -98,6 +100,7 @@ if ($Action -in @('Install','Enroll')) {
 if ($Action -eq 'Enroll') {
     if ($GitHubEnvironment -or $ExpectedEnvironmentId) { throw 'Enroll uses a repository variable; Environment inputs are only for explicit legacy revoke.' }
     $enrollOptions = @{}
+    if ($PSBoundParameters.ContainsKey('ControllerEnrollmentVersion')) { $enrollOptions.ControllerEnrollmentVersion = $ControllerEnrollmentVersion }
     if ($EnrollmentProfile) { $enrollOptions.Profile = $EnrollmentProfile }
     if ($ApprovalLocation) { $enrollOptions.ApprovalLocation = $ApprovalLocation }
     & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions -Repository $Repository -BrokerOrigin $BrokerOrigin `
@@ -170,18 +173,18 @@ function Invoke-Runtime([string[]]$Arguments) {
 function Show-Binding($Binding) {
     # Only bounded public identity fields are suitable for a transcript. The native
     # consumer remains responsible for validating the frozen credential itself.
-    Assert-Text $Binding.deviceId '\A[0-9a-f]{32}\z'
+    Assert-Text $Binding.enrollmentId '\A[0-9a-f]{32}\z'
     Assert-Id $Binding.appId; Assert-Id $Binding.installationId
-    Write-Host "Saved device: $($Binding.deviceId); App: $($Binding.appId); installation: $($Binding.installationId); authorization is checked on Apply."
+    Write-Host "Saved controller enrollment: $($Binding.enrollmentId); App: $($Binding.appId); installation: $($Binding.installationId); authorization is checked on Apply."
 }
 function Read-Document([string]$Path) {
-    return Read-HostJson ([Text.Encoding]::UTF8.GetString((Read-PrivateFileBytes $Path)))
+    return Read-OperatorJson ([Text.Encoding]::UTF8.GetString((Read-PrivateFileBytes $Path))) -ControllerDocument
 }
 try {
     if ($PSVersionTable.PSVersion -lt [version]'7.4') { Stop-Install 'Guided Install requires PowerShell 7.4 or later for checked durable host state.' }
     if ($Instance -cnotmatch '^[a-z0-9][a-z0-9-]{0,40}$') { Stop-Install 'Instance must have 1–41 lowercase letters, digits or hyphens, starting with a letter or digit.' }
     if ($GitHubEnvironment -or $ExpectedEnvironmentId -or $EnrollmentFile -or $ApprovalStatePath) { Stop-Install 'Install uses its selected state directory. Use Enroll/Revoke or the supplied-enrollment runtime commands for those inputs.' }
-    Import-Module "$PSScriptRoot/scripts/host-enrollment.psm1" -DisableNameChecking
+    Import-Module "$PSScriptRoot/scripts/controller-enrollment.psm1" -DisableNameChecking
     Import-Module "$PSScriptRoot/scripts/private-file.psm1"
     . "$PSScriptRoot/scripts/image-input.ps1"
     if (-not $StateDirectory) { $StateDirectory = Join-Path ([Environment]::GetFolderPath('UserProfile')) ".repoagent/instances/$Instance" }
@@ -198,6 +201,7 @@ try {
         if ($saved.Contains('toolUpdates')) { $fields += 'toolUpdates' }
         if ($saved.Contains('clone')) { $fields += 'clone' }
         if ($saved.Contains('repositorySettings')) { $fields += 'repositorySettings' }
+        if ($saved.Contains('dashboardCategory')) { $fields += 'dashboardCategory' }
         if ($saved.Contains('launchState')) { $fields += 'launchState' }
         Assert-Fields $saved $fields
         if ($saved.schemaVersion -ne 1 -or $saved.instance -cne $Instance -or -not $(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase.Equals($saved.stateDirectory, $StateDirectory) } else { [StringComparer]::Ordinal.Equals($saved.stateDirectory, $StateDirectory) })) { Stop-Install 'Saved launch coordinates differ from the selected instance/state directory.' }
@@ -222,7 +226,7 @@ try {
     $approvalPath = Join-Path $StateDirectory 'approval.json'
     $approval = if (Test-Path -LiteralPath $approvalPath) { Read-Document $approvalPath } else { $null }
     if ($approval) {
-        if ($Authentication -ne 'Broker') { Stop-Install 'Existing host enrollment requires Broker authentication; choose a fresh instance for OwnApp.' }
+        if ($Authentication -ne 'Broker') { Stop-Install 'Existing controller enrollment requires Broker authentication; choose a fresh instance for OwnApp.' }
         # The enrollment command remains responsible for validating/recovering its document.
         foreach ($pair in @(@('Repository','repository'),@('BrokerOrigin','brokerOrigin'),@('ApprovalVariable','approvalVariable'),@('EnrollmentProfile','profile'))) {
             if (-not $provided.ContainsKey($pair[0]) -and (-not $saved -or -not $saved[$pair[0]])) { Set-Variable $pair[0] $approval[$pair[1]] }
@@ -238,6 +242,8 @@ try {
     $KeyPath = Setting KeyPath
     $InstallationId = Setting InstallationId
     $MentionUser = Setting MentionUser
+    $DashboardCategory = Setting DashboardCategory
+    if ($DashboardCategory -and ($DashboardCategory.Length -gt 100 -or -not $DashboardCategory.Trim())) { Stop-Install 'DashboardCategory must name an existing Discussion category of at most 100 printable characters.' }
     $Model = Setting Model 'gpt-6.1-sol'
     $WebSearch = Setting WebSearch 'live'
     $PublicUrl = Setting PublicUrl
@@ -264,10 +270,11 @@ try {
         if (($resolvedClone -or $resolvedSettings) -and $approval -and $approval.profile -cne $expectedProfile) { Stop-Install 'Changing clone or repository-settings authority requires a fresh instance and enrollment.' }
         $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
         $enrollOptions = @{ Repository=$Repository; BrokerOrigin=$BrokerOrigin; ApprovalVariable=$ApprovalVariable; Profile=$resolvedProfile; StateDirectory=$StateDirectory; NonInteractive=$true }
+        if ($PSBoundParameters.ContainsKey('ControllerEnrollmentVersion')) { $enrollOptions.ControllerEnrollmentVersion = $ControllerEnrollmentVersion }
         if ($ApprovalLocation) { $enrollOptions.ApprovalLocation = $ApprovalLocation }
         $global:LASTEXITCODE = 0
         & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions | Out-Host
-        if ($LASTEXITCODE -ne 0) { Stop-Install 'Host enrollment plan failed. Check the selected coordinates/private state; no runtime work was attempted.' }
+        if ($LASTEXITCODE -ne 0) { Stop-Install 'Controller enrollment plan failed. Check the selected coordinates/private state; no runtime work was attempted.' }
     } else {
         if ($BrokerOrigin -or $provided.ContainsKey('ApprovalVariable') -or $provided.ContainsKey('EnrollmentProfile') -or $provided.ContainsKey('ApprovalLocation')) { Stop-Install 'OwnApp cannot use broker enrollment selectors.' }
         $AppId = Setting AppId -Required; $KeyPath = Input-File (Setting KeyPath -Required)
@@ -338,15 +345,17 @@ try {
         brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; enrollmentProfile=$resolvedProfile; imageManifest=$ImageManifest;
         imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
-        listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath }
+        listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath;
+        dashboardCategory=$DashboardCategory }
     if ($saved.launchState) {
         if ($Apply) { Assert-LocalRuntimeAction Install @() $plan }
         $plan['launchState'] = $saved.launchState
     }
     Write-Host "Instance: $Instance; repository: $Repository; authentication: $Authentication; mode: $Mode"
+    Write-Host "Dashboard: $(if ($DashboardCategory) { $DashboardCategory } else { 'disabled' })."
     if ($resolvedClone) {
         Write-Host "Repository context: $resolvedProfile; Contents read, Discussions write$(if ($Mode -ne 'polling') { ', repository hooks write' }). Fresh instance and approval required."
-        Write-Host 'Persistent checkout: /workspace/repository. Trust this exact repository root for native instructions, project configuration and local skills.'
+        Write-Host 'Persistent checkout: /workspace/repository. Trust this exact repository root for agent instructions, project configuration and local skills.'
     }
     if ($resolvedSettings) {
         if ($Authentication -eq 'Broker') { Write-Host "Repository settings: $resolvedProfile uses the enrollment's exact variables-read policy (fresh setup v4: Agent variables, runtime v3). Fresh instance and approval required." }
@@ -382,11 +391,11 @@ try {
     if ($Authentication -eq 'Broker') {
         $stage = 'enroll or resume the same controller'
         & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions -Apply | Out-Host
-        if ($LASTEXITCODE -ne 0) { Stop-Install 'Host enrollment is incomplete. Retain this state and retry the same command; no runtime was started.' }
+        if ($LASTEXITCODE -ne 0) { Stop-Install 'Controller enrollment is incomplete. Retain this state and retry the same command; no runtime was started.' }
         $binding = Read-Document $enrollmentPath
         if ($InstallationId -and $InstallationId -cne [string]$binding.installationId) { Stop-Install 'Expected installation differs from the enrolled binding; no runtime started.' }
         $AppId = [string]$binding.appId; $InstallationId = [string]$binding.installationId
-        Write-Host "Bound device: $($binding.deviceId); App: $AppId; installation: $InstallationId."
+        Write-Host "Bound controller enrollment: $($binding.enrollmentId); App: $AppId; installation: $InstallationId."
         $plan.appId = $AppId; $plan.installationId = $InstallationId
         Write-PrivateJson $launchPath $plan
     }
@@ -408,6 +417,7 @@ try {
     Write-PrivateJson $launchPath $plan
     $stage = 'configure and privately import enrollment'
     $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--web-search', $WebSearch)
+    if ($DashboardCategory) { $configuration += "--dashboard-category=$DashboardCategory" }
     if ($resolvedClone) { $configuration += '--clone' }
     if ($resolvedSettings) { $configuration += '--repository-settings' }
     if ($InstallationId) { $configuration += @('--installation-id', $InstallationId) }

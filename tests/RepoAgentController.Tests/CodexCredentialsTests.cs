@@ -3,7 +3,7 @@ using Xunit;
 
 namespace RepoAgentController.Tests;
 
-// Operator-supplied Codex account credentials over a private native home in a temporary directory: what each start installs
+// Operator-supplied Codex account credentials over a private agent home in a temporary directory: what each start installs
 // there, and what an unusable supply reveals. Whether the pinned Codex then signs in with its home's auth.json is not tested.
 [Collection("Managed checkout environment")]
 public sealed class CodexCredentialsTests : IDisposable
@@ -13,7 +13,7 @@ public sealed class CodexCredentialsTests : IDisposable
 
     public CodexCredentialsTests()
     {
-        home = Path.Combine(directory, "native-home");
+        home = Path.Combine(directory, "agent-home");
         Directory.CreateDirectory(home);
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(home, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         supplied = Path.Combine(directory, "auth.json");
@@ -30,7 +30,7 @@ public sealed class CodexCredentialsTests : IDisposable
         CodexCredentials.Open(supplied, home).Install();
         Assert.Equal("sk-canary-A", Installed());
 
-        // The native refreshes its own sign-in, as Codex rotates ChatGPT tokens into its home. An unchanged supply must not
+        // The agent refreshes its own sign-in, as Codex rotates ChatGPT tokens into its home. An unchanged supply must not
         // overwrite that at the next start, or every restart would reinstate an already-rotated refresh token.
         File.WriteAllText(Path.Combine(home, "auth.json"), Credential("sk-canary-rotated"));
         CodexCredentials.Open(supplied, home).Install();

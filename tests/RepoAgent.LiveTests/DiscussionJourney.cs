@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -15,7 +16,8 @@ public sealed class DiscussionJourney
     readonly List<JsonNode> fixtures = [];
     readonly string repository = Environment.GetEnvironmentVariable("REPOAGENT_REPOSITORY") ?? "";
     readonly string actor = Environment.GetEnvironmentVariable("REPOAGENT_ACTOR") ?? "";
-    readonly string evidence = "/evidence";
+    readonly string evidence = Environment.GetEnvironmentVariable("REPOAGENT_EVIDENCE") ?? "/evidence";
+    static bool HostedSmoke => Environment.GetEnvironmentVariable("REPOAGENT_LIVE_CASE") == "hosted-smoke";
     readonly List<object> outcomes = [];
 
     [Fact(Timeout = 3_600_000)]
@@ -33,6 +35,29 @@ public sealed class DiscussionJourney
             var repo = (await Api("query($o:String!,$r:String!){repository(owner:$o,name:$r){id discussionCategories(first:20){nodes{id name isAnswerable}}}}", new { o = parts[0], r = parts[1] }))["repository"]!;
             var categories = repo["discussionCategories"]!["nodes"]!.AsArray();
             var category = categories.FirstOrDefault(c => c!["isAnswerable"]!.GetValue<bool>()) ?? throw new InvalidOperationException("NOT EXERCISED: repository needs an answerable Discussion category.");
+            if (HostedSmoke)
+            {
+                await HostedDashboard();
+                var marker = "HOSTED_SMOKE_" + run;
+                var fixture = await Create(repo, category, "mention", $"@{actor} Authorized disposable installer smoke. Reply once with {marker}, using the authenticated GitHub response skill. Only perform this test request.");
+                var number = fixture["number"]!.GetValue<int>();
+                await Until(async () => (await Logs()).Split('\n').Any(line => IsEvent(line, "webhook-delivery") &&
+                    line.Contains($" event=discussion action=created discussion={number} scheduled=True", StringComparison.Ordinal)), "the Discussion creation webhook through the Quick Tunnel");
+                await Until(async () => (await Logs()).Split('\n').Any(line => IsEvent(line, "webhook-observed") &&
+                    line.Contains($" discussion={number} success=True ", StringComparison.Ordinal)), "successful webhook observation for the fixture");
+                var reply = await Reply(fixture, marker);
+                await Receipt(fixture["id"]!.GetValue<string>());
+                var session = await Session(fixture);
+                await Until(async () =>
+                {
+                    var log = await Logs();
+                    return log.Split('\n').Any(line => IsEvent(line, "agent-accepted") && line.Contains(" session=" + session + " ", StringComparison.Ordinal)) && AgentTurnsFinished(log);
+                }, "the accepted smoke turn completed before credential closure");
+                Pass("HOSTED_INSTALLER", new { discussion = fixture["url"]!.ToString(), reply = reply["url"]!.ToString(), actor, webhook = "observed", receipt = "EYES" });
+                await Api("mutation($id:ID!){deleteDiscussion(input:{id:$id}){clientMutationId}}", new { id = fixture["id"]!.ToString() });
+                fixtures.Clear();
+                return;
+            }
             var inspection = JsonNode.Parse(await File.ReadAllTextAsync("/data/control/runtime-inspection.json", TestContext.Current.CancellationToken))!;
             Assert.False(inspection["privileged"]!.GetValue<bool>());
             Pass("C14", new { runtime = inspection, selectedSkills = JsonNode.Parse(await File.ReadAllTextAsync("/data/control/skills.json", TestContext.Current.CancellationToken)) });
@@ -58,7 +83,7 @@ public sealed class DiscussionJourney
             await Receipt(a["id"]!.GetValue<string>());
             var originalSession = await Session(a);
             Pass(explicitJourney ? "SETUP_EXPLICIT" : "C01", new { discussion = a["url"]!.ToString(), session = originalSession, reply = initial["url"]!.ToString() });
-            await Until(async () => NativeTurnsFinished(await Logs()), "initial turn completed before container replacement");
+            await Until(async () => AgentTurnsFinished(await Logs()), "initial turn completed before container replacement");
 
             if (!recoveryOnly)
             {
@@ -100,22 +125,22 @@ public sealed class DiscussionJourney
                 Pass("C06", new { skill = "acceptance-marker", correlation = run, expected });
 
                 var hold = await Comment(a, $"Use $acceptance-marker's marker.py with arguments {run} --hold. It creates a ready file and waits up to 300 seconds for the test runner's release file. Run it now and publish its result once after release. If the skill is unavailable, report SKILL_UNAVAILABLE.");
-                await Until(() => Task.FromResult(File.Exists("/workspace/hold-ready-" + run)), "native skill action is active");
+                await Until(() => Task.FromResult(File.Exists("/workspace/hold-ready-" + run)), "agent skill action is active");
                 var during = await Comment(a, "This additional input arrives while the previous tool is waiting. When you receive it, reply once with ACTIVE_SECOND_" + run);
-                await Until(async () => Waiting(await Logs(), during["id"]!.ToString()), "second input waits during native work");
+                await Until(async () => Waiting(await Logs(), during["id"]!.ToString()), "second input waits during agent work");
                 Assert.Equal(0, CountAcceptedSources(await Logs(), during["id"]!.ToString()));
                 Assert.Equal(0, Eyes(await Source(during["id"]!.ToString())));
                 var activeGate = JsonNode.Parse(await File.ReadAllTextAsync("/workspace/hold-ready-" + run, TestContext.Current.CancellationToken))!;
-                Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "native skill gate remains active while the additional input waits");
+                Assert.True(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0 < activeGate["expiresAt"]!.GetValue<double>(), "agent skill gate remains active while the additional input waits");
                 Assert.False(File.Exists("/workspace/hold-release-" + run));
                 File.WriteAllText("/workspace/hold-release-" + run, "release");
-                await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted after native idle");
+                await Until(async () => CountAcceptedSources(await Logs(), during["id"]!.ToString()) > 0, "second input accepted after agent idle");
                 await Receipt(during["id"]!.ToString());
                 await Reply(a, expected, hold["id"]!.ToString());
                 await Reply(a, "ACTIVE_SECOND_" + run, during["id"]!.ToString());
                 Pass("C07", new { activeSource = hold["url"]!.ToString(), additionalSource = during["url"]!.ToString() });
 
-                await Until(async () => NativeTurnsFinished(await Logs()), "native turns completed before quiet observation");
+                await Until(async () => AgentTurnsFinished(await Logs()), "agent turns completed before quiet observation");
                 var quietBaseline = Forwarded(await Logs());
                 await StableAcrossPolls(log => Forwarded(log) == quietBaseline, "unchanged polls and App-only output stay quiet");
                 Pass("C08", new { acceptedInputs = quietBaseline, completeUnchangedPolls = 2 });
@@ -127,13 +152,13 @@ public sealed class DiscussionJourney
                 Assert.Equal(originalSession, await Session(a));
                 Assert.Contains("session-resumed " + originalSession, await Logs());
                 Pass("C09", new { session = originalSession, reply = afterRestart["url"]!.ToString() });
-                await Until(async () => NativeTurnsFinished(await Logs()), "continued turn completed before the rejection fixture");
+                await Until(async () => AgentTurnsFinished(await Logs()), "continued turn completed before the rejection fixture");
             }
 
-            // The operator path stops the bridge, backs up state and substitutes an invalid native ID.
+            // The operator path stops the bridge, backs up state and substitutes an invalid agent ID.
             await Control("invalidate-session", a["id"]!.ToString());
             var rejected = await Comment(a, "Rejected-input fixture: reply only if this input is accepted. Marker REJECTED_" + run);
-            await Until(async () => HasRetryForSource(await Logs(), a["url"]!.ToString(), rejected["id"]!.ToString()), "native rejection retried for this source and the deliberately invalid session");
+            await Until(async () => HasRetryForSource(await Logs(), a["url"]!.ToString(), rejected["id"]!.ToString()), "agent rejection retried for this source and the deliberately invalid session");
             Assert.Equal(0, Eyes(await Source(rejected["id"]!.ToString())));
             var rejectedCount = Forwarded(await Logs());
             await StableAcrossPolls(log => Forwarded(log) == rejectedCount, "rejected input keeps retrying without acceptance", requireSuccessfulPolls: false);
@@ -150,7 +175,7 @@ public sealed class DiscussionJourney
             Assert.Equal(originalSession, await Session(a));
             Pass("C11", new { session = originalSession });
 
-            await Until(async () => NativeTurnsFinished(await Logs()), "turn completion before the credential fault fixture");
+            await Until(async () => AgentTurnsFinished(await Logs()), "turn completion before the credential fault fixture");
             // The controller holds its App token only in memory: the fixture revokes that live token at GitHub
             // through the controller's credential handoff, and only a new controller lifetime acquires another.
             var beforeFault = (await Logs()).Split('\n').Length;
@@ -189,8 +214,8 @@ public sealed class DiscussionJourney
     static async Task<JsonNode> Api(string query, object? variables = null)
     {
         var start = new ProcessStartInfo("gh") { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        start.Environment["GH_CONFIG_DIR"] = "/data/participant";
-        foreach (var name in new[] { "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_REPO", "GH_DEBUG", "DEBUG" }) start.Environment.Remove(name);
+        if (!HostedSmoke) start.Environment["GH_CONFIG_DIR"] = "/data/participant";
+        foreach (var name in new[] { "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_REPO", "GH_DEBUG", "DEBUG" }) if (!HostedSmoke || name is not ("GH_TOKEN" or "GITHUB_TOKEN")) start.Environment.Remove(name);
         foreach (var arg in new[] { "api", "graphql", "--hostname", "github.com", "--method", "POST", "--input", "-" }) start.ArgumentList.Add(arg);
         using var child = Process.Start(start)!;
         await child.StandardInput.WriteAsync(System.Text.Json.JsonSerializer.Serialize(new { query, variables = variables ?? new { } }));
@@ -208,13 +233,66 @@ public sealed class DiscussionJourney
 
     async Task<JsonNode> Create(JsonNode repo, JsonNode category, string title, string body)
     {
-        var discussion = (await Api("mutation($i:CreateDiscussionInput!){createDiscussion(input:$i){discussion{id number url}}}", new { i = new { repositoryId = repo["id"]!.ToString(), categoryId = category["id"]!.ToString(), title = $"[RepoAgent live {run}] {title}", body } }))["createDiscussion"]!["discussion"]!;
+        var discussion = (await Api("mutation($i:CreateDiscussionInput!){createDiscussion(input:$i){discussion{id number url}}}", new { i = new { repositoryId = repo["id"]!.ToString(), categoryId = category["id"]!.ToString(), title = HostedSmoke ? $"[RepoAgent hosted smoke {run}] {title}" : $"[RepoAgent live {run}] {title}", body = HostedSmoke ? "<!-- repoagent.hosted-smoke/v1 -->\n" + body : body } }))["createDiscussion"]!["discussion"]!;
         fixtures.Add(discussion.DeepClone());
         return discussion;
     }
 
     static async Task<JsonNode> Comment(JsonNode discussion, string body, string? replyTo = null) =>
         (await Api("mutation($d:ID!,$b:String!,$r:ID){addDiscussionComment(input:{discussionId:$d,body:$b,replyToId:$r}){comment{id url}}}", new { d = discussion["id"]!.ToString(), b = body, r = replyTo }))["addDiscussionComment"]!["comment"]!;
+
+    async Task HostedDashboard()
+    {
+        var category = Environment.GetEnvironmentVariable("REPOAGENT_DASHBOARD_CATEGORY");
+        Assert.False(string.IsNullOrEmpty(category), "Hosted installer must enable the discovered dashboard category.");
+        var before = JsonSerializer.Deserialize<string[]>(Environment.GetEnvironmentVariable("REPOAGENT_DASHBOARD_BEFORE") ?? "[]")!;
+        var parts = repository.Split('/');
+        JsonNode? dashboard = null;
+        async Task<bool> Observe()
+        {
+            var page = (await Api("query($o:String!,$r:String!,$c:ID!){repository(owner:$o,name:$r){discussions(first:100,categoryId:$c){nodes{id number url title body author{login}}pageInfo{hasNextPage}}}}", new { o = parts[0], r = parts[1], c = category }))["repository"]!["discussions"]!;
+            Assert.False(page["pageInfo"]!["hasNextPage"]!.GetValue<bool>(), "Dashboard category observation is bounded.");
+            var matches = page["nodes"]!.AsArray().Where(item => !before.Contains(item!["id"]!.ToString()) &&
+                IsActor(item["author"]?["login"]?.ToString()) && item["body"]!.ToString().Contains("<!-- repoagent:controller-dashboard -->", StringComparison.Ordinal)).ToArray();
+            Assert.True(matches.Length <= 1, "The fresh smoke must not create duplicate dashboards.");
+            dashboard = matches.SingleOrDefault();
+            return dashboard is not null;
+        }
+        static string Heartbeat(JsonNode item) => Regex.Match(item["body"]!.ToString(), @"\*\*Last heartbeat:\*\* (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)").Groups[1].Value;
+        static string Usage(string body) => body.Contains("Usage unsupported", StringComparison.Ordinal) ? "unsupported"
+            : body.Contains("Usage unavailable from the runtime.", StringComparison.Ordinal) ? "unavailable"
+            : body.Contains("Usage refresh failed", StringComparison.Ordinal) ? "refresh-failed"
+            : body.Contains("Observed at ", StringComparison.Ordinal) && !body.Contains("Usage stale", StringComparison.Ordinal) ? "available" : "pending";
+        await Until(Observe, "a fresh App-owned dashboard in the selected existing category");
+        var first = Heartbeat(dashboard!);
+        Assert.NotEmpty(first);
+        await Until(async () => await Observe() && Heartbeat(dashboard!) != first && Usage(dashboard!["body"]!.ToString()) != "pending",
+            "another published heartbeat and an actual pinned-runtime usage capability outcome without an agent turn");
+        var body = dashboard!["body"]!.ToString();
+        var title = dashboard["title"]!.ToString();
+        var heartbeat = Heartbeat(dashboard);
+        var at = DateTimeOffset.Parse(heartbeat, CultureInfo.InvariantCulture);
+        Assert.InRange(DateTimeOffset.UtcNow - at, TimeSpan.FromSeconds(-5), TimeSpan.FromMinutes(2));
+        Assert.Matches(@"💓 \d{2} \w{3} \d{4} \d{2}:\d{2} UTC", title);
+        Assert.EndsWith("— RepoAgent", title, StringComparison.Ordinal);
+        Assert.Contains("Refreshed about every 30 seconds", body, StringComparison.Ordinal);
+        Assert.Contains("Treat more than two minutes without a heartbeat as offline", body, StringComparison.Ordinal);
+        Assert.Contains("### Agent account usage", body, StringComparison.Ordinal);
+        Assert.DoesNotContain((await Logs()).Split('\n'), line => IsEvent(line, "agent-accepted"));
+        Pass("HOSTED_DASHBOARD", new
+        {
+            discussion = dashboard["url"]!.ToString(),
+            title,
+            firstHeartbeat = first,
+            heartbeat,
+            usage = Usage(body),
+            remainingPercentages = Regex.Matches(body, @"\d+(?:\.\d+)?% remaining").Select(match => match.Value).ToArray(),
+            observedAt = Regex.Match(body, @"Observed at (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)").Groups[1].Value,
+            resets = Regex.Matches(body, @"resets \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ").Select(match => match.Value).ToArray(),
+            artificialTurns = 0,
+            renderedGitHubUi = "not inspected"
+        });
+    }
 
     async Task<JsonNode> Snapshot(JsonNode discussion)
     {
@@ -243,7 +321,7 @@ public sealed class DiscussionJourney
             var data = await Snapshot(discussion);
             var candidates = root is null ? data["comments"]!["nodes"]!.AsArray() : data["comments"]!["nodes"]!.AsArray().SingleOrDefault(x => x!["id"]!.ToString() == root)?["replies"]?["nodes"]?.AsArray();
             if (marker.StartsWith("SKILL_ACTION_", StringComparison.Ordinal) && candidates?.Any(x => IsActor(x!["author"]?["login"]?.ToString()) && x["body"]!.ToString().Contains("SKILL_UNAVAILABLE", StringComparison.Ordinal)) == true)
-                Assert.Fail("Selected skill action was absent: native agent reported SKILL_UNAVAILABLE.");
+                Assert.Fail("Selected skill action was absent: agent agent reported SKILL_UNAVAILABLE.");
             match = candidates?.FirstOrDefault(x => IsActor(x!["author"]?["login"]?.ToString()) && x["body"]!.ToString().Contains(marker, StringComparison.Ordinal));
             return match is not null;
         }, "App reply " + marker);
@@ -251,7 +329,7 @@ public sealed class DiscussionJourney
     }
 
     bool IsActor(string? login) => login == actor || login == actor.Replace("[bot]", "");
-    int Eyes(JsonNode source) => source["reactionGroups"]!.AsArray().Where(g => g!["content"]!.ToString() == "EYES").SelectMany(g => g!["users"]!["nodes"]!.AsArray()).Count(u => u!["login"]!.ToString() == actor);
+    int Eyes(JsonNode source) => source["reactionGroups"]!.AsArray().Where(g => g!["content"]!.ToString() == "EYES").SelectMany(g => g!["users"]!["nodes"]!.AsArray()).Count(u => IsActor(u!["login"]!.ToString()));
     static async Task<JsonNode> Source(string id) => (await Api("""
         query($id:ID!) { node(id:$id) {
           ... on Discussion { id reactionGroups { content users(first:5) { nodes { login } } } }
@@ -272,7 +350,17 @@ public sealed class DiscussionJourney
         Assert.True(response["ok"]!.GetValue<bool>(), response["error"]?.ToString());
     }
 
-    static async Task<string> Logs() { await Control("capture"); return await File.ReadAllTextAsync("/data/control/bridge.log"); }
+    static async Task<string> Logs()
+    {
+        if (HostedSmoke)
+        {
+            var path = Environment.GetEnvironmentVariable("REPOAGENT_SMOKE_LOG") ?? throw new InvalidOperationException("Hosted smoke log path is required");
+            try { return await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken); }
+            catch (IOException) { return ""; }
+        }
+        await Control("capture");
+        return await File.ReadAllTextAsync("/data/control/bridge.log");
+    }
     static async Task<string> Session(JsonNode discussion)
     {
         var url = discussion["url"]!.ToString();
@@ -282,14 +370,14 @@ public sealed class DiscussionJourney
             var line = (await Logs()).Split('\n').LastOrDefault(x => x.Contains("forwarded " + url + " session="));
             if (line is not null) session = line[(line.LastIndexOf("session=", StringComparison.Ordinal) + 8)..].Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
             return session is not null;
-        }, "native session ID");
+        }, "agent session ID");
         return session!;
     }
     [Fact]
     public void Retry_evidence_matches_the_source_and_the_invalid_session()
     {
         const string log = """
-            2026-10-20T00:26:25.2314303+00:00 delivery-retry https://github.com/egil/repoagent/discussions/23 session=invalid-native-session attempt=1 redelivery=false inputs=2 sources=DC_kwDOVQFj7c4BIsCJ,DC_kwDOVQFj7c4BIsCK retry-at=2026-10-20T00:26:30.2314303+00:00: Native request failed: {
+            2026-10-20T00:26:25.2314303+00:00 delivery-retry https://github.com/egil/repoagent/discussions/23 session=invalid-agent-session attempt=1 redelivery=false inputs=2 sources=DC_kwDOVQFj7c4BIsCJ,DC_kwDOVQFj7c4BIsCK retry-at=2026-10-20T00:26:30.2314303+00:00: Agent request failed: {
               "code": -32600,
               "message": "thread not found"
             }
@@ -301,11 +389,11 @@ public sealed class DiscussionJourney
         Assert.False(HasRetryForSource(log, url, "DC_kwDOVQFj7c4BIsC"));
         Assert.False(HasRetryForSource(log.Replace(" delivery-retry ", " observation-error quoted: delivery-retry "), url, "DC_kwDOVQFj7c4BIsCK"));
         Assert.False(HasRetryForSource(log, url + "0", "DC_kwDOVQFj7c4BIsCK"));
-        Assert.False(HasRetryForSource(log.Replace("session=invalid-native-session", "session=other"), url, "DC_kwDOVQFj7c4BIsCK"));
+        Assert.False(HasRetryForSource(log.Replace("session=invalid-agent-session", "session=other"), url, "DC_kwDOVQFj7c4BIsCK"));
     }
 
     static bool HasRetryForSource(string log, string url, string sourceId) => log.Split('\n').Any(line =>
-        IsEvent(line, "delivery-retry") && line.Contains(" delivery-retry " + url + " session=invalid-native-session ", StringComparison.Ordinal) &&
+        IsEvent(line, "delivery-retry") && line.Contains(" delivery-retry " + url + " session=invalid-agent-session ", StringComparison.Ordinal) &&
         Regex.Match(line, @" sources=(\S*) ") is { Success: true } sources && sources.Groups[1].Value.Split(',').Contains(sourceId));
 
     static bool IsEvent(string line, string kind)
@@ -316,7 +404,7 @@ public sealed class DiscussionJourney
     static int CountAcceptedSources(string log, string id) => log.Split('\n').Count(x => IsEvent(x, "forwarded") && x.Contains(id));
     static int Forwarded(string log) => log.Split('\n').Count(x => IsEvent(x, "forwarded"));
     static bool Waiting(string log, string id) => log.Split('\n').Any(x => IsEvent(x, "input-waiting") && x.Contains(id));
-    static bool NativeTurnsFinished(string log)
+    static bool AgentTurnsFinished(string log)
     {
         var lines = log.Split('\n');
         var ready = Array.FindLastIndex(lines, line => IsEvent(line, "ready"));
@@ -325,10 +413,10 @@ public sealed class DiscussionJourney
         var completed = new HashSet<string>();
         foreach (var line in current)
         {
-            if (IsEvent(line, "native-accepted")) accepted.Add(line[(line.LastIndexOf("turn=", StringComparison.Ordinal) + 5)..].Trim());
-            if (!IsEvent(line, "native-event")) continue;
-            // The controller logs only redacted fields of native events, never the raw message.
-            var completion = Regex.Match(line, @" native-event method=turn/completed thread=\S* turn=(\S+) ");
+            if (IsEvent(line, "agent-accepted")) accepted.Add(line[(line.LastIndexOf("turn=", StringComparison.Ordinal) + 5)..].Trim());
+            if (!IsEvent(line, "agent-event")) continue;
+            // The controller logs only redacted fields of agent events, never the raw message.
+            var completion = Regex.Match(line, @" agent-event method=turn/completed thread=\S* turn=(\S+) ");
             if (completion.Success) completed.Add(completion.Groups[1].Value);
         }
         return accepted.IsSubsetOf(completed);

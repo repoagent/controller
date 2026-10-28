@@ -4,7 +4,7 @@ namespace RepoAgentController;
 
 /// <summary>
 /// Durably retains controller-owned GitHub operations, EYES receipts and dashboard updates, until each succeeds or
-/// fails permanently. Delivery is independent of native input acceptance: nothing here resends agent input, and
+/// fails permanently. Delivery is independent of agent input acceptance: nothing here resends agent input, and
 /// agent-authored replies stay on the agent's direct gh.
 /// </summary>
 public sealed class GitHubOutbox : IAsyncDisposable

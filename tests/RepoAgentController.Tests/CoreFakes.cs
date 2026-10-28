@@ -473,15 +473,15 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
     /// <summary>The model and effort of the agent's own configuration.</summary>
     public (string? Model, string? Effort) Configuration { get; set; }
 
-    public IReadOnlyList<NativeModel> Catalogue { get; set; } = [new("gpt-6-luna", true, "medium", ["medium", "xhigh"])];
+    public IReadOnlyList<AgentModel> Catalogue { get; set; } = [new("gpt-6-luna", true, "medium", ["medium", "xhigh"])];
 
     public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => Task.FromResult(Configuration);
 
-    /// <summary>When set, reading the model catalogue fails with it, as a native that cannot answer does.</summary>
+    /// <summary>When set, reading the model catalogue fails with it, as a agent that cannot answer does.</summary>
     public Exception? ModelsFailure { get; set; }
 
-    public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => ModelsFailure is { } failure
-        ? Task.FromException<IReadOnlyList<NativeModel>>(failure) : Task.FromResult(Catalogue);
+    public Task<IReadOnlyList<AgentModel>> Models(CancellationToken ct) => ModelsFailure is { } failure
+        ? Task.FromException<IReadOnlyList<AgentModel>>(failure) : Task.FromResult(Catalogue);
 
     public void Report(string session, AgentSessionStatus status) => Changed?.Invoke(new AgentSessionStatusChanged(Epoch, session, status));
     public void Started(string session, string turn) => Changed?.Invoke(new AgentTurnStarted(Epoch, session, turn));
@@ -490,6 +490,10 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
     public void Completed(string session, string turn, AgentTurnStatus status = AgentTurnStatus.Completed, string? rejection = null,
         int? epoch = null, string? reported = null) =>
         Changed?.Invoke(new AgentTurnCompleted(epoch ?? Epoch, session, turn, status, reported ?? status.ToString().ToLowerInvariant(), rejection));
+    public Func<CancellationToken, Task<AgentUsageObservation>> Usage { get; set; } = _ =>
+        Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Unsupported, []));
+    public Task<AgentUsageObservation> ReadUsage(CancellationToken ct) => Usage(ct);
+    public void AccountChanged() => Changed?.Invoke(new AgentUsageContextChanged(Epoch));
     public void Disconnect() => Changed?.Invoke(new AgentRuntimeDisconnected(Epoch));
 }
 

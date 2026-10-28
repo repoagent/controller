@@ -5,7 +5,7 @@ namespace RepoAgentController.Tests;
 
 // The dashboard Discussion's title and body, byte for byte, as each publication hands them to the outbox: a running controller
 // with every section filled, then its graceful stop, then a later lifetime's stop after a failure. The status reads the status
-// record, Discussion state, settings and checkout fakes. ControllerDashboardGolden.txt holds what e03e391 produced.
+// record, Discussion state, settings and checkout fakes. ControllerDashboardGolden.txt holds representative complete publications.
 public sealed class ControllerDashboardGoldenTests
 {
     const string Category = "Controller status", Repository = "owner/repository", Url = "https://github.com/owner/repository/discussions/";
@@ -60,9 +60,9 @@ public sealed class ControllerDashboardGoldenTests
 
     ControllerStatus Open(string mode) => new(Repository, mode, record, discussions, state, checkout, clock);
 
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "ControllerDashboard owns and asynchronously disposes its BaselineReleases.")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "ControllerDashboard owns and asynchronously disposes its BaselineReleaseCheck.")]
     ControllerDashboard Dashboard(ControllerStatus status, GitHubOutbox outbox) => new(Category, status, outbox,
-            new BaselineReleases(published, _ => Task.FromResult<string?>(Inventory("running")), clock, new RecordingLog(), text => text), clock, new RecordingLog(), text => text);
+            new BaselineReleaseCheck(published, _ => Task.FromResult<string?>(Inventory("running")), clock, new RecordingLog(), text => text), clock, new RecordingLog(), text => text);
 
     // The last publication handed to the outbox, once it names the newest release; each publication arms the next heartbeat.
     async Task<DashboardOperation> Publication(string release)
@@ -78,7 +78,7 @@ public sealed class ControllerDashboardGoldenTests
     static void Log(ControllerStatus status, int seconds, string kind, string message) => status.Record(new(Start.AddSeconds(seconds), kind, message));
 
     [Fact]
-    public async Task The_dashboard_title_and_body_are_the_bytes_e03e391_published_while_running_and_at_each_kind_of_stop()
+    public async Task The_dashboard_title_and_body_present_a_heartbeat_overview_while_running_and_at_each_kind_of_stop()
     {
         Save();
         var current = Release(101, image: "running");
@@ -93,7 +93,7 @@ public sealed class ControllerDashboardGoldenTests
         Log(status, 0, "app-token-refreshed", "installation=234");
         Log(status, 0, "codex-auth-supplied", "account credentials installed");
         Log(status, 0, "forwarded", Url + "1 session=S1 changes=1 sources=DC_7 waiting=0 latest=" + Url + "1#discussioncomment-7");
-        // Eleven failures: the dashboard lists the newest ten, newest first.
+        // Eleven retained failures: ten compact groups and every individual event in expandable details.
         for (var failure = 1; failure <= 8; failure++) Log(status, 0, "dispatch-error", $"failure {failure}");
         Log(status, 0, "delivery-retry", Url + "3 session=S3 attempt=2: delivery refused `the input`\n  with   spacing");
         Log(status, 1, "poll-error", "GitHub said " + new string('x', 320));

@@ -4,7 +4,7 @@ namespace RepoAgent.Auth.Tests;
 
 // The approval marker is a persisted, public format: setup writes it to the approval variable, the enrollment stores it,
 // and every renewal compares GitHub's copy with it exactly. The literals are markers enrollments stored before the
-// encoding moved to the core (the device rows BrokerStateGoldenTests and the #205 PR 4 recordings hold).
+// encoding moved to the core (the enrollmentId rows BrokerStateGoldenTests and the #205 PR 4 recordings hold).
 public sealed class ApprovalMarkerTests
 {
     [Fact]

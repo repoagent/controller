@@ -52,7 +52,7 @@ public sealed class ControllerStatusGoldenTests : IDisposable
             ["REPOAGENT_MAX_ACTIVE_SESSIONS"] = new(SettingState.Configured, "3") { Since = Start },
             ["REPOAGENT_MODEL"] = new(SettingState.Invalid, null, "must be a model name")
         }));
-        // As CheckoutRefresh saves its journal when it starts over an earlier lifetime's admission: S6's native turn is still
+        // As CheckoutRefresh saves its journal when it starts over an earlier lifetime's admission: S6's agent turn is still
         // recorded, so admission is blocked with its reason.
         File.WriteAllText(State + ".refresh.json", """{"version":1,"root":"/workspace/repository","owner":"owner","repositoryId":7,"requested":1,"completed":1,"active":{"6f1c2a9e0b7d4e5f8a3c1d2e4f6a8b0c":{"thread":"S6","turn":"T6","since":1,"confirmed":true}},"reason":"Native activity or checkout update is uncertain; inspect state before recovery","blocked":true,"running":1}""");
     }

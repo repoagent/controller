@@ -35,8 +35,9 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
     public long? RepositoryId => clone ? Id(enrollment.RootElement, "repositoryId") : null;
     public string? GitRepository => clone ? Text(enrollment.RootElement, "repository") : null;
     public string? GitProfile => clone ? Text(enrollment.RootElement, "profile") : null;
-    readonly string deviceId;
+    readonly string enrollmentId;
     readonly string secret;
+    readonly bool canonicalNames;
     public string AppSlug => enrollment.RootElement.GetProperty("appSlug").GetString()!;
 
     /// <param name="readEnrollment">Supplies the protected enrollment document, from <see cref="EnrollmentFile"/> or
@@ -64,7 +65,8 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
             if (settings && version != 3) throw Invalid("--repository-settings requires a controller enrollment with a repository-settings profile (runtime v3); frozen profiles are not widened");
             if (!settings && version == 3) throw Invalid("a repository-settings profile requires --repository-settings");
             if (version != profile.Version) throw Invalid("explicit runtime selection differs from enrollment version");
-            CheckFields(root, [.. Fields, "brokerOrigin", "githubHost", "deviceId", "deviceSecret"]);
+            canonicalNames = root.TryGetProperty("enrollmentId", out _);
+            CheckFields(root, [.. Fields, "brokerOrigin", "githubHost", canonicalNames ? "enrollmentId" : "deviceId", canonicalNames ? "controllerSecret" : "deviceSecret"]);
             CheckBinding(root);
             if (Text(root, "githubHost") != "github.com") throw Invalid("only github.com is supported");
             if (ParseOrigin(Text(root, "brokerOrigin")) != origin) throw Invalid("broker origin differs from enrollment");
@@ -74,10 +76,10 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
             if (expectedRepositoryId is { } expected && (!clone || expected <= 0 || Id(root, "repositoryId") != expected))
                 throw Invalid("CLI repository ID differs from enrollment");
             ValidateInstallation(expectedInstallationId);
-            deviceId = Text(root, "deviceId");
-            secret = Text(root, "deviceSecret");
-            if (!Regex.IsMatch(deviceId, @"\A[A-Za-z0-9_-]{1,128}\z") || !Regex.IsMatch(secret, @"\A[A-Za-z0-9_-]{43,128}\z"))
-                throw Invalid("invalid device credential format");
+            enrollmentId = Text(root, canonicalNames ? "enrollmentId" : "deviceId");
+            secret = Text(root, canonicalNames ? "controllerSecret" : "deviceSecret");
+            if (!Regex.IsMatch(enrollmentId, @"\A[A-Za-z0-9_-]{1,128}\z") || !Regex.IsMatch(secret, @"\A[A-Za-z0-9_-]{43,128}\z"))
+                throw Invalid("invalid controller credential format");
             Log.Protect(secret);
         }
         catch { enrollment.Dispose(); throw; }
@@ -106,7 +108,7 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
 
     /// <summary>
     /// Removes an externally injected enrollment from this process environment and returns it, so no
-    /// later gh, Git or native child can inherit it. Returns null when no variable is selected.
+    /// later gh, Git or agent child can inherit it. Returns null when no variable is selected.
     /// </summary>
     internal static string? TakeInjected(string? variable)
     {
@@ -153,7 +155,8 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60), clock);
         using var acquisition = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
         ct = acquisition.Token;
-        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, $"/v{version}/devices/{deviceId}/installation-token"));
+        var route = canonicalNames ? $"/v{version}/controller-enrollments/{enrollmentId}/github-token" : $"/v{version}/devices/{enrollmentId}/installation-token";
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, route));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         HttpResponseMessage response;
@@ -161,6 +164,14 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
         catch (HttpRequestException) { throw Invalid("broker transport failed"); }
         using (response)
         {
+            if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            {
+                TimeSpan? delay = null;
+                if (response.Headers.TryGetValues("Retry-After", out var values) && values.ToArray() is [var value] &&
+                    RetryConditionHeaderValue.TryParse(value, out var retry))
+                    delay = retry.Delta ?? (retry.Date is { } date ? date - clock.GetUtcNow() : null);
+                throw new GitHubTokenThrottledException(delay);
+            }
             if (!response.IsSuccessStatusCode) throw Invalid($"broker request failed (HTTP {(int)response.StatusCode})");
             if (response.Content.Headers.ContentLength > MaximumBytes) throw Invalid("response exceeds 64 KiB");
             await using var stream = await response.Content.ReadAsStreamAsync(ct);
@@ -204,10 +215,10 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
         var parts = Text(value, "repository").Split('/');
         if (parts.Length != 2 || !parts.All(Name)) throw Invalid("invalid repository name");
         if (settings && (Text(value, "profile") != profile.Name ||
-            Text(value, "policyVersion") != SettingsPolicy))
+            Text(value, "policyVersion") != (canonicalNames ? "repository-agent-settings-approval-v5" : SettingsPolicy)))
             throw Invalid("repository-settings policy differs");
         if (clone && !settings && (Text(value, "profile") != profile.Name ||
-            Text(value, "policyVersion") is not (ClonePolicy or LegacyClonePolicy)))
+            (canonicalNames ? Text(value, "policyVersion") != "repository-agent-clone-approval-v5" : Text(value, "policyVersion") is not (ClonePolicy or LegacyClonePolicy))))
             throw Invalid("clone policy differs");
         var permissions = value.GetProperty("permissions");
         var required = profile.Permissions();

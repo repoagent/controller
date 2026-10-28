@@ -36,7 +36,7 @@ static class CheckoutRecoveryCommand
         // Verify all identity before normalization. There is no reset, network lookup, process adoption or inferred completion.
         CheckoutRecovery.Recover(new(root, record.Owner!, repository.Id, "refs/heads/" + repository.Branch), files,
             new RefreshJournalFile(statePath), stopped, clock);
-        Log.Write("checkout-recovered", $"Native uncertainty explicitly settled; evidence retained at {statePath}.checkout-evidence. Restart with the existing configuration. Input may already have executed or lost output; pending input remains a redelivery.");
+        Log.Write("checkout-recovered", $"Agent uncertainty explicitly settled; evidence retained at {statePath}.checkout-evidence. Restart with the existing configuration. Input may already have executed or lost output; pending input remains a redelivery.");
     }
 
     static void PrivateState(string path)

@@ -155,7 +155,7 @@ public sealed class IssuanceFaultTests
             if (changedAuthority || ++batches != 2) return;
             changedAuthority = true;
             if (changed == "revoked")
-                Assert.Equal(204, await f.Revocation().RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
+                Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
             else
                 f.State.Change(f.EnrollmentKey, row => row["SecretHash"] = new string('0', 64));
         };
@@ -248,7 +248,7 @@ public sealed class IssuanceFaultTests
             // The verifier's global charge is the first transaction and its repository admission the second.
             if (revoked || ++batches != 2) return;
             revoked = true;
-            Assert.Equal(204, await f.Revocation().RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
+            Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
         };
         Assert.Equal(503, (await f.IssueAsync(Token)).Status);
         Assert.True(revoked);
@@ -344,7 +344,7 @@ public sealed class IssuanceFaultTests
         var runtime = issued ? f.Attempt("runtime") : null;
         StateKey key = row switch
         {
-            "locator" => EnrollmentLocator.Key(f.Device.DeviceId),
+            "locator" => EnrollmentLocator.Key(f.EnrollmentId.DeviceId),
             "gate" => IssuanceFixture.GateKey,
             "enrollment" => f.EnrollmentKey,
             "enrollment-quota" => EnrollmentQuota.Key,
@@ -405,7 +405,7 @@ public sealed class IssuanceFaultTests
         {
             if (f.GitHub.Reads == 12 && request.StartsWith("variable ", StringComparison.Ordinal))
             {
-                Assert.Equal(204, await f.Revocation().RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
+                Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
                 revoked = true;
             }
         };
@@ -448,7 +448,7 @@ public sealed class IssuanceFaultTests
         var f = IssuanceFixture.Create(runtimeLifetime: TimeSpan.FromMinutes(6));
         var limits = new IssuanceLimits(GlobalAttempts: 4);
         Assert.Equal(200, (await f.IssueAsync(Token, limits)).Status);
-        // Model a historical device without the optional published-lease pointer.
+        // Model a historical enrollmentId without the optional published-lease pointer.
         f.State.Change(f.EnrollmentKey, row =>
         {
             row.Remove("RuntimeAttempt");

@@ -27,21 +27,21 @@ public sealed class ExpiredEnrollmentRecoveryTests
 
         // Exercise the consumer's actual recovery outcome, not just a vacant-gate projection.
         var replacement = await Retained.ActiveAgent(f);
-        Assert.NotEqual(old.Device, replacement.Device);
+        Assert.NotEqual(old.EnrollmentId, replacement.EnrollmentId);
         Assert.NotEqual(old.Secret, replacement.Secret);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.Device, replacement.Secret)).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.Device, old.Secret)).StatusCode);
-        Assert.NotEqual(HttpStatusCode.OK, (await f.Acknowledge(old.Device, old.Completion, old.Secret, 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.EnrollmentId, replacement.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
+        Assert.NotEqual(HttpStatusCode.OK, (await f.Acknowledge(old.EnrollmentId, old.Completion, old.Secret, 2)).StatusCode);
 
         // A delayed old cleanup visit must not close or release the replacement.
         var gate = f.State.Version(GateKey);
         await Retained.ReclaimEnrollment(f, old.Id);
         Assert.Equal(gate, f.State.Version(GateKey));
-        Assert.Equal(replacement.Device, f.Gate.OwnerEnrollmentId);
-        var retired = f.Enrollment(old.Device);
+        Assert.Equal(replacement.EnrollmentId, f.Gate.OwnerEnrollmentId);
+        var retired = f.Enrollment(old.EnrollmentId);
         Assert.Equal("revoked", retired.State);
         Assert.False(retired.Acknowledged);
-        Assert.Equal(old.Device, f.State.Get(RevocationReceipt.Key(Retained.Repository, old.Device))!.EnrollmentId);
+        Assert.Equal(old.EnrollmentId, f.State.Get(RevocationReceipt.Key(Retained.Repository, old.EnrollmentId))!.EnrollmentId);
         var quota = f.State.Get(EnrollmentQuota.Key)!;
         Assert.Equal(2L, quota.RetainedEnrollmentCount);
         Assert.Equal(1L, quota.Count);
@@ -61,10 +61,10 @@ public sealed class ExpiredEnrollmentRecoveryTests
 
         await Retained.ReclaimEnrollment(f, old.Id);
 
-        Assert.Equal(old.Device, f.Gate.OwnerEnrollmentId);
+        Assert.Equal(old.EnrollmentId, f.Gate.OwnerEnrollmentId);
         Assert.Equal(1L, f.Gate.OutstandingTokenCount);
-        Assert.Null(f.State.Row(RevocationReceipt.Key(Retained.Repository, old.Device)));
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.Device, old.Secret)).StatusCode);
+        Assert.Null(f.State.Row(RevocationReceipt.Key(Retained.Repository, old.EnrollmentId)));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
     }
 
     [Theory]
@@ -76,21 +76,21 @@ public sealed class ExpiredEnrollmentRecoveryTests
     [InlineData("missing-acknowledgment")]
     [InlineData("app-binding")]
     [InlineData("unknown-property")]
-    public async Task Owner_recovery_requires_never_activated_device_and_complete_current_binding_proofs(string barrier)
+    public async Task Owner_recovery_requires_never_activated_controller_enrollment_and_complete_current_binding_proofs(string barrier)
     {
         var f = new InMemoryBroker();
         var old = await Retained.CompletedAgent(f);
         if (barrier == "acknowledged")
         {
             f.Clock.Advance(TimeSpan.FromMinutes(1));
-            Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(old.Device, old.Completion, old.Secret, 2)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(old.EnrollmentId, old.Completion, old.Secret, 2)).StatusCode);
         }
         f.Clock.Advance(TimeSpan.FromDays(91));
         await SettleVerifiers(f);
         await Retained.ReclaimEnrollment(f, old.Id);
-        var device = ControllerEnrollment.Key(Retained.Repository, old.Device);
+        var enrollmentId = ControllerEnrollment.Key(Retained.Repository, old.EnrollmentId);
         if (barrier is "pending-binding" or "missing-acknowledgment" or "app-binding" or "unknown-property")
-            f.State.Change(device, row =>
+            f.State.Change(enrollmentId, row =>
             {
                 if (barrier == "pending-binding") row["PendingId"] = "123456_" + Guid.NewGuid().ToString("N");
                 if (barrier == "missing-acknowledgment") Assert.True(row.Remove("Acknowledged"));
@@ -99,7 +99,7 @@ public sealed class ExpiredEnrollmentRecoveryTests
                 // A property no record maps: the release reads the gate and the enrollment through their records.
                 if (barrier == "unknown-property") row["Unrecognized"] = "kept by no record";
             });
-        if (barrier == "missing-device") Assert.True(f.State.Remove(device));
+        if (barrier == "missing-device") Assert.True(f.State.Remove(enrollmentId));
         if (barrier == "missing-release") Assert.True(f.State.Remove(ReleaseProof.Enrollment(Retained.Repository, old.Id)));
         var before = f.State.Version(GateKey);
         Assert.NotNull(before);
@@ -111,7 +111,7 @@ public sealed class ExpiredEnrollmentRecoveryTests
         else await Retained.ReclaimEnrollment(f, old.Id);
 
         Assert.Equal(before, f.State.Version(GateKey));
-        Assert.Equal(old.Device, f.Gate.OwnerEnrollmentId);
+        Assert.Equal(old.EnrollmentId, f.Gate.OwnerEnrollmentId);
     }
 
     [Fact]
@@ -137,8 +137,8 @@ public sealed class ExpiredEnrollmentRecoveryTests
             await Assert.ThrowsAsync<StateConflict>(() => stale);
 
             Assert.Equal(gate, f.State.Version(GateKey));
-            Assert.Equal(replacement.Device, f.Gate.OwnerEnrollmentId);
-            Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.Device, replacement.Secret)).StatusCode);
+            Assert.Equal(replacement.EnrollmentId, f.Gate.OwnerEnrollmentId);
+            Assert.Equal(HttpStatusCode.OK, (await f.Issue(replacement.EnrollmentId, replacement.Secret)).StatusCode);
         }
         finally
         {

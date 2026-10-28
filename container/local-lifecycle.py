@@ -37,6 +37,8 @@ def checked(path, missing=False):
 def pairs(items):
     result = {}
     for key, value in items:
+        # Compatibility with frozen persisted enrollment and recovery files; ambiguous aliases fail closed.
+        key = {'deviceId': 'enrollmentId', 'deviceSecret': 'controllerSecret', 'secret': 'setupSecret'}.get(key, key)
         if key.lower() in {name.lower() for name in result}:
             raise ValueError('Duplicate field')
         result[key] = value
@@ -71,7 +73,7 @@ def marker(value):
         raise ValueError('Invalid disable state')
     patterns = {'instance': r'[a-z0-9][a-z0-9-]{0,40}', 'image': r'sha256:[a-f0-9]{64}'}
     binding = value['binding']
-    fields = {'repository', 'repositoryId', 'deviceId', 'appId', 'installationId', 'brokerOrigin', 'profile',
+    fields = {'repository', 'repositoryId', 'enrollmentId', 'appId', 'installationId', 'brokerOrigin', 'profile',
               'approvalKind', 'approvalVariable', 'expectedValueSha256', 'githubEnvironment', 'environmentId'}
     if not isinstance(binding, dict) or set(binding) != fields:
         raise ValueError('Invalid disable binding')
@@ -81,7 +83,7 @@ def marker(value):
     for name in ('repositoryId', 'appId', 'installationId'):
         if type(binding[name]) is not int or not 0 < binding[name] < 2**63:
             raise ValueError('Invalid numeric identity')
-    patterns = {'repository': r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', 'deviceId': r'[A-Za-z0-9_-]{1,128}',
+    patterns = {'repository': r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', 'enrollmentId': r'[A-Za-z0-9_-]{1,128}',
                 'brokerOrigin': r'https://[A-Za-z0-9.-]+(?::[0-9]+)?', 'profile': r'(polling|webhook)(-clone)?(-settings)?',
                 'approvalVariable': r'[A-Z_][A-Z0-9_]{0,99}', 'expectedValueSha256': r'[a-f0-9]{64}'}
     for name, pattern in patterns.items():
@@ -136,7 +138,7 @@ def verify_binding(expected, config=None):
         raise ValueError('Selected profile differs')
     if checked(TARGETS[0], missing=True):
         credential = read(TARGETS[0])
-        fields = {'protocolVersion', 'brokerOrigin', 'githubHost', 'deviceId', 'deviceSecret', 'appId', 'appSlug', 'installationId', 'repositoryId', 'repository', 'permissions'}
+        fields = {'protocolVersion', 'brokerOrigin', 'githubHost', 'enrollmentId', 'controllerSecret', 'appId', 'appSlug', 'installationId', 'repositoryId', 'repository', 'permissions'}
         # Clone (v2) and repository-settings (v3) enrollments name their profile and policy.
         if credential.get('protocolVersion') in (2, 3):
             fields |= {'profile', 'policyVersion'}
@@ -147,7 +149,7 @@ def verify_binding(expected, config=None):
         for key in ('repositoryId', 'appId', 'installationId'):
             if type(credential[key]) is not int or not 0 < credential[key] < 2**63:
                 raise ValueError('Invalid enrollment identity')
-        if any(not isinstance(credential[key], str) or not credential[key] for key in ('deviceId', 'deviceSecret', 'brokerOrigin', 'repository', 'appSlug')):
+        if any(not isinstance(credential[key], str) or not credential[key] for key in ('enrollmentId', 'controllerSecret', 'brokerOrigin', 'repository', 'appSlug')):
             raise ValueError('Invalid enrollment text')
         permissions = {'discussions': 'write'}
         if profile.startswith('webhook'):
@@ -163,12 +165,12 @@ def verify_binding(expected, config=None):
         # Existing lifecycle bindings have no setup version. Agent clone credentials
         # may name either exact v2/v4 clone policy; neither changes the frozen grant.
         policies = {'repository-actions-variable': ('repository-actions-settings-approval-v3',),
-                    'repository-agent-variable': ('repository-agent-settings-approval-v4',)} if settings else \
+                    'repository-agent-variable': ('repository-agent-settings-approval-v4', 'repository-agent-settings-approval-v5')} if settings else \
             {'repository-actions-variable': ('repository-actions-clone-approval-v3',),
-             'repository-agent-variable': ('repository-agent-clone-approval-v2', 'repository-agent-clone-approval-v4')}
+             'repository-agent-variable': ('repository-agent-clone-approval-v2', 'repository-agent-clone-approval-v4', 'repository-agent-clone-approval-v5')}
         if credential['protocolVersion'] > 1 and credential['policyVersion'] not in policies.get(binding['approvalKind'], ()):
             raise ValueError('Enrollment policy differs')
-        for key in ('repository', 'repositoryId', 'deviceId', 'appId', 'installationId', 'brokerOrigin'):
+        for key in ('repository', 'repositoryId', 'enrollmentId', 'appId', 'installationId', 'brokerOrigin'):
             if credential[key] != binding[key]:
                 raise ValueError('Selected enrollment differs')
         if credential.get('profile', profile) != profile:

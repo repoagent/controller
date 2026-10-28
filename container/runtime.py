@@ -398,7 +398,8 @@ def main():
     elif args.command == 'get': print(settings().get(args.key) or '')
     elif args.command == 'versions':
         print('RepoAgent container; uid=' + str(os.getuid()), flush=True)
-        print('RepoAgentController: Native AOT, built with .NET SDK 11.0.100-rc.3', flush=True)
+        version = subprocess.check_output(CONTROLLER + ['--version'], text=True).strip()
+        print('RepoAgentController version: ' + version, flush=True)
         run([sys.executable, '--version'])
         for name in ['gh', 'codex', 'rg', 'cloudflared']:
             if shutil.which(name): run([name, '--version'])

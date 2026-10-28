@@ -26,7 +26,7 @@ if (others.FirstOrDefault(html => mention.IsMentioned(RenderedMentions.Users(htm
     throw new InvalidOperationException("Native AOT mention enrollment treated other rendered content as a mention: " + other);
 Console.WriteLine("Native AOT rendered-mention smoke passed.");
 
-var directory = Path.Combine(Path.GetTempPath(), "native-lease-" + Guid.NewGuid().ToString("N"));
+var directory = Path.Combine(Path.GetTempPath(), "agent-lease-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(directory);
 try
 {

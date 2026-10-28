@@ -155,7 +155,7 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
             var record = gate?.Value ?? RepositoryGate.Vacant(repository, epoch);
             RequireReady(record, repository);
             var count = record.PendingCount ?? 0;
-            if (count >= RepositoryPending) throw new IssuanceDenied(429);
+            if (count >= RepositoryPending) throw new IssuanceDenied(429, BrokerRejectionReason.RepositoryPending);
             record.PendingCount = count + 1;
             record.Sequence = Number(record.Sequence) + 1;
             var pending = Copy(reservation);
@@ -220,7 +220,7 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
             || Text(g.RepositoryId) != parts[0] || Text(g.Epoch) != epoch
             || Text(p.Epoch) != epoch) throw new IssuanceDenied(401);
         if (setupSecretHash is not null && (p.SetupSecretHash is not { } hash
-            || !DeviceSecret.Matches(Convert.FromHexString(setupSecretHash), hash))) throw new IssuanceDenied(401);
+            || !ControllerSecret.Matches(Convert.FromHexString(setupSecretHash), hash))) throw new IssuanceDenied(401);
         var snapshot = new PendingSnapshot(parts[0], parts[1], gate, pending);
         if (!snapshot.Approval.Allows(Text(p.Profile))) throw new IssuanceDenied();
         if (snapshot.Approval.SetupVersion != setupVersion) throw new IssuanceDenied(409);
@@ -261,7 +261,7 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
         _ = await capacity.QuotasAsync(ct);
         _ = await capacity.CandidateAsync(s.RepositoryId, ct) ?? throw new IssuanceDenied();
         var now = clock.GetUtcNow();
-        if (Date(s.Pending.NextWorkAt) > now) throw new IssuanceDenied(429);
+        if (Date(s.Pending.NextWorkAt) > now) throw new IssuanceDenied(429, BrokerRejectionReason.EnrollmentBackoff);
         if (s.Pending.Attempt is not null && mint) throw new IssuanceDenied();
         work.EvaluateAdmission();
         // Claim one durable operation before global/provider admission; all endpoints share this field.
@@ -278,7 +278,7 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
         if (mint)
         {
             var occupancy = Number(global.Value.Slots);
-            if (occupancy >= limits.GlobalAttempts) throw new IssuanceDenied(429);
+            if (occupancy >= limits.GlobalAttempts) throw new IssuanceDenied(429, BrokerRejectionReason.GlobalAttempts);
             slot = await capacity.FreeSlotAsync(limits.GlobalAttempts, ct);
             global.Value.Slots = occupancy + 1;
             var slotReservation = new IssuanceSlot
@@ -308,7 +308,7 @@ public sealed class EnrollmentStore(IBrokerState state, string epoch, RetainedLi
         var extra = new List<TrackedRecord> { charged };
         if (mint)
         {
-            if (Number(s.Gate.OutstandingTokenCount) >= limits.RepositoryAttempts) throw new IssuanceDenied(429);
+            if (Number(s.Gate.OutstandingTokenCount) >= limits.RepositoryAttempts) throw new IssuanceDenied(429, BrokerRejectionReason.RepositoryAttempts);
             s.Gate.OutstandingTokenCount = Number(s.Gate.OutstandingTokenCount) + 1;
             s.Pending.Attempt = operation;
             extra.Add(new Tracked<IssuanceAttempt>(IssuanceAttempt.Key(s.PartitionRepositoryId, operation), new()

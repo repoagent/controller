@@ -5,7 +5,7 @@ using Xunit;
 namespace RepoAgent.Auth.Tests;
 
 // A controller's self-revocation, decided by the core over the in-memory broker state and a manual clock.
-public sealed class DeviceRevocationTests
+public sealed class ControllerSelfRevocationTests
 {
     private const string Epoch = "test-epoch", Repository = "123456", Partition = "repository:" + Repository, Id = "enrollment-1";
     private static readonly string Secret = new('s', 43);
@@ -18,7 +18,7 @@ public sealed class DeviceRevocationTests
     private static StateKey<ControllerEnrollment> EnrollmentKey(string id = Id) => ControllerEnrollment.Key(Repository, id);
     private static StateKey<RevocationReceipt> ReceiptKey(string id = Id) => RevocationReceipt.Key(Repository, id);
     private Task<int> RevokeAsync(string? secret, int runtimeVersion = 1, string id = Id) =>
-        new DeviceRevocation(state, Epoch, clock).RevokeAsync(id, secret, Token, runtimeVersion);
+        new ControllerSelfRevocation(state, Epoch, clock).RevokeAsync(id, secret, Token, runtimeVersion);
     private Task<int> RevokeAsync() => RevokeAsync(Secret);
 
     // The rows a controller enrollment from before approval contracts has, with one outstanding GitHub token and its
@@ -483,7 +483,7 @@ public sealed class DeviceRevocationTests
         using var cancelled = new CancellationTokenSource();
         await cancelled.CancelAsync();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new DeviceRevocation(state, Epoch, clock).RevokeAsync(Id, Secret, cancelled.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new ControllerSelfRevocation(state, Epoch, clock).RevokeAsync(Id, Secret, cancelled.Token));
         state.BeforeRead = _ => throw new OperationCanceledException();
         Assert.Equal(503, await RevokeAsync());
 

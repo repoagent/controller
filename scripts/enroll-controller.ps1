@@ -6,6 +6,7 @@ param(
     [string]$ApprovalVariable,
     [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone', 'polling-settings', 'webhook-settings', 'polling-clone-settings', 'webhook-clone-settings')][string]$Profile,
     [string]$StateDirectory,
+    [ValidateSet(4, 5)][int]$ControllerEnrollmentVersion = 4,
     # Fresh setup v4 uses a direct repository Agent variable. ActionsVariable is accepted
     # only when resuming matching saved v3 state. Saved state keeps its setup version.
     [ValidateSet('ActionsVariable', 'AgentVariable')][string]$ApprovalLocation,
@@ -13,7 +14,7 @@ param(
     [switch]$NonInteractive
 )
 $ErrorActionPreference = 'Stop'
-Import-Module "$PSScriptRoot/host-enrollment.psm1" -Force -DisableNameChecking
+Import-Module "$PSScriptRoot/controller-enrollment.psm1" -Force -DisableNameChecking
 $script:Diagnostic = 'Enrollment could not be verified. Inspect host authentication, selected coordinates and private state before retrying.'
 $script:Calls = 0
 $script:Clock = [Diagnostics.Stopwatch]::StartNew()
@@ -22,14 +23,14 @@ function Stop-Enrollment([string]$Message) { $script:Diagnostic = $Message; thro
 function GitHub([string]$Method, [string]$Endpoint, $Body = $null) {
     $script:Calls++
     if ($script:Calls -gt 12 -or $script:Clock.Elapsed.TotalMinutes -gt 15) { Stop-Enrollment 'GitHub work limit reached; inspect before retrying.' }
-    $result = Invoke-HostGitHub $Method $Endpoint $Body
+    $result = Invoke-OperatorGitHub $Method $Endpoint $Body
     if ($result.Status -in @(401, 403, 422)) { Stop-Enrollment "GitHub denied this operation (HTTP $($result.Status)). Check host gh access, repository $($script:LocationName) variables read/write permission and API availability." }
     return $result
 }
 function Read-Repository {
     $r = GitHub GET $repoPath
     if ($r.Status -ne 200) { Stop-Enrollment 'Repository access could not be verified.' }
-    $repo = Read-HostJson $r.Body; Assert-Id $repo.id
+    $repo = Read-OperatorJson $r.Body; Assert-Id $repo.id
     if ($repo.full_name -isnot [string] -or $repo.full_name -ine $Repository -or ($config.repositoryId -and $config.repositoryId -ne $repo.id)) { Stop-Enrollment 'Repository identity changed.' }
     return $repo.id
 }
@@ -38,7 +39,7 @@ function Read-VariableAccess {
     # never limits enrollment; unrelated variables may share the selected store.
     $r = GitHub GET ($variablesPath + '?per_page=1&page=1')
     if ($r.Status -ne 200) { Stop-Enrollment "Direct repository $($script:LocationName) variables are unavailable; absence and write access are unconfirmed." }
-    $v = Read-HostJson $r.Body
+    $v = Read-OperatorJson $r.Body
     Assert-Fields $v @('total_count','variables')
     if (($v.total_count -isnot [long] -and $v.total_count -isnot [int]) -or $v.total_count -lt 0 -or $v.variables -isnot [array] -or $v.variables.Count -ne [Math]::Min(1, $v.total_count)) { Stop-Enrollment "$($script:LocationName)-variable listing is malformed or incomplete." }
     foreach ($item in $v.variables) {
@@ -55,7 +56,7 @@ function Confirm-Absent {
     }
 }
 function Check-Recovery {
-    Assert-Fields $recovery @('version','setupVersion','approvalKind','request','secret','completionId','lastWorkAt','acknowledged','ackAttempted')
+    Assert-Fields $recovery @('version','setupVersion','approvalKind','request','setupSecret','completionId','lastWorkAt','acknowledged','ackAttempted')
     Assert-Id $recovery.version; Assert-Id $recovery.setupVersion
     if ($recovery.version -ne $setupVersion -or $recovery.setupVersion -ne $setupVersion -or $recovery.approvalKind -cne $approvalKind) { Stop-Enrollment "Recovery state is not $($script:LocationName)-variable enrollment v$setupVersion; it cannot be migrated or replayed." }
     Assert-Fields $recovery.request @('idempotencyId','repositoryId','repository','variable','profile')
@@ -68,8 +69,8 @@ function Check-Recovery {
     if ($recovery.completionId) { Assert-Text $recovery.completionId '\A[0-9a-f]{32}\z' }
     if ($null -ne $recovery.lastWorkAt) { Assert-Text $recovery.lastWorkAt '\A\d{4}-\d\d-\d\dT[^\r\n]+(?:Z|[+-]\d\d:\d\d)\z' }
     if ($recovery.acknowledged) {
-        if ($null -ne $recovery.secret -or -not $recovery.ackAttempted -or -not $recovery.completionId) { Stop-Enrollment 'Invalid acknowledged recovery state.' }
-    } else { Assert-Text $recovery.secret '\A[A-Za-z0-9_-]{43}\z' }
+        if ($null -ne $recovery.setupSecret -or -not $recovery.ackAttempted -or -not $recovery.completionId) { Stop-Enrollment 'Invalid acknowledged recovery state.' }
+    } else { Assert-Text $recovery.setupSecret '\A[A-Za-z0-9_-]{43}\z' }
 }
 function Broker([string]$Method, [string]$Path, [string]$Secret, $Body = $null) {
     for ($attempt = 0; $attempt -lt 3; $attempt++) {
@@ -107,7 +108,7 @@ function Broker([string]$Method, [string]$Path, [string]$Secret, $Body = $null) 
     if ($Method -ceq 'POST' -and $Path -ceq "/v$setupVersion/enrollments" -and $r.Status -in @(409,503)) {
         $startDiagnostic = $null
         try {
-            $denial = Read-HostJson $r.Body
+            $denial = Read-OperatorJson $r.Body
             if ($r.Status -eq 409) {
                 Assert-Fields $denial @('code','retryAfterSeconds')
                 if ($denial.code -is [string] -and $denial.code -ceq 'enrollment_not_ready' -and
@@ -124,7 +125,7 @@ function Broker([string]$Method, [string]$Path, [string]$Secret, $Body = $null) 
         if ($startDiagnostic) { Stop-Enrollment $startDiagnostic }
     }
     if ($r.Status -ne 200) { Stop-Enrollment "Broker operation failed (HTTP $($r.Status)); private state is retained. Retry the same enrollment after inspection; no new identity was created." }
-    return Read-HostJson $r.Body
+    return Read-OperatorJson $r.Body -ControllerDocument
 }
 function Save-State { Write-PrivateJson $configPath $config; Write-PrivateJson $recoveryPath $recovery }
 function Check-Status($Status) {
@@ -141,25 +142,25 @@ function Check-Status($Status) {
     $config.pendingId = $Status.pendingId; $config.deadline = $Status.deadline
 }
 function Check-Marker([string]$Text) {
-    $m = Read-HostJson $Text
-    Assert-Fields $m @('version','approvalKind','githubHost','appId','appSlug','repositoryId','repository','installationId','deviceId','challenge','profile','policyVersion','epoch','variable')
+    $m = Read-OperatorJson $Text -ControllerDocument
+    Assert-Fields $m @('version','approvalKind','githubHost','appId','appSlug','repositoryId','repository','installationId','enrollmentId','challenge','profile','policyVersion','epoch','variable')
     foreach ($key in @('version','appId','repositoryId','installationId')) { Assert-Id $m[$key] }
     if ($m.version -ne $setupVersion -or $m.approvalKind -cne $approvalKind -or $m.githubHost -cne 'github.com' -or $m.appId -ne 5387625 -or $m.appSlug -cne 'repo-agent-connector' -or $m.repositoryId -ne $config.repositoryId -or $m.repository -ine $Repository -or $m.variable -cne $ApprovalVariable -or $m.profile -cne $Profile -or $m.policyVersion -cne $policy) { Stop-Enrollment 'Broker approval marker differs from the trusted host intent.' }
-    Assert-Text $m.deviceId '\A[0-9a-f]{32}\z'
+    Assert-Text $m.enrollmentId '\A[0-9a-f]{32}\z'
     Assert-Text $m.challenge '\A[A-Za-z0-9_-]{43}\z'
     Assert-Text $m.epoch '\A[A-Za-z0-9_-]{1,128}\z'
     if ($config.marker -and $config.marker -cne $Text) { Stop-Enrollment 'Broker changed the saved marker.' }
     return $m
 }
 function Check-Enrollment($Enrollment, $Marker) {
-    $bindingFields = @('protocolVersion','brokerOrigin','githubHost','deviceId','deviceSecret','appId','appSlug','installationId','repositoryId','repository','permissions')
+    $bindingFields = @('protocolVersion','brokerOrigin','githubHost','enrollmentId','controllerSecret','appId','appSlug','installationId','repositoryId','repository','permissions')
     # Clone (runtime v2) and repository-settings (runtime v3) files name their profile and policy.
     if ($runtimeVersion -gt 1) { $bindingFields += @('profile','policyVersion') }
     Assert-Fields $Enrollment $bindingFields
     if ($runtimeVersion -gt 1 -and ($Enrollment.profile -cne $Profile -or $Enrollment.policyVersion -cne $policy)) { Stop-Enrollment 'Enrollment profile policy differs.' }
     foreach ($key in @('protocolVersion','appId','installationId','repositoryId')) { Assert-Id $Enrollment[$key] }
-    if ($Enrollment.protocolVersion -ne $runtimeVersion -or (Get-BrokerOrigin $Enrollment.brokerOrigin) -cne $BrokerOrigin -or $Enrollment.githubHost -cne 'github.com' -or $Enrollment.deviceId -cne $Marker.deviceId -or $Enrollment.appId -ne $Marker.appId -or $Enrollment.appSlug -cne $Marker.appSlug -or $Enrollment.installationId -ne $Marker.installationId -or $Enrollment.repositoryId -ne $Marker.repositoryId -or $Enrollment.repository -ine $Repository) { Stop-Enrollment 'Completion binding differs from the approved enrollment.' }
-    Assert-Text $Enrollment.deviceSecret '\A[A-Za-z0-9_-]{43,128}\z'
+    if ($Enrollment.protocolVersion -ne $runtimeVersion -or (Get-BrokerOrigin $Enrollment.brokerOrigin) -cne $BrokerOrigin -or $Enrollment.githubHost -cne 'github.com' -or $Enrollment.enrollmentId -cne $Marker.enrollmentId -or $Enrollment.appId -ne $Marker.appId -or $Enrollment.appSlug -cne $Marker.appSlug -or $Enrollment.installationId -ne $Marker.installationId -or $Enrollment.repositoryId -ne $Marker.repositoryId -or $Enrollment.repository -ine $Repository) { Stop-Enrollment 'Completion binding differs from the approved enrollment.' }
+    Assert-Text $Enrollment.controllerSecret '\A[A-Za-z0-9_-]{43,128}\z'
     $fields = @('discussions'); if ($Profile.StartsWith('webhook', [StringComparison]::Ordinal)) { $fields += 'repository_hooks' }
     if ($clone) { $fields += 'contents' }
     $variablesPermission = if ($setupVersion -eq 3) { 'actions_variables' } else { 'agent_variables' }
@@ -203,8 +204,9 @@ try {
             Set-Variable -Name $pair[0] -Value $config[$pair[1]]
         }
     }
-    $location = if ($config) { Get-ApprovalLocation -Kind $savedKind -SetupVersion $config.setupVersion } else { Get-ApprovalLocation -Location $ApprovalLocation }
-    if (-not $config -and $location.SetupVersion -ne 4) { Stop-Enrollment 'Fresh enrollment requires setup v4 in repository Agent variables. Saved legacy state may only resume its original request; revoke and settle old authority before enrolling afresh.' }
+    if ($config -and $PSBoundParameters.ContainsKey('ControllerEnrollmentVersion') -and $ControllerEnrollmentVersion -ne $config.setupVersion) { Stop-Enrollment 'The selected setup version differs from saved enrollment state.' }
+    $location = if ($config) { Get-ApprovalLocation -Kind $savedKind -SetupVersion $config.setupVersion } else { Get-ApprovalLocation -Location $ApprovalLocation -SetupVersion $ControllerEnrollmentVersion }
+    if (-not $config -and $location.SetupVersion -notin @(4, 5)) { Stop-Enrollment 'Fresh enrollment requires repository Agent variables. Saved legacy state may only resume its original request; revoke and settle old authority before enrolling afresh.' }
     $actions = $location.Location -ceq 'ActionsVariable'
     $setupVersion = $location.SetupVersion
     $approvalKind = $location.Kind
@@ -231,7 +233,7 @@ try {
     Assert-Text $ApprovalVariable '\A[A-Za-z_][A-Za-z0-9_]{0,99}\z'
     $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
     if ($ApprovalVariable.StartsWith('GITHUB_', [StringComparison]::Ordinal)) { Stop-Enrollment 'Approval variable cannot start with GITHUB_.' }
-    if ($setupVersion -in @(3,4) -and -not (Test-RepositoryApprovalName $ApprovalVariable)) { Stop-Enrollment "Approval variable $ApprovalVariable is in the REPOAGENT_ repository-settings namespace, which repository-settings.ps1 writes. Use REPOAGENT_APPROVAL or a name without the REPOAGENT_ prefix." }
+    if ($setupVersion -in @(3,4,5) -and -not (Test-RepositoryApprovalName $ApprovalVariable)) { Stop-Enrollment "Approval variable $ApprovalVariable is in the REPOAGENT_ repository-settings namespace, which repository-settings.ps1 writes. Use REPOAGENT_APPROVAL or a name without the REPOAGENT_ prefix." }
     $BrokerOrigin = Get-BrokerOrigin $BrokerOrigin
     if ($null -eq $config) { $config = [ordered]@{ version=$setupVersion; setupVersion=$setupVersion; approvalKind=$approvalKind; repository=$Repository; repositoryId=$null; brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; profile=$Profile; pendingId=$null; deadline=$null; marker=$null; expectedValueSha256=$null; approvalWriteAttempted=$false; approvalObserved=$false } }
     $recovery = $null
@@ -243,7 +245,7 @@ try {
     Write-Host "Setup/marker: $setupVersion; controller/runtime: $runtimeVersion; policy: $policy; permissions: $permissionPreview"
     Write-Host "Repository $($script:LocationName)-variable approval: $ApprovalVariable; state: $StateDirectory"
     if ($location.Legacy) { Write-Host 'Saved legacy setup retains its original approval and authority. Moving to setup v4 requires revocation, settlement and a fresh enrollment in a new state directory.' }
-    Write-Host "Apply may start one pending $($script:LocationName)-variable enrollment, write its validated public marker, save a private device credential and acknowledge it. Existing matching approval is reused; conflicts stop."
+    Write-Host "Apply may start one pending $($script:LocationName)-variable enrollment, write its validated public marker, save a private controller credential and acknowledge it. Existing matching approval is reused; conflicts stop."
     if (-not $Apply) { Write-Host 'Read-only plan. Use -Apply to execute. The fresh marker is available only after start.'; exit 0 }
     $script:Diagnostic = 'Private enrollment state could not be verified. Use an owned local directory with mode 0700/0600 on Linux or a current-user-only protected DACL on Windows; do not discard recovery state.'
     $null = Initialize-PrivateDirectory $StateDirectory
@@ -251,37 +253,40 @@ try {
     $variablesPath = $repoPath + '/' + $location.Path
     $varPath = $variablesPath + '/' + [Uri]::EscapeDataString($ApprovalVariable)
     $brokerSetup = "/v$setupVersion"
-    $script:Diagnostic = 'Enrollment transport or document validation failed. Check host gh authentication, broker availability and the saved binding; no automatic repair was attempted.'
+    $script:Diagnostic = 'Repository identity could not be read or validated through host gh; no broker enrollment was started.'
     $config.repositoryId = Read-Repository
+    $script:Diagnostic = 'Repository approval-variable access could not be read or validated through host gh; no broker enrollment was started.'
     $null = Read-VariableAccess
+    $script:Diagnostic = 'Private enrollment binding could not be saved; preserve the selected state directory.'
     Write-PrivateJson $configPath $config
     if ($null -eq $recovery) {
-        $recovery = [ordered]@{ version=$setupVersion; setupVersion=$setupVersion; approvalKind=$approvalKind; request=[ordered]@{ idempotencyId=[Guid]::NewGuid().ToString('N'); repositoryId=$config.repositoryId; repository=$Repository; variable=$ApprovalVariable; profile=$Profile }; secret=[Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).TrimEnd('=').Replace('+','-').Replace('/','_'); completionId=$null; lastWorkAt=$null; acknowledged=$false; ackAttempted=$false }
+        $recovery = [ordered]@{ version=$setupVersion; setupVersion=$setupVersion; approvalKind=$approvalKind; request=[ordered]@{ idempotencyId=[Guid]::NewGuid().ToString('N'); repositoryId=$config.repositoryId; repository=$Repository; variable=$ApprovalVariable; profile=$Profile }; setupSecret=[Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).TrimEnd('=').Replace('+','-').Replace('/','_'); completionId=$null; lastWorkAt=$null; acknowledged=$false; ackAttempted=$false }
         Write-PrivateJson $recoveryPath $recovery
     }
+    $script:Diagnostic = 'Enrollment transport or document validation failed. Check broker availability and the saved binding; no automatic repair was attempted.'
     if ((Test-Path -LiteralPath $enrollmentPath) -and $recovery.completionId) {
         $marker = Check-Marker $config.marker
         $enrollment = Read-PrivateJson $enrollmentPath
         Check-Enrollment $enrollment $marker
         $r = GitHub GET $varPath
         if ($r.Status -ne 200) { Stop-Enrollment 'Saved approval is unavailable; do not recreate it.' }
-        $variable = Read-HostJson $r.Body
+        $variable = Read-OperatorJson $r.Body
         if ($variable.name -isnot [string] -or $variable.name -ine $ApprovalVariable -or $variable.value -isnot [string] -or $variable.value -cne $config.marker) { Stop-Enrollment 'Saved approval changed; do not restore it.' }
     } else {
-        Assert-Text $recovery.secret '\A[A-Za-z0-9_-]{43}\z'
+        Assert-Text $recovery.setupSecret '\A[A-Za-z0-9_-]{43}\z'
         Wait-Work
-        $status = Broker POST ($brokerSetup + '/enrollments') $recovery.secret $recovery.request
+        $status = Broker POST ($brokerSetup + '/enrollments') $recovery.setupSecret $recovery.request
         Check-Status $status
         if ($null -eq $status.marker) { Save-State; Stop-Enrollment 'Broker discovery is still pending. Rerun the same request after at least five seconds.' }
         if ($status.marker -isnot [string]) { Stop-Enrollment 'Invalid broker marker.' }
         $marker = Check-Marker $status.marker
         $config.marker = $status.marker; $config.expectedValueSha256 = Get-ValueHash $status.marker
         Save-State
-        Write-Host "Validated approval: repository ID $($marker.repositoryId), installation $($marker.installationId), device $($marker.deviceId), profile $Profile; policy $policy; controller/runtime $runtimeVersion; permissions $permissionPreview."
+        Write-Host "Validated approval: repository ID $($marker.repositoryId), installation $($marker.installationId), controller enrollment $($marker.enrollmentId), profile $Profile; policy $policy; controller/runtime $runtimeVersion; permissions $permissionPreview."
         $null = Read-Repository
         $r = GitHub GET $varPath
         if ($r.Status -eq 200) {
-            $variable = Read-HostJson $r.Body
+            $variable = Read-OperatorJson $r.Body
             if ($variable.name -isnot [string] -or $variable.name -ine $ApprovalVariable -or $variable.value -isnot [string] -or $variable.value -cne $config.marker) { Stop-Enrollment 'Approval conflicts with this enrollment. Nothing was replaced; resolve old authority manually.' }
         } elseif ($r.Status -eq 404) {
             if ($config.approvalWriteAttempted -or $config.approvalObserved) { Stop-Enrollment 'A previous approval write was attempted and its marker is now absent. Inspect manually; it will not be restored.' }
@@ -296,7 +301,7 @@ try {
         Write-PrivateJson $configPath $config
         for ($poll = 0; $poll -lt 180; $poll++) {
             Wait-Work
-            $completion = Broker POST ($brokerSetup + '/enrollments/' + $config.pendingId + '/completion') $recovery.secret
+            $completion = Broker POST ($brokerSetup + '/enrollments/' + $config.pendingId + '/completion') $recovery.setupSecret
             if ($completion.Contains('enrollment')) {
                 Assert-Fields $completion @('completionId','enrollment')
                 Assert-Text $completion.completionId '\A[0-9a-f]{32}\z'
@@ -304,7 +309,13 @@ try {
                 if ($recovery.completionId -and $recovery.completionId -cne $completion.completionId) { Stop-Enrollment 'Completion receipt changed.' }
                 $recovery.completionId = $completion.completionId
                 Write-PrivateJson $recoveryPath $recovery
-                Write-PrivateJson $enrollmentPath $completion.enrollment
+                # Keep frozen private formats for an older broker; only explicit setup v5 writes canonical fields.
+                $persisted = [ordered]@{}
+                foreach ($key in $completion.enrollment.Keys) {
+                    $field = if ($setupVersion -lt 5 -and $key -ceq 'enrollmentId') { 'deviceId' } elseif ($setupVersion -lt 5 -and $key -ceq 'controllerSecret') { 'deviceSecret' } else { $key }
+                    $persisted[$field] = $completion.enrollment[$key]
+                }
+                Write-PrivateJson $enrollmentPath $persisted
                 $enrollment = Read-PrivateJson $enrollmentPath
                 Check-Enrollment $enrollment $marker
                 break
@@ -319,14 +330,24 @@ try {
     Wait-Work -AcknowledgmentRecovery:$recovery.ackAttempted
     $recovery.ackAttempted = $true
     Write-PrivateJson $recoveryPath $recovery
-    $receipt = Broker POST ($brokerSetup + '/devices/' + $enrollment.deviceId + '/acknowledgment') $enrollment.deviceSecret @{ completionId=$recovery.completionId }
+    $identityRoute = if ($setupVersion -ge 5) { '/controller-enrollments/' } else { '/devices/' }
+    $receipt = Broker POST ($brokerSetup + $identityRoute + $enrollment.enrollmentId + '/acknowledgment') $enrollment.controllerSecret @{ completionId=$recovery.completionId }
     Assert-Fields $receipt @('state')
-    if ($receipt.state -cne 'active') { Stop-Enrollment 'Activation is unconfirmed; retry acknowledgment using the persisted device credential.' }
-    $recovery.acknowledged = $true; $recovery.secret = $null
+    if ($receipt.state -cne 'active') { Stop-Enrollment 'Activation is unconfirmed; retry acknowledgment using the persisted controller credential.' }
+    $recovery.acknowledged = $true; $recovery.setupSecret = $null
     Write-PrivateJson $recoveryPath $recovery
     [ordered]@{ state='active'; enrollmentFile=$enrollmentPath; approvalFile=$configPath; brokerClosure='not-requested'; outstandingTokens='unsettled' } | ConvertTo-Json -Compress
     exit 0
 } catch {
-    Write-Warning $script:Diagnostic
+    # Static source coordinates and exception type help diagnose a failed boundary without reflecting provider bodies,
+    # credentials, full host paths or private document contents.
+    $location = 'unknown'
+    if ($_.InvocationInfo -and $_.InvocationInfo.ScriptName) {
+        $location = [IO.Path]::GetFileName($_.InvocationInfo.ScriptName) + ':' + $_.InvocationInfo.ScriptLineNumber
+    }
+    $cause = $_.Exception.GetBaseException()
+    $errorType = $cause.GetType().Name
+    $socket = if ($cause -is [Net.Sockets.SocketException]) { "; socket code: $($cause.SocketErrorCode)" } else { '' }
+    Write-Warning "$script:Diagnostic Failure location: $location; error type: $errorType$socket."
     exit 1
 }

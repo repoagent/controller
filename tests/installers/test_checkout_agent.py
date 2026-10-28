@@ -1,4 +1,4 @@
-"""Genuine native config observations, without model turns."""
+"""Genuine agent config observations, without model turns."""
 import json
 import os
 from pathlib import Path
@@ -11,10 +11,10 @@ import time
 import unittest
 
 
-def native_config(root, home, discovery=False, environment=None):
-    """Observe the actual native layer; callers must acquire trust through production."""
+def agent_config(root, home, discovery=False, environment=None):
+    """Observe the actual agent layer; callers must acquire trust through production."""
     executable = (shutil.which('codex', path=environment['PATH']) if environment is not None else
-                  os.environ.get('CHECKOUT_NATIVE', os.environ.get('CHECKOUT_REAL_NATIVE', shutil.which('codex'))))
+                  os.environ.get('CHECKOUT_AGENT', os.environ.get('CHECKOUT_REAL_AGENT', shutil.which('codex'))))
     environment = dict(PATH=os.environ['PATH'], LANG='C.UTF-8') if environment is None else dict(environment)
     environment['CODEX_HOME'] = str(home)
     with tempfile.TemporaryFile() as errors:
@@ -33,7 +33,7 @@ def native_config(root, home, discovery=False, environment=None):
                         break
                     part = os.read(process.stdout.fileno(), 65536)
                     if not part:
-                        raise RuntimeError('Native closed before response')
+                        raise RuntimeError('Agent closed before response')
                     buffer += part
                 while b'\n' in buffer:
                     line, buffer = buffer.split(b'\n', 1)
@@ -119,7 +119,7 @@ if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == '--observe-production':
         import tomllib
         root, home = map(Path, sys.argv[2:])
-        observation = native_config(root, home, discovery=True)
+        observation = agent_config(root, home, discovery=True)
         assert_trusted_project(unittest.TestCase(), observation, root)
         config = tomllib.loads((home / 'config.toml').read_text())
         assert config['projects'] == {'/unrelated-fixture': {'trust_level': 'untrusted'}, str(root): {'trust_level': 'trusted'}}

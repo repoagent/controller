@@ -33,28 +33,28 @@ public sealed class AgentVariableEnrollmentTests
         var completion = await f.Complete(pendingId, 2);
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var receipt = completion.Json;
-        var device = receipt.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        var enrollmentId = receipt.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
         var secret = receipt.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
         Assert.DoesNotContain(secret, marker);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(device, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(enrollmentId, secret)).StatusCode);
 
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var recovered = await f.Complete(pendingId, 2);
         Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
         Assert.Equal(completion.Text, recovered.Text);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(device, receipt.GetProperty("completionId").GetString()!, secret, 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId, receipt.GetProperty("completionId").GetString()!, secret, 2)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(device, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(enrollmentId, secret)).StatusCode);
         Assert.Equal(1, f.GitHub.VerifierMints);
         Assert.Contains("read variable agents owner/project APPROVAL", f.GitHub.Requests);
 
         f.GitHub.Marker = "";
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(device, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(enrollmentId, secret)).StatusCode);
         f.GitHub.Marker = marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(device, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(enrollmentId, secret)).StatusCode);
     }
 
     // Agent enrollments mint their verifier with exactly Agent variables read, and runtime tokens with Discussions

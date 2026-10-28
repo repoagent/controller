@@ -127,7 +127,7 @@ Device authentication requires enabling device-code login in ChatGPT security or
 ./repoagent check
 ```
 
-Only that selected file is mounted during the import, copied with owner-only permissions, and unmounted afterward. Normal runtime mounts neither host home nor host credential directories. Rerunning `login` reuses a valid container sign-in. Setup errors stop visibly; they never select a human GitHub identity for the agent.
+The host streams only that selected file into a network-disabled import container, which saves it atomically with owner-only permissions. This supports private host files even when the host and container user IDs differ. Normal runtime mounts neither host home nor host credential directories. Rerunning `login` reuses a valid container sign-in. Setup errors stop visibly; they never select a human GitHub identity for the agent.
 
 ### Replace Codex credentials without restarting the container
 
@@ -220,7 +220,7 @@ Supply these container environment variables. They are not repository Actions va
 
 | Variable | Contents |
 | --- | --- |
-| `REPOAGENT_ENROLLMENT` | **Secret.** The complete private `enrollment.json` from [controller enrollment](host-enrollment.md), unchanged |
+| `REPOAGENT_ENROLLMENT` | **Secret.** The complete private `enrollment.json` from [controller enrollment](controller-enrollment.md), unchanged |
 | `REPOAGENT_REPOSITORY`, `REPOAGENT_APP_ID`, `REPOAGENT_BROKER_URL` | Required binding: `OWNER/REPO`, numeric App ID and the broker's HTTPS origin |
 | `REPOAGENT_CLONE` | `true` for clone enrollments; omitted or `false` otherwise |
 | `REPOAGENT_REPOSITORY_SETTINGS` | `true` for an enrollment with a [repository-settings profile](repository-settings.md#broker-enrollments) (runtime v3); omitted or `false` otherwise |
@@ -269,7 +269,7 @@ Here `@mounts` holds the same five `--mount` arguments. Sign Codex in once into 
 
 To restart, stop and remove the container, then run it again with the same volumes and the injected value. Docker keeps an injected value in the container's configuration until the container is removed, so `docker restart` reuses it. Anyone with access to the Docker daemon can read it with `docker inspect`, and processes running as the container user can read the controller's initial environment, just as they could read the former 0600 enrollment file. Remove stopped containers, and replace the container to rotate or withdraw the value.
 
-Your controller enrollment state directory stays the authoritative secret and recovery source. Only `enrollment.json` is injected; `approval.json` and `recovery.json` never enter the container. Revoke and broker self-revoke continue to use that host state, as described in [controller enrollment](host-enrollment.md#revoke-and-prototype-compatibility).
+Your controller enrollment state directory stays the authoritative secret and recovery source. Only `enrollment.json` is injected; `approval.json` and `recovery.json` never enter the container. Revoke and broker self-revoke continue to use that host state, as described in [controller enrollment](controller-enrollment.md#revoke-and-prototype-compatibility).
 
 Instances managed by `repoagent.ps1` or `install.ps1 -Action Install` keep their enrollment volume. That volume also holds the disable marker and launch state used by Update, Rollback and Uninstall. Do not mix the two paths on one instance.
 

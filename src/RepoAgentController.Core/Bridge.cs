@@ -4,20 +4,20 @@ namespace RepoAgentController;
 
 /// <summary>
 /// Observes Discussions into an ordered per-Discussion waiting queue in the state store, then dispatches the next
-/// size-bounded batch only to a natively idle session. EYES follow native acceptance of the batch carrying the source.
+/// size-bounded batch only to a idle at the agent runtime session. EYES follow agent acceptance of the batch carrying the source.
 /// A failed or unacknowledged delivery keeps its batch first in line and retries it with backoff; input that may already
-/// have reached the native is sent again marked as a redelivery, accepting possible duplicate processing.
+/// have reached the agent is sent again marked as a redelivery, accepting possible duplicate processing.
 /// </summary>
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "Managed-only semaphores have no wait handles; callbacks and dispatch share their lifetime and may still unwind during controller shutdown.")]
 public sealed class Bridge(string repository, IDiscussions discussions, AppIdentity identity, AgentSessions sessions, StateStore store, GitHubOutbox outbox,
-    HashSet<int> enroll, RepositorySettings settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? admission = null)
+    HashSet<int> enroll, RepositorySettingsRefresh settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? admission = null)
 {
-    // Envelope characters per dispatched batch; the pinned native rejects turn input above 1,048,576 characters.
+    // Envelope characters per dispatched batch; the pinned agent rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
     // Bootstrap context characters, leaving room in the first batch for the Discussion and its first changes.
     const int MaximumContextCharacters = MaximumBatchCharacters / 2;
     public const string ActiveSessionSetting = "REPOAGENT_MAX_ACTIVE_SESSIONS";
-    /// <summary>Native turns that may run at once across Discussions while REPOAGENT_MAX_ACTIVE_SESSIONS has no effective value.</summary>
+    /// <summary>Agent turns that may run at once across Discussions while REPOAGENT_MAX_ACTIVE_SESSIONS has no effective value.</summary>
     public const int DefaultActiveSessions = 4;
     readonly HashSet<string> held = [];
     // Delivery retries back off from five seconds, doubling up to five minutes, with no attempt limit.
@@ -40,7 +40,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     /// <summary>Retries every delivery an earlier controller lifetime left unacknowledged. Call once, before observing.</summary>
     public void ResumeInterrupted()
     {
-        // Turns end with the native process of their lifetime, however their marker was left.
+        // Turns end with the agent process of their lifetime, however their marker was left.
         foreach (var record in store.Discussions.Values.Where(record => record.Running is not null || record.UnreadableKeys.ContainsKey(RecordKey.Running)).ToArray())
         {
             record.Running = null;
@@ -96,7 +96,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             if (identity.IsDashboard(discussion.Author, discussion.Body)) continue; // Operational status, never agent input, however enrolled.
             var id = discussion.Id;
             var record = store.Discussions.GetValueOrDefault(id);
-            // A delivery still pending in this lifetime failed as its native stopped; the next start retries it.
+            // A delivery still pending in this lifetime failed as its agent stopped; the next start retries it.
             if (record?.Pending is not null) { succeeded = false; continue; }
             try
             {
@@ -190,26 +190,35 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         return succeeded;
     }
 
-    /// <summary>Runs <paramref name="action"/> while no observation or dispatch runs, so it never interleaves with native admission.</summary>
+    /// <summary>Runs <paramref name="action"/> while no observation or dispatch runs, so it never interleaves with agent admission.</summary>
     public async Task<T> ExcludingDispatch<T>(Func<Task<T>> action, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
         try
         {
-            Settle(); // Returned input is queued before a native restart can forget the turn that held it.
+            Settle(); // Returned input is queued before a agent restart can forget the turn that held it.
             return await action();
         }
         finally { gate.Release(); }
     }
 
-    /// <summary>Permanently stops new admission, then settles native work as it ends. Only a hard abort cancels the wait.</summary>
+    /// <summary>Applies replacement agent credentials between dispatches and only at a proven global idle boundary.</summary>
+    public Task<bool> ReplaceAgentCredentials(Action install, CancellationToken ct) => ExcludingDispatch(async () =>
+    {
+        if (admissionStopped) return false;
+        if (admission is null) return await sessions.RestartWhenIdle(install, ct);
+        var restarted = false;
+        return await admission.CommitAtIdle(async idle => restarted = await sessions.RestartWhenIdle(install, idle), ct) && restarted;
+    }, ct);
+
+    /// <summary>Permanently stops new admission, then settles agent work as it ends. Only a hard abort cancels the wait.</summary>
     public async Task StopAndDrain(CancellationToken abort)
     {
         // A private pulse for each caller: dispatch has its own wake, and concurrent stops must not consume each other's signal.
         var notification = new object();
         TaskCompletionSource changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         void Notify() { lock (notification) changed.TrySetResult(); }
-        sessions.StatusChanged += Notify; // Raised after the turn journal observes the native event.
+        sessions.StatusChanged += Notify; // Raised after the turn journal observes the agent event.
         try
         {
             while (true)
@@ -252,14 +261,14 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     }
 
     /// <summary>
-    /// Wakes on native session status and repository setting changes, or when the earliest scheduled delivery retry falls
+    /// Wakes on agent session status and repository setting changes, or when the earliest scheduled delivery retry falls
     /// due, and dispatches waiting input, oldest first, until stopped.
     /// </summary>
     /// <remarks>An in-flight dispatch finishes on <paramref name="ct"/>; <paramref name="stop"/> only ends waiting.</remarks>
     public async Task DispatchWhenIdle(CancellationToken stop, CancellationToken ct)
     {
         sessions.StatusChanged += Wake;
-        settings.Changed += Wake; // A raised active-session limit admits waiting input without another native event.
+        settings.Changed += Wake; // A raised active-session limit admits waiting input without another agent event.
         try
         {
             TimeSpan delay;
@@ -387,10 +396,10 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         if (!create && sessions.Loaded(session) && !AgentSessions.Admits(sessions.Status(session))) return false;
         // After a failed attempt the batch waits for its backoff.
         if (RetryAt(waiting) > clock.GetUtcNow()) return false;
-        // Global capacity counts running native turns only; stored idle sessions and retrying deliveries take no slot.
+        // Global capacity counts running agent turns only; stored idle sessions and retrying deliveries take no slot.
         if (sessions.ActiveTurns >= ActiveSessionLimit) return false;
         var inputs = waiting.Inputs;
-        // Bootstrap supplies the initial Discussion; a continuation shares only its identity, once per batch. The native may
+        // Bootstrap supplies the initial Discussion; a continuation shares only its identity, once per batch. The agent may
         // already hold redelivered input; the marker lets the agent check its history before repeating work.
         var redelivery = inputs[0].Redelivery;
         var envelope = new AgentEnvelope(repository, identity, waiting.DiscussionJson, waiting.ContextJson, redelivery, []);
@@ -402,12 +411,12 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         // Global admission: checkout refresh exclusion; the active-session limit was checked above.
         using var checkout = admission is null ? null : await admission.Admit(ct);
         // Selected after admission applied any due checkout refresh, so the refreshed project configuration counts.
-        // Its native queries are read-only, so a failure or unusable selection releases the admission.
+        // Its agent queries are read-only, so a failure or unusable selection releases the admission.
         ModelChoice? selection;
         try { selection = await Select(record, ct); }
         catch { checkout?.Abandon(); throw; }
         if (selection is null) { checkout?.Abandon(); return false; }
-        // Durable while the native outcome is unknown; an interrupted lifetime leaves it for redelivery at the next start.
+        // Durable while the agent outcome is unknown; an interrupted lifetime leaves it for redelivery at the next start.
         var pending = new PendingDelivery(create ? "create-and-send" : "send", clock.GetUtcNow(), [.. receipts.Select(receipt => receipt.SubjectId)], count);
         var offered = false;
         var turn = "";
@@ -429,7 +438,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             }
             if (!AgentSessions.Admits(sessions.Status(session)))
             {
-                // Unknown, unloaded or active native status is never assumed idle.
+                // Unknown, unloaded or active agent status is never assumed idle.
                 if (record.Pending is not null) { record.Pending = null; store.Save(); }
                 checkout?.Abandon();
                 return false;
@@ -439,10 +448,10 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             turn = await sessions.Accept(session, turnInput, selection, checkout is null ? null : checkout.Accepted, ct);
         }
         // A failure while this lifetime stops leaves pending; the next start retries it as an interrupted delivery. Credential
-        // loss kills the native before the lifetime token is cancelled, so it is checked directly.
+        // loss kills the agent before the lifetime token is cancelled, so it is checked directly.
         catch (Exception error) when (!ct.IsCancellationRequested && !sessions.CredentialLost)
         {
-            // Nothing offered or refused: no native turn holds this input. Otherwise one may, so the checkout stays excluded.
+            // Nothing offered or refused: no agent turn holds this input. Otherwise one may, so the checkout stays excluded.
             try { if (!offered || AgentSessions.Refused(error)) checkout?.Abandon(); else checkout?.Unconfirmed(); }
             finally { Retry(record, count, offered, error.Message); }
             return false;
@@ -454,7 +463,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         waiting.Retry = null;
         if (inputs.Count == 0) record.Waiting = null;
         record.Pending = null;
-        // Status reports the running turn in every mode until the native reports it completed.
+        // Status reports the running turn in every mode until the agent reports it completed.
         record.Running = new(turn, clock.GetUtcNow());
         store.Save();
         checkout?.Confirm();
@@ -463,9 +472,9 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         return true;
     }
 
-    // Caller holds the gate. Ends the running marker of every turn the native completed or lost. Input of a turn the provider
+    // Caller holds the gate. Ends the running marker of every turn the agent completed or lost. Input of a turn the provider
     // rejected for its Codex account credentials goes back first in line as a redelivery; it waits for replacement credentials,
-    // since the rejection holds all dispatch. Returns whether that same atomic snapshot held no native work, only after its
+    // since the rejection holds all dispatch. Returns whether that same atomic snapshot held no agent work, only after its
     // outcomes are saved: a later ActiveTurns read could see a completion this pass has not yet consumed.
     bool Settle()
     {
@@ -480,7 +489,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             events.Add(("turn-ended", $"{record.Url} session={outcome.Session} turn={outcome.Turn} status={outcome.Status}"));
             if (outcome.CredentialsRejected && batch is not null) events.Add(("input-requeued", Requeue(record, batch, outcome.Turn)));
         }
-        // A turn lost with its native process (disconnect) reports no outcome.
+        // A turn lost with its agent process (disconnect) reports no outcome.
         foreach (var record in store.Discussions.Values.Where(record => record.Running is not null && !active.Contains(record.SessionId ?? "")).ToArray())
         {
             var turn = record.Running!.Turn;
@@ -497,7 +506,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         return active.Count == 0;
     }
 
-    // Caller holds the gate and saves. The native accepted this batch but the provider refused the Codex account, so no agent
+    // Caller holds the gate and saves. The agent accepted this batch but the provider refused the Codex account, so no agent
     // work ran; the history may still hold the input, so it is marked as a redelivery. Returns the event to log once saved.
     static string Requeue(DiscussionRecord record, RunningBatch batch, string turn)
     {
@@ -521,7 +530,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     }
 
     // Caller holds the gate. The failed batch stays first in line with a backoff; input a turn/start carried is marked
-    // for redelivery, since the native may have accepted it without acknowledgement.
+    // for redelivery, since the agent may have accepted it without acknowledgement.
     void Retry(DiscussionRecord record, int count, bool offered, string reason, bool immediate = false)
     {
         var waiting = record.Waiting!;
@@ -546,12 +555,12 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         // Labels in a form no writer leaves threw when read for selection before the records were typed.
         if (record.UnreadableKeys.GetValueOrDefault(RecordKey.Labels) is { } unreadable) throw new InvalidDataException(unreadable.Reason);
         var labels = record.Labels ?? [];
-        var (nativeModel, nativeReasoning) = await sessions.ConfiguredModel(ct);
+        var (agentModel, agentReasoning) = await sessions.ConfiguredModel(ct);
         var catalogue = await sessions.Models(ct);
         try
         {
             var selection = ModelSelection.Resolve(labels, settings[ModelSelection.ModelSetting], settings[ModelSelection.ReasoningSetting],
-                nativeModel, nativeReasoning, catalogue);
+                agentModel, agentReasoning, catalogue);
             Report("selection-error", record.Url, null);
             return selection;
         }
@@ -593,8 +602,8 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     }
 
     // GitHub confirmed deletion: end its whole controller record, so its waiting input, delivery retry, pending marker, running
-    // turn, model labels and checkpoints are gone and nothing of it is dispatched. A turn the native still runs keeps its slot
-    // until the native ends it. Native conversation history is retained separately.
+    // turn, model labels and checkpoints are gone and nothing of it is dispatched. A turn the agent still runs keeps its slot
+    // until the agent ends it. Agent conversation history is retained separately.
     async Task Forget(int number, CancellationToken ct)
     {
         var url = $"https://github.com/{repository}/discussions/{number}";

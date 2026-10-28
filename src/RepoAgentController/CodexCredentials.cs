@@ -6,28 +6,28 @@ namespace RepoAgentController;
 
 /// <summary>
 /// Operator-supplied Codex account credentials: a Codex auth.json-format file, separate from GitHub App credentials.
-/// Supplied content is installed into the private native home only while no owned app-server runs. The pinned
-/// native neither watches nor reloads a replaced auth.json, so a replacement restarts the owned app-server at idle.
+/// Supplied content is installed into the private agent home only while no owned app-server runs. The pinned
+/// agent neither watches nor reloads a replaced auth.json, so a replacement restarts the owned app-server at idle.
 /// </summary>
 sealed class CodexCredentials
 {
     const int MaximumBytes = 64 * 1024;
     static readonly TimeSpan CheckInterval = TimeSpan.FromSeconds(5);
-    // Fingerprint of the supplied content last installed. Native refresh rewrites auth.json, so an unchanged
-    // supplied file must not overwrite the native's current (possibly rotated) credentials on restart.
+    // Fingerprint of the supplied content last installed. Agent refresh rewrites auth.json, so an unchanged
+    // supplied file must not overwrite the agent's current (possibly rotated) credentials on restart.
     const string Marker = "repoagent-supplied-auth.sha256";
     readonly string source, home;
     byte[] content;
 
     CodexCredentials(string source, string home, byte[] content) { this.source = source; this.home = home; this.content = content; }
 
-    /// <summary>Validates the supplied file and the private native home before any effects.</summary>
+    /// <summary>Validates the supplied file and the private agent home before any effects.</summary>
     public static CodexCredentials Open(string source) => Open(source, Codex.PrivateHome("--codex-auth"));
 
-    /// <summary>Validates the supplied file for the already validated private native home <paramref name="home"/>.</summary>
+    /// <summary>Validates the supplied file for the already validated private agent home <paramref name="home"/>.</summary>
     internal static CodexCredentials Open(string source, string home) => new(Path.GetFullPath(source), home, Read(source));
 
-    /// <summary>Installs the supplied credentials unless this exact supply is already installed. Call while no native runs.</summary>
+    /// <summary>Installs the supplied credentials unless this exact supply is already installed. Call while no agent runs.</summary>
     public void Install()
     {
         var installed = File.Exists(Path.Combine(home, "auth.json")) && File.Exists(Path.Combine(home, Marker)) &&
@@ -44,8 +44,8 @@ sealed class CodexCredentials
 
     /// <summary>
     /// Until disposed, applies each valid replacement of the supplied file through <paramref name="applyAtIdle"/>, which
-    /// returns false while native work still runs and otherwise calls its argument with no native process running.
-    /// A failed application calls <paramref name="fail"/>: the owned native state is then unknown.
+    /// returns false while agent work still runs and otherwise calls its argument with no agent process running.
+    /// A failed application calls <paramref name="fail"/>: the owned agent state is then unknown.
     /// </summary>
     public IAsyncDisposable Watch(Func<Action, CancellationToken, Task<bool>> applyAtIdle, TimeProvider clock, Action fail, CancellationToken ct)
     {

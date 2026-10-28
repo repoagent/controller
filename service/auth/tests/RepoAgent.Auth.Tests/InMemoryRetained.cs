@@ -12,7 +12,7 @@ internal static class Retained
     public static RepositoryVariableEnrollmentRequest AgentRequest(string id, string profile = "polling") =>
         new(id, 123456, "owner/project", "APPROVAL", profile);
 
-    public sealed record Journey(string Id, string Pending, string Device, string Secret, string Completion);
+    public sealed record Journey(string Id, string Pending, string EnrollmentId, string Secret, string Completion);
 
     // POST /v2/enrollments with GitHub configured for the profile; the Agent variable then holds the marker.
     public static async Task<(string Id, string Pending)> StartAgent(InMemoryBroker f, string profile = "polling", string? id = null)
@@ -82,7 +82,7 @@ internal static class Retained
     {
         var journey = await CompletedAgent(f, profile);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(journey.Device, journey.Completion, journey.Secret, 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(journey.EnrollmentId, journey.Completion, journey.Secret, 2)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         return journey;
     }

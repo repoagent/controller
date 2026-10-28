@@ -380,9 +380,9 @@ public sealed class EnrollmentDecisionTests
         };
         var completion = await f.Complete(pending);
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
-        var device = f.Enrollment(completion.Json.GetProperty("enrollment").GetProperty("deviceId").GetString()!);
-        Assert.Equal(("unacknowledged", false), (device.State, device.Acknowledged));
-        Assert.Equal(f.Pending(pending).Deadline, device.ExpiresAt);
+        var enrollmentId = f.Enrollment(completion.Json.GetProperty("enrollment").GetProperty("deviceId").GetString()!);
+        Assert.Equal(("unacknowledged", false), (enrollmentId.State, enrollmentId.Acknowledged));
+        Assert.Equal(f.Pending(pending).Deadline, enrollmentId.ExpiresAt);
         // Every repository transaction replaces the gate with the next sequence.
         Assert.True(sequences.Count >= 3);
         Assert.Equal(Enumerable.Range((int)sequences[0], sequences.Count).Select(n => (long)n), sequences);
@@ -408,8 +408,8 @@ public sealed class EnrollmentDecisionTests
         var f = new InMemoryBroker();
         var pending = await Start(f);
         var completion = await f.Complete(pending);
-        var device = completion.Json.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
-        f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, device), row => row["AppSlug"] = "another-app");
+        var enrollmentId = completion.Json.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, enrollmentId), row => row["AppSlug"] = "another-app");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var reads = f.GitHub.Reads;
         var retry = await f.Complete(pending);
@@ -424,19 +424,19 @@ public sealed class EnrollmentDecisionTests
         var f = new InMemoryBroker();
         var pending = await Start(f);
         var completion = await f.Complete(pending);
-        var device = completion.Json.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        var enrollmentId = completion.Json.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
         var secret = completion.Json.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
         f.GitHub.Marker = "";
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         Assert.DoesNotContain("deviceSecret", (await f.Complete(pending)).Text);
         Assert.Equal(("closed", "closed"), (f.Pending(pending).State, f.Gate.State));
-        Assert.Equal("revoked", f.Enrollment(device).State);
-        var receipt = f.State.Get(RevocationReceipt.Key(InMemoryBroker.RepositoryId, device))!;
-        Assert.Equal((InMemoryBroker.RepositoryId, device, InMemoryBroker.Epoch), (receipt.RepositoryId, receipt.EnrollmentId, receipt.Epoch));
+        Assert.Equal("revoked", f.Enrollment(enrollmentId).State);
+        var receipt = f.State.Get(RevocationReceipt.Key(InMemoryBroker.RepositoryId, enrollmentId))!;
+        Assert.Equal((InMemoryBroker.RepositoryId, enrollmentId, InMemoryBroker.Epoch), (receipt.RepositoryId, receipt.EnrollmentId, receipt.Epoch));
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var ack = await f.Acknowledge(device, completion.Json.GetProperty("completionId").GetString()!, secret);
+        var ack = await f.Acknowledge(enrollmentId, completion.Json.GetProperty("completionId").GetString()!, secret);
         Assert.NotEqual(HttpStatusCode.OK, ack.StatusCode);
-        Assert.False(f.Enrollment(device).Acknowledged);
+        Assert.False(f.Enrollment(enrollmentId).Acknowledged);
     }
 
     [Theory]
@@ -448,15 +448,15 @@ public sealed class EnrollmentDecisionTests
         var f = new InMemoryBroker();
         var pending = await Start(f);
         var completion = (await f.Complete(pending)).Json;
-        var device = completion.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        var enrollmentId = completion.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
         var secret = completion.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
         var completionId = completion.GetProperty("completionId").GetString()!;
-        if (fault == "revoked") f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, device), row => row["State"] = "revoked");
+        if (fault == "revoked") f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, enrollmentId), row => row["State"] = "revoked");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var ack = await f.Acknowledge(device, fault == "completion" ? Guid.NewGuid().ToString("N") : completionId,
+        var ack = await f.Acknowledge(enrollmentId, fault == "completion" ? Guid.NewGuid().ToString("N") : completionId,
             fault == "secret" ? new string('b', 43) : secret);
         Assert.Equal(HttpStatusCode.Unauthorized, ack.StatusCode);
-        Assert.False(f.Enrollment(device).Acknowledged);
+        Assert.False(f.Enrollment(enrollmentId).Acknowledged);
         Assert.Equal("completed", f.Pending(pending).State);
     }
 
@@ -466,12 +466,12 @@ public sealed class EnrollmentDecisionTests
         var f = new InMemoryBroker();
         var pending = await Start(f);
         var completion = (await f.Complete(pending)).Json;
-        var device = completion.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        var enrollmentId = completion.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var ack = await f.Acknowledge(device, completion.GetProperty("completionId").GetString()!,
+        var ack = await f.Acknowledge(enrollmentId, completion.GetProperty("completionId").GetString()!,
             completion.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!);
         Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
-        Assert.Equal(("active", "active", "active"), (f.Pending(pending).State, f.Gate.State, f.Enrollment(device).State));
+        Assert.Equal(("active", "active", "active"), (f.Pending(pending).State, f.Gate.State, f.Enrollment(enrollmentId).State));
         Assert.Equal(f.Clock.GetUtcNow(), f.Pending(pending).FirstTerminalAt);
     }
 
@@ -483,14 +483,14 @@ public sealed class EnrollmentDecisionTests
         var f = new InMemoryBroker();
         var pending = await Start(f);
         var completion = (await f.Complete(pending)).Json;
-        var device = completion.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        var enrollmentId = completion.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
         var secret = completion.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
         var completionId = completion.GetProperty("completionId").GetString()!;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(device, completionId, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId, completionId, secret)).StatusCode);
         if (fault == "expired") f.Clock.Advance(TimeSpan.FromDays(91));
-        else f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, device), row => row["AppSlug"] = "another-app");
-        Assert.Equal(expected, (await f.Acknowledge(device, completionId, secret)).StatusCode);
+        else f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, enrollmentId), row => row["AppSlug"] = "another-app");
+        Assert.Equal(expected, (await f.Acknowledge(enrollmentId, completionId, secret)).StatusCode);
     }
 
     [Fact]
@@ -550,11 +550,11 @@ public sealed class EnrollmentDecisionTests
         var f = new InMemoryBroker();
         var pending = await Start(f);
         var completion = await f.Complete(pending);
-        var device = completion.Json.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        var enrollmentId = completion.Json.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
         var p = f.Pending(pending);
-        var moved = ApprovalMarker.Create(ApprovalContract.Legacy, InMemoryBroker.RepositoryId, p.Repository!, 790, device, p.Challenge,
+        var moved = ApprovalMarker.Create(ApprovalContract.Legacy, InMemoryBroker.RepositoryId, p.Repository!, 790, enrollmentId, p.Challenge,
             p.Profile!, InMemoryBroker.Epoch, p.Variable!, p.Environment, p.EnvironmentId);
-        f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, device), row =>
+        f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, enrollmentId), row =>
         {
             row["InstallationId"] = 790L;
             row["Marker"] = moved;

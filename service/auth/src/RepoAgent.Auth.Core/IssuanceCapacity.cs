@@ -51,10 +51,12 @@ public sealed class IssuanceCapacity(IBrokerState state, long retainedIssuanceLi
     {
         if (!newCandidate && Number(quota.CandidateCount) == 0
             || Number(candidate.PendingCount) > Number(quota.Count)) throw new IssuanceDenied();
-        if (Number(quota.RetainedEnrollmentCount) >= retainedEnrollmentLimit
-            || newCandidate && Number(quota.CandidateCount) >= candidateRepositoryLimit
-            || Number(quota.Count) >= GlobalPending || Number(candidate.PendingCount) >= RepositoryPending)
-            throw new IssuanceDenied(429);
+        if (Number(quota.RetainedEnrollmentCount) >= retainedEnrollmentLimit)
+            throw new IssuanceDenied(429, BrokerRejectionReason.RetainedEnrollments);
+        if (newCandidate && Number(quota.CandidateCount) >= candidateRepositoryLimit)
+            throw new IssuanceDenied(429, BrokerRejectionReason.CandidateRepositories);
+        if (Number(quota.Count) >= GlobalPending) throw new IssuanceDenied(429, BrokerRejectionReason.GlobalPending);
+        if (Number(candidate.PendingCount) >= RepositoryPending) throw new IssuanceDenied(429, BrokerRejectionReason.RepositoryPending);
         quota.RetainedEnrollmentCount = Number(quota.RetainedEnrollmentCount) + 1;
         quota.Count = Number(quota.Count) + 1;
         if (newCandidate) quota.CandidateCount = Number(quota.CandidateCount) + 1;
@@ -66,7 +68,7 @@ public sealed class IssuanceCapacity(IBrokerState state, long retainedIssuanceLi
     {
         for (long slot = 0; slot < ceiling; slot++)
             if (await state.ReadAsync(IssuanceSlot.Key(slot), ct) is null) return slot;
-        throw new IssuanceDenied(429);
+        throw new IssuanceDenied(429, BrokerRejectionReason.GlobalAttempts);
     }
 
     // The attempt's ledger and slot exist, are still charged and bind exactly this operation. Returns the slot.
@@ -98,7 +100,7 @@ public sealed class IssuanceCapacity(IBrokerState state, long retainedIssuanceLi
     // Charges one retained ledger for the slot's attempt. 429 at the retained ceiling.
     public IssuanceLedger ChargeIssuance(IssuanceQuota quota, IssuanceSlot slot, string enrollmentId, string? pendingId = null)
     {
-        if (Number(quota.RetainedIssuanceCount) >= retainedIssuanceLimit) throw new IssuanceDenied(429);
+        if (Number(quota.RetainedIssuanceCount) >= retainedIssuanceLimit) throw new IssuanceDenied(429, BrokerRejectionReason.RetainedIssuance);
         quota.RetainedIssuanceCount = Number(quota.RetainedIssuanceCount) + 1;
         var operation = Text(slot.OperationId);
         var approval = ApprovalContract.Stored(slot.ApprovalKind, slot.SetupVersion, slot.PolicyVersion, false);

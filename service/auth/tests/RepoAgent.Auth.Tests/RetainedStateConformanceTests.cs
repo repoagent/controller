@@ -22,7 +22,7 @@ public sealed class RetainedStateConformanceTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Active_device_runtime_and_verifier_renewal_cannot_bypass_retained_issuance_limit(bool renewVerifier)
+    public async Task Active_controller_enrollment_runtime_and_verifier_renewal_cannot_bypass_retained_issuance_limit(bool renewVerifier)
     {
         var f = new InMemoryBroker { Retained = new(128, 256, 2) };
         AgentVariableEnrollmentTests.ConfigureGitHub(f.GitHub);
@@ -34,18 +34,18 @@ public sealed class RetainedStateConformanceTests
         var completion = await f.Complete(start.Json.GetProperty("pendingId").GetString()!, 2);
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var receipt = completion.Json;
-        var device = receipt.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        var enrollmentId = receipt.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
         var secret = receipt.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(device, receipt.GetProperty("completionId").GetString()!, secret, 2)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId, receipt.GetProperty("completionId").GetString()!, secret, 2)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(device, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(enrollmentId, secret)).StatusCode);
         var before = f.Rows();
         AssertAllocation(before, 2);
         f.Clock.Advance(TimeSpan.FromMinutes(renewVerifier ? 56 : 1));
         if (!renewVerifier) f.Retained = new(128, 256, 1);
         // Lowering below the existing count must not reset accounting or remove ledgers.
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Issue(device, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await f.Issue(enrollmentId, secret)).StatusCode);
         var after = f.Rows();
         Assert.Equal(before.Select(r => r.Key), after.Select(r => r.Key));
         AssertAllocation(after, 2);

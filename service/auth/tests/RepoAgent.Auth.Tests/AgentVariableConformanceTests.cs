@@ -29,7 +29,7 @@ public sealed class AgentVariableConformanceTests
         Assert.Equal(receipt.ToString(), recovered.Json.ToString());
         await Ack(f, receipt);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var runtime = await f.Issue(Device(receipt), Secret(receipt));
+        var runtime = await f.Issue(EnrollmentId(receipt), Secret(receipt));
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
         var result = runtime.Json;
         Assert.Equal(1, result.GetProperty("protocolVersion").GetInt32());
@@ -65,7 +65,7 @@ public sealed class AgentVariableConformanceTests
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var receipt = await Complete(f, pending, version);
         reads = f.GitHub.Reads;
-        var ack = await f.Acknowledge(Device(receipt), receipt.GetProperty("completionId").GetString()!, Secret(receipt), 3 - version);
+        var ack = await f.Acknowledge(EnrollmentId(receipt), receipt.GetProperty("completionId").GetString()!, Secret(receipt), 3 - version);
         Assert.Equal(HttpStatusCode.Conflict, ack.StatusCode);
         Assert.Equal(reads, f.GitHub.Reads);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
@@ -90,7 +90,7 @@ public sealed class AgentVariableConformanceTests
             var body = legacy.Json;
             f.GitHub.Marker = body.GetProperty("marker").GetString()!;
             f.Clock.Advance(TimeSpan.FromMinutes(1));
-            incumbent = Device(await Complete(f, body.GetProperty("pendingId").GetString()!, 1));
+            incumbent = EnrollmentId(await Complete(f, body.GetProperty("pendingId").GetString()!, 1));
         }
         var before = f.Rows().Single(r => r.Name.StartsWith("attempt:", StringComparison.Ordinal));
         f.GitHub.BeforeMint = agentHandler;
@@ -156,7 +156,7 @@ public sealed class AgentVariableConformanceTests
         var f = AgentFixture();
         var receipt = await Complete(f, await Start(f));
         await Ack(f, receipt);
-        f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, Device(receipt)), row =>
+        f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, EnrollmentId(receipt)), row =>
         {
             if (fault == "missing-both") { row.Remove("ApprovalKind"); row.Remove("SetupVersion"); }
             if (fault == "missing-kind") row.Remove("ApprovalKind");
@@ -165,7 +165,7 @@ public sealed class AgentVariableConformanceTests
             if (fault == "wrong-policy") row["PolicyVersion"] = IssuancePolicy.Version;
         });
         var reads = f.GitHub.Reads;
-        var denied = await f.Issue(Device(receipt), Secret(receipt));
+        var denied = await f.Issue(EnrollmentId(receipt), Secret(receipt));
         Assert.NotEqual(HttpStatusCode.OK, denied.StatusCode);
         Assert.Equal("", denied.Text);
         Assert.Equal(reads, f.GitHub.Reads);
@@ -174,25 +174,25 @@ public sealed class AgentVariableConformanceTests
     [Theory]
     [InlineData("polling")]
     [InlineData("webhook")]
-    public async Task V1_runtime_and_self_revoke_dispatch_from_authenticated_Agent_device(string profile)
+    public async Task V1_runtime_and_self_revoke_dispatch_from_authenticated_Agent_controller_enrollment(string profile)
     {
         var f = AgentFixture();
         var receipt = await Complete(f, await Start(f, profile));
         await Ack(f, receipt);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var issued = await f.Issue(Device(receipt), Secret(receipt));
+        var issued = await f.Issue(EnrollmentId(receipt), Secret(receipt));
         Assert.Equal(HttpStatusCode.OK, issued.StatusCode);
         var permissions = issued.Json.GetProperty("permissions");
         Assert.Equal("write", permissions.GetProperty("discussions").GetString());
         Assert.Equal(profile == "webhook", permissions.TryGetProperty("repository_hooks", out _));
         Assert.Equal(profile == "webhook" ? 2 : 1, permissions.EnumerateObject().Count());
-        var revoked = await f.Revoke(Device(receipt), Secret(receipt));
+        var revoked = await f.Revoke(EnrollmentId(receipt), Secret(receipt));
         Assert.Equal(HttpStatusCode.NoContent, revoked.StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var runtime = await f.Issue(Device(receipt), Secret(receipt));
+        var runtime = await f.Issue(EnrollmentId(receipt), Secret(receipt));
         Assert.Equal(HttpStatusCode.Unauthorized, runtime.StatusCode);
         Assert.Equal("closed", f.Gate.State);
-        Assert.Equal("revoked", f.Enrollment(Device(receipt)).State);
+        Assert.Equal("revoked", f.Enrollment(EnrollmentId(receipt)).State);
     }
 
     [Fact]
@@ -262,7 +262,7 @@ public sealed class AgentVariableConformanceTests
             return Task.CompletedTask;
         };
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var stale = await f.Issue(Device(receipt), Secret(receipt));
+        var stale = await f.Issue(EnrollmentId(receipt), Secret(receipt));
         Assert.NotEqual(HttpStatusCode.OK, stale.StatusCode);
         Assert.Equal(1, variableReads);
         var body = stale.Text;
@@ -272,9 +272,9 @@ public sealed class AgentVariableConformanceTests
         f.GitHub.BeforeRead = null;
         f.GitHub.Marker = marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var recovered = await f.Issue(Device(receipt), Secret(receipt));
+        var recovered = await f.Issue(EnrollmentId(receipt), Secret(receipt));
         Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
-        Assert.Equal(Device(receipt), f.Gate.OwnerEnrollmentId);
+        Assert.Equal(EnrollmentId(receipt), f.Gate.OwnerEnrollmentId);
     }
 
     // Which installation and repository answers prove a binding change is the core's rule (ApprovalObserverTests);
@@ -291,7 +291,7 @@ public sealed class AgentVariableConformanceTests
         var observed = ObserveInstallationReads(f, stale: observation.EndsWith("-stale", StringComparison.Ordinal));
         f.GitHub.Installation = observation == "denied" ? new GitHubRead<AppInstallation>.Refused() : Moved;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var changed = await f.Issue(Device(receipt), Secret(receipt));
+        var changed = await f.Issue(EnrollmentId(receipt), Secret(receipt));
         Assert.True(observed());
         Assert.NotEqual(HttpStatusCode.OK, changed.StatusCode);
         Assert.DoesNotContain("token", changed.Text);
@@ -299,7 +299,7 @@ public sealed class AgentVariableConformanceTests
         f.GitHub.BeforeRead = null;
         f.GitHub.Installation = GitHubRead.Found(InMemoryGitHub.Installed);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var restored = await f.Issue(Device(receipt), Secret(receipt));
+        var restored = await f.Issue(EnrollmentId(receipt), Secret(receipt));
         Assert.Equal(terminal ? HttpStatusCode.Unauthorized : HttpStatusCode.OK, restored.StatusCode);
         if (terminal) Assert.Equal("closed", f.Gate.State);
     }
@@ -321,7 +321,7 @@ public sealed class AgentVariableConformanceTests
         else f.GitHub.Repositories = GitHubRead.Found(new InstallationRepositories(1,
             observation == "empty" ? [] : [new RepositoryIdentity(123456, "other/project")]));
         Task<Answer> Continue() => acknowledge
-            ? f.Acknowledge(Device(receipt), receipt.GetProperty("completionId").GetString()!, Secret(receipt), 2)
+            ? f.Acknowledge(EnrollmentId(receipt), receipt.GetProperty("completionId").GetString()!, Secret(receipt), 2)
             : f.Complete(pending, 2);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var denied = await Continue();
@@ -342,7 +342,7 @@ public sealed class AgentVariableConformanceTests
             await Ack(f, receipt);
         }
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var runtime = await f.Issue(Device(receipt), Secret(receipt));
+        var runtime = await f.Issue(EnrollmentId(receipt), Secret(receipt));
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
     }
 
@@ -380,7 +380,7 @@ public sealed class AgentVariableConformanceTests
         return f;
     }
     private static RepositoryVariableEnrollmentRequest Request(string profile = "polling") => new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "APPROVAL", profile);
-    private static string Device(JsonElement receipt) => receipt.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+    private static string EnrollmentId(JsonElement receipt) => receipt.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
     private static string Secret(JsonElement receipt) => receipt.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
     private static async Task<string> Start(InMemoryBroker f, string profile = "polling")
     {
@@ -402,7 +402,7 @@ public sealed class AgentVariableConformanceTests
     private static async Task Ack(InMemoryBroker f, JsonElement receipt)
     {
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var response = await f.Acknowledge(Device(receipt), receipt.GetProperty("completionId").GetString()!, Secret(receipt), 2);
+        var response = await f.Acknowledge(EnrollmentId(receipt), receipt.GetProperty("completionId").GetString()!, Secret(receipt), 2);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 }

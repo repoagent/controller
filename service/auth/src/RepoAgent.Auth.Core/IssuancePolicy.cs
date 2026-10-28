@@ -6,13 +6,17 @@ namespace RepoAgent.Auth;
 
 // Denies the current broker operation. The status is what the caller sees; 503 means "try again later".
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1710:Identifiers should have correct suffix", Justification = "Preserve the established core exception contract; renaming is outside the analyzer rollout.")]
-public sealed class IssuanceDenied(int status = 503) : Exception
+public sealed class IssuanceDenied(int status = 503, BrokerRejectionReason reason = BrokerRejectionReason.Other) : Exception
 {
     public int Status { get; } = status;
+    public BrokerRejectionReason Reason { get; } = reason;
 }
 
 // What a broker operation answers: the HTTP status and, for 200, the JSON body.
-public sealed record IssuanceResult(int Status, object? Body = null);
+public sealed record IssuanceResult(int Status, object? Body = null)
+{
+    public BrokerRejectionReason? Rejection { get; init; }
+}
 
 public static class IssuancePolicy
 {

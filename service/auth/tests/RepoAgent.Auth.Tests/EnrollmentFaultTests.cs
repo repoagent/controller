@@ -45,7 +45,7 @@ public sealed class EnrollmentFaultTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Lost_completion_commit_or_locator_response_recovers_one_encrypted_device_after_restart(bool locator)
+    public async Task Lost_completion_commit_or_locator_response_recovers_one_encrypted_controller_enrollment_after_restart(bool locator)
     {
         var f = new InMemoryBroker();
         var pending = await Start(f);
@@ -64,17 +64,17 @@ public sealed class EnrollmentFaultTests
         var lost = await f.Complete(pending);
         Assert.True(injected);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, lost.StatusCode);
-        var device = Assert.Single(f.Rows(), r => r.Name.StartsWith("device:", StringComparison.Ordinal)).Read<ControllerEnrollment>();
-        var hash = device.ControllerSecretHash;
-        Assert.False(device.Acknowledged);
+        var enrollmentId = Assert.Single(f.Rows(), r => r.Name.StartsWith("device:", StringComparison.Ordinal)).Read<ControllerEnrollment>();
+        var hash = enrollmentId.ControllerSecretHash;
+        Assert.False(enrollmentId.Acknowledged);
         f.State.AfterCommit = null;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var recovered = await f.Complete(pending);
         Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         Assert.Equal(recovered.Text, (await f.Complete(pending)).Text);
-        device = Assert.Single(f.Rows(), r => r.Name.StartsWith("device:", StringComparison.Ordinal)).Read<ControllerEnrollment>();
-        Assert.Equal(hash, device.ControllerSecretHash);
+        enrollmentId = Assert.Single(f.Rows(), r => r.Name.StartsWith("device:", StringComparison.Ordinal)).Read<ControllerEnrollment>();
+        Assert.Equal(hash, enrollmentId.ControllerSecretHash);
         Assert.Equal(1, f.GitHub.Mints);
     }
 
@@ -136,7 +136,7 @@ public sealed class EnrollmentFaultTests
         var pending = await Start(f);
         var delivered = (await f.Complete(pending)).Json;
         var envelope = delivered.GetProperty("enrollment");
-        var device = envelope.GetProperty("deviceId").GetString()!;
+        var enrollmentId = envelope.GetProperty("deviceId").GetString()!;
         var secret = envelope.GetProperty("deviceSecret").GetString()!;
         var revoked = false;
         f.GitHub.BeforeRead = async request =>
@@ -144,18 +144,18 @@ public sealed class EnrollmentFaultTests
             if (!revoked && request.StartsWith("variables ", StringComparison.Ordinal))
             {
                 revoked = true;
-                Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(device, secret)).StatusCode);
+                Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(enrollmentId, secret)).StatusCode);
             }
         };
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var completionId = delivered.GetProperty("completionId").GetString()!;
-        var ack = await f.Acknowledge(device, completionId, secret);
+        var ack = await f.Acknowledge(enrollmentId, completionId, secret);
         Assert.True(revoked);
         Assert.NotEqual(HttpStatusCode.OK, ack.StatusCode);
         f.GitHub.BeforeRead = null;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.NotEqual(HttpStatusCode.OK, (await f.Acknowledge(device, completionId, secret)).StatusCode);
-        Assert.Equal("revoked", f.Enrollment(device).State);
+        Assert.NotEqual(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId, completionId, secret)).StatusCode);
+        Assert.Equal("revoked", f.Enrollment(enrollmentId).State);
     }
 
     [Fact]
@@ -217,16 +217,16 @@ public sealed class EnrollmentFaultTests
         var completion = await f.Complete(pending);
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var delivered = completion.Json;
-        var device = delivered.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        var enrollmentId = delivered.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
         var secret = delivered.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
         if (epoch) f.DeploymentEpoch = "restored-epoch";
         else f.Clock.Advance(f.Pending(pending).Deadline!.Value - f.Clock.GetUtcNow());
         var reads = f.GitHub.Reads;
         Assert.Equal(epoch ? HttpStatusCode.Unauthorized : HttpStatusCode.Gone, (await f.Complete(pending)).StatusCode);
-        var ack = await f.Acknowledge(device, delivered.GetProperty("completionId").GetString()!, secret);
+        var ack = await f.Acknowledge(enrollmentId, delivered.GetProperty("completionId").GetString()!, secret);
         Assert.Equal(epoch ? HttpStatusCode.Unauthorized : HttpStatusCode.Gone, ack.StatusCode);
         Assert.Equal(reads, f.GitHub.Reads);
-        Assert.False(f.Enrollment(device).Acknowledged);
+        Assert.False(f.Enrollment(enrollmentId).Acknowledged);
     }
 
     [Fact]
@@ -235,16 +235,16 @@ public sealed class EnrollmentFaultTests
         var f = new InMemoryBroker();
         var pending = await Start(f);
         var delivered = (await f.Complete(pending)).Json;
-        var device = delivered.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
+        var enrollmentId = delivered.GetProperty("enrollment").GetProperty("deviceId").GetString()!;
         var secret = delivered.GetProperty("enrollment").GetProperty("deviceSecret").GetString()!;
         var completionId = delivered.GetProperty("completionId").GetString()!;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(device, completionId, secret)).StatusCode);
-        var key = ControllerEnrollment.Key(InMemoryBroker.RepositoryId, device);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId, completionId, secret)).StatusCode);
+        var key = ControllerEnrollment.Key(InMemoryBroker.RepositoryId, enrollmentId);
         var (initial, version) = (f.State.Get(key)!, f.State.Version(key));
         f.Clock.Advance(TimeSpan.FromDays(1));
         var reads = f.GitHub.Reads;
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(device, completionId, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId, completionId, secret)).StatusCode);
         var current = f.State.Get(key)!;
         Assert.Equal(version, f.State.Version(key));
         Assert.Equal(initial.LastActivityAt, current.LastActivityAt);

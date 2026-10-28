@@ -17,7 +17,7 @@ public sealed class ControllerDashboardUpdatesTests
     {
         var text = new StringBuilder();
         ControllerDashboard.Updates(text, notice);
-        return text.ToString();
+        return text.ToString().ReplaceLineEndings("\n");
     }
 
     static string Link(BaselineRelease release) => $"[{release.Tag}](https://github.com/repoagent/controller/releases/tag/{release.Tag})";
@@ -41,7 +41,7 @@ public sealed class ControllerDashboardUpdatesTests
             - Publication is not deployment: this controller keeps running its current image. It never replaces itself and has no Docker host or deployment access.
             - To update, an operator recreates the controller from that image, or rebuilds an image derived from the baseline on it, keeping the controller's external configuration, credentials and session data; see [baseline releases](https://github.com/repoagent/controller/blob/{Newest.Commit}/docs/ci-cd.md#baseline-releases).
 
-            """, Updates(new(At, Current, Newest, 2, null)));
+            """.ReplaceLineEndings("\n"), Updates(new(At, Current, Newest, 2, null)));
         Assert.Contains("(1 newer release; ", Updates(new(At, Current, Newest, 1, null)));
     }
 
@@ -69,6 +69,6 @@ public sealed class ControllerDashboardUpdatesTests
             **Release identity uncertain** (checked at {Checked}): the image cannot be identified. No replacement is suggested.
             - Newest published baseline release: {Link(Newest)}, image `{Newest.Image}` ([package](https://github.com/repoagent/controller/pkgs/container/controller)) with gh `2.103.1` and Codex `0.164.0`. Compare it with this controller's image before deciding whether to rebuild or recreate it.
 
-            """, text);
+            """.ReplaceLineEndings("\n"), text);
     }
 }

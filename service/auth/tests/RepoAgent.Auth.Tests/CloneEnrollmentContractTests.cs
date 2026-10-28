@@ -51,18 +51,18 @@ public sealed class CloneEnrollmentContractTests
             Assert.False(enrollment.TryGetProperty("profile", out _));
             Assert.False(enrollment.TryGetProperty("policyVersion", out _));
         }
-        var device = enrollment.GetProperty("deviceId").GetString()!;
+        var enrollmentId = enrollment.GetProperty("deviceId").GetString()!;
         var secret = enrollment.GetProperty("deviceSecret").GetString()!;
-        var unacknowledged = await f.Issue(device, secret, runtimeVersion);
+        var unacknowledged = await f.Issue(enrollmentId, secret, runtimeVersion);
         Assert.Equal(HttpStatusCode.Unauthorized, unacknowledged.StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var ack = await f.Acknowledge(device, receipt.GetProperty("completionId").GetString()!, secret, setupVersion);
+        var ack = await f.Acknowledge(enrollmentId, receipt.GetProperty("completionId").GetString()!, secret, setupVersion);
         Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
         var beforeMismatch = DurableVersions(f);
         var mints = f.GitHub.Mints;
-        var wrongFamily = await f.Issue(device, secret, 3 - runtimeVersion);
+        var wrongFamily = await f.Issue(enrollmentId, secret, 3 - runtimeVersion);
         Assert.Equal(HttpStatusCode.Unauthorized, wrongFamily.StatusCode);
-        var wrongRevoke = await f.Revoke(device, secret, 3 - runtimeVersion);
+        var wrongRevoke = await f.Revoke(enrollmentId, secret, 3 - runtimeVersion);
         Assert.Equal(HttpStatusCode.Unauthorized, wrongRevoke.StatusCode);
         Assert.Equal(mints, f.GitHub.Mints);
         // No durable quota, attempt, slot or enrollment write may precede family rejection.
@@ -71,7 +71,7 @@ public sealed class CloneEnrollmentContractTests
         for (var renewal = 0; renewal < 2; renewal++)
         {
             f.Clock.Advance(TimeSpan.FromMinutes(1));
-            var runtime = await f.Issue(device, secret, runtimeVersion);
+            var runtime = await f.Issue(enrollmentId, secret, runtimeVersion);
             Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
             var lease = runtime.Json;
             Assert.Equal(runtimeVersion, lease.GetProperty("protocolVersion").GetInt32());
@@ -96,11 +96,11 @@ public sealed class CloneEnrollmentContractTests
         {
             f.GitHub.Marker = "";
             f.Clock.Advance(TimeSpan.FromMinutes(1));
-            var removed = await f.Issue(device, secret, runtimeVersion);
+            var removed = await f.Issue(enrollmentId, secret, runtimeVersion);
             Assert.Equal(HttpStatusCode.Unauthorized, removed.StatusCode);
             f.GitHub.Marker = marker;
             f.Clock.Advance(TimeSpan.FromMinutes(1));
-            var restored = await f.Issue(device, secret, runtimeVersion);
+            var restored = await f.Issue(enrollmentId, secret, runtimeVersion);
             Assert.Equal(HttpStatusCode.Unauthorized, restored.StatusCode);
         }
     }
@@ -123,19 +123,19 @@ public sealed class CloneEnrollmentContractTests
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var receipt = completion.Json;
         var file = receipt.GetProperty("enrollment");
-        var device = file.GetProperty("deviceId").GetString()!;
+        var enrollmentId = file.GetProperty("deviceId").GetString()!;
         var secret = file.GetProperty("deviceSecret").GetString()!;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var ack = await f.Acknowledge(device, receipt.GetProperty("completionId").GetString()!, secret, 2);
+        var ack = await f.Acknowledge(enrollmentId, receipt.GetProperty("completionId").GetString()!, secret, 2);
         Assert.Equal(HttpStatusCode.OK, ack.StatusCode);
-        f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, device), row =>
+        f.State.Change(ControllerEnrollment.Key(InMemoryBroker.RepositoryId, enrollmentId), row =>
         {
             if (value.Length == 0) row.Remove(field);
             else row[field] = value;
         });
         var before = DurableVersions(f);
         var requests = f.GitHub.Requests.Count;
-        var denied = await f.Issue(device, secret, 2);
+        var denied = await f.Issue(enrollmentId, secret, 2);
         Assert.NotEqual(HttpStatusCode.OK, denied.StatusCode);
         Assert.Equal("", denied.Text);
         Assert.Equal(requests, f.GitHub.Requests.Count);

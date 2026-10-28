@@ -28,7 +28,7 @@ public sealed class CheckoutRecoveryTests
             Completed = 3,
             Blocked = true,
             Running = 1,
-            Reason = "Native activity or checkout update is uncertain; inspect state before recovery",
+            Reason = "Agent activity or checkout update is uncertain; inspect state before recovery",
             Unknown = [new("future", "{\"keep\":\"verbatim\"}")]
         };
         journal.Active["admission"] = new(1) { Thread = "S1", Turn = "", Unconfirmed = true };

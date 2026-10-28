@@ -1,9 +1,15 @@
+using System.Text.RegularExpressions;
+
 namespace RepoAgentController;
 
 /// <summary>One published baseline release, as its machine-readable release metadata describes it.</summary>
 public sealed record BaselineRelease(string Tag, long Run, int Attempt, string Image, string InventorySha256, string Commit, string Gh, string Codex)
 {
-    public string Url => $"https://github.com/{BaselineReleases.Repository}/releases/tag/{Tag}";
+    /// <summary>The stable controller semantic version; legacy releases have no comparable semantic version.</summary>
+    public Version? Version => Regex.IsMatch(Tag, @"\Acontroller-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z") &&
+        System.Version.TryParse(Tag[12..], out var version) ? version : null;
+
+    public string Url => $"https://github.com/{BaselineReleaseCheck.Repository}/releases/tag/{Tag}";
 }
 
 /// <summary>
@@ -21,7 +27,7 @@ public sealed record ReleaseNotice(DateTimeOffset CheckedAt, BaselineRelease? Ru
 /// controller was started without one. A delegate rather than a port: it is one local file read, not a provider.</param>
 /// <param name="redact">Removes the secrets the controller knows from a failure's message. A failure is kept redacted, so
 /// failures that differ only in a secret are the same outcome.</param>
-public sealed class BaselineReleases(IBaselineReleases published, Func<CancellationToken, Task<string?>> inventorySha256,
+public sealed class BaselineReleaseCheck(IBaselineReleases published, Func<CancellationToken, Task<string?>> inventorySha256,
     TimeProvider clock, IControllerLog log, Func<string, string> redact) : IAsyncDisposable
 {
     public const string Repository = "repoagent/controller";
@@ -73,13 +79,18 @@ public sealed class BaselineReleases(IBaselineReleases published, Func<Cancellat
     async Task<ReleaseNotice> Compare(CancellationToken ct)
     {
         var identity = await inventorySha256(ct);
-        // Newest first by publication run and attempt, which the tag records; GitHub's Latest badge is not used.
-        var releases = (await published.Published(ct)).OrderByDescending(release => release.Run).ThenByDescending(release => release.Attempt).ToArray();
+        // Stable semantic releases supersede the legacy run ordering. Other components and previews never enter it.
+        var releases = (await published.Published(ct)).Where(release => release.Version is not null ||
+                Regex.IsMatch(release.Tag, @"\Abaseline-[0-9]+\.[0-9]+\z"))
+            .OrderByDescending(release => release.Version is not null).ThenByDescending(release => release.Version)
+            .ThenByDescending(release => release.Run).ThenByDescending(release => release.Attempt).ToArray();
         var matched = Array.FindIndex(releases, release => release.InventorySha256 == identity);
-        var uncertainty = identity is null ? "this controller was not started with a baseline image inventory, for example in a native or development run"
+        var migration = matched >= 0 && releases[matched].Version is null && releases.Any(release => release.Version is not null);
+        var uncertainty = identity is null ? "this controller was not started with a baseline image inventory, for example in a standalone or development run"
             : matched < 0 ? "its image inventory matches none of the newest published baseline releases, so it is a derived, local, unreleased or much older image"
+            : migration ? "this controller has an identified legacy baseline without a semantic version; compare its inventory and deliberately adopt a semantic release before version comparisons apply"
             : null;
-        return new(clock.GetUtcNow(), matched < 0 ? null : releases[matched], releases.FirstOrDefault(), Math.Max(matched, 0), uncertainty);
+        return new(clock.GetUtcNow(), matched < 0 ? null : releases[matched], releases.FirstOrDefault(), migration ? 0 : Math.Max(matched, 0), uncertainty);
     }
 
     public async ValueTask DisposeAsync()

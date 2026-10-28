@@ -36,7 +36,7 @@ Deliver bounded slices, preserving independent verification:
 2. Idempotent authenticated default-branch checkout and exact-root Codex trust/start/resume integration.
 3. Agent turn-activity coordination and safe, persistent push/startup/periodic reconciliation.
 
-Use real disposable local Git repositories for checkout/dirty/index/untracked/default-branch/force-push/restart cases; replace outbound GitHub at the owned transport or process seam. Add a sparse native acceptance journey proving repository-root instructions and a repository-local skill are available on start and resume. Local fixtures cannot prove real GitHub App clone permissions or hosted signed push delivery.
+Use real disposable local Git repositories for checkout/dirty/index/untracked/default-branch/force-push/restart cases; replace outbound GitHub at the owned transport or process seam. Add a sparse agent acceptance journey proving repository-root instructions and a repository-local skill are available on start and resume. Local fixtures cannot prove real GitHub App clone permissions or hosted signed push delivery.
 
 ## Primary documentation
 

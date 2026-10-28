@@ -14,18 +14,18 @@ internal sealed class IssuanceFixture
     public IssuanceClock Clock { get; } = new();
     public InMemoryGitHub GitHub { get; }
     public InMemorySecretProtection Secrets { get; } = new();
-    public EnrolledDevice Device { get; private set; } = null!;
+    public EnrolledDevice EnrollmentId { get; private set; } = null!;
     private IssuanceFixture() => GitHub = new(Clock);
 
     public IssuanceStore Store(IssuanceLimits? limits = null) => new(State, Epoch, 4096, Secrets, Clock, limits);
-    public InstallationTokenIssuer Issuer(IssuanceLimits? limits = null) => new(Store(limits), GitHub, GitHub, GitHub, Clock);
+    public GitHubTokenIssuer Issuer(IssuanceLimits? limits = null) => new(Store(limits), GitHub, GitHub, GitHub, Clock);
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1068", Justification = "Preserve existing positional callers; this token is distinct from the optional configuration that follows it.")]
     public Task<IssuanceResult> IssueAsync(CancellationToken caller = default, IssuanceLimits? limits = null) =>
-            Issuer(limits).IssueAsync(Device.DeviceId, Device.Secret, caller);
-    public DeviceRevocation Revocation() => new(State, Epoch, Clock);
+            Issuer(limits).IssueAsync(EnrollmentId.DeviceId, EnrollmentId.Secret, caller);
+    public ControllerSelfRevocation Revocation() => new(State, Epoch, Clock);
 
     public static StateKey<RepositoryGate> GateKey => RepositoryGate.Key(RepositoryId);
-    public StateKey<ControllerEnrollment> EnrollmentKey => ControllerEnrollment.Key(RepositoryId, Device.DeviceId);
+    public StateKey<ControllerEnrollment> EnrollmentKey => ControllerEnrollment.Key(RepositoryId, EnrollmentId.DeviceId);
     public static StateKey<RepositoryQuota> QuotaKey => RepositoryQuota.Key(RepositoryId);
     public RepositoryGate Gate => State.Get(GateKey)!;
     public ControllerEnrollment Enrollment => State.Get(EnrollmentKey)!;
@@ -64,7 +64,7 @@ internal sealed class IssuanceFixture
     {
         var f = new IssuanceFixture();
         if (runtimeLifetime is { } lifetime) f.GitHub.RuntimeLifetime = lifetime;
-        f.Device = f.Enroll(RepositoryId, "owner/project", outstanding: 1);
+        f.EnrollmentId = f.Enroll(RepositoryId, "owner/project", outstanding: 1);
         f.GitHub.Marker = f.Enrollment.Marker!;
         return f;
     }
@@ -72,13 +72,13 @@ internal sealed class IssuanceFixture
     // Enrolls the same controller in another repository with no outstanding GitHub token, and returns its grant.
     public async Task<GrantSnapshot> EnrollCompetitorAsync(string repositoryId, string repository, CancellationToken ct)
     {
-        _ = Enroll(repositoryId, repository, outstanding: 0, Device);
-        return await Store().SnapshotAsync(repositoryId, Device.DeviceId, ct);
+        _ = Enroll(repositoryId, repository, outstanding: 0, EnrollmentId);
+        return await Store().SnapshotAsync(repositoryId, EnrollmentId.DeviceId, ct);
     }
 
     private EnrolledDevice Enroll(string repositoryId, string repository, long outstanding, EnrolledDevice? existing = null)
     {
-        var deviceId = existing?.DeviceId ?? Base64Url(RandomNumberGenerator.GetBytes(24));
+        var enrollmentId = existing?.DeviceId ?? Base64Url(RandomNumberGenerator.GetBytes(24));
         var secret = existing?.Secret ?? Base64Url(RandomNumberGenerator.GetBytes(32));
         var created = Clock.GetUtcNow();
         var enrollmentQuota = State.Get(EnrollmentQuota.Key) ?? new() { RetentionSchemaVersion = 1, CandidateCount = 0, RetainedEnrollmentCount = 0, Count = 0 };
@@ -105,7 +105,7 @@ internal sealed class IssuanceFixture
                 OperationId = "one",
                 Generation = generation,
                 RepositoryId = repositoryId,
-                EnrollmentId = deviceId,
+                EnrollmentId = enrollmentId,
                 Purpose = "runtime",
                 Epoch = Epoch,
                 ReservedAt = created,
@@ -132,11 +132,11 @@ internal sealed class IssuanceFixture
                 SetupVersion = 1,
                 PolicyVersion = IssuancePolicy.Version
             });
-            State.Seed(EnrollmentLocator.Key(deviceId), new() { RepositoryId = repositoryId, EnrollmentId = deviceId, PendingId = repositoryId + "_" + Guid.NewGuid().ToString("N") });
+            State.Seed(EnrollmentLocator.Key(enrollmentId), new() { RepositoryId = repositoryId, EnrollmentId = enrollmentId, PendingId = repositoryId + "_" + Guid.NewGuid().ToString("N") });
             State.Seed(IssuanceAttempt.Key(repositoryId, "one"), new()
             {
                 RepositoryId = repositoryId,
-                EnrollmentId = deviceId,
+                EnrollmentId = enrollmentId,
                 Epoch = Epoch,
                 State = "outstanding",
                 Purpose = "runtime",
@@ -154,16 +154,16 @@ internal sealed class IssuanceFixture
         {
             RepositoryId = repositoryId,
             Epoch = Epoch,
-            OwnerEnrollmentId = deviceId,
+            OwnerEnrollmentId = enrollmentId,
             State = "active",
             Sequence = 7,
             OutstandingTokenCount = outstanding
         });
         var challenge = new string('a', 43);
-        State.Seed(ControllerEnrollment.Key(repositoryId, deviceId), new()
+        State.Seed(ControllerEnrollment.Key(repositoryId, enrollmentId), new()
         {
             RepositoryId = repositoryId,
-            EnrollmentId = deviceId,
+            EnrollmentId = enrollmentId,
             Epoch = Epoch,
             ControllerSecretHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret))),
             ExpiresAt = created.AddHours(1),
@@ -181,10 +181,10 @@ internal sealed class IssuanceFixture
             EnvironmentId = 987,
             Variable = "APPROVAL",
             Challenge = challenge,
-            Marker = ApprovalMarker.Create(ApprovalContract.Legacy, repositoryId, repository, 789, deviceId, challenge, "polling", Epoch,
+            Marker = ApprovalMarker.Create(ApprovalContract.Legacy, repositoryId, repository, 789, enrollmentId, challenge, "polling", Epoch,
                 "APPROVAL", "approval/environment", 987)
         });
-        return new(deviceId, secret);
+        return new(enrollmentId, secret);
     }
 
     private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');

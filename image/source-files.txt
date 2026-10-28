@@ -10,6 +10,7 @@ src/RepoAgentController/CheckoutEvidence.cs
 src/RepoAgentController/CheckoutRecoveryCommand.cs
 src/RepoAgentController/BrokerTokenSource.cs
 src/RepoAgentController/Codex.cs
+src/RepoAgentController/CodexUsage.cs
 src/RepoAgentController/DirectAppTokenSource.cs
 src/RepoAgentController/DiscussionWebhooks.cs
 src/RepoAgentController/GitHubWebhookRegistration.cs
@@ -25,7 +26,7 @@ src/RepoAgentController/CodexCredentials.cs
 src/RepoAgentController/OperatorStatusJson.cs
 src/RepoAgentController/StatusFiles.cs
 src/RepoAgentController/ControllerHttpServer.cs
-src/RepoAgentController/ControllerPolling.cs
+src/RepoAgentController.Core/ControllerPolling.cs
 src/RepoAgentController/GitHubBaselineReleases.cs
 src/RepoAgentController/ImageInventory.cs
 src/RepoAgentController/RenderedMentions.cs
@@ -47,9 +48,9 @@ src/RepoAgentController.Core/SettingValue.cs
 src/RepoAgentController.Core/IRepositorySettings.cs
 src/RepoAgentController.Core/IControllerState.cs
 src/RepoAgentController.Core/DiscussionState.cs
-src/RepoAgentController.Core/RepositorySettings.cs
+src/RepoAgentController.Core/RepositorySettingsRefresh.cs
 src/RepoAgentController.Core/IBaselineReleases.cs
-src/RepoAgentController.Core/BaselineReleases.cs
+src/RepoAgentController.Core/BaselineReleaseCheck.cs
 src/RepoAgentController.Core/CategoryEnrollmentStarts.cs
 src/RepoAgentController.Core/GitHubRequestException.cs
 src/RepoAgentController.Core/GitHubResponse.cs
@@ -61,6 +62,8 @@ src/RepoAgentController.Core/Discussion.cs
 src/RepoAgentController.Core/GitHubOutbox.cs
 src/RepoAgentController.Core/IWebhookRegistration.cs
 src/RepoAgentController.Core/IAgentRuntime.cs
+src/RepoAgentController.Core/AgentUsageObservation.cs
+src/RepoAgentController.Core/AgentUsageCollection.cs
 src/RepoAgentController.Core/AgentSessions.cs
 src/RepoAgentController.Core/ICheckoutAdmission.cs
 src/RepoAgentController.Core/IAgentInput.cs
@@ -94,3 +97,9 @@ container/install-cloudflared.sh
 container/prepare-runtime.sh
 scripts/compose-image.py
 image/source-files.txt
+src/RepoAgentController.Core/GitHubTokenThrottledException.cs
+releases/controller/version.txt
+releases/controller/CHANGELOG.md
+scripts/delivery/controller-release.py
+src/RepoAgentController.Core/IAgentToolCredentials.cs
+src/RepoAgentController.Core/ControllerWebhooks.cs

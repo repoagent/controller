@@ -9,16 +9,16 @@ internal static class AppGitCredential
     static readonly string[] UnsafePrefixes = ["credential.", "http.", "url.", "include.", "includeif."];
 
     // Only clone-capable credentials carry the approved repository binding Git may use.
-    static InstallationCredential Lease(InstallationCredential credential)
+    static GitHubToolToken Lease(GitHubToolToken credential)
     {
         if (credential.Profile is not ("polling-clone" or "webhook-clone" or "polling-clone-settings" or "webhook-clone-settings") ||
             credential.Repository?.Split('/') is not [var owner, var name] || !Segment(owner) || !Segment(name))
             throw new IOException("Unavailable Git lease");
         return credential;
     }
-    static async Task<InstallationCredential> Lease(string directory, CancellationToken ct) => Lease(await CredentialHandoff.Request(directory, ct));
+    static async Task<GitHubToolToken> Lease(string directory, CancellationToken ct) => Lease(await CredentialHandoff.Request(directory, ct));
     static bool Segment(string s) => s.Length is > 0 and <= 100 && s is not ("." or "..") && s.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
-    static string Url(InstallationCredential lease) => "https://github.com/" + lease.Repository + ".git";
+    static string Url(GitHubToolToken lease) => "https://github.com/" + lease.Repository + ".git";
     static string Quote(string s) => "'" + s.Replace("'", "'\"'\"'") + "'";
     static string Launcher()
     {
@@ -42,7 +42,7 @@ internal static class AppGitCredential
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
-    internal static string[] PrepareClone(ProcessStartInfo start, InstallationCredential credential, string directory, string[] args)
+    internal static string[] PrepareClone(ProcessStartInfo start, GitHubToolToken credential, string directory, string[] args)
     {
         if (args.Length < 2 || args[0] != "repo" || args[1] != "clone") return args;
         var lease = Lease(credential);

@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import re
+import runpy
 from pathlib import Path
 import sys
 
@@ -96,7 +97,8 @@ def compose(root, manifest, output, derived=None):
     if output.exists() and any(output.iterdir()):
         raise ValueError('Output context must be empty')
     extension = regular_file(derived) if derived else None
-    inventory = dict(value, controller={'source': 'checkout', 'sha256': source_digest},
+    release, release_notes = runpy.run_path(str(root / 'scripts/delivery/controller-release.py'))['release_files'](root)
+    inventory = dict(value, controller={'source': 'checkout', 'sha256': source_digest, 'version': release['version'], 'releaseNotesSha256': release['notesSha256']},
                      baseImages={'sdk': SDK, 'runtime': value.get('baseImage', {}).get('reference', RUNTIME)}, ubuntuSnapshot=SNAPSHOT,
                      artifacts={key: {'version': v, 'url': url, 'sha256': sha} for key, (v, url, sha) in ARTIFACTS.items()
                                 if key != 'cloudflared' or key in value['tools']})
@@ -107,12 +109,14 @@ def compose(root, manifest, output, derived=None):
         destination = output / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(content)
+    (output / 'releases/controller/RELEASE_NOTES.md').write_bytes(release_notes.encode())
     (output / 'image-inventory.json').write_text(json.dumps(inventory, indent=2, sort_keys=True) + '\n')
     reference = inventory['baseImages']['runtime']
     (output / 'base-reference.txt').write_text(reference + '\n')
     from_reference = 'repoagent-local-base:' + reference[7:] if reference.startswith('sha256:') else reference
     (output / 'tool-artifacts.json').write_text(json.dumps(inventory['artifacts'], sort_keys=True) + '\n')
     dockerfile = (output / 'container/Containerfile').read_text()
+    dockerfile = dockerfile.replace('__CONTROLLER_VERSION__', release['version'])
     dockerfile = dockerfile.replace('__SDK_IMAGE__', SDK).replace('__RUNTIME_IMAGE__', from_reference)
     dockerfile = dockerfile.replace('RUN apt-get update', f'RUN sed -i -E "s|https?://[^ /]+/ubuntu/?|https://snapshot.ubuntu.com/ubuntu/{SNAPSHOT}/|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update')
     dockerfile = dockerfile.replace('RUN bash /tmp/prepare-runtime.sh', 'RUN bash /tmp/prepare-runtime.sh ' + ('true' if value['tools'].get('developerUtilities', False) else 'false') + ' ' + SNAPSHOT)

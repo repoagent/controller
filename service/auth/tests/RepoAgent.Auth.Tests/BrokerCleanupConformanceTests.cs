@@ -61,10 +61,10 @@ public sealed partial class BrokerCleanupTests
         var f = new InMemoryBroker();
         var journey = acknowledge ? await Retained.ActiveAgent(f, profile) : await Retained.CompletedAgent(f, profile);
         var runtimeVersion = profile == "polling-clone" ? 2 : 1;
-        if (revoke) Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(journey.Device, journey.Secret, runtimeVersion)).StatusCode);
+        if (revoke) Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(journey.EnrollmentId, journey.Secret, runtimeVersion)).StatusCode);
         f.Clock.Advance(TimeSpan.FromDays(2));
         var pendingKey = PendingControllerEnrollment.Key(Retained.Repository, journey.Id);
-        var enrollmentKey = ControllerEnrollment.Key(Retained.Repository, journey.Device);
+        var enrollmentKey = ControllerEnrollment.Key(Retained.Repository, journey.EnrollmentId);
         var gateKey = RepositoryGate.Key(Retained.Repository);
         var active = f.State.Get(enrollmentKey)!;
         Assert.Equal(!acknowledge, Stores(f, pendingKey, "ProtectedCompletion"));
@@ -99,7 +99,7 @@ public sealed partial class BrokerCleanupTests
             Assert.Equal("revoked", preserved.State);
             Assert.Equal("vacant", f.Gate.State);
             Assert.False(Stores(f, gateKey, "OwnerDeviceId"));
-            Assert.Equal(journey.Device, f.State.Get(RevocationReceipt.Key(Retained.Repository, journey.Device))!.EnrollmentId);
+            Assert.Equal(journey.EnrollmentId, f.State.Get(RevocationReceipt.Key(Retained.Repository, journey.EnrollmentId))!.EnrollmentId);
         }
         foreach (var ledger in ledgers)
         {
@@ -111,11 +111,11 @@ public sealed partial class BrokerCleanupTests
         if (acknowledge && !revoke)
         {
             // The current grant still issues under the current epoch, so the restored epoch's denial is the fence.
-            Assert.Equal(HttpStatusCode.OK, (await f.Issue(journey.Device, journey.Secret, runtimeVersion)).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await f.Issue(journey.EnrollmentId, journey.Secret, runtimeVersion)).StatusCode);
             var mints = f.GitHub.Mints;
             var signs = f.GitHub.Authorizations;
             f.DeploymentEpoch = "restored-epoch";
-            Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(journey.Device, journey.Secret, runtimeVersion)).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(journey.EnrollmentId, journey.Secret, runtimeVersion)).StatusCode);
             Assert.Equal(mints, f.GitHub.Mints);
             Assert.Equal(signs, f.GitHub.Authorizations);
         }

@@ -5,7 +5,7 @@ namespace RepoAgentController.Tests;
 
 /// <summary>
 /// The bridge in-process as the controller composes it, across controller lifetimes: the real Bridge, AgentSessions,
-/// RepositorySettings, GitHubOutbox and ControllerStatus, the Discussion state in memory (or, with <see cref="Files"/>, in the
+/// RepositorySettingsRefresh, GitHubOutbox and ControllerStatus, the Discussion state in memory (or, with <see cref="Files"/>, in the
 /// state file), the status record and the checkout's turns in memory, the settings and outbox in files in a temporary
 /// directory, the readable Discussions fake, and a new agent runtime fake
 /// for each lifetime, as each lifetime owns its runtime process. Time moves only when a test
@@ -74,7 +74,7 @@ sealed class BridgeWorld : IAsyncDisposable
         });
     }
 
-    sealed record Lifetime(CancellationTokenSource Stop, LeasedStateStore? Lease, StateStore Store, ControllerStatus Status, RepositorySettings Settings, GitHubOutbox Outbox,
+    sealed record Lifetime(CancellationTokenSource Stop, LeasedStateStore? Lease, StateStore Store, ControllerStatus Status, RepositorySettingsRefresh Settings, GitHubOutbox Outbox,
         FakeAgentRuntime Runtime, AgentSessions Sessions)
     {
         public Bridge Bridge { get; set; } = null!;
@@ -102,7 +102,7 @@ sealed class BridgeWorld : IAsyncDisposable
         var lease = Files ? new LeasedStateStore(StatePath, Repository) : null;
         var current = new Lifetime(stop, lease, lease?.Store ?? new StateStore(State, Repository),
             new ControllerStatus(Repository, "polling", StatusRecord, Discussions, new ControllerStateFiles(StatePath), Checkout, Clock),
-            new RepositorySettings(RepositorySettingsCatalogue.Settings, RepositorySettings ? Variables : null, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
+            new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, RepositorySettings ? Variables : null, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             new GitHubOutbox(Repository, GitHub, InMemoryDiscussions.App, new ControllerStateFiles(StatePath), Clock, new ControllerLog()),
             runtime, new AgentSessions(runtime, new ControllerLog(), CheckoutRefresh));
         lifetime = current;

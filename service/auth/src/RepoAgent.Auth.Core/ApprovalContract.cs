@@ -19,13 +19,18 @@ public sealed record ApprovalContract(string Kind, long SetupVersion, string Pol
     public static readonly ApprovalContract AgentV4 = new("repository-agent-variable", 4, "repository-agent-approval-v4", "agent-variable-verification");
     public static readonly ApprovalContract AgentCloneV4 = new("repository-agent-variable", 4, "repository-agent-clone-approval-v4", "agent-variable-verification");
     public static readonly ApprovalContract AgentSettingsV4 = new("repository-agent-variable", 4, "repository-agent-settings-approval-v4", "agent-variable-verification");
-    private static readonly ApprovalContract[] All = [Legacy, Agent, AgentClone, Actions, ActionsClone, ActionsSettings, AgentV4, AgentCloneV4, AgentSettingsV4];
+    public static readonly ApprovalContract AgentV5 = new("repository-agent-variable", 5, "repository-agent-approval-v5", "agent-variable-verification");
+    public static readonly ApprovalContract AgentCloneV5 = new("repository-agent-variable", 5, "repository-agent-clone-approval-v5", "agent-variable-verification");
+    public static readonly ApprovalContract AgentSettingsV5 = new("repository-agent-variable", 5, "repository-agent-settings-approval-v5", "agent-variable-verification");
+    private static readonly ApprovalContract[] All = [Legacy, Agent, AgentClone, Actions, ActionsClone, ActionsSettings, AgentV4, AgentCloneV4, AgentSettingsV4,
+        AgentV5, AgentCloneV5, AgentSettingsV5];
+    public bool CanonicalNames => SetupVersion >= 5;
     public bool IsAgent => Kind == Agent.Kind;
     public bool IsActions => Kind == Actions.Kind;
     // Agent and Actions approvals are direct repository variables without Environment identity.
     public bool IsRepositoryVariable => IsAgent || IsActions;
-    public bool IsClone => this == AgentClone || this == ActionsClone || this == AgentCloneV4;
-    public bool IsSettings => this == ActionsSettings || this == AgentSettingsV4;
+    public bool IsClone => this == AgentClone || this == ActionsClone || this == AgentCloneV4 || this == AgentCloneV5;
+    public bool IsSettings => this == ActionsSettings || this == AgentSettingsV4 || this == AgentSettingsV5;
     public int RuntimeVersion => IsSettings ? 3 : IsClone ? 2 : 1;
     // Runtime v2 and v3 files and leases name their profile and approval policy explicitly.
     public bool NamesProfile => RuntimeVersion > 1;
@@ -34,7 +39,7 @@ public sealed record ApprovalContract(string Kind, long SetupVersion, string Pol
     // Repository-settings tooling writes REPOAGENT_ repository variables. A repository-variable approval may use that
     // prefix only under the name the settings catalogue (src/RepoAgentController/repository-settings.json) reserves
     // for approval, so settings changes never overwrite a marker. Legacy setup v2 keeps its variable grammar.
-    public bool AcceptsVariable(string variable) => !(IsActions || SetupVersion == 4) || !variable.StartsWith("REPOAGENT_", StringComparison.OrdinalIgnoreCase)
+    public bool AcceptsVariable(string variable) => !(IsActions || SetupVersion >= 4) || !variable.StartsWith("REPOAGENT_", StringComparison.OrdinalIgnoreCase)
         || string.Equals(variable, "REPOAGENT_APPROVAL", StringComparison.OrdinalIgnoreCase);
 
     // The contract a stored record names. Historical v1 rows predate the kind and setup version; their complete legacy
@@ -57,6 +62,7 @@ public sealed record ApprovalContract(string Kind, long SetupVersion, string Pol
             2 when !settings => clone ? AgentClone : Agent,
             3 => settings ? ActionsSettings : clone ? ActionsClone : Actions,
             4 => settings ? AgentSettingsV4 : clone ? AgentCloneV4 : AgentV4,
+            5 => settings ? AgentSettingsV5 : clone ? AgentCloneV5 : AgentV5,
             _ => throw new IssuanceDenied(400)
         };
     }

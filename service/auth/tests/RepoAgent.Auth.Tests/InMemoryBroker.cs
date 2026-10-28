@@ -42,7 +42,7 @@ internal sealed class InMemoryBroker
 
     public EnrollmentService Enrollment() => new(new EnrollmentStore(State, DeploymentEpoch, Retained, Secrets, Clock, Limits),
         GitHub, GitHub, GitHub, BrokerOrigin, Clock);
-    public InstallationTokenIssuer Issuer() => new(new IssuanceStore(State, DeploymentEpoch, Retained.Issuance, Secrets, Clock, Limits),
+    public GitHubTokenIssuer Issuer() => new(new IssuanceStore(State, DeploymentEpoch, Retained.Issuance, Secrets, Clock, Limits),
         GitHub, GitHub, GitHub, Clock);
 
     // A setup v1 start body for owner/project and its approval environment.
@@ -70,7 +70,7 @@ internal sealed class InMemoryBroker
         Answer.From(await BrokerRoutes.IssueAsync(Request(secret), enrollmentId, () => Issuer().IssueAsync, runtimeVersion));
     // DELETE /v{runtimeVersion}/devices/{id}.
     public async Task<Answer> Revoke(string enrollmentId, string secret, int runtimeVersion = 1) =>
-        Answer.From(await BrokerRoutes.RevokeAsync(Request(secret), enrollmentId, new DeviceRevocation(State, DeploymentEpoch, Clock), runtimeVersion));
+        Answer.From(await BrokerRoutes.RevokeAsync(Request(secret), enrollmentId, new ControllerSelfRevocation(State, DeploymentEpoch, Clock), runtimeVersion));
 
     // A request as the HTTP adapter hands it to a route: one Bearer credential and, when there is one, a web JSON body.
     public static BrokerRequest Request(string? secret, object? body = null) => new(

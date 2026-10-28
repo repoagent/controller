@@ -24,7 +24,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
         caller.ThrowIfCancellationRequested();
         var request = input();
         if (brokerOrigin is null) throw new IssuanceDenied();
-        var hash = DeviceSecret.Hash(secret) ?? throw new IssuanceDenied(401);
+        var hash = ControllerSecret.Hash(secret) ?? throw new IssuanceDenied(401);
         var s = await store.AdmitAsync(request, Convert.ToHexString(hash), work.Cancellation);
         if (s.Pending.Marker is not null) return Status(s);
         var existing = s.Pending.Attempt is not null ? await store.AttemptAsync(s, work.Cancellation) : null;
@@ -93,14 +93,14 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
     public Task<IssuanceResult> StatusAsync(string id, string? secret, CancellationToken caller, int setupVersion = 1) => Run(async work =>
     {
         caller.ThrowIfCancellationRequested();
-        var s = await store.SnapshotAsync(id, Convert.ToHexString(DeviceSecret.Hash(secret) ?? throw new IssuanceDenied(401)), work.Cancellation, setupVersion);
+        var s = await store.SnapshotAsync(id, Convert.ToHexString(ControllerSecret.Hash(secret) ?? throw new IssuanceDenied(401)), work.Cancellation, setupVersion);
         return Status(s);
     });
 
     public Task<IssuanceResult> CompleteAsync(string id, string? secret, CancellationToken caller, int setupVersion = 1) => Run(async work =>
     {
         caller.ThrowIfCancellationRequested();
-        var s = await store.SnapshotAsync(id, Convert.ToHexString(DeviceSecret.Hash(secret) ?? throw new IssuanceDenied(401)), work.Cancellation, setupVersion);
+        var s = await store.SnapshotAsync(id, Convert.ToHexString(ControllerSecret.Hash(secret) ?? throw new IssuanceDenied(401)), work.Cancellation, setupVersion);
         store.RequireLive(s.Pending);
         if (s.Pending.Marker is null) throw new IssuanceDenied(409);
         var attempt = await store.AttemptAsync(s, work.Cancellation);
@@ -133,7 +133,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
                 AppId = AppId,
                 AppSlug = AppSlug,
                 GitHubHost = "github.com",
-                ControllerSecretHash = Convert.ToHexString(DeviceSecret.Hash(controllerSecret)!),
+                ControllerSecretHash = Convert.ToHexString(ControllerSecret.Hash(controllerSecret)!),
                 Acknowledged = false,
                 State = "unacknowledged",
                 ExpiresAt = Date(p.Deadline),
@@ -152,8 +152,8 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
                 ["protocolVersion"] = approval.RuntimeVersion,
                 ["brokerOrigin"] = brokerOrigin!.GetLeftPart(UriPartial.Authority),
                 ["githubHost"] = "github.com",
-                ["deviceId"] = s.EnrollmentId,
-                ["deviceSecret"] = controllerSecret,
+                [approval.CanonicalNames ? "enrollmentId" : "deviceId"] = s.EnrollmentId,
+                [approval.CanonicalNames ? "controllerSecret" : "deviceSecret"] = controllerSecret,
                 ["appId"] = AppId,
                 ["appSlug"] = AppSlug,
                 ["installationId"] = Number(p.InstallationId),
@@ -184,18 +184,18 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
         return new(200, new { completionId = completion, enrollment = result });
     });
 
-    public Task<IssuanceResult> AcknowledgeAsync(string deviceId, string completionId, string? secret, CancellationToken caller, int setupVersion = 1) => Run(async work =>
+    public Task<IssuanceResult> AcknowledgeAsync(string enrollmentId, string completionId, string? secret, CancellationToken caller, int setupVersion = 1) => Run(async work =>
     {
         caller.ThrowIfCancellationRequested();
-        var hash = DeviceSecret.Hash(secret) ?? throw new IssuanceDenied(401);
-        if (!DeviceSecret.IsDeviceId(deviceId) || !Guid.TryParseExact(completionId, "N", out _)) throw new IssuanceDenied(401);
-        var locator = await store.LocatorAsync(deviceId, work.Cancellation) ?? throw new IssuanceDenied(401);
-        if (Text(locator.EnrollmentId) != deviceId) throw new IssuanceDenied(401);
+        var hash = ControllerSecret.Hash(secret) ?? throw new IssuanceDenied(401);
+        if (!ControllerSecret.IsEnrollmentId(enrollmentId) || !Guid.TryParseExact(completionId, "N", out _)) throw new IssuanceDenied(401);
+        var locator = await store.LocatorAsync(enrollmentId, work.Cancellation) ?? throw new IssuanceDenied(401);
+        if (Text(locator.EnrollmentId) != enrollmentId) throw new IssuanceDenied(401);
         var s = await store.SnapshotAsync(Text(locator.PendingId), null, work.Cancellation, setupVersion);
-        if (s.EnrollmentId != deviceId || s.RepositoryId != Text(locator.RepositoryId)) throw new IssuanceDenied(401);
+        if (s.EnrollmentId != enrollmentId || s.RepositoryId != Text(locator.RepositoryId)) throw new IssuanceDenied(401);
         var enrollment = await EnrollmentAsync(s, work.Cancellation);
         var e = enrollment.Value;
-        if (!DeviceSecret.Matches(hash, Text(e.ControllerSecretHash)) || Text(e.CompletionId) != completionId
+        if (!ControllerSecret.Matches(hash, Text(e.ControllerSecretHash)) || Text(e.CompletionId) != completionId
             || Text(s.Pending.CompletionId) != completionId) throw new IssuanceDenied(401);
         if (e.Acknowledged == true)
         {
@@ -333,7 +333,7 @@ public sealed class EnrollmentService(EnrollmentStore store, IGitHubTokens token
             var status = ex is IssuanceDenied denied ? denied.Status : 503;
             return start && status == 503
                 ? new(503, new { code = "enrollment_settlement_unconfirmed" })
-                : new(status);
+                : new(status) { Rejection = ex is IssuanceDenied rejection ? rejection.Reason : null };
         }
     }
 }

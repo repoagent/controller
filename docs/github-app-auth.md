@@ -17,7 +17,7 @@ Webhook mode additionally requires owner-approved **Webhooks: read and write** a
 
 ## Broker credentials (consumer integration)
 
-Obtain a private enrollment through the [controller enrollment client](host-enrollment.md), using the broker operator's canonical HTTPS origin. The deployed maintainer broker is described in [Azure operations](azure-auth-deployment.md). The protected [v1 enrollment file](broker-protocol.md) lets the Linux/macOS controller authenticate without an App PEM; full hosted controller handover and lifecycle acceptance remain separate gates.
+Obtain a private enrollment through the [controller enrollment client](controller-enrollment.md), using the broker operator's canonical HTTPS origin. The deployed maintainer broker is described in [Azure operations](azure-auth-deployment.md). The protected [v1 enrollment file](broker-protocol.md) lets the Linux/macOS controller authenticate without an App PEM; full hosted controller handover and lifecycle acceptance remain separate gates.
 
 ```sh
 RepoAgentController --repo OWNER/REPO --app-id NUMERIC_APP_ID \
@@ -46,7 +46,7 @@ installation, repository ID and trusted broker origin:
 
 ```sh
 enrollment="$HOME/.repoagent/instances/YOUR_INSTANCE/enrollment.json"
-check_state="$HOME/.repoagent/native-auth-check"
+check_state="$HOME/.repoagent/agent-auth-check"
 install -d -m 700 "$check_state"
 
 dotnet run --project src/RepoAgentController -- \

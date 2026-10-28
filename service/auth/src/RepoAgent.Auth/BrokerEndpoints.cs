@@ -11,15 +11,20 @@ internal static class BrokerEndpoints
         // Runtime v1: frozen non-clone, v2: frozen clone, v3: repository-settings profiles.
         foreach (var version in new[] { 1, 2, 3 })
         {
-            app.MapDelete($"/v{version}/devices/{{deviceId}}", (string deviceId, HttpContext context, DeviceRevocation revocation) =>
-                AnswerAsync(context, request => BrokerRoutes.RevokeAsync(request, deviceId, revocation, version)));
-            app.MapPost($"/v{version}/devices/{{deviceId}}/installation-token", (string deviceId, HttpContext context) =>
-                AnswerAsync(context, request => BrokerRoutes.IssueAsync(request, deviceId, () =>
-                    context.RequestServices.GetService<InstallationTokenIssuer>() is { } issuer ? issuer.IssueAsync : null, version)));
+            app.MapDelete($"/v{version}/devices/{{enrollmentId}}", (string enrollmentId, HttpContext context, ControllerSelfRevocation revocation) =>
+                AnswerAsync(context, request => BrokerRoutes.RevokeAsync(request, enrollmentId, revocation, version)));
+            app.MapPost($"/v{version}/devices/{{enrollmentId}}/installation-token", (string enrollmentId, HttpContext context) =>
+                AnswerAsync(context, request => BrokerRoutes.IssueAsync(request, enrollmentId, () =>
+                    context.RequestServices.GetService<GitHubTokenIssuer>() is { } issuer ? issuer.IssueAsync : null, version)));
+            app.MapDelete($"/v{version}/controller-enrollments/{{enrollmentId}}", (string enrollmentId, HttpContext context, ControllerSelfRevocation revocation) =>
+                AnswerAsync(context, request => BrokerRoutes.RevokeAsync(request, enrollmentId, revocation, version)));
+            app.MapPost($"/v{version}/controller-enrollments/{{enrollmentId}}/github-token", (string enrollmentId, HttpContext context) =>
+                AnswerAsync(context, request => BrokerRoutes.IssueAsync(request, enrollmentId, () =>
+                    context.RequestServices.GetService<GitHubTokenIssuer>() is { } issuer ? issuer.IssueAsync : null, version)));
         }
         // Setup v1: approval environment, v2: repository Agent variable, v3: repository Actions variable,
         // v4: repository Agent variable for every profile. Its policies reuse the runtime versions above.
-        foreach (var version in new[] { 1, 2, 3, 4 })
+        foreach (var version in new[] { 1, 2, 3, 4, 5 })
         {
             // The explicit return type keeps this handler off the RequestDelegate overload, which would discard the answer.
             app.MapPost($"/v{version}/enrollments", Task<IResult> (HttpContext context) =>
@@ -28,7 +33,8 @@ internal static class BrokerEndpoints
                 AnswerAsync(context, request => BrokerRoutes.StatusAsync(request, id, Service<EnrollmentService>(context), version)));
             app.MapPost($"/v{version}/enrollments/{{id}}/completion", (string id, HttpContext context) =>
                 AnswerAsync(context, request => BrokerRoutes.CompleteAsync(request, id, Service<EnrollmentService>(context), version)));
-            app.MapPost($"/v{version}/devices/{{id}}/acknowledgment", (string id, HttpContext context) =>
+            var acknowledgment = version == 5 ? $"/v{version}/controller-enrollments/{{id}}/acknowledgment" : $"/v{version}/devices/{{id}}/acknowledgment";
+            app.MapPost(acknowledgment, (string id, HttpContext context) =>
                 AnswerAsync(context, request => BrokerRoutes.AcknowledgeAsync(request, id, Service<EnrollmentService>(context), version)));
         }
     }
@@ -45,6 +51,7 @@ internal static class BrokerEndpoints
         IssuanceResult answer;
         try { answer = await route(request); }
         catch (BadHttpRequestException) { return Results.StatusCode(StatusCodes.Status400BadRequest); } // A body Kestrel can't deliver.
+        if (answer.Status == StatusCodes.Status429TooManyRequests) BrokerRejections.Record(answer.Rejection ?? BrokerRejectionReason.Other);
         return answer.Body is null ? Results.StatusCode(answer.Status) : Results.Json(answer.Body, statusCode: answer.Status);
     }
 

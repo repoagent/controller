@@ -74,10 +74,22 @@ jobs:
           cd "$RUNNER_TEMP/controller-image"
           docker run --rm --network none "$IMAGE" versions | tee versions.txt
           docker run --rm --network none --entrypoint cat "$IMAGE" /opt/repoagent/image-inventory.json > image-inventory.json
+          docker run --rm --network none --entrypoint cat "$IMAGE" /opt/repoagent/controller/RELEASE_NOTES.md > RELEASE_NOTES.md
           docker run --rm --network none --entrypoint /opt/repoagent/native-smoke/NativeSmoke "$IMAGE"
           python3 "$GITHUB_WORKSPACE/scripts/delivery/image-release.py" check .
-  commit:
+  smoke:
     needs: [select, verify]
+    if: needs.select.outputs.changed == 'true'
+    uses: ./.github/workflows/e2e-smoke.yml
+    with:
+      source_ref: ${{ needs.select.outputs.base }}
+      selection: ${{ needs.select.outputs.selection }}
+    secrets: inherit
+    permissions:
+      contents: read
+      issues: write
+  commit:
+    needs: [select, verify, smoke]
     if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && needs.select.outputs.changed == 'true'
     environment: controller-release
     runs-on: ubuntu-24.04
@@ -94,14 +106,38 @@ jobs:
         with:
           artifact-ids: ${{ needs.select.outputs.selection }}
           path: ${{ runner.temp }}/tool-selection
-      - name: Pin the verified version on main and publish a baseline
+      - name: Pin the verified version on main and propose a semantic release
         # A GITHUB_TOKEN commit starts no push workflow, so publication is dispatched explicitly.
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           python3 scripts/delivery/tool-refresh.py commit "$RUNNER_TEMP/tool-selection/selection.json"
-          gh workflow run controller.yml --ref main || {
-            echo '::error::The verified pin is on main, but publication was not dispatched. Run: gh workflow run controller.yml --ref main' >&2
+          gh workflow run release-please.yml --ref main || {
+            echo '::error::The verified pin is on main, but publication was not dispatched. Run: gh workflow run release-please.yml --ref main' >&2
             exit 1
           }
+  report-failure:
+    needs: [select, verify, smoke, commit]
+    if: failure() && github.repository == 'repoagent/controller' && needs.smoke.result != 'failure'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Report a refused tool selection or verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TOOL: ${{ inputs.tool }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Baseline tool refresh failed: $TOOL"
+          printf 'Tool refresh `%s` failed. Inspect [the run](%s). Selection, verification, smoke and safe pinning must all succeed before publication. Prior pins remain authoritative; if explicit publication dispatch failed after pinning, follow the recovery diagnostic in the run.\n' "$TOOL" "$RUN_URL" > "$RUNNER_TEMP/tool-failure.md"
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body-file "$RUNNER_TEMP/tool-failure.md"
+          else
+            gh issue create --title "$title" --body-file "$RUNNER_TEMP/tool-failure.md"
+          fi

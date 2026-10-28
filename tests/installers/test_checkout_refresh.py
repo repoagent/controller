@@ -1,4 +1,4 @@
-"""Real managed-checkout startup freshness; empty polls create no native turns."""
+"""Real managed-checkout startup freshness; empty polls create no agent turns."""
 from contextlib import closing, contextmanager
 import hashlib
 import hmac
@@ -25,13 +25,13 @@ import unittest
 
 from test_managed_git import CONTROLLER, ROOT, CredentialManager, GitProvider, free_port
 
-# Real native model turns against GitProvider's credential-free local Responses endpoint.
+# Real agent model turns against GitProvider's credential-free local Responses endpoint.
 FIXTURE_MODEL = 'model = "gpt-6.1-sol"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "Credential-free local fixture"\nbase_url = "https://broker.fixture/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n'
 
 
-def native_event(line):
-    """Fields of the controller's redacted native-event log line; the raw native message is never logged."""
-    return re.search(r' native-event method=(?P<method>\S*) thread=(?P<thread>\S*) turn=(?P<turn>\S*) status=(?P<status>\S*)'
+def agent_event(line):
+    """Fields of the controller's redacted agent-event log line; the raw agent message is never logged."""
+    return re.search(r' agent-event method=(?P<method>\S*) thread=(?P<thread>\S*) turn=(?P<turn>\S*) status=(?P<status>\S*)'
                      r' will-retry=(?P<willRetry>\S*) error=(?P<error>.*)$', line.rstrip('\n')).groupdict()
 
 
@@ -39,15 +39,15 @@ def native_event(line):
 class CheckoutRefreshTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        owned = tempfile.TemporaryDirectory(prefix='checkout-refresh-native-')
+        owned = tempfile.TemporaryDirectory(prefix='checkout-refresh-agent-')
         directory = Path(owned.name)
         def cleanup():
             owned.cleanup()
-            assert not directory.exists(), 'Owned native prerequisite was not removed'
-            print('REFRESH_NATIVE cleanup=removed path=' + str(directory), flush=True)
+            assert not directory.exists(), 'Owned agent prerequisite was not removed'
+            print('REFRESH_AGENT cleanup=removed path=' + str(directory), flush=True)
         cls.addClassCleanup(cleanup)
-        native_bin, home = directory / 'bin', directory / 'home'
-        native_bin.mkdir()
+        agent_bin, home = directory / 'bin', directory / 'home'
+        agent_bin.mkdir()
         home.mkdir(mode=0o700)
         version, url, checksum = runpy.run_path(str(ROOT / 'scripts/compose-image.py'))['ARTIFACTS']['codex']
         if json.loads((ROOT / 'image/default.json').read_text())['agent']['version'] != version:
@@ -56,22 +56,22 @@ class CheckoutRefreshTests(unittest.TestCase):
         with urllib.request.urlopen(url, timeout=60) as response, archive.open('wb') as output:
             shutil.copyfileobj(response, output)
         if hashlib.sha256(archive.read_bytes()).hexdigest() != checksum:
-            raise RuntimeError('Native test prerequisite checksum mismatch')
-        cls.native = native_bin / 'codex'
+            raise RuntimeError('Agent test prerequisite checksum mismatch')
+        cls.agent = agent_bin / 'codex'
         with tarfile.open(archive, 'r:gz') as package:
             member = package.getmember('codex-x86_64-unknown-linux-musl')
             if not member.isfile():
-                raise RuntimeError('Native test prerequisite must be a regular executable')
-            with package.extractfile(member) as source, cls.native.open('wb') as output:
+                raise RuntimeError('Agent test prerequisite must be a regular executable')
+            with package.extractfile(member) as source, cls.agent.open('wb') as output:
                 shutil.copyfileobj(source, output)
-        cls.native.chmod(0o755)
-        identity = subprocess.run([str(cls.native), '--version'], capture_output=True, text=True,
+        cls.agent.chmod(0o755)
+        identity = subprocess.run([str(cls.agent), '--version'], capture_output=True, text=True,
                                   check=True, timeout=15, env=dict(PATH=os.environ['PATH'], HOME=str(home), CODEX_HOME=str(home)))
         if identity.stdout.strip() != 'codex-cli ' + version:
-            raise RuntimeError('Native test prerequisite version mismatch')
-        print('REFRESH_NATIVE version=' + version + ' archive-sha256=' + checksum
-              + ' executable-sha256=' + hashlib.sha256(cls.native.read_bytes()).hexdigest()
-              + ' path=' + str(cls.native) + ' owned-mode=' + oct(directory.stat().st_mode & 0o777)
+            raise RuntimeError('Agent test prerequisite version mismatch')
+        print('REFRESH_AGENT version=' + version + ' archive-sha256=' + checksum
+              + ' executable-sha256=' + hashlib.sha256(cls.agent.read_bytes()).hexdigest()
+              + ' path=' + str(cls.agent) + ' owned-mode=' + oct(directory.stat().st_mode & 0o777)
               + ' home-mode=' + oct(home.stat().st_mode & 0o777), flush=True)
         build = subprocess.run(['dotnet', 'build', str(ROOT / 'src/RepoAgentController/RepoAgentController.csproj'),
                                 '-c', 'Release', '--nologo', '-v', 'quiet'], cwd=ROOT,
@@ -101,8 +101,8 @@ class CheckoutRefreshTests(unittest.TestCase):
             enrollment.chmod(0o600)
             environment = provider.environment()
             environment.update(HOME=str(home), CODEX_HOME=str(home), CODEX_CA_CERTIFICATE=str(provider.cert),
-                               PATH=str(self.native.parent) + os.pathsep + os.environ['PATH'])
-            self.assertEqual(shutil.which('codex', path=environment['PATH']), str(self.native))
+                               PATH=str(self.agent.parent) + os.pathsep + os.environ['PATH'])
+            self.assertEqual(shutil.which('codex', path=environment['PATH']), str(self.agent))
             # All outbound HTTP goes to the existing local denying CONNECT fixture.
             for name in ('HTTP_PROXY', 'http_proxy', 'https_proxy'):
                 environment[name] = environment['HTTPS_PROXY']
@@ -158,7 +158,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertIn('poll-completed success=True', output)
             actual = git('-C', checkout, 'rev-parse', 'HEAD')
             print('REFRESH baseline=' + before + ' target=' + after + ' actual=' + actual
-                  + ' native=' + str(Path(shutil.which('codex', path=environment['PATH'])).resolve())
+                  + ' agent=' + str(Path(shutil.which('codex', path=environment['PATH'])).resolve())
                   + ' transport=GitProvider-normal-TLS empty-poll=true helper-fetch-control=passed', flush=True)
             self.assertEqual(actual, after, 'Restart must reconcile the clean owned checkout before its empty poll')
             self.assertEqual((checkout / 'README').read_text(), 'current default branch B\n')
@@ -195,7 +195,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 enrollment.write_text(json.dumps(provider.enrollment())); enrollment.chmod(0o600)
                 environment = provider.environment()
                 environment.update(HOME=str(home), CODEX_HOME=str(home), CODEX_CA_CERTIFICATE=str(provider.cert),
-                                   PATH=str(self.native.parent) + os.pathsep + os.environ['PATH'],
+                                   PATH=str(self.agent.parent) + os.pathsep + os.environ['PATH'],
                                    HTTP_PROXY=environment['HTTPS_PROXY'], http_proxy=environment['HTTPS_PROXY'],
                                    https_proxy=environment['HTTPS_PROXY'], ALL_PROXY='', all_proxy='', no_proxy='')
                 def run(command):
@@ -213,7 +213,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                                     checkout=checkout, owner=workspace / '.repoagent-checkout.json', command=command,
                                     run=run, git=git, journal=Path(str(state) + '.refresh.json'))
                 if protocol:
-                    incoming, outgoing = directory / 'native-in', directory / 'native-out'
+                    incoming, outgoing = directory / 'agent-in', directory / 'agent-out'
                     os.mkfifo(incoming); os.mkfifo(outgoing)
                     f.commands = os.fdopen(os.open(incoming, os.O_RDWR), 'w', buffering=1)
                     f.responses = os.fdopen(os.open(outgoing, os.O_RDWR), 'r')
@@ -221,9 +221,9 @@ class CheckoutRefreshTests(unittest.TestCase):
                     (relay / 'codex').write_text(textwrap.dedent('''\
                         #!/usr/bin/python3
                         import json,os,subprocess,sys,threading
-                        child=subprocess.Popen([os.environ['MATRIX_NATIVE'],*sys.argv[1:]],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+                        child=subprocess.Popen([os.environ['MATRIX_AGENT'],*sys.argv[1:]],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
                         if os.environ.get('MATRIX_PIDS'):
-                         with open(os.environ['MATRIX_PIDS'],'w') as proof: json.dump(dict(relay=os.getpid(),native=child.pid),proof)
+                         with open(os.environ['MATRIX_PIDS'],'w') as proof: json.dump(dict(relay=os.getpid(),agent=child.pid),proof)
                         lock=threading.Lock()
                         def emit(line):
                          with lock: print(line,end='',flush=True)
@@ -246,7 +246,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                         child.stdin.close();child.wait();sys.exit(child.returncode)
                         '''))
                     (relay / 'codex').chmod(0o700)
-                    environment.update(PATH=str(relay) + os.pathsep + environment['PATH'], MATRIX_NATIVE=str(self.native),
+                    environment.update(PATH=str(relay) + os.pathsep + environment['PATH'], MATRIX_AGENT=str(self.agent),
                                        MATRIX_IN=str(incoming), MATRIX_OUT=str(outgoing), MATRIX_HOLD=str(directory / 'hold-reload'))
                 try: yield f
                 finally:
@@ -270,8 +270,8 @@ class CheckoutRefreshTests(unittest.TestCase):
                 except queue.Empty: self.fail('Timed out before ' + fragment + '; refresh outcomes:\n' + ''.join(item for item in lines if ' refresh-' in item))
                 if line is None: self.fail('Controller closed before ' + fragment + '\n' + ''.join(lines))
                 if fragment in line: return line
-        def wait_or_native(fragment, timeout=20):
-            # Event barrier for the protocol relay: None means native input arrived before the controller line.
+        def wait_or_agent(fragment, timeout=20):
+            # Event barrier for the protocol relay: None means agent input arrived before the controller line.
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if select.select([f.responses], [], [], 0.05)[0]: return None
@@ -279,8 +279,8 @@ class CheckoutRefreshTests(unittest.TestCase):
                 except queue.Empty: continue
                 if line is None: self.fail('Controller closed before ' + fragment + '\n' + ''.join(lines))
                 if fragment in line: return line
-            self.fail('Neither native input nor ' + fragment + ' was observed\n' + ''.join(lines))
-        f.process, f.wait, f.wait_or_native, f.lines = process, wait, wait_or_native, lines
+            self.fail('Neither agent input nor ' + fragment + ' was observed\n' + ''.join(lines))
+        f.process, f.wait, f.wait_or_agent, f.lines = process, wait, wait_or_agent, lines
         try:
             wait(ready)
             yield
@@ -438,30 +438,30 @@ class CheckoutRefreshTests(unittest.TestCase):
     def subjects(self, envelope):
         return [(change['subject']['id'], change['subject']['author']['login'], change['subject']['body']) for change in envelope['changes']]
 
-    def test_unacknowledged_native_input_is_redelivered_once_idle_while_the_checkout_stays_excluded(self):
+    def test_unacknowledged_agent_input_is_redelivered_once_idle_while_the_checkout_stays_excluded(self):
         with self.fixture(protocol=True) as f, self.controller(f):
             f.provider.discussions = [dict(self.discussion(1), reactionGroups=[])]
             request = self.rpc(f, 'thread/start')
             self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
             request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
-            self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+            self.terminal(f, 'S1', 'T1'); f.wait('agent-event')
             initial = f.git('-C', f.checkout, 'rev-parse', 'HEAD')
             f.provider.comments = {'D1': [self.comment(1, 'alice', 'please answer')]}
             request = self.rpc(f, 'turn/start')
             self.assertEqual(self.subjects(self.dispatched(request)), [('C1', 'alice', 'please answer')])
             target = self.publish(f)
-            f.wait('delivery-retry', timeout=90)  # The acknowledgement is lost: the controller's native request deadline passes.
+            f.wait('delivery-retry', timeout=90)  # The acknowledgement is lost: the controller's agent request deadline passes.
             self.pending(f)
             self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial, 'Checkout refreshed while delivery was uncertain')
-            # The native accepted the input after all; its late turn runs past the retry backoff.
+            # The agent accepted the input after all; its late turn runs past the retry backoff.
             self.notify(f, 'thread/status/changed', threadId='S1', status=dict(type='active'))
             self.notify(f, 'turn/started', threadId='S1', turn=dict(id='T2', status='inProgress'))
             deadline = time.monotonic() + 7
             while time.monotonic() < deadline:
-                self.assertIsNotNone(f.wait_or_native('poll-completed'), 'Redelivery reached a session that was not idle')
+                self.assertIsNotNone(f.wait_or_agent('poll-completed'), 'Redelivery reached a session that was not idle')
             journal = json.loads(f.journal.read_text())
             self.assertFalse(journal['blocked'], journal.get('reason'))
-            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial, 'Checkout refreshed under the late native turn')
+            self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial, 'Checkout refreshed under the late agent turn')
             self.terminal(f, 'S1', 'T2')
             request = self.rpc(f, 'turn/start')
             redelivered = self.dispatched(request)
@@ -472,21 +472,21 @@ class CheckoutRefreshTests(unittest.TestCase):
             f.wait('receipt https://github.com/owner/project/discussions/1#discussioncomment-1')
             self.assertEqual(f.provider.reactions, ['D1', 'C1'])
             self.terminal(f, 'S1', 'T3')
-            # The acknowledged redelivery completed, so no native turn can still hold the input: refresh resumes.
+            # The acknowledged redelivery completed, so no agent turn can still hold the input: refresh resumes.
             f.wait('checkout-refreshed'); self.settled(f)
             self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
             self.assertEqual(json.loads(f.journal.read_text())['active'], {})
             self.assertNotIn('waiting', json.loads(f.state.read_text())['discussions']['D1'])
-            print('REDELIVERY lost-ack=redelivered late-native-turn=held-until-idle checkout=excluded-until-resolved', flush=True)
+            print('REDELIVERY lost-ack=redelivered late-agent-turn=held-until-idle checkout=excluded-until-resolved', flush=True)
 
     def rpc(self, f, method):
-        self.assertTrue(select.select([f.responses], [], [], 20)[0], 'Missing native request ' + method)
+        self.assertTrue(select.select([f.responses], [], [], 20)[0], 'Missing agent request ' + method)
         message = json.loads(f.responses.readline())
         self.assertEqual(message['method'], method)
         return message
 
     def reply(self, f, request, result, status='idle'):
-        # Pinned native thread/start and thread/resume results report the loaded thread's runtime status.
+        # Pinned agent thread/start and thread/resume results report the loaded thread's runtime status.
         if request['method'] in ('thread/start', 'thread/resume') and 'thread' in result:
             result['thread'].setdefault('status', dict(type=status))
         f.commands.write(json.dumps(dict(id=request['id'], result=result)) + '\n'); f.commands.flush()
@@ -495,7 +495,7 @@ class CheckoutRefreshTests(unittest.TestCase):
         f.commands.write(json.dumps(dict(method=method, params=params)) + '\n'); f.commands.flush()
 
     def terminal(self, f, thread, turn, status='idle', outcome='completed'):
-        # Pinned native order: the thread status changes before turn/completed.
+        # Pinned agent order: the thread status changes before turn/completed.
         self.notify(f, 'thread/status/changed', threadId=thread, status=dict(type=status))
         self.notify(f, 'turn/completed', threadId=thread, turn=dict(id=turn, status=outcome))
 
@@ -504,7 +504,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             f.wait('poll-completed success=True')
             journal = json.loads(f.journal.read_text())
             if journal['requested'] > journal['completed']: return journal
-        self.fail('Periodic trigger was not persisted while native work was active')
+        self.fail('Periodic trigger was not persisted while agent work was active')
 
     def test_all_sessions_block_refresh_until_correlated_completion_and_preserve_reload_checkpoint(self):
         for hold_reload in (False, True):
@@ -524,12 +524,12 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.pending(f)
                     self.assertEqual(len(f.provider.git_tokens), requests)
                     self.terminal(f, 'S1', 'T1')
-                    f.wait('native-event')
+                    f.wait('agent-event')
                     self.pending(f)
                     self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
                     self.assertEqual(len(f.provider.git_tokens), requests)
                     self.terminal(f, 'S1', 'T1')  # Known duplicate cannot release session2.
-                    f.wait('native-event')
+                    f.wait('agent-event')
                     if hold_reload: (f.directory / 'hold-reload').touch()
                     self.terminal(f, 'S2', 'T2')
                     f.wait('checkout-refreshed')
@@ -575,7 +575,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertFalse(journal['blocked'])
                 self.assertEqual(journal['completed'], journal['requested'])
                 return
-        self.fail('Native reload did not complete its durable checkpoint')
+        self.fail('Agent reload did not complete its durable checkpoint')
 
     def test_refresh_precedes_waiting_input_and_early_completion_waits_for_acknowledgement(self):
         with self.fixture(protocol=True) as f, self.controller(f):
@@ -588,19 +588,19 @@ class CheckoutRefreshTests(unittest.TestCase):
             requests = len(f.provider.git_tokens)
             target = self.publish(f); self.pending(f)
             f.provider.discussions[0]['body'] += ' changed'
-            self.assertIsNotNone(f.wait_or_native('input-waiting'), 'Input reached native during the active turn')
+            self.assertIsNotNone(f.wait_or_agent('input-waiting'), 'Input reached agent during the active turn')
             self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), initial)
             self.assertEqual(len(f.provider.git_tokens), requests)
             self.terminal(f, 'S1', 'T1')
-            # The eligible refresh takes the idle boundary before the waiting input reaches the reloaded native.
+            # The eligible refresh takes the idle boundary before the waiting input reaches the reloaded agent.
             f.wait('checkout-refreshed')
             self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
             request = self.rpc(f, 'thread/resume')
             self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
             request = self.rpc(f, 'turn/start')
             self.assertIn(' changed', self.dispatched(request)['changes'][0]['subject']['body'])
-            self.terminal(f, 'S1', 'T2')  # The native can complete a turn before its acknowledgement arrives.
-            f.wait('native-event')
+            self.terminal(f, 'S1', 'T2')  # The agent can complete a turn before its acknowledgement arrives.
+            f.wait('agent-event')
             journal = json.loads(f.journal.read_text())
             self.assertEqual(len(journal['active']), 1, 'Early terminal cleared admission before acknowledgement')
             self.assertFalse(next(iter(journal['active'].values()))['confirmed'])
@@ -639,7 +639,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 1)
                     self.assertIn('refresh', result.stdout.lower())
                 else:
-                    # The actual CLI now reaches its HTTP host while preserving the native admission fence.
+                    # The actual CLI now reaches its HTTP host while preserving the agent admission fence.
                     with self.controller(f, ' ready repository='):
                         port = int(f.command[f.command.index('--status-port') + 1])
                         with closing(http.client.HTTPConnection('127.0.0.1', port, timeout=5)) as connection:
@@ -673,12 +673,12 @@ class CheckoutRefreshTests(unittest.TestCase):
             requests = len(f.provider.git_tokens)
             target = self.force_push(f); self.pending(f)
             self.assertEqual(self.snapshot(f.checkout), during, 'Refresh changed the checkout under an active turn')
-            self.assertEqual(len(f.provider.git_tokens), requests, 'Refresh fetched while native work was active')
+            self.assertEqual(len(f.provider.git_tokens), requests, 'Refresh fetched while agent work was active')
             self.terminal(f, 'S1', 'T1')
             f.wait('checkout-refreshed'); self.settled(f)
             f.provider.discussions[0]['body'] += ' next input'
             request = self.rpc(f, 'thread/resume')
-            # Native has not started the next turn yet; it must already see origin's content.
+            # Agent has not started the next turn yet; it must already see origin's content.
             self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
             self.assertEqual((f.checkout / 'README').read_text(), 'rewritten history\n')
             self.assertFalse((f.checkout / 'agent-notes').exists())
@@ -688,11 +688,11 @@ class CheckoutRefreshTests(unittest.TestCase):
             f.wait('poll-completed success=True')
             self.assertNotEqual(initial, target)
             self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
-            self.terminal(f, 'S1', 'T2'); f.wait('native-event')
+            self.terminal(f, 'S1', 'T2'); f.wait('agent-event')
 
 
 
-    def test_unexpected_replacement_native_eof_preserves_active_uncertainty(self):
+    def test_unexpected_replacement_agent_eof_preserves_active_uncertainty(self):
         with self.fixture(protocol=True) as f, self.controller(f):
             baseline = self.publish(f)
             f.wait('checkout-refreshed'); self.settled(f)
@@ -758,12 +758,12 @@ class CheckoutRefreshTests(unittest.TestCase):
                     deliver('discussion', number)
                     f.wait('webhook-observed discussion=' + str(number) + ' success=True')
                     session = json.loads(f.state.read_text())['discussions']['D' + str(number)]['sessionId']
-                    # The actual pinned native creates and completes every session; no manufactured session IDs.
-                    while not any(' native-event ' in line and native_event(line)['method'] == 'turn/completed'
-                                  and native_event(line)['thread'] == session for line in f.lines):
-                        f.wait('native-event')
-                    completion = next(native_event(line) for line in f.lines if ' native-event ' in line
-                                      and native_event(line)['method'] == 'turn/completed' and native_event(line)['thread'] == session)
+                    # The actual pinned agent creates and completes every session; no manufactured session IDs.
+                    while not any(' agent-event ' in line and agent_event(line)['method'] == 'turn/completed'
+                                  and agent_event(line)['thread'] == session for line in f.lines):
+                        f.wait('agent-event')
+                    completion = next(agent_event(line) for line in f.lines if ' agent-event ' in line
+                                      and agent_event(line)['method'] == 'turn/completed' and agent_event(line)['thread'] == session)
                     self.assertEqual(completion['status'], 'completed', completion)
                 # A completed observation settles the final running marker before the retained snapshot is read.
                 deliver('discussion', 1); f.wait('webhook-observed discussion=1 success=True')
@@ -783,7 +783,7 @@ class CheckoutRefreshTests(unittest.TestCase):
             self.assertEqual(legacy['running'], 0)
             self.assertIsNone(legacy.get('applying'))
             # Load only this isolated fixture's reported legacy shape, not the unknown cause of a production HTTP429.
-            legacy.update(blocked=True, reason='Native activity or checkout update is uncertain; inspect state before recovery')
+            legacy.update(blocked=True, reason='Agent activity or checkout update is uncertain; inspect state before recovery')
             f.journal.write_text(json.dumps(legacy)); f.journal.chmod(0o600)
             legacy_state, legacy_journal = f.state.read_bytes(), f.journal.read_bytes()
             before = self.local_state(f)
@@ -839,7 +839,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                     self.assertFalse(status()['work']['admissionBlocked'])
                     self.assertEqual(status()['state'], 'idle')
                     self.assertEqual({key: record['sessionId'] for key, record in json.loads(f.state.read_text())['discussions'].items()}, identities)
-                    self.assertEqual(len(f.provider.model_requests), 10, 'Quiet retained sessions dispatched native work')
+                    self.assertEqual(len(f.provider.model_requests), 10, 'Quiet retained sessions dispatched agent work')
                     self.assertFalse(json.loads(f.journal.read_text())['blocked'])
                 self.assertEqual(f.process.returncode, 0)
                 print('LEGACY_RECOVERY sessions=10 pending=0 active=0 normal-ready=true signed-ping=true full-reconcile=true controlled-restart=' + str(restart), flush=True)
@@ -881,7 +881,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 finally:
                     # Normal stop drains accepted work; retain S1, but explicitly finish its genuine T1 first.
                     self.terminal(f, 'S1', 'T1')
-                f.wait('native-event method=turn/completed thread=S1 turn=T1 status=completed')
+                f.wait('agent-event method=turn/completed thread=S1 turn=T1 status=completed')
             self.assertEqual(f.process.returncode, 0)
             self.assertTrue(any(' turn-ended https://github.com/owner/project/discussions/1 session=S1 turn=T1 status=completed' in line
                                 for line in f.lines), 'Normal drain did not durably settle the correlated completed turn')
@@ -923,7 +923,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertTrue(status()['work']['admissionBlocked'])
                 self.assertEqual(status()['state'], 'busy')
                 self.assertFalse(f.journal.exists())
-                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Blocked Forget admitted native input')
+                self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Blocked Forget admitted agent input')
             self.assertEqual(f.process.returncode, 0)
             self.assertFalse(f.journal.exists())
             self.assertEqual({p: p.read_bytes() for p in raw_evidence}, raw_evidence)
@@ -942,7 +942,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertFalse(f.journal.exists(), 'Restart synthesized a lifecycle journal from an empty Discussion state')
                 f.provider.discussions = [self.discussion(2)]
                 deliver(2, 'created')
-                self.assertIsNotNone(f.wait_or_native('observation-error'), 'Restart admitted native input after Forget')
+                self.assertIsNotNone(f.wait_or_agent('observation-error'), 'Restart admitted agent input after Forget')
                 f.wait('webhook-observed discussion=2 success=False')
                 self.assertFalse(select.select([f.responses], [], [], 0)[0])
                 self.assertFalse(f.journal.exists())
@@ -962,7 +962,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                         request = self.rpc(f, 'turn/start'); self.reply(f, request, dict(turn=dict(id='T1')))
                         f.wait('poll-completed success=True')
                         if case == 'resume':
-                            self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+                            self.terminal(f, 'S1', 'T1'); f.wait('agent-event')
                             self.assertEqual(json.loads(f.journal.read_text())['active'], {})
                     if case == 'active-restart':
                         saved = json.loads(f.journal.read_text())
@@ -977,7 +977,7 @@ class CheckoutRefreshTests(unittest.TestCase):
                             self.assertEqual(status['state'], 'busy')
                             self.assertTrue(status['work']['admissionBlocked'])
                             self.assertEqual(status['work']['running'], 0)
-                            self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Blocked restart dispatched native input')
+                            self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Blocked restart dispatched agent input')
                         self.assertEqual(f.process.returncode, 0)
                         self.assertTrue(json.loads(f.journal.read_text())['active'])
                         # Recovery shares normal checkout metadata modes, including owner-executable SMB views.
@@ -1053,14 +1053,14 @@ class CheckoutRefreshTests(unittest.TestCase):
                         self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
                         self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Input was sent without a durable checkpoint')
                         Path(str(f.state) + '.tmp').rmdir()  # Release only the fixture write fault.
-                        request = self.rpc(f, 'thread/resume')  # The refresh reloaded the native.
+                        request = self.rpc(f, 'thread/resume')  # The refresh reloaded the agent.
                         self.reply(f, request, dict(cwd=str(f.checkout), thread=dict(id='S1', cwd=str(f.checkout))))
                         request = self.rpc(f, 'turn/start')
                         envelope = self.dispatched(request)
                         self.assertEqual(envelope['_bridge']['mode'], 'bootstrap')
                         self.assertNotIn('redelivery', envelope['_bridge'], 'No earlier turn/start carried this input')
                         self.reply(f, request, dict(turn=dict(id='T1')))
-                        self.terminal(f, 'S1', 'T1'); f.wait('native-event')
+                        self.terminal(f, 'S1', 'T1'); f.wait('agent-event')
                     else:
                         request = self.rpc(f, 'turn/start')
                         turn = 'T2' if case == 'resume' else 'T1'
@@ -1073,7 +1073,7 @@ class CheckoutRefreshTests(unittest.TestCase):
 
 
     def test_genuine_controller_resume_receives_refreshed_instructions_skills_and_preserved_history(self):
-        from test_checkout_native import native_config
+        from test_checkout_agent import agent_config
         with self.fixture(responses=True) as f:
             home, seed = f.directory / 'home', f.directory / 'seed'
             config = home / 'config.toml'
@@ -1081,15 +1081,15 @@ class CheckoutRefreshTests(unittest.TestCase):
             skill = seed / '.agents/skills/repo-refresh'
             skill.mkdir(parents=True); (seed / '.codex').mkdir()
             def context(version, effort):
-                (seed / 'AGENTS.md').write_text('Repository context NATIVE_AGENTS_' + version + '.\n')
+                (seed / 'AGENTS.md').write_text('Repository context AGENT_AGENTS_' + version + '.\n')
                 (seed / '.codex/config.toml').write_text('model_reasoning_effort = "' + effort + '"\n')
-                (skill / 'SKILL.md').write_text('---\nname: repo-refresh\ndescription: Fixture scoped skill NATIVE_DESCRIPTION_' + version + '.\n---\nScoped instruction NATIVE_SKILL_BODY_' + version + '.\n')
-            context('A', 'low'); self.publish(f, content='native initial A\n')
+                (skill / 'SKILL.md').write_text('---\nname: repo-refresh\ndescription: Fixture scoped skill AGENT_DESCRIPTION_' + version + '.\n---\nScoped instruction AGENT_SKILL_BODY_' + version + '.\n')
+            context('A', 'low'); self.publish(f, content='agent initial A\n')
             with self.controller(f):
                 f.provider.discussions = [self.discussion(1)]
-                f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_FIRST'
-                first = native_event(f.wait('native-event'))
-                self.assertEqual(first['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(first), flush=True)
+                f.provider.discussions[0]['body'] += ' $repo-refresh AGENT_USER_FIRST'
+                first = agent_event(f.wait('agent-event'))
+                self.assertEqual(first['method'], 'turn/completed'); print('AGENT_COMPLETED ' + json.dumps(first), flush=True)
                 self.settled(f)
                 self.assertEqual(first['status'], 'completed')
                 self.assertEqual(len(f.provider.model_requests), 1)
@@ -1097,30 +1097,30 @@ class CheckoutRefreshTests(unittest.TestCase):
                 self.assertEqual(first['thread'], session)
                 rollout, = home.rglob('rollout-*.jsonl')
                 prefix = rollout.read_bytes()
-                self.assertIn(b'NATIVE_USER_FIRST', prefix)
+                self.assertIn(b'AGENT_USER_FIRST', prefix)
                 self.assertIn(b'Harmless fixture assistant 1.', prefix)
                 request_a = json.dumps(f.provider.model_requests[0]['body'])
-                self.assertIn('NATIVE_AGENTS_A', request_a)
-                self.assertIn('NATIVE_SKILL_BODY_A', request_a)
+                self.assertIn('AGENT_AGENTS_A', request_a)
+                self.assertIn('AGENT_SKILL_BODY_A', request_a)
                 # Local instruction/skill edits and a rewritten origin mainline: origin's B must win at idle.
-                (f.checkout / 'AGENTS.md').write_text('Local agent edit NATIVE_AGENTS_LOCAL.\n')
-                (f.checkout / '.agents/skills/repo-refresh/SKILL.md').write_text('---\nname: repo-refresh\ndescription: Local NATIVE_DESCRIPTION_LOCAL.\n---\nLocal NATIVE_SKILL_BODY_LOCAL.\n')
+                (f.checkout / 'AGENTS.md').write_text('Local agent edit AGENT_AGENTS_LOCAL.\n')
+                (f.checkout / '.agents/skills/repo-refresh/SKILL.md').write_text('---\nname: repo-refresh\ndescription: Local AGENT_DESCRIPTION_LOCAL.\n---\nLocal AGENT_SKILL_BODY_LOCAL.\n')
                 context('B', 'high'); f.git('-C', seed, 'add', '.')
-                f.git('-C', seed, 'commit', '--quiet', '--amend', '-m', 'rewrite native context B')
+                f.git('-C', seed, 'commit', '--quiet', '--amend', '-m', 'rewrite agent context B')
                 f.git('-C', seed, 'push', f.directory / 'repositories/owner/project.git', '+HEAD:main')
                 target = f.git('-C', seed, 'rev-parse', 'HEAD')
                 f.wait('checkout-refreshed'); self.settled(f)
-                probe = native_config(f.checkout, home, discovery=True, environment=f.environment)
+                probe = agent_config(f.checkout, home, discovery=True, environment=f.environment)
                 self.assertEqual(probe['config']['model_reasoning_effort'], 'high')
                 project = [layer for layer in probe['layers'] if layer['name']['type'] == 'project']
                 self.assertTrue(project); self.assertFalse(project[0].get('disabledReason'))
                 listed = json.dumps(probe['fixtureSkills'])
                 self.assertIn(str(f.checkout / '.agents/skills/repo-refresh/SKILL.md'), listed)
-                self.assertIn('NATIVE_DESCRIPTION_B', listed)
-                self.assertNotIn('NATIVE_DESCRIPTION_A', listed); self.assertNotIn('NATIVE_DESCRIPTION_LOCAL', listed)
-                f.provider.discussions[0]['body'] += ' $repo-refresh NATIVE_USER_SECOND'
-                second = native_event(f.wait('native-event'))
-                self.assertEqual(second['method'], 'turn/completed'); print('NATIVE_COMPLETED ' + json.dumps(second), flush=True)
+                self.assertIn('AGENT_DESCRIPTION_B', listed)
+                self.assertNotIn('AGENT_DESCRIPTION_A', listed); self.assertNotIn('AGENT_DESCRIPTION_LOCAL', listed)
+                f.provider.discussions[0]['body'] += ' $repo-refresh AGENT_USER_SECOND'
+                second = agent_event(f.wait('agent-event'))
+                self.assertEqual(second['method'], 'turn/completed'); print('AGENT_COMPLETED ' + json.dumps(second), flush=True)
                 self.settled(f)
                 self.assertEqual(second['status'], 'completed')
                 self.assertEqual(second['thread'], session)
@@ -1129,20 +1129,20 @@ class CheckoutRefreshTests(unittest.TestCase):
                 # Each turn states the reasoning its checkout's project configuration selects at that turn.
                 self.assertEqual([request['body']['reasoning']['effort'] for request in f.provider.model_requests], ['low', 'high'])
                 request_b = json.dumps(f.provider.model_requests[1]['body'])
-                for text in ('NATIVE_USER_FIRST', 'Harmless fixture assistant 1.', 'NATIVE_USER_SECOND', 'NATIVE_AGENTS_B', 'NATIVE_SKILL_BODY_B'):
+                for text in ('AGENT_USER_FIRST', 'Harmless fixture assistant 1.', 'AGENT_USER_SECOND', 'AGENT_AGENTS_B', 'AGENT_SKILL_BODY_B'):
                     self.assertIn(text, request_b)
-                for text in ('NATIVE_AGENTS_LOCAL', 'NATIVE_SKILL_BODY_LOCAL', 'NATIVE_DESCRIPTION_LOCAL'):
+                for text in ('AGENT_AGENTS_LOCAL', 'AGENT_SKILL_BODY_LOCAL', 'AGENT_DESCRIPTION_LOCAL'):
                     self.assertNotIn(text, request_b)
-                self.assertLess(request_b.index('NATIVE_AGENTS_A'), request_b.index('NATIVE_AGENTS_B'))
+                self.assertLess(request_b.index('AGENT_AGENTS_A'), request_b.index('AGENT_AGENTS_B'))
                 self.assertIn('These AGENTS.md instructions replace all previously provided AGENTS.md instructions.', request_b)
                 self.assertEqual(json.loads(f.owner.read_text())['commit'], target)
                 self.assertEqual(json.loads(f.journal.read_text())['active'], {})
             final = rollout.read_bytes()
             self.assertTrue(final.startswith(prefix))
-            self.assertIn(b'NATIVE_USER_SECOND', final)
+            self.assertIn(b'AGENT_USER_SECOND', final)
             self.assertIn(b'Harmless fixture assistant 2.', final)
             self.assertFalse(any(item[0] == 'POST' for item in f.provider.denied))
-            print('NATIVE_INTEGRATION ' + json.dumps(dict(session=session, commit=target, requests=f.provider.model_requests,
+            print('AGENT_INTEGRATION ' + json.dumps(dict(session=session, commit=target, requests=f.provider.model_requests,
                   completions=[first, second], config=probe['config'], skills=probe['fixtureSkills'], denied=f.provider.denied,
                   network=f.provider.requests, prefixLength=len(prefix), prefixSha256=hashlib.sha256(prefix).hexdigest(),
                   finalPrefixSha256=hashlib.sha256(final[:len(prefix)]).hexdigest(), rolloutSha256=hashlib.sha256(final).hexdigest())), flush=True)
@@ -1213,9 +1213,9 @@ class CheckoutRefreshTests(unittest.TestCase):
                     f.provider.discussions[0]['body'] += ' after fault'
                     self.assertEqual(deliver(notice, event='discussion'), 202)
                     # T2 is still active, so the input waits; at idle the faulted journal blocks its admission.
-                    self.assertIsNotNone(f.wait_or_native('input-waiting'), 'Input reached the active turn')
+                    self.assertIsNotNone(f.wait_or_agent('input-waiting'), 'Input reached the active turn')
                     self.terminal(f, 'S1', 'T2'); f.wait('dispatch-error')
-                    self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Faulted journal admitted native input')
+                    self.assertFalse(select.select([f.responses], [], [], 0)[0], 'Faulted journal admitted agent input')
                     self.assertEqual(f.git('-C', f.checkout, 'rev-parse', 'HEAD'), target)
 
 if __name__ == '__main__':

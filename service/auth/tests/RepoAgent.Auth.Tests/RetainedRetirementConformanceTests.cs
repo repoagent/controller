@@ -300,16 +300,16 @@ public sealed class RetainedRetirementConformanceTests
     {
         var f = new InMemoryBroker();
         var active = await Retained.ActiveAgent(f);
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(active.Device, active.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(active.EnrollmentId, active.Secret)).StatusCode);
         var runtimeLedger = Assert.Single(Retained.IssuanceLedgers(f), x => x.Value.Purpose == "runtime").Value;
         var runtime = new Allocation(false, runtimeLedger.OperationId!, runtimeLedger.Generation!);
         var enrollment = new Allocation(true, active.Id, Retained.EnrollmentLedger(f, active.Id).Value.Generation!);
         f.Clock.Advance(f.State.Get(Retained.Attempt(runtimeLedger))!.ExpiresAt!.Value.AddMinutes(5) - f.Clock.GetUtcNow());
         await Retirement(f, runtime);
         await Retirement(f, enrollment);
-        var deviceKey = ControllerEnrollment.Key(Retained.Repository, active.Device);
+        var deviceKey = ControllerEnrollment.Key(Retained.Repository, active.EnrollmentId);
         Assert.Equal(0L, f.State.Get(deviceKey)!.OutstandingTokenCount);
-        var device = f.State.Version(deviceKey);
+        var enrollmentId = f.State.Version(deviceKey);
         f.Clock.Advance(TimeSpan.FromDays(30));
         await Retirement(f, enrollment);
         await Retirement(f, runtime);
@@ -318,8 +318,8 @@ public sealed class RetainedRetirementConformanceTests
         Assert.Null(f.State.Row(runtime.Release));
         Assert.Equal(1L, RetainedCount(f, runtime));
         Assert.Equal(1L, RetainedCount(f, enrollment));
-        Assert.Equal(device, f.State.Version(deviceKey));
-        Assert.NotNull(f.State.Row(EnrollmentLocator.Key(active.Device)));
+        Assert.Equal(enrollmentId, f.State.Version(deviceKey));
+        Assert.NotNull(f.State.Row(EnrollmentLocator.Key(active.EnrollmentId)));
         Assert.NotNull(f.State.Row(enrollment.Target));
     }
 

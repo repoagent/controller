@@ -6,7 +6,7 @@ namespace RepoAgent.Auth.Tests;
 public sealed class EnrollmentTests
 {
     [Fact]
-    public async Task Lost_start_and_completion_responses_recover_one_device_and_only_ack_enables_runtime()
+    public async Task Lost_start_and_completion_responses_recover_one_controller_enrollment_and_only_ack_enables_runtime()
     {
         var f = new InMemoryBroker();
         var request = InMemoryBroker.Request();
@@ -24,19 +24,19 @@ public sealed class EnrollmentTests
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var delivered = completion.Json;
         var envelope = delivered.GetProperty("enrollment");
-        var device = envelope.GetProperty("deviceId").GetString()!;
+        var enrollmentId = envelope.GetProperty("deviceId").GetString()!;
         var secret = envelope.GetProperty("deviceSecret").GetString()!;
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(device, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(enrollmentId, secret)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var recovered = await f.Complete(id);
         Assert.Equal(delivered.ToString(), recovered.Json.ToString());
         f.Clock.Advance(TimeSpan.FromMinutes(1));
         var completionId = delivered.GetProperty("completionId").GetString()!;
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(device, completionId, secret)).StatusCode);
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(device, completionId, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId, completionId, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId, completionId, secret)).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await f.Complete(id)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(device, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(enrollmentId, secret)).StatusCode);
         Assert.Equal(1, f.GitHub.VerifierMints);
     }
 
@@ -51,19 +51,19 @@ public sealed class EnrollmentTests
         f.GitHub.RuntimeLifetime = TimeSpan.FromMinutes(6);
         var old = await Retained.ActiveAgent(f);
         // The same stored binding and credential authorize issuance before the external epoch changes.
-        Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.Device, old.Secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
         if (unknownSend)
         {
             f.Clock.Advance(TimeSpan.FromMinutes(2));
             f.GitHub.BeforeMint = _ => throw new GitHubUnavailable("Provider send outcome unknown");
-            Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(old.Device, old.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
             Assert.Contains(f.Rows(), row => row.Name.StartsWith("attempt:", StringComparison.Ordinal)
                 && row.Row.TryGetValue("State", out var state) && Equals(state, "sending"));
         }
         if (revoked)
         {
-            Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.Device, old.Secret)).StatusCode);
-            Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.Device, old.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.NoContent, (await f.Revoke(old.EnrollmentId, old.Secret)).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(old.EnrollmentId, old.Secret)).StatusCode);
         }
         // Pending occupancy can release independently; outstanding capabilities and publication remain charged.
         await Retained.ReclaimEnrollment(f, old.Id);
@@ -72,7 +72,7 @@ public sealed class EnrollmentTests
         var commits = f.State.Commits;
         f.DeploymentEpoch = "restored-epoch";
 
-        var denied = await f.Issue(old.Device, old.Secret);
+        var denied = await f.Issue(old.EnrollmentId, old.Secret);
         await Retained.ReclaimEnrollment(f, old.Id);
 
         Assert.Equal(HttpStatusCode.Unauthorized, denied.StatusCode);
@@ -80,12 +80,12 @@ public sealed class EnrollmentTests
         Assert.Equal(commits, f.State.Commits);
         Assert.Equal(provider, (f.GitHub.Authorizations, f.GitHub.Reads, f.GitHub.Mints, f.GitHub.Revokes));
         Assert.Equal(before.Select(row => (row.Key, row.Version)), f.Rows().Select(row => (row.Key, row.Version)));
-        Assert.Equal(old.Device, f.Gate.OwnerEnrollmentId);
-        Assert.NotNull(f.State.Get(EnrollmentLocator.Key(old.Device)));
+        Assert.Equal(old.EnrollmentId, f.Gate.OwnerEnrollmentId);
+        Assert.NotNull(f.State.Get(EnrollmentLocator.Key(old.EnrollmentId)));
         if (revoked)
         {
-            Assert.Equal("revoked", f.Enrollment(old.Device).State);
-            Assert.NotNull(f.State.Get(RevocationReceipt.Key(InMemoryBroker.RepositoryId, old.Device)));
+            Assert.Equal("revoked", f.Enrollment(old.EnrollmentId).State);
+            Assert.NotNull(f.State.Get(RevocationReceipt.Key(InMemoryBroker.RepositoryId, old.EnrollmentId)));
         }
     }
 

@@ -14,7 +14,7 @@ The catalogue's `reserved` list names `REPOAGENT_` variables that other features
 | `REPOAGENT_MAX_ACTIVE_SESSIONS` | Integer from 1 to 64 | The most native Discussion turns running at once. Default `4`. See [Active-session limit](#active-session-limit). |
 | `REPOAGENT_ENROLLMENT_CATEGORIES` | 1 to 25 Discussion category names, separated by commas | New Discussions in these categories enroll without a mention. Absent means no category enrollment. See [Category enrollment](#category-enrollment). |
 | `REPOAGENT_MODEL` | Model alias such as `sol6.1`, or a model ID such as `gpt-6.1-sol` | Default model for Discussions without a model label. Unset: the native Codex configuration's `model`, then the catalogue's default model. |
-| `REPOAGENT_REASONING` | Reasoning effort such as `xhigh` | Default effort for Discussions without a model label. Unset: the native configuration's `model_reasoning_effort`, then the selected model's default effort. |
+| `REPOAGENT_REASONING` | Reasoning effort such as `xhigh` | Default effort for Discussions without a model label. Unset: the agent configuration's `model_reasoning_effort`, then the selected model's default effort. |
 
 ## Inspect or change settings
 
@@ -54,7 +54,7 @@ Enable reading with `--repository-settings`. For the container runtime, run `rep
 
 The existing broker profiles (`polling`, `webhook`, `polling-clone`, `webhook-clone`) are frozen and grant no variables access. The controller does not widen them: with a v1 or v2 enrollment file it refuses `--repository-settings` before contacting the broker, and the broker never adds variables access to those profiles.
 
-To read settings through the broker, choose a repository-settings profile at enrollment ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md), [ADR 0012](adr/0012-use-repository-agent-variables-for-settings-and-approval.md)). These profiles are `polling-settings`, `webhook-settings`, `polling-clone-settings` and `webhook-clone-settings`. Each grants exactly its frozen counterpart's permissions plus `agent_variables: read`, under the policy `repository-agent-settings-approval-v4` of Agent-variable approval setup v4. The enrollment file, leases and runtime routes are protocol v3, and the controller consumes such a file only with `--repository-settings`. See [the consumer contract](broker-protocol.md#explicit-repository-settings-consumer-v3). The broker and PowerShell installer support setup v4; [live installation acceptance](host-enrollment.md#verification-boundary) remains separate.
+To read settings through the broker, choose a repository-settings profile at enrollment ([ADR 0008](adr/0008-add-an-explicit-repository-settings-runtime-profile.md), [ADR 0012](adr/0012-use-repository-agent-variables-for-settings-and-approval.md)). These profiles are `polling-settings`, `webhook-settings`, `polling-clone-settings` and `webhook-clone-settings`. Each grants exactly its frozen counterpart's permissions plus `agent_variables: read`, under the policy `repository-agent-settings-approval-v4` of Agent-variable approval setup v4. The enrollment file, leases and runtime routes are protocol v3, and the controller consumes such a file only with `--repository-settings`. See [the consumer contract](broker-protocol.md#explicit-repository-settings-consumer-v3). The broker and PowerShell installer support setup v4; [live installation acceptance](controller-enrollment.md#verification-boundary) remains separate.
 
 The controller refuses an enrollment file from retired Actions-variable setup v3 (policy `repository-actions-settings-approval-v3`, or `repository-actions-clone-approval-v3` for a clone profile) at startup, before contacting the broker, and names re-enrollment. Revoke it and enroll afresh as below.
 
@@ -87,7 +87,7 @@ Each refresh records every setting's state, effective value and reason in `<stat
 
 ## Active-session limit
 
-`REPOAGENT_MAX_ACTIVE_SESSIONS` bounds how many native Discussion turns one controller runs at the same time. A Discussion holds a slot from native acceptance of its turn until the native reports that turn completed or failed; a native `active` status report also holds one. Stored sessions that are idle, not loaded or failed hold no slot, however many there are.
+`REPOAGENT_MAX_ACTIVE_SESSIONS` bounds how many native Discussion turns one controller runs at the same time. A Discussion holds a slot from agent acceptance of its turn until the native reports that turn completed or failed; a native `active` status report also holds one. Stored sessions that are idle, not loaded or failed hold no slot, however many there are.
 
 At the limit, newly observed input waits in the controller, as it does for a busy session. It shows as `waiting` in `status`, gets no EYES, and the observation logs `input-waiting ... active=N limit=M`. When a turn finishes, waiting Discussions are dispatched again. `status` reports running turns as `work.running` against the effective limit `work.limit`, and the [dashboard](controller-operations.md#discussion-status-dashboard) shows that count and lists such input as waiting for a free active-session slot.
 
@@ -127,15 +127,15 @@ For each turn, the controller uses the Discussion's model label if it has one. O
 **Label grammar.** `repoagent:<model>:<reasoning>`, for example `repoagent:sol6.1:xhigh`. Every label whose name starts with `repoagent:` (any case) is a model label:
 
 - `<model>` and `<reasoning>` are names of letters, digits, `.`, `_` or `-`, at most 64 characters. They are compared case-insensitively.
-- `<model>` is a model ID from the account's native catalogue, or its alias. `gpt-<version>-<family>` has the alias `<family><version>`. For example, `gpt-6.1-sol` has the alias `sol6.1`. Other IDs, such as `gpt-5.5`, have no alias.
+- `<model>` is a model ID from the account's agent catalogue, or its alias. `gpt-<version>-<family>` has the alias `<family><version>`. For example, `gpt-6.1-sol` has the alias `sol6.1`. Other IDs, such as `gpt-5.5`, have no alias.
 - `<reasoning>` must be one of the efforts the catalogue lists for that model.
 
 **Validation.**
 
-- The native catalogue is `model/list` without hidden models. It reflects the signed-in account, so syntax and availability are checked separately.
+- The agent catalogue is `model/list` without hidden models. It reflects the signed-in account, so syntax and availability are checked separately.
 - One model label selects that Discussion's model and effort. Several model labels are a conflict.
-- A conflict, a malformed label, an unavailable model or an unsupported effort is never substituted. Neither is an invalid or unreadable `REPOAGENT_MODEL` or `REPOAGENT_REASONING` when no earlier value is known: the native configuration does not stand in for it. This applies equally to a default. Without validation, pinned Codex would clamp an unsupported effort, for example `ultra` to `max`. Instead, the Discussion's input waits without taking an [active-session](#active-session-limit) slot, and a `selection-error` names the label or setting, plus the available models or supported efforts. Status lists it under `failures`. The next observation after a fix delivers the waiting input.
-- Each accepted turn logs its selection: `native-accepted session=… model=gpt-6-luna effort=xhigh selection=label turn=…`.
+- A conflict, a malformed label, an unavailable model or an unsupported effort is never substituted. Neither is an invalid or unreadable `REPOAGENT_MODEL` or `REPOAGENT_REASONING` when no earlier value is known: the agent configuration does not stand in for it. This applies equally to a default. Without validation, pinned Codex would clamp an unsupported effort, for example `ultra` to `max`. Instead, the Discussion's input waits without taking an [active-session](#active-session-limit) slot, and a `selection-error` names the label or setting, plus the available models or supported efforts. Status lists it under `failures`. The next observation after a fix delivers the waiting input.
+- Each accepted turn logs its selection: `agent-accepted session=… model=gpt-6-luna effort=xhigh selection=label turn=…`.
 
 **Label changes.** The controller reads a Discussion's labels each time it observes that Discussion, and keeps them in its state. A label change is not input: it never starts or steers a turn, and it takes effect on the next turn. If labels cannot be read, `label-read-error` is logged once and the last observed labels still apply.
 

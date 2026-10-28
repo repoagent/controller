@@ -13,7 +13,7 @@ public sealed record PresentedAuthorization(int Length, string? Scheme, string? 
 public sealed record BrokerRequest(IReadOnlyList<PresentedAuthorization> Authorization, bool CanHaveBody,
     Func<int, Task<byte[]>> Body, CancellationToken Aborted);
 
-// The installation-token operation of a composed issuer: InstallationTokenIssuer.IssueAsync.
+// The installation-token operation of a composed issuer: GitHubTokenIssuer.IssueAsync.
 public delegate Task<IssuanceResult> TokenIssuance(string enrollmentId, string? secret, CancellationToken caller, int runtimeVersion);
 
 // What each public route decides around the operation it calls: the credential and body it accepts, in the order it
@@ -23,7 +23,7 @@ public static class BrokerRoutes
     private const int BodyLimit = 8192;
 
     // DELETE /v{runtimeVersion}/devices/{enrollmentId}. A body is refused before the credential is read.
-    public static async Task<IssuanceResult> RevokeAsync(BrokerRequest request, string enrollmentId, DeviceRevocation revocation,
+    public static async Task<IssuanceResult> RevokeAsync(BrokerRequest request, string enrollmentId, ControllerSelfRevocation revocation,
         int runtimeVersion)
     {
         if (request.CanHaveBody) return new(400);
@@ -39,7 +39,7 @@ public static class BrokerRoutes
         if (!Bearer(request, out var secret)) return new(401);
         if (issuer() is not { } issue) return new(503);
         var result = await issue(enrollmentId, secret, request.Aborted, runtimeVersion);
-        return result.Status == 200 ? result : new(result.Status);
+        return result.Status == 200 ? result : new(result.Status) { Rejection = result.Rejection };
     }
 
     // POST /v{setupVersion}/enrollments. Setup v1 takes the approval environment's body; v2 to v4 the approval variable's.
@@ -106,7 +106,7 @@ public static class BrokerRoutes
 
     // A Bearer credential in the secret grammar: the setup secret, or the controller secret that acknowledges.
     private static string? Secret(BrokerRequest request) =>
-        Bearer(request, out var credential) && DeviceSecret.Hash(credential) is not null ? credential : null;
+        Bearer(request, out var credential) && ControllerSecret.Hash(credential) is not null ? credential : null;
 
     // At most 8 KiB of JSON at most 4 deep, whose root is an object that names no property twice in any case. The adapter
     // reads one byte past the limit, so a longer body is known to be too large without reading it all.

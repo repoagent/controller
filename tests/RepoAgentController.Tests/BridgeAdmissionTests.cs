@@ -404,7 +404,7 @@ public sealed class BridgeAdmissionTests
         Assert.Equal(["S1"], world.Runtime.Resumed); // Loaded again into the restarted runtime before its turn.
     }
 
-    // With a managed checkout, each delivery is admitted before it reaches a session and resolved once by what the native did:
+    // With a managed checkout, each delivery is admitted before it reaches a session and resolved once by what the agent did:
     // confirmed with its acknowledged turn, abandoned when no turn can hold its input, or left unconfirmed when one may.
     [Fact]
     public async Task An_acknowledged_delivery_binds_its_session_and_confirms_its_turn()
@@ -422,9 +422,9 @@ public sealed class BridgeAdmissionTests
     }
 
     [Theory]
-    [InlineData(true, "abandon")] // The native refused the input, so no turn holds it.
-    [InlineData(false, "unconfirmed")] // No acknowledgement: the native may hold the input.
-    public async Task A_delivery_the_native_refused_is_abandoned_and_one_it_may_hold_stays_unconfirmed(bool refused, string resolution)
+    [InlineData(true, "abandon")] // The agent refused the input, so no turn holds it.
+    [InlineData(false, "unconfirmed")] // No acknowledgement: the agent may hold the input.
+    public async Task A_delivery_the_agent_refused_is_abandoned_and_one_it_may_hold_stays_unconfirmed(bool refused, string resolution)
     {
         await using var world = Mentioned(1);
         world.Admission = new();
@@ -520,7 +520,7 @@ public sealed class BridgeAdmissionTests
         var log = new RecordingLog();
         var runtime = new HeldAcknowledgement();
         var sessions = new AgentSessions(runtime, log);
-        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, null, state, clock, log);
         await using var outbox = new GitHubOutbox(BridgeWorld.Repository, github, InMemoryDiscussions.App, state, clock, log);
         var bridge = new Bridge(BridgeWorld.Repository, github, InMemoryDiscussions.App, sessions,
             new StateStore(saved, BridgeWorld.Repository), outbox, [], settings, new AgentInputJson(), log, clock);
@@ -547,10 +547,10 @@ public sealed class BridgeAdmissionTests
             Assert.Null(saved.Saved!.Discussions["D1"].Pending);
             if (!completesBeforeAcknowledgement)
             {
-                Assert.False(drain.IsCompleted, "Native acknowledgement is not correlated turn completion.");
+                Assert.False(drain.IsCompleted, "Agent acknowledgement is not correlated turn completion.");
                 Assert.NotNull(saved.Saved.Discussions["D1"].Running);
                 runtime.Inner.Report("S1", AgentSessionStatus.Idle);
-                Assert.False(drain.IsCompleted, "An early native idle report cannot finish accepted work.");
+                Assert.False(drain.IsCompleted, "An early agent idle report cannot finish accepted work.");
                 runtime.Inner.Completed("S1", "T1");
             }
             await drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
@@ -625,17 +625,17 @@ public sealed class BridgeAdmissionTests
     }
 
     [Fact]
-    public async Task Shutdown_waits_fail_closed_for_native_active_work_without_a_known_accepted_turn()
+    public async Task Shutdown_waits_fail_closed_for_agent_active_work_without_a_known_accepted_turn()
     {
         await using var world = new BridgeWorld();
         await world.Begin();
-        world.Runtime.Report("native-active", AgentSessionStatus.Active);
+        world.Runtime.Report("agent-active", AgentSessionStatus.Active);
         using var abort = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var drain = world.Bridge.StopAndDrain(abort.Token);
         try
         {
             Assert.False(drain.IsCompleted);
-            world.Runtime.Report("native-active", AgentSessionStatus.Idle);
+            world.Runtime.Report("agent-active", AgentSessionStatus.Idle);
             await drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
             Assert.Empty(world.Turns);
         }
@@ -704,7 +704,7 @@ public sealed class BridgeAdmissionTests
     }
 
     [Fact]
-    public async Task Shutdown_settles_a_real_native_disconnect_as_lost_without_inventing_success()
+    public async Task Shutdown_settles_a_real_agent_disconnect_as_lost_without_inventing_success()
     {
         await using var world = Mentioned(1);
         await world.Begin();
@@ -734,7 +734,7 @@ public sealed class BridgeAdmissionTests
         var log = new RecordingLog();
         var runtime = new FakeAgentRuntime();
         var sessions = new AgentSessions(runtime, log);
-        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, null, state, clock, log);
         await using var outbox = new GitHubOutbox(BridgeWorld.Repository, github, InMemoryDiscussions.App, state, clock, log);
         var bridge = new Bridge(BridgeWorld.Repository, github, InMemoryDiscussions.App, sessions,
             new StateStore(persisting, BridgeWorld.Repository), outbox, [], settings, new AgentInputJson(), log, clock);
@@ -771,14 +771,14 @@ public sealed class BridgeAdmissionTests
     {
         var clock = new SteppedClock(BridgeWorld.Start);
         var github = new InMemoryDiscussions(clock);
-        github.Open(1, "@test-app[bot] genuinely completed native work");
+        github.Open(1, "@test-app[bot] genuinely completed agent work");
         var durable = new InMemoryDiscussionStore();
         var persisting = new AfterDiscussionSave(durable);
         var state = new InMemoryControllerState();
         var log = new RecordingLog();
         var runtime = new FakeAgentRuntime();
         var sessions = new AgentSessions(runtime, log);
-        var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, null, state, clock, log);
+        var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, null, state, clock, log);
         await using var outbox = new GitHubOutbox(BridgeWorld.Repository, github, InMemoryDiscussions.App, state, clock, log);
         var bridge = new Bridge(BridgeWorld.Repository, github, InMemoryDiscussions.App, sessions,
             new StateStore(persisting, BridgeWorld.Repository), outbox, [], settings, new AgentInputJson(), log, clock);
@@ -838,7 +838,7 @@ public sealed class BridgeAdmissionTests
         public Task<(string SessionId, AgentSessionStatus Status)> StartSession(CancellationToken ct) => Inner.StartSession(ct);
         public Task<AgentSessionStatus> ResumeSession(string sessionId, CancellationToken ct) => Inner.ResumeSession(sessionId, ct);
         public Task<(string? Model, string? Effort)> ConfiguredModel(CancellationToken ct) => Inner.ConfiguredModel(ct);
-        public Task<IReadOnlyList<NativeModel>> Models(CancellationToken ct) => Inner.Models(ct);
+        public Task<IReadOnlyList<AgentModel>> Models(CancellationToken ct) => Inner.Models(ct);
         public async Task<AgentTurnAccepted> StartTurn(AgentTurnRequest request, CancellationToken ct)
         {
             Activity = ct;

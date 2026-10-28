@@ -1,12 +1,14 @@
 # Controller credential protocol v1
 
+Setup v5 uses the glossary spellings `enrollmentId` and `controllerSecret` in the private enrollment document, with `enrollmentId` in the public approval marker. It keeps runtime protocol versions 1–3 and their permission profiles, with distinct setup v5 approval policies. Canonical runtime routes are `POST /v{runtimeVersion}/controller-enrollments/{enrollmentId}/github-token` and `DELETE /v{runtimeVersion}/controller-enrollments/{enrollmentId}`. Frozen setup v1–v4 documents and `/devices/...` routes remain supported as described below. See [upgrade order and explicit setup selection](controller-enrollment.md#canonical-names-and-upgrade-order); existing credentials and approval markers must not be edited or translated in place.
+
 This is the consumer contract for [deployment plan #28](https://github.com/repoagent/controller/issues/28). It does not establish that an enrollment service or hosted broker exists. Direct App authentication remains available for an operator's own App.
 
 The approved provider/installer design is now [controller approval with a UI-free credential broker](auth-repository-approval.md). It supersedes the earlier browser/personal-administrator ceremony below without changing the frozen v1 consumer fields, runtime permission profiles or credential lifecycle.
 
 ## Enrollment file
 
-The PowerShell installer writes this file atomically after the broker verifies controller approval. Fresh [setup v4](../service/auth/README.md#repository-agent-variable-enrollment-v4) creates or safely reuses a user-named direct repository Agent variable through admin authority; saved v2/v3 state retains its original contract. Assembled installation, private-file and native Windows acceptance remain separate [release gates](host-enrollment.md#verification-boundary). Treat it as a secret: owner-only access (0600 on Unix, a private user ACL on Windows), never an image build input or command-line argument value. The CLI receives its path through `--enrollment-file`, or receives the same document as an injected secret through the environment variable named by `--enrollment-environment`, and separately requires `--broker-url`. Marker coordinates belong in broker state and separate nonsecret installer configuration, preserving this v1 schema.
+The PowerShell installer writes this file atomically after the broker verifies controller approval. Fresh [setup v4](../service/auth/README.md#repository-agent-variable-enrollment-v4) creates or safely reuses a user-named direct repository Agent variable through admin authority; saved v2/v3 state retains its original contract. Assembled installation, private-file and native Windows acceptance remain separate [release gates](controller-enrollment.md#verification-boundary). Treat it as a secret: owner-only access (0600 on Unix, a private user ACL on Windows), never an image build input or command-line argument value. The CLI receives its path through `--enrollment-file`, or receives the same document as an injected secret through the environment variable named by `--enrollment-environment`, and separately requires `--broker-url`. Marker coordinates belong in broker state and separate nonsecret installer configuration, preserving this v1 schema.
 
 ```json
 {
@@ -84,7 +86,7 @@ Renewal uses empty-body `POST /v2/devices/{id}/installation-token`; self-revocat
 
 ### Managed Git operations
 
-The authenticated `gh` wrapper supports `gh repo clone OWNER/REPO [DESTINATION]` for the approved repository, normalized to its HTTPS URL with `--no-upstream`. No arbitrary clone flags are accepted. A private Git shim exists only inside that clone child to replace gh's injected host-wide helper. It recognizes the supported clone shape and the fixed local fork bookkeeping command, and rejects other shapes. Ordinary native-session Git is unchanged.
+The authenticated `gh` wrapper supports `gh repo clone OWNER/REPO [DESTINATION]` for the approved repository, normalized to its HTTPS URL with `--no-upstream`. No arbitrary clone flags are accepted. A private Git shim exists only inside that clone child to replace gh's injected host-wide helper. It recognizes the supported clone shape and the fixed local fork bookkeeping command, and rejects other shapes. Ordinary agent-session Git is unchanged.
 
 Use the sibling `repoagent-git fetch --directory CHECKOUT` wrapper for later fetches. The approved URL is implicit; caller URLs, remotes and Git flags are not accepted. Fetch refuses repository authentication/header/rewrite/include configuration and does not recurse into submodules. Checkout selection, trust and update scheduling remain separate work.
 

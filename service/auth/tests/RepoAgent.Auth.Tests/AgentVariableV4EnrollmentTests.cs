@@ -43,7 +43,7 @@ public sealed class AgentVariableV4EnrollmentTests
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var receipt = completion.Json;
         var enrollment = receipt.GetProperty("enrollment");
-        var device = enrollment.GetProperty("deviceId").GetString()!;
+        var enrollmentId = enrollment.GetProperty("deviceId").GetString()!;
         var secret = enrollment.GetProperty("deviceSecret").GetString()!;
         // A frozen polling enrollment keeps the policy-free runtime v1 file.
         Assert.Equal(1, enrollment.GetProperty("protocolVersion").GetInt32());
@@ -51,9 +51,9 @@ public sealed class AgentVariableV4EnrollmentTests
         Assert.DoesNotContain(secret, marker);
 
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(device, receipt.GetProperty("completionId").GetString()!, secret, 4)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId, receipt.GetProperty("completionId").GetString()!, secret, 4)).StatusCode);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        var runtime = await f.Issue(device, secret);
+        var runtime = await f.Issue(enrollmentId, secret);
         Assert.Equal(HttpStatusCode.OK, runtime.StatusCode);
         Assert.Equal(new Dictionary<string, string> { ["discussions"] = "write" }, github.RuntimePermissions[^1]);
         Assert.Contains("read variable agents owner/project REPOAGENT_APPROVAL", f.GitHub.Requests);
@@ -62,10 +62,10 @@ public sealed class AgentVariableV4EnrollmentTests
 
         github.Agent.Remove("REPOAGENT_APPROVAL");
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(device, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(enrollmentId, secret)).StatusCode);
         github.Agent["REPOAGENT_APPROVAL"] = marker;
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(device, secret)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await f.Issue(enrollmentId, secret)).StatusCode);
     }
 
     // Setup v2 predates the settings catalogue's reserved prefix. Its accepted variable names and idempotent retries
@@ -115,12 +115,12 @@ public sealed class AgentVariableV4EnrollmentTests
         var completion = await f.Complete(pending, setupVersion);
         Assert.Equal(HttpStatusCode.OK, completion.StatusCode);
         var enrollment = completion.Json.GetProperty("enrollment");
-        var (device, secret) = (enrollment.GetProperty("deviceId").GetString()!, enrollment.GetProperty("deviceSecret").GetString()!);
+        var (enrollmentId, secret) = (enrollment.GetProperty("deviceId").GetString()!, enrollment.GetProperty("deviceSecret").GetString()!);
         var completionId = completion.Json.GetProperty("completionId").GetString()!;
         reads = f.GitHub.Reads;
-        Assert.Equal(HttpStatusCode.Conflict, (await f.Acknowledge(device, completionId, secret, route)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, (await f.Acknowledge(enrollmentId, completionId, secret, route)).StatusCode);
         Assert.Equal(reads, f.GitHub.Reads);
         f.Clock.Advance(TimeSpan.FromMinutes(1));
-        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(device, completionId, secret, setupVersion)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await f.Acknowledge(enrollmentId, completionId, secret, setupVersion)).StatusCode);
     }
 }

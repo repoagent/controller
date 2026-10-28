@@ -29,8 +29,8 @@ public static class BridgeCommand
         var listenPort = new Option<int>("--listen-port") { DefaultValueFactory = _ => 8080, Description = "Container HTTP listener port in webhook mode" };
         var statusPort = new Option<int>("--status-port") { DefaultValueFactory = _ => 8081, Description = "Local (loopback) port for GET /status: busy or idle and work counts, while the controller runs in polling or webhook mode" };
         var reconcileInterval = new Option<int>("--reconcile-interval") { DefaultValueFactory = _ => 300, Description = "Seconds between full reconciliations in webhook mode" };
-        var disableWebhook = new Option<bool>("--disable-webhook") { Description = "Deactivate this stopped controller's saved webhook without starting native work" };
-        var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (native work may still be running)" };
+        var disableWebhook = new Option<bool>("--disable-webhook") { Description = "Deactivate this stopped controller's saved webhook without starting agent work" };
+        var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (agent work may still be running)" };
         var clone = new Option<bool>("--clone") { Description = "Use explicitly approved clone-capable credentials" };
         var checkAuth = new Option<bool>("--check-auth") { Description = "Verify App installation identity and prepare authenticated gh, then exit without starting Codex" };
         var repositorySettings = new Option<bool>("--repository-settings") { Description = "Read REPOAGENT_ repository Agent variables with an explicit Agent variables: read runtime permission (direct App, or a broker enrollment with a repository-settings profile)" };
@@ -39,11 +39,11 @@ public static class BridgeCommand
         var dashboardCategory = new Option<string?>("--dashboard-category") { Description = "Existing Discussion category for the controller-owned status dashboard; omit to publish no dashboard" };
         var codexAuth = new Option<FileInfo>("--codex-auth") { Description = "Operator-supplied Codex account credentials (auth.json format), separate from GitHub App credentials. Installed into the private CODEX_HOME when it differs from the last supply; replacing the file while running restarts the owned Codex app-server at idle and resumes sessions" };
         var imageInventory = new Option<FileInfo?>("--image-inventory") { Description = "The running baseline image's inventory (/opt/repoagent/image-inventory.json); the dashboard compares its SHA-256 with published baseline releases" };
-        var root = new RootCommand("RepoAgentController: GitHub Discussions → native Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, enrollmentEnvironment, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, statusPort, reconcileInterval, disableWebhook, once, checkAuth, clone, repositorySettings, logFileBytes, logFiles, dashboardCategory, codexAuth, imageInventory };
+        var root = new RootCommand("RepoAgentController: GitHub Discussions → agent Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, enrollmentEnvironment, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, statusPort, reconcileInterval, disableWebhook, once, checkAuth, clone, repositorySettings, logFileBytes, logFiles, dashboardCategory, codexAuth, imageInventory };
         var ghCredentials = new Option<DirectoryInfo>("--credential-directory") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
-        var githubCommand = new Command("github-command", "Run gh with the running controller's current in-memory App credential (native wrapper entry point)") { ghCredentials, ghPath, forwardedArguments };
+        var githubCommand = new Command("github-command", "Run gh with the running controller's current in-memory App credential (agent wrapper entry point)") { ghCredentials, ghPath, forwardedArguments };
         githubCommand.SetAction(async (result, ct) =>
         {
             try { return await AppGitHubCommand.Run(result.GetValue(ghPath)!.FullName, result.GetValue(ghCredentials)!.FullName, result.GetValue(forwardedArguments) ?? [], ct); }
@@ -64,7 +64,7 @@ public static class BridgeCommand
         var recoveryWorkspace = new Option<DirectoryInfo>("--workspace") { Required = true };
         var recoveryStopped = new Option<bool>("--confirm-runtime-stopped")
         { Description = "Attest that the previous controller, agent runtime and ALL agent-launched tools using this checkout have stopped" };
-        var recoveryCommand = new Command("recover-checkout", "Explicit offline settlement of native uncertainty; preserves evidence and waiting input, refuses malformed evidence and interrupted checkout applies")
+        var recoveryCommand = new Command("recover-checkout", "Explicit offline settlement of agent uncertainty; preserves evidence and waiting input, refuses malformed evidence and interrupted checkout applies")
         { recoveryState, recoveryWorkspace, recoveryStopped };
         recoveryCommand.SetAction(async (result, ct) =>
         {
@@ -163,17 +163,17 @@ public static class BridgeCommand
                         return await new GitHubWebhookRegistration(github, statePath).Deactivate() ? 0 : 1;
                     if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentialDirectory);
                     var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentialDirectory);
-                    var settings = new RepositorySettings(RepositorySettingsCatalogue.Settings, !result.GetValue(repositorySettings) ? null
+                    var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, !result.GetValue(repositorySettings) ? null
                         : credentials.SettingsUnreadable is { } unreadable ? new UnreadableRepositorySettings(unreadable) : new GitHubRepositorySettings(github), new ControllerStateFiles(statePath), time, new ControllerLog());
                     await settings.Refresh(cancellationToken);
                     if (result.GetValue(checkAuth)) return 0;
-                    agentCredentials?.Install(); // Before any owned native process starts.
+                    agentCredentials?.Install(); // Before any owned agent process starts.
                     var discussions = new GitHubDiscussions(github);
                     await using var outbox = new GitHubOutbox(github.Repository, discussions, github.Identity, new ControllerStateFiles(statePath), time, new ControllerLog());
                     // Disposed before the outbox: a stop this lifetime handles is published, then delivery drains within a bound.
                     await using var dashboard = result.GetValue(dashboardCategory) is { } category
                         ? new ControllerDashboard(category, status, outbox,
-                            new BaselineReleases(new GitHubBaselineReleases(github), ImageInventory.Sha256(result.GetValue(imageInventory)?.FullName), time, new ControllerLog(), Log.Redact),
+                            new BaselineReleaseCheck(new GitHubBaselineReleases(github), ImageInventory.Sha256(result.GetValue(imageInventory)?.FullName), time, new ControllerLog(), Log.Redact),
                             time, new ControllerLog(), Log.Redact) : null;
                     using var abort = CancellationTokenSource.CreateLinkedTokenSource(credentials.BrokerCredentialLost);
                     using var failedAuthority = abort.Token.UnsafeRegister(_ => Volatile.Write(ref authorityFailed, true), null);
@@ -189,16 +189,16 @@ public static class BridgeCommand
                     {
                         using var checkout = result.GetValue(clone)
                             ? await ManagedCheckout.Open(cwd, statePath, github, credentials, executable, runtimeToken) : null;
-                        var nativeRoot = checkout?.Root ?? cwd;
-                        var nativeConfig = Path.Combine(credentialDirectory, "gh-config");
-                        if (checkout is not null) await Codex.TrustWorkspace(nativeRoot, wrapper, nativeConfig, runtimeToken, credentials.BrokerCredentialLost);
+                        var agentRoot = checkout?.Root ?? cwd;
+                        var agentConfig = Path.Combine(credentialDirectory, "gh-config");
+                        if (checkout is not null) await Codex.TrustWorkspace(agentRoot, wrapper, agentConfig, runtimeToken, credentials.BrokerCredentialLost);
                         // Read retained evidence before the constructor can archive this lifetime. Forgetting the final
                         // Discussion cannot prove prior tools stopped, so a missing journal must remain fenced.
                         var reconciliation = checkout is null ? null : new CheckoutRefresh(checkout,
                             new CheckoutBinding(checkout.Root, checkout.Owner, checkout.RepositoryId, checkout.DefaultRef), new RefreshJournalFile(statePath),
                             store.Discussions.Values.Any(record => record.HoldsSession) || Directory.Exists(statePath + ".checkout-evidence"),
                             store.Discussions.Values.Any(record => record.HoldsPending), time, new ControllerLog());
-                        await using var codex = new Codex(nativeRoot, wrapper, nativeConfig, checkout is not null, credentials.BrokerCredentialLost,
+                        await using var codex = new Codex(agentRoot, wrapper, agentConfig, checkout is not null, credentials.BrokerCredentialLost,
                             suppliedCredentials: agentCredentials is not null);
                         var sessions = new AgentSessions(codex, new ControllerLog(), reconciliation, credentials.BrokerCredentialLost, agentCredentials is not null);
                         // Status counts a turn by its session too, so it stays running after its Discussion record is forgotten.
@@ -215,15 +215,10 @@ public static class BridgeCommand
                             // Offline recovery must inspect original pending evidence before it can be normalized away.
                             if (reconciliation?.AdmissionBlocked != true) bridge.ResumeInterrupted();
                             settingsRefresh = settings.RefreshUntilCancelled(bridge.ReconcileCategoryEnrollment, intakeStop.Token);
-                            dashboard?.Start(runtimeToken);
+                            dashboard?.Start(runtimeToken, codex);
                             // Replaced agent credentials apply between dispatches at a global idle boundary: the checkout journal's in
-                            // clone mode, else the native's. Dispatch holds its gate before refresh admission, so this order matches.
-                            await using var agentRefresh = agentCredentials?.Watch((install, ct) => bridge.ExcludingDispatch(async () =>
-                            {
-                                if (reconciliation is null) return await sessions.RestartWhenIdle(install, ct);
-                                var restarted = false;
-                                return await reconciliation.CommitAtIdle(async idle => restarted = await sessions.RestartWhenIdle(install, idle), ct) && restarted;
-                            }, ct), time, abort.Cancel, intakeStop.Token);
+                            // clone mode, else the agent's. Dispatch holds its gate before refresh admission, so this order matches.
+                            await using var agentRefresh = agentCredentials?.Watch(bridge.ReplaceAgentCredentials, time, abort.Cancel, intakeStop.Token);
                             if (!result.GetValue(once)) outbox.Start(runtimeToken);
                             using var dispatchStop = CancellationTokenSource.CreateLinkedTokenSource(intakeStop.Token);
                             var dispatcher = bridge.DispatchWhenIdle(dispatchStop.Token, runtimeToken);
@@ -264,7 +259,7 @@ public static class BridgeCommand
                             await intakeStop.CancelAsync();
                             if (!result.GetValue(once) && cancellationToken.IsCancellationRequested && !abort.IsCancellationRequested)
                             {
-                                Log.Write("shutdown-draining", "New input is held while native work finishes");
+                                Log.Write("shutdown-draining", "New input is held while agent work finishes");
                                 await bridge.StopAndDrain(abort.Token);
                             }
                         }

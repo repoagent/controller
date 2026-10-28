@@ -4,12 +4,12 @@ using Xunit;
 namespace RepoAgent.Auth.Tests;
 
 // GitHub token issuance, decided by the core over the in-memory broker state, GitHub fake and a manual clock.
-public sealed class InstallationTokenTests
+public sealed class GitHubTokenIssuerTests
 {
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Fact]
-    public async Task Acknowledged_device_receives_exact_v1_token_with_durable_encrypted_accounting()
+    public async Task Acknowledged_controller_enrollment_receives_exact_v1_token_with_durable_encrypted_accounting()
     {
         var f = IssuanceFixture.Create();
         var result = await f.IssueAsync(Token);
@@ -56,7 +56,7 @@ public sealed class InstallationTokenTests
     public async Task Invalid_authority_is_denied_before_GitHub_work_or_a_write(string scenario, int status)
     {
         var f = IssuanceFixture.Create();
-        var (enrollmentId, secret, runtimeVersion) = (f.Device.DeviceId, f.Device.Secret, 1);
+        var (enrollmentId, secret, runtimeVersion) = (f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, 1);
         var other = Guid.NewGuid().ToString("N");
         string Marker(ApprovalContract approval, string repositoryId, string epoch, bool environment) => ApprovalMarker.Create(approval,
             repositoryId, "owner/project", 789, enrollmentId, new string('a', 43), "polling", epoch, "APPROVAL",
@@ -141,7 +141,7 @@ public sealed class InstallationTokenTests
             {
                 row["Epoch"] = epoch;
                 row["Marker"] = ApprovalMarker.Create(ApprovalContract.Legacy, IssuanceFixture.RepositoryId,
-                    "owner/project", 789, f.Device.DeviceId, new string('a', 43), "polling", epoch, "APPROVAL",
+                    "owner/project", 789, f.EnrollmentId.DeviceId, new string('a', 43), "polling", epoch, "APPROVAL",
                     "approval/environment", 987);
             });
         }
@@ -161,9 +161,9 @@ public sealed class InstallationTokenTests
         });
         var before = f.State.All().Select(row => (row.Scope, row.Name, row.Version)).ToList();
         var store = new IssuanceStore(f.State, "restored-epoch", 4096, f.Secrets, f.Clock);
-        var issuer = new InstallationTokenIssuer(store, f.GitHub, f.GitHub, f.GitHub, f.Clock);
+        var issuer = new GitHubTokenIssuer(store, f.GitHub, f.GitHub, f.GitHub, f.Clock);
 
-        var result = await issuer.IssueAsync(f.Device.DeviceId, f.Device.Secret, Token);
+        var result = await issuer.IssueAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token);
 
         Assert.Equal(503, result.Status);
         Assert.Null(result.Body);
@@ -212,7 +212,7 @@ public sealed class InstallationTokenTests
         Assert.NotEqual(200, (await f.IssueAsync(Token)).Status);
         Assert.Equal(1, f.GitHub.Mints);
         // Closing left the revocation receipt, so the controller's own revocation of the closed grant still succeeds.
-        Assert.Equal(204, await f.Revocation().RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
+        Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
     }
 
     // Which answers are unverifiable is the core's rule (ApprovalObserverTests); this is the issuer's outcome.
@@ -233,7 +233,7 @@ public sealed class InstallationTokenTests
         var f = IssuanceFixture.Create();
         f.GitHub.BeforeMint = async mint =>
         {
-            if (mint.Number == 2) Assert.Equal(204, await f.Revocation().RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
+            if (mint.Number == 2) Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
         };
         Assert.NotEqual(200, (await f.IssueAsync(Token)).Status);
         Assert.Equal("closed", f.Gate.State);
@@ -248,7 +248,7 @@ public sealed class InstallationTokenTests
     {
         var f = IssuanceFixture.Create();
         Assert.Equal(200, (await f.IssueAsync(Token)).Status);
-        Assert.Equal(204, await f.Revocation().RevokeAsync(f.Device.DeviceId, f.Device.Secret, Token));
+        Assert.Equal(204, await f.Revocation().RevokeAsync(f.EnrollmentId.DeviceId, f.EnrollmentId.Secret, Token));
         Assert.Equal("released", f.Attempt("runtime").State);
         Assert.Equal(3, f.Gate.OutstandingTokenCount);
     }

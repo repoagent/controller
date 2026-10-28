@@ -7,12 +7,12 @@ namespace RepoAgentController.Tests;
 public sealed class ControllerShutdownTests
 {
     [Fact]
-    public async Task Sigterm_keeps_accepted_native_work_and_credentials_alive_until_correlated_completion()
+    public async Task Sigterm_keeps_accepted_agent_work_and_credentials_alive_until_correlated_completion()
     {
-        if (!OperatingSystem.IsLinux()) return; // Actual shipping OS signal, Unix credential socket and native relay.
+        if (!OperatingSystem.IsLinux()) return; // Actual shipping OS signal, Unix credential socket and agent relay.
         await using var controller = new ControllerHarness.Controller(1);
         await controller.StartChild();
-        var turn = await controller.Turn(1); // Native acknowledgement and durable acceptance have both completed.
+        var turn = await controller.Turn(1); // Agent acknowledgement and durable acceptance have both completed.
         Assert.Null(controller.DiscussionState(1)["pending"]);
         Assert.NotNull(controller.DiscussionState(1)["running"]);
         Assert.Equal(0, await controller.InvokeWrapper());
@@ -24,14 +24,14 @@ public sealed class ControllerShutdownTests
 
         var observedExit = controller.ChildExited ? await controller.ChildExit : (int?)null;
         Assert.False(controller.ChildExited,
-            $"SIGTERM ended the controller while its acknowledged native turn was still held without correlated completion; child exit={observedExit}, running retained={controller.DiscussionState(1)["running"] is not null}, observed after 3s.");
+            $"SIGTERM ended the controller while its acknowledged agent turn was still held without correlated completion; child exit={observedExit}, running retained={controller.DiscussionState(1)["running"] is not null}, observed after 3s.");
         Assert.Equal(0, await controller.InvokeWrapper());
-        Assert.Single(controller.Native.Turns);
+        Assert.Single(controller.Agent.Turns);
         await controller.Finish(turn);
         Assert.Equal(0, await controller.ChildExit.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken));
         Assert.Null(controller.DiscussionState(1)["pending"]);
         Assert.Null(controller.DiscussionState(1)["running"]);
-        Assert.Single(controller.Native.Turns);
+        Assert.Single(controller.Agent.Turns);
     }
 }
 

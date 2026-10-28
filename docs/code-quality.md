@@ -1,18 +1,20 @@
 # Development and code quality
 
-All 11 projects target `net11.0` and use SDK `11.0.100-rc.3.26522.148`. Root and broker `global.json` are identical, allow prereleases and disable roll-forward. This is a release candidate, not a stable SDK. Microsoft's [release metadata](https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/11.0/releases.json) identifies RC3 (October 25, 2026) as a go-live security release. The SDK includes runtime and ASP.NET Core `11.0.0-rc.3.26522.148`. Updating the SDK requires reviewing runtime/container pins together and rerunning the gates below; separate broker runtime deployment still needs operator authorization.
+All 12 projects target `net11.0` and use SDK `11.0.100-rc.3.26522.148`. Root and broker `global.json` are identical, allow prereleases and disable roll-forward. This is a release candidate, not a stable SDK. Microsoft's [release metadata](https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/11.0/releases.json) identifies RC3 (October 25, 2026) as a go-live security release. The SDK includes runtime and ASP.NET Core `11.0.0-rc.3.26522.148`. Updating the SDK requires reviewing runtime/container pins together and rerunning the gates below; separate broker runtime deployment still needs operator authorization.
 
 ## Shared policy
 
 `Directory.Build.props` enables nullable, SDK analyzers, `AnalysisLevel=11-recommended`, build code style and warnings-as-errors for every project. No independent `AnalysisMode` or NetAnalyzers package overrides the SDK. `.editorconfig` adds cancellation, disposal, ValueTask, stream, rethrow, ordinal-comparison, cryptography/TLS and logging rules. Both cores retain their own banned symbols and analyzer 4.14.0; RS0030 is an error. Framework ASP.NET analyzers remain enabled in both hosts. The controller, controller core and NativeSmoke run trim/AOT/single-file checks on ordinary builds; broker, Aspire and tests do not claim AOT compatibility.
 
-The three xUnit projects retain `xunit.v3.mtp-v2` 4.0.2, which resolves `xunit.analyzers` 2.2.0 and Microsoft.Testing.Platform 2.5.1. Aspire AppHost/SDK and Azure Storage hosting stay at 13.6.2. Package-supplied analyzers remain active. Unused private members (IDE0051) and assignments (IDE0059) are build warnings. Whitespace uses four-space indentation, UTF-8, LF and a final newline; imports put System first. `dotnet format` verifies the complete explicit solution.
+The four xUnit projects retain `xunit.v3.mtp-v2` 4.0.2, which resolves `xunit.analyzers` 2.2.0 and Microsoft.Testing.Platform 2.5.1. Aspire AppHost/SDK and Azure Storage hosting stay at 13.6.2. Package-supplied analyzers remain active. Unused private members (IDE0051) and assignments (IDE0059) are build warnings. Whitespace uses four-space indentation, UTF-8, LF and a final newline; imports put System first. `dotnet format` verifies the complete explicit solution.
 
 **IDE0079 limitation:** it is configured as a warning for editors. Microsoft [documents that it does not run during builds](https://learn.microsoft.com/en-us/dotnet/fundamentals/code-analysis/style-rules/ide0079). A bounded RC3 probe with an unnecessary CS0168 pragma produced no diagnostic in either `dotnet build` or `dotnet format analyzers --diagnostics IDE0079 --verify-no-changes`. Consequently, CLI enforcement of unnecessary suppressions is unavailable with this toolchain; review must check them. A successful formatter invocation does not establish IDE0079 enforcement.
 
 SDK/framework generators and generated files retain their supplied generated-code treatment. Do not label handwritten files as generated to avoid analysis. Native worktrees and review artifacts are excluded from project globs; an ancestor checkout's `.globalconfig` is removed before compilation while SDK/package configs are retained. Root `.editorconfig` stops ordinary editor-config inheritance.
 
 ## Verification
+
+The [controller architecture guide](controller-architecture.md) identifies the core driving interfaces and the remaining HTTP/process safety checks. Core behavior uses domain ports and controlled time; provider compatibility belongs to the shared Aspire and hosted smoke paths.
 
 Install the exact SDK from `global.json`, then run from the repository root:
 
@@ -22,7 +24,7 @@ bash scripts/delivery/verify.sh /tmp/repoagent-packages
 bash service/auth/verify.sh
 ```
 
-The shared gate checks equal SDK policies and solution coverage of every C# project under src, tests and service/auth (also in Git archives), builds all projects in Release with analyzers, and runs `dotnet format RepoAgent.slnx --no-restore --verify-no-changes --severity warn`. Both existing Controller and Broker verification scripts invoke it. Live tests compile without executing credential-dependent scenarios. The controller gate executes its xUnit/process/delivery suites and Linux AOT/native smoke; the broker gate executes actual service tests and rejects zero execution.
+The shared gate checks equal SDK policies and solution coverage of every C# project under src, tests and service/auth (also in Git archives), builds all projects in Release with analyzers, and runs `dotnet format RepoAgent.slnx --no-restore --verify-no-changes --severity warn`. Both existing Controller and Broker verification scripts invoke it. Live and shared AppHost tests compile without executing credential-dependent scenarios. The shared AppHost project has a [separate opt-in real-provider journey](local-apphost.md#automated-journey); its two composition/origin checks are not evidence of a completed provider run. The controller gate executes its xUnit/process/delivery suites and Linux AOT/native smoke; the broker gate executes actual service tests and rejects zero execution.
 
 Container build inputs matter: the controller's source inventory and explicit `COPY` statements include shared policy before build. The test Containerfile does the same. Broker Docker builds use the repository root with `-f service/auth/Dockerfile`; its Dockerfile-specific allowlist sends only shared policy, SDK selections and broker production sources. Shared policy stays above `service/auth`, including during restore; banned symbols arrive with production sources. The publication and archived-source bootstrap paths use this same context. Neither context includes worktrees, artifacts or development credentials.
 
