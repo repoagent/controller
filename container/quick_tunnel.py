@@ -6,19 +6,21 @@ Only explicit idle status permits retirement; its normal shutdown also drains a
 turn admitted after that snapshot. Recovery waits for actual controller exit,
 then restarts with the replacement URL and reports recovery only after readiness.
 """
+from contextlib import closing
 import datetime
+import errno
 import http.client
 import json
 import os
 import queue
 import re
+import select
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 
 CONNECT_SECONDS = 90
 RETRY_FIRST_SECONDS = 5
@@ -64,35 +66,85 @@ def status_state(body):
     return value['state']
 
 
-class NoStatusRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, response, code, message, headers, new_url):
-        return None
+class _StatusSocket(socket.socket):
+    """One local status request's I/O budget, including progress between received bytes."""
+    def __init__(self, deadline, stopping):
+        super().__init__(socket.AF_INET, socket.SOCK_STREAM)
+        self.deadline, self.stopping = deadline, stopping
+
+    def remaining(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0 or self.stopping is not None and self.stopping.is_set():
+            raise TimeoutError('status request ended')
+        return remaining
+
+    def connect_status(self, port):
+        self.remaining()
+        self.setblocking(False)
+        error = self.connect_ex(('127.0.0.1', port))
+        if error not in (0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY):
+            raise OSError(error, 'status connection failed')
+        while error:
+            _, writable, exceptional = select.select([], [self], [self], min(0.2, self.remaining()))
+            if writable or exceptional:
+                error = self.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                if error:
+                    raise OSError(error, 'status connection failed')
+        self.settimeout(min(0.2, self.remaining()))
+
+    def recv_into(self, buffer, nbytes=0, flags=0):
+        while True:
+            self.settimeout(min(0.2, self.remaining()))
+            try:
+                return super().recv_into(buffer, nbytes, flags)
+            except TimeoutError:
+                # Retry inside SocketIO: a timeout escaping it makes its file permanently unreadable.
+                continue
+
+    def sendall(self, data, flags=0):
+        pending = memoryview(data)
+        while pending:
+            self.settimeout(min(0.2, self.remaining()))
+            try:
+                sent = super().send(pending, flags)
+            except TimeoutError:
+                continue
+            if not sent:
+                raise OSError('status connection closed while sending')
+            pending = pending[sent:]
 
 
-def controller_status(port):
+def controller_status(port, stopping=None):
     """Query only the private loopback status port; diagnostic reasons contain no response data."""
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoStatusRedirect())
     try:
-        with opener.open('http://127.0.0.1:' + str(port) + '/status', timeout=STATUS_TIMEOUT_SECONDS) as response:
-            if response.status != 200:
-                return None, 'status-http-' + str(response.status)
-            lengths = response.headers.get_all('Content-Length', [])
-            if len(lengths) > 1 or lengths and not lengths[0].strip().isdigit():
-                return None, 'status-invalid-response'
-            declared = int(lengths[0]) if lengths else None
-            if declared is not None and declared > MAX_STATUS_BYTES:
-                return None, 'status-response-too-large'
-            body = response.read(MAX_STATUS_BYTES + 1)
-            if len(body) > MAX_STATUS_BYTES:
-                return None, 'status-response-too-large'
-            if declared is not None and declared != len(body):
-                return None, 'status-invalid-response'
-            return status_state(body), 'controller-busy'
-    except urllib.error.HTTPError as error:
-        return None, 'status-http-' + str(error.code)
+        # HTTPConnection uses neither environment proxies nor redirects. Its normal HTTP parser reads through the budgeted socket.
+        with (
+            _StatusSocket(time.monotonic() + STATUS_TIMEOUT_SECONDS, stopping) as local,
+            closing(http.client.HTTPConnection('127.0.0.1', port)) as connection,
+        ):
+            local.connect_status(port)
+            connection.sock = local
+            connection.request('GET', '/status')
+            with connection.getresponse() as response:
+                if response.status != 200:
+                    return None, 'status-http-' + str(response.status)
+                lengths = response.headers.get_all('Content-Length', [])
+                if len(lengths) > 1 or lengths and not lengths[0].strip().isdigit():
+                    return None, 'status-invalid-response'
+                declared = int(lengths[0]) if lengths else None
+                if declared is not None and declared > MAX_STATUS_BYTES:
+                    return None, 'status-response-too-large'
+                body = response.read(MAX_STATUS_BYTES + 1)
+                if len(body) > MAX_STATUS_BYTES:
+                    return None, 'status-response-too-large'
+                if declared is not None and declared != len(body):
+                    return None, 'status-invalid-response'
+                state = status_state(body)
+                local.remaining()
+                return state, 'controller-busy'
     except (ValueError, UnicodeError, RecursionError):
         return None, 'status-invalid-response'
-    except (OSError, urllib.error.URLError, http.client.HTTPException):
+    except (OSError, http.client.HTTPException):
         return None, 'status-unavailable'
 
 
@@ -247,7 +299,7 @@ def run(bridge, port, environment=None, *, status_port):
                 if owned['cloudflared'][0].poll() is not None:
                     break
                 if not retiring:
-                    state, reason = controller_status(status_port)
+                    state, reason = controller_status(status_port, stopping)
                     observe()
                     if stopping.is_set() or retained is None or owned['cloudflared'][0].poll() is not None:
                         break
