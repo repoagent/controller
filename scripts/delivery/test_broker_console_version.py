@@ -16,7 +16,7 @@ IMAGE = 'ghcr.io/repoagent/controller-auth@sha256:'+'b'*64
 
 @unittest.skipIf(os.name == 'nt', 'The version probe requires Linux PTY transport')
 class BrokerConsoleVersionTests(unittest.TestCase):
-    def invoke(self, change=None, **environment):
+    def invoke(self, change=None, script=SCRIPT, report_name='version-probe.json', **environment):
         def setup(fixtures, job):
             app = fixtures[APP]['properties']
             app['template']['containers'][0]['name'] = 'auth-service'
@@ -39,7 +39,7 @@ class BrokerConsoleVersionTests(unittest.TestCase):
         values = dict(AUTH_EXPECTED_IMAGE=IMAGE, AUTH_EXPECTED_REVISION=REVISION, AUTH_EXPECTED_REPLICA=REPLICA,
                       AUTH_RELEASE_TAG='broker-v1.0.0')
         values.update(environment)
-        return harness.BrokerDiagnosticsTests.invoke(self, setup, script=SCRIPT, report_name='version-probe.json', **values)
+        return harness.BrokerDiagnosticsTests.invoke(self, setup, script=script, report_name=report_name, **values)
 
     def test_fixed_version_command_observes_only_metadata_using_terminal_stdin(self):
         result, report, calls, output = self.invoke()
@@ -133,4 +133,10 @@ class BrokerConsoleVersionTests(unittest.TestCase):
             fixtures['repos/repoagent/controller/commits/broker-v1.0.0']['sha'] = 'c'*40
         result, report, _, _ = self.invoke(wrong_contract)
         self.assertEqual(result.returncode, 1)
+        self.assertNotIn('metadata', report)
+
+    def test_nonzero_cli_exit_still_withholds_even_valid_version_metadata(self):
+        result, report, _, _ = self.invoke(lambda fixtures: fixtures.update(consoleExitCode=1))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(report['state'], 'unavailable')
         self.assertNotIn('metadata', report)

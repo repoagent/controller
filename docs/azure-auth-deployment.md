@@ -191,9 +191,24 @@ Primary shapes: [stable revision and replica GET schema](https://github.com/Azur
 
 ## Internal retained-authority observation
 
-The [internal source command](../service/auth/README.md#internal-retained-authority-observation) is fixed to operational test repository `1432194081`. It is not a public HTTP endpoint or a general Table inspector. It must be published in a reviewed broker release and deliberately adopted before use; broker 1.0.0 does not contain it. No workflow inspection operation is introduced here. Actual selected-container transport, Table read authority and retained-state acceptance require their own runtime evidence.
+The [internal source command](../service/auth/README.md#internal-retained-authority-observation) is fixed to operational test repository `1432194081`. It is not a public HTTP endpoint or a general Table inspector. It must be published in a reviewed broker release and deliberately adopted before use; broker 1.0.0 does not contain it. The explicit main-only `authority-probe` operation below invokes only that fixed command. Actual Table read authority and retained-state acceptance require their own runtime evidence.
 
 Its production pins come from successful [deployment40749418629](https://github.com/repoagent/controller/actions/runs/40749418629), source `4b7e9eb094209384484cb297019b7a022314e224`, observed Bicep outputs at2026-10-28T19:05:50Z: Table origin `https://repoagentauth.table.core.windows.net/`, Table `brokerstate`, runtime identity `repoagent-auth-runtime` with client ID `8016ef66-b1b7-4118-8de4-07814ebc9896`. This is the runtime identity, distinct from the deployment OIDC identity. `Broker__ManagedIdentityClientId` must match that accepted client ID, and `AZURE_CLIENT_ID`, when present, must agree. Rotation or a different target requires a reviewed source change; the command does not grant itself authority or select another credential.
+
+After a reviewed broker release containing the command has been published and deliberately deployed, select its exact immutable image and current ready revision:
+
+```sh
+gh workflow run broker.yml --repo repoagent/controller --ref main \
+  -f operation=authority-probe -f expected-source-sha=EXACT_ACCEPTED_MAIN_SHA \
+  -f release-tag=broker-v1.1.0 -f image=ghcr.io/repoagent/controller-auth@sha256:EXACT_CURRENT_IMAGE_DIGEST \
+  -f revision=EXACT_CURRENT_READY_REVISION
+```
+
+Only compatible stable major1 releases from1.1.0 onward are accepted;1.0 and unknown majors are refused before exec. Published release metadata binds the image and exact compiled version/source. Existing source/account/app/revision/unique-replica guards are shared with version-probe; authority mode additionally verifies the accepted runtime UAMI assignment/client ID before and after exec. An optional exact replica must match the single discovered replica. It uses the existing OIDC Contributor console authority, no direct workflow Table reads, new grants, storage keys or E2E credentials. The only remote command is `dotnet /app/RepoAgent.Auth.dll --inspect-retained-authority`; no command/target/repository selector is accepted.
+
+The shared fixed-command PTY transport privately bounds stdout to64KiB/30seconds and discards stderr/banners. Exactly one projection of at most16KiB must match the full supported schema: exact fields, source/version, false settlement/all-attempts flags, enums, nullable flags, nonnegative integer counts, UTC observation time and readCount<=6. Unknown/duplicate fields, malformed values, unexpected metadata, observed target drift, ambiguity, overflow or timeout retain no projection. Only a fresh deeply allowlisted `authority-probe.json` reaches the seven-day artifact.
+
+`projectionValidated=true` means the supported report was validated, not that every field is complete. Valid partial/unavailable reports retain their actual state and null/unknown values, even with a nonzero CLI exit; the workflow exits unsuccessfully while retaining that useful artifact. `remoteExitStatusEstablished`, `settlementProven` and `allOutstandingAttemptsExamined` remain false. Version-probe behavior/artifacts are unchanged. This operation has not established any actual retained-row or settlement acceptance until its reviewed current-main invocation is observed.
 
 The current configured deployment epoch is compared internally with each encountered row; old/missing/invalid epochs remain explicit mismatches/unknowns and are never substituted or exported. Only gate→owner/receipt, owner→runtime attempt and gate→verifier attempt references are followed, with one gate reread. Reports cover these referenced rows only, not private global accounting or every outstanding attempt. They never authorize replacement, revocation, reclamation or epoch changes. Keep raw runtime/provider material private and retain only the bounded command projection.
 
