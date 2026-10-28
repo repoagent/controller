@@ -24,7 +24,9 @@ jobs:
     uses: ./.github/workflows/refresh-baseline-tool.yml
     with:
       tool: ${{ matrix.tool }}
-    # The ceiling for the called refresh; only its main-only commit job uses the write permissions.
+    secrets: inherit
+    # Main-only pinning and the separate failure reporter receive their own write permissions.
     permissions:
       contents: write
       actions: write
+      issues: write

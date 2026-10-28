@@ -2,6 +2,10 @@ name: Controller
 on:
   workflow_dispatch:
     inputs:
+      smoke:
+        description: Run the disposable hosted installer smoke on this branch without publishing
+        type: boolean
+        default: false
       tag:
         description: Optional existing vMAJOR.MINOR.PATCH tag on main for a native release; omit for a baseline image
         type: string
@@ -24,6 +28,7 @@ on:
       - '.agents/skills/repoagent-orientation/**'
       - 'scripts/**'
       - '.github/workflows/controller.yml'
+      - '.github/workflows/e2e-smoke.yml'
       - '.github/workflows/broker.yml'
       - '.github/workflows/refresh-baseline-tool.yml'
       - '.github/workflows/refresh-baseline-tools.yml'
@@ -47,17 +52,25 @@ on:
       - '.agents/skills/repoagent-orientation/**'
       - 'scripts/**'
       - '.github/workflows/controller.yml'
+      - '.github/workflows/e2e-smoke.yml'
       - '.github/workflows/broker.yml'
       - '.github/workflows/refresh-baseline-tool.yml'
       - '.github/workflows/refresh-baseline-tools.yml'
 permissions:
   contents: read
 jobs:
+  hosted-smoke:
+    if: github.repository == 'repoagent/controller' && github.event_name == 'workflow_dispatch' && inputs.smoke == true && inputs.tag == ''
+    uses: ./.github/workflows/e2e-smoke.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      issues: write
   build:
     concurrency:
       group: controller-build-${{ github.ref }}
       cancel-in-progress: true
-    if: (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && inputs.tag == ''
+    if: (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && inputs.tag == '' && inputs.smoke != true
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -126,7 +139,7 @@ jobs:
     concurrency:
       group: controller-verify-${{ github.ref }}
       cancel-in-progress: true
-    if: (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && inputs.tag == ''
+    if: (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') && inputs.tag == '' && inputs.smoke != true
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -142,7 +155,7 @@ jobs:
       group: controller-publish
       cancel-in-progress: false
     needs: [build, verify-artifact, verify]
-    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && inputs.tag == '' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && inputs.tag == '' && inputs.smoke != true && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     environment: controller-release
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -196,7 +209,7 @@ jobs:
       group: controller-release
       cancel-in-progress: false
     needs: [build, publish]
-    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && inputs.tag == '' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && inputs.tag == '' && inputs.smoke != true && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     environment: controller-release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -225,7 +238,7 @@ jobs:
     concurrency:
       group: controller-native-release
       cancel-in-progress: false
-    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    if: github.repository == 'repoagent/controller' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.tag != '' && inputs.smoke != true
     environment: controller-release
     runs-on: ubuntu-24.04
     timeout-minutes: 30
