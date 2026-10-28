@@ -1,1 +1,4 @@
-{"service/auth":"1.0.0"}
+{
+  "releases/controller": "1.0.0",
+  "service/auth": "1.0.0"
+}
