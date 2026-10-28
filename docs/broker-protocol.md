@@ -72,7 +72,7 @@ Approval authority is a principal GitHub permits to write the selected variable,
 
 The existing [legacy Environment host revocation tool](repository-approval.md) checks the exact decoded value and makes one DELETE, accepting an independent-writer availability race and manual recovery. GitHub removal acknowledgment, durable broker closure and outstanding-token settlement are separate results. No continuous-history guarantee is made for identical delete/recreate between observations, and terminal enrollments never reopen.
 
-A lease alone does not fence outstanding GitHub bearer tokens. Before hosted ownership transfer, account for every issued token, including mint/response-loss races: confirm revocation or wait for expiry plus documented uncertainty before admitting another owner. Compliant owners must stop work, disable local launches and drain/terminate native children on ownership loss. Partition, suspend/resume and retained-token takeover evidence is a release gate. These guarantees are outside the first consumer slice.
+A lease alone does not fence outstanding GitHub bearer tokens. Before hosted ownership transfer, account for every issued token, including mint/response-loss races: confirm revocation or wait for expiry plus documented uncertainty before admitting another owner. Compliant owners must stop work, disable local launches and drain/terminate agent runtime descendants on ownership loss. Partition, suspend/resume and retained-token takeover evidence is a release gate. These guarantees are outside the first consumer slice.
 
 ## Explicit clone-capable consumer v2
 

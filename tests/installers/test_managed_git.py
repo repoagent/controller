@@ -33,10 +33,10 @@ def read_line(process, buffers, timeout=20):
         with selectors.DefaultSelector() as ready:
             ready.register(process.stdout, selectors.EVENT_READ)
             if not ready.select(timeout):
-                raise AssertionError('Native/manager response timed out')
+                raise AssertionError('Agent runtime/manager response timed out')
         chunk = os.read(process.stdout.fileno(), 4096)
         if not chunk:
-            raise AssertionError('Native/manager exited before response')
+            raise AssertionError('Agent runtime/manager exited before response')
         data += chunk
     result, buffers[process.pid] = data.split(b'\n', 1)
     return result.decode()
@@ -117,11 +117,11 @@ class ManagedGitTests(unittest.TestCase):
     def test_fork_clone_with_quoted_paths_excludes_ambient_credentials_and_upstream(self):
         self.assert_clone_and_fetch(prefix="managed git's ", fork=True, ambient=True)
 
-    @unittest.skipUnless(os.environ.get('REPOAGENT_TEST_NATIVE_CODEX'), 'Installed native Codex command boundary required')
+    @unittest.skipUnless(os.environ.get('REPOAGENT_TEST_NATIVE_CODEX'), 'Installed Codex command boundary required')
     def test_persistent_agent_process_observes_real_manager_renewal_then_denial(self):
-        self.assert_clone_and_fetch(native=True)
+        self.assert_clone_and_fetch(real_agent_runtime=True)
 
-    def assert_clone_and_fetch(self, prefix='managed-git-', fork=False, ambient=False, native=False):
+    def assert_clone_and_fetch(self, prefix='managed-git-', fork=False, ambient=False, real_agent_runtime=False):
         with tempfile.TemporaryDirectory(prefix=prefix) as temporary:
             directory = Path(temporary)
             fixture = GitProvider(directory, fork=fork)
@@ -181,7 +181,7 @@ class ManagedGitTests(unittest.TestCase):
                                                      'remote.origin.gh-resolved'], fixture.environment()).stdout.strip(), 'base')
                         self.assertFalse(any('/upstream/' in path for method, host, path in fixture.requests))
                     self.assertFalse(spy.exists(), 'Ambient authentication must never execute')
-                    if native:
+                    if real_agent_runtime:
                         self.assert_agent_renewal(fixture, manager, credential, state, checkout)
                     if ambient:
                         self.assert_managed_denials(fixture, environment, manager, credential, wrapper, checkout, spy)
@@ -192,19 +192,19 @@ class ManagedGitTests(unittest.TestCase):
                 fixture.close()
 
     def assert_agent_renewal(self, fixture, manager, credential, state, checkout):
-        # The shipped image's native permission profile: commands reach the network and the credential handoff.
-        home = fixture.directory / 'native-codex'
+        # The shipped image's agent permission profile: commands reach the network and the credential handoff.
+        home = fixture.directory / 'agent-codex'
         home.mkdir(mode=0o700)
         (home / 'config.toml').write_text('approval_policy = "never"\nsandbox_mode = "danger-full-access"\n')
         environment = dict(fixture.environment(), CODEX_HOME=str(home))
-        native = None
+        agent_runtime = None
         buffers = {}
 
         def line(process):
             return read_line(process, buffers)
 
         try:
-            native = subprocess.Popen([os.environ['REPOAGENT_TEST_NATIVE_CODEX'], 'app-server'], cwd=ROOT,
+            agent_runtime = subprocess.Popen([os.environ['REPOAGENT_TEST_NATIVE_CODEX'], 'app-server'], cwd=ROOT,
                                       env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                       stderr=subprocess.DEVNULL, text=True)
             request_id = 0
@@ -212,18 +212,18 @@ class ManagedGitTests(unittest.TestCase):
             def request(method, parameters):
                 nonlocal request_id
                 request_id += 1
-                native.stdin.write(json.dumps(dict(id=request_id, method=method, params=parameters)) + '\n')
-                native.stdin.flush()
+                agent_runtime.stdin.write(json.dumps(dict(id=request_id, method=method, params=parameters)) + '\n')
+                agent_runtime.stdin.flush()
                 while True:
-                    message = json.loads(line(native))
+                    message = json.loads(line(agent_runtime))
                     if message.get('id') == request_id:
-                        self.assertNotIn('error', message, 'Native RPC request rejected')
+                        self.assertNotIn('error', message, 'Agent runtime RPC request rejected')
                         return message['result']
 
             request('initialize', {'clientInfo': {'name': 'clone_conformance', 'version': '1'},
                                    'capabilities': {'experimentalApi': False}})
-            native.stdin.write('{"method":"initialized"}\n')
-            native.stdin.flush()
+            agent_runtime.stdin.write('{"method":"initialized"}\n')
+            agent_runtime.stdin.flush()
             wrapper = credential / 'bin/repoagent-git'
             original_wrapper = wrapper.read_bytes()
 
@@ -257,22 +257,22 @@ class ManagedGitTests(unittest.TestCase):
             denied_fetch = fetch()
             self.assertNotEqual(denied_fetch['exitCode'], 0)
             self.assertEqual(len(fixture.requests), before, 'Denied renewal must stop before provider network')
-            self.assertIsNone(native.poll(), 'One native process must survive rotation and denial')
-            print('Native persistent process pid=' + str(native.pid) + '; real manager/helper A-to-B/denial verified; fetch exits=' +
+            self.assertIsNone(agent_runtime.poll(), 'One agent runtime process must survive rotation and denial')
+            print('Agent runtime persistent process pid=' + str(agent_runtime.pid) + '; real manager/helper A-to-B/denial verified; fetch exits=' +
                   str(first['exitCode']) + '/' + str(second['exitCode']), flush=True)
             for phase, result in [('A', first), ('B', second)]:
-                self.assertEqual(result['exitCode'], 0, 'Native managed fetch ' + phase + ' must succeed with existing permissions: ' +
+                self.assertEqual(result['exitCode'], 0, 'Agent managed fetch ' + phase + ' must succeed with existing permissions: ' +
                     result.get('stderr', '').replace('lease-A', '[test lease]').replace('lease-B', '[test lease]'))
         finally:
-            if native is not None:
-                if native.poll() is None:
-                    native.stdin.close()
+            if agent_runtime is not None:
+                if agent_runtime.poll() is None:
+                    agent_runtime.stdin.close()
                     try:
-                        native.wait(timeout=5)
+                        agent_runtime.wait(timeout=5)
                     except subprocess.TimeoutExpired:
-                        native.kill()
-                        native.wait(timeout=5)
-                native.stdout.close()
+                        agent_runtime.kill()
+                        agent_runtime.wait(timeout=5)
+                agent_runtime.stdout.close()
 
     def assert_managed_denials(self, fixture, environment, manager, credential, wrapper, checkout, spy):
         before = len(fixture.requests)
@@ -556,7 +556,7 @@ class GitProvider:
                     self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
                     return
                 if host == 'broker.fixture':
-                    # Optional: only the enrolled device secret authorizes a lease.
+                    # Optional: only the controller secret authorizes a lease.
                     secret = getattr(provider, 'broker_secret', None)
                     if secret is not None and self.headers.get('Authorization') != 'Bearer ' + secret:
                         return self.reply({}, 401)

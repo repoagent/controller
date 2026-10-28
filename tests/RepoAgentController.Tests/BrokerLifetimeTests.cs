@@ -70,7 +70,7 @@ public sealed class BrokerLifetimeTests
         WriteExecutable(Path.Combine(tools, "codex"), Agent);
         WriteExecutable(fixture.Gh, GitHub);
         var previousPath = Environment.GetEnvironmentVariable("PATH");
-        var previousSettings = Environment.GetEnvironmentVariable("NATIVE_DRAIN_SETTINGS");
+        var previousSettings = Environment.GetEnvironmentVariable("AGENT_RUNTIME_DRAIN_SETTINGS");
         Process? parent = null, child = null;
         TcpClient? connection = null;
         Task<int>? run = null;
@@ -78,7 +78,7 @@ public sealed class BrokerLifetimeTests
         try
         {
             Environment.SetEnvironmentVariable("PATH", tools + Path.PathSeparator + previousPath);
-            Environment.SetEnvironmentVariable("NATIVE_DRAIN_SETTINGS", settingsPath);
+            Environment.SetEnvironmentVariable("AGENT_RUNTIME_DRAIN_SETTINGS", settingsPath);
             var statusPort = ControllerHarness.FreePort();
             var args = new List<string>
             {
@@ -194,7 +194,7 @@ public sealed class BrokerLifetimeTests
                 parent?.Dispose();
                 child?.Dispose();
                 Environment.SetEnvironmentVariable("PATH", previousPath);
-                Environment.SetEnvironmentVariable("NATIVE_DRAIN_SETTINGS", previousSettings);
+                Environment.SetEnvironmentVariable("AGENT_RUNTIME_DRAIN_SETTINGS", previousSettings);
             }
         }
     }
@@ -284,7 +284,7 @@ public sealed class BrokerLifetimeTests
         var environment = new Dictionary<string, string?>
         {
             ["PATH"] = tools + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"),
-            ["NATIVE_DRAIN_SETTINGS"] = settingsPath
+            ["AGENT_RUNTIME_DRAIN_SETTINGS"] = settingsPath
         };
         var previous = environment.Keys.ToDictionary(k => k, Environment.GetEnvironmentVariable);
         Process? parent = null, child = null;
@@ -403,7 +403,7 @@ public sealed class BrokerLifetimeTests
     const string Agent = """"
         #!/usr/bin/python3
         import json,os,signal,subprocess,sys,threading
-        s=json.load(open(os.environ['NATIVE_DRAIN_SETTINGS']))
+        s=json.load(open(os.environ['AGENT_RUNTIME_DRAIN_SETTINGS']))
         child=None
         acknowledged=threading.Event()
         completed=threading.Event()
@@ -413,7 +413,7 @@ public sealed class BrokerLifetimeTests
          global child
          code=r"""
         import json,os,socket,subprocess,threading
-        s=json.load(open(os.environ['NATIVE_DRAIN_SETTINGS']))
+        s=json.load(open(os.environ['AGENT_RUNTIME_DRAIN_SETTINGS']))
         token=subprocess.run(["gh","auth","token"],capture_output=True,text=True).stdout.strip()
         with socket.create_connection(('127.0.0.1',s['port'])) as ready:
          ready.sendall((json.dumps({'parent':os.getppid(),'child':os.getpid(),'credentialCopied':token.startswith('opaque-token-')})+'\n').encode())

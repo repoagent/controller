@@ -6,7 +6,7 @@ The maintainer requested [#42](https://github.com/repoagent/controller/issues/42
 
 Prepare the configured repository after GitHub App identity is verified and before starting agent work. Use the authenticated `gh` command to clone over HTTPS into persistent runtime storage. Resolve and bind the immutable repository identity and actual default branch; do not assume `main`, clone a webhook-selected arbitrary URL, or replace an unrelated existing checkout. The clone belongs to runtime data, not image layers.
 
-Set the native process working directory, `thread/start.cwd` and `thread/resume.cwd` to the same canonical checkout root. Enable trust for that exact verified folder in the controller's private Codex configuration, preserving other settings. Repository `AGENTS.md`, repository-local skills and trusted project configuration then participate through Codex's native mechanisms. Keep the existing controller transport instructions, authenticated `gh` wrapper and persistent session history.
+Set the agent runtime process working directory, `thread/start.cwd` and `thread/resume.cwd` to the same canonical checkout root. Enable trust for that exact verified folder in the controller's private Codex configuration, preserving other settings. Repository `AGENTS.md`, repository-local skills and trusted project configuration then participate through Codex's native mechanisms. Keep the existing controller transport instructions, authenticated `gh` wrapper and persistent session history.
 
 Receive signed push webhooks for the configured repository and reconcile changes to its actual default branch. Duplicate, delayed and reordered events should converge on current GitHub state. Also reconcile on startup and periodically so missed deliveries do not leave the checkout permanently stale. A push payload is a trigger for an authoritative fetch, not authority to select a repository or reset local work.
 
@@ -18,7 +18,7 @@ Use the renewable App credential for both `gh repo clone` and later Git fetches.
 
 ## Updating without damaging agent work
 
-Track actual agent turn execution, not just acceptance of `turn/start`. Current observation serialization ends at acceptance while native execution continues. Coordinate all active turns sharing a checkout with applying updates; a single-reader webhook queue does not itself make filesystem mutation safe. Native disconnect and uncertain completion must not be interpreted as idle.
+Track actual agent turn execution, not just acceptance of `turn/start`. Current observation serialization ends at acceptance while agent turn execution continues. Coordinate all active turns sharing a checkout with applying updates; a single-reader webhook queue does not itself make filesystem mutation safe. Agent runtime disconnect and uncertain completion must not be interpreted as idle.
 
 Initially use a conservative shared-checkout policy: defer checkout mutation while agent work is active; when idle, update only a clean controller-managed checkout at the expected previously applied commit. Preserve staged, unstaged and untracked files, user branches, local commits and merge/rebase state. Leave refresh pending with actionable status when those conditions are not met; do not auto-stash, clean or reset agent work. A default-branch rename, deletion or force-push must either be reconciled safely under these conditions or report a recoverable blocked state.
 

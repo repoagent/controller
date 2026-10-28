@@ -79,7 +79,7 @@ LABEL project=${PROJECT_LABEL}
   -BuildArg 'PROJECT_LABEL=team; literal text'
 ```
 
-Paths and argument values are passed as process arguments, without shell evaluation. Docker bind mount paths containing commas/newlines are rejected. Derived build arguments are nonsecret user-owned inputs; do not pass tokens or private keys. The derived Dockerfile receives only the allowlisted context, with its own file copied to a fixed filename. It receives `REPOAGENT_BASE` pointing to the locally composed base image. Arbitrary derived instructions are not reviewed agent profiles and may alter the runtime contract. Only Codex's native app-server adapter is supported.
+Paths and argument values are passed as process arguments, without shell evaluation. Docker bind mount paths containing commas/newlines are rejected. Derived build arguments are nonsecret user-owned inputs; do not pass tokens or private keys. The derived Dockerfile receives only the allowlisted context, with its own file copied to a fixed filename. It receives `REPOAGENT_BASE` pointing to the locally composed base image. Arbitrary derived instructions are not reviewed agent profiles and may alter the runtime contract. Only the Codex app-server adapter is supported.
 
 Credential exclusion guarantees concern the context and overlay controlled here. An explicitly supplied base or Dockerfile is trusted user content: existing secrets in its layers cannot be removed by adding this overlay. Keep those inputs credential-free as well. No host home, PEM, controller secret, auth cache or token is automatically copied; symlinks in allowlisted source paths are rejected.
 

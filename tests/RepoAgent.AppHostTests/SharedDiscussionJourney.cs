@@ -27,9 +27,9 @@ public sealed class SharedDiscussionJourney
         using var binding = JsonDocument.Parse(enrollment);
         var actor = binding.RootElement.GetProperty("appSlug").GetString() + "[bot]";
         var canonical = binding.RootElement.TryGetProperty("controllerSecret", out var controllerSecret);
-        var legacy = binding.RootElement.TryGetProperty("deviceSecret", out var deviceSecret);
+        var legacy = binding.RootElement.TryGetProperty("deviceSecret", out var legacyControllerSecret);
         Assert.NotEqual(canonical, legacy); // Exactly one naming generation; mixed aliases are ambiguous.
-        var secret = (canonical ? controllerSecret : deviceSecret).GetString();
+        var secret = (canonical ? controllerSecret : legacyControllerSecret).GetString();
         Assert.False(string.IsNullOrWhiteSpace(secret), "The private controller secret is required.");
         Assert.Equal(repository, binding.RootElement.GetProperty("repository").GetString());
         var coordinates = repository.Split('/');
@@ -72,7 +72,7 @@ public sealed class SharedDiscussionJourney
                 var receipted = current["reactions"]!["nodes"]!.AsArray().Any(reaction =>
                     reaction?["content"]?.GetValue<string>() == "EYES" && reaction["user"]?["login"]?.GetValue<string>() == actor);
                 var status = await controller.GetStringAsync("/status", ct);
-                Assert.False(status.Contains(secret, StringComparison.Ordinal), "The controller status exposed its enrollment secret.");
+                Assert.False(status.Contains(secret, StringComparison.Ordinal), "The controller status exposed its controller secret.");
                 using var snapshot = JsonDocument.Parse(status);
                 completed = replied && receipted && snapshot.RootElement.GetProperty("state").GetString() == "idle";
                 if (!completed) await Task.Delay(TimeSpan.FromSeconds(2), ct);

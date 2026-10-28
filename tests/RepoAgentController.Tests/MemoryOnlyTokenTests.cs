@@ -159,7 +159,7 @@ public sealed class MemoryOnlyTokenTests
             WriteExecutable(fixture.Gh, GitHub);
             Set("PATH", tools + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH"));
             Set("MEMORY_TOKEN_OBSERVATIONS", observations);
-            Set("MEMORY_TOKEN_NATIVE_READY", ready);
+            Set("MEMORY_TOKEN_AGENT_READY", ready);
         }
 
         void Set(string name, string value)
@@ -235,7 +235,7 @@ public sealed class MemoryOnlyTokenTests
             #!/usr/bin/python3
             import json,os,signal,subprocess,sys
             active=False;finished=False
-            ready=os.environ['MEMORY_TOKEN_NATIVE_READY']
+            ready=os.environ['MEMORY_TOKEN_AGENT_READY']
             def complete():
              global active
              if not active:return

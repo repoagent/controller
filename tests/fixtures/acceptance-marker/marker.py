@@ -14,7 +14,7 @@ if '--hold' in sys.argv[2:]:
     try:
         while not Path('/workspace/hold-release-' + value).exists():
             if time.monotonic() >= deadline:
-                raise TimeoutError('Test runner did not release the native action')
+                raise TimeoutError('Test runner did not release the agent action')
             time.sleep(0.2)
     finally:
         ready.unlink(missing_ok=True)
