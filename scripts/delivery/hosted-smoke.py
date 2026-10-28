@@ -97,6 +97,20 @@ def outcomes(path, name, value):
     private_write(evidence / (name + '.json'), value)
 
 
+def install_failure(path, result):
+    # Retain only a short diagnostic, never the private installer log or credential supplies.
+    text = re.sub(r'\x1b\[[0-9;]*m', '', result.stdout + result.stderr)
+    for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY'):
+        if value := os.environ.get(name):
+            text = text.replace(value, '<redacted>')
+    # Enrollment/setup secrets, bearer tokens and hashes are opaque long strings.
+    text = re.sub(r'[A-Za-z0-9_+/=\-]{32,}', '<redacted>', text)
+    text = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', '', text)
+    diagnostic = '\n'.join(line[:300] for line in text.splitlines() if line.strip())
+    outcomes(path, 'install-failure', {'stage': 'fresh-install', 'exitCode': result.returncode,
+                                      'diagnostic': diagnostic[-4000:]})
+
+
 def tools(path):
     path = Path(path)
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -245,17 +259,27 @@ def install(path):
         raise Refused('Candidate platform, role or runtime identity differs from the operator image contract')
     value['imageId'] = image['Id']
     private_write(path / 'run.json', value)
+    # Warm a potentially scaled-to-zero broker before any state-changing setup request. Only this anonymous GET retries.
+    ready = command(['curl', '--fail', '--silent', '--show-error', '--connect-timeout', '10', '--max-time', '30',
+                     '--retry', '2', '--retry-delay', '5', '--retry-all-errors', '--output', '/dev/null',
+                     '--write-out', '%{http_code}', BROKER + '/health/ready'], check=False, timeout=110)
+    available = ready.returncode == 0 and ready.stdout.strip() == '200'
+    outcomes(path, 'broker-readiness', {'state': 'ready' if available else 'unavailable',
+                                       'httpStatus': 200 if available else None, 'exitCode': ready.returncode})
+    if not available:
+        raise Refused('Broker readiness could not be confirmed within the bounded check; no enrollment was started')
     auth = path / 'codex-auth.json'
     private_write(auth, {'OPENAI_API_KEY': key})
     state = path / 'state'
     arguments = ['pwsh', '-NoLogo', '-NoProfile', '-File', ROOT / 'install.ps1', '-Authentication', 'Broker',
                  '-Repository', REPOSITORY, '-BrokerOrigin', BROKER, '-ApprovalVariable', APPROVAL,
                  '-ApprovalLocation', 'AgentVariable', '-Clone', '-Mode', 'quick-tunnel', '-MentionUser', '',
-                 '-Instance', value['instance'], '-StateDirectory', state, '-Image', value['image'], '-SkipBuild',
+                 '-Instance', value['instance'], '-StateDirectory', state, '-SkipBuild',
                  '-CodexAuthPath', auth, '-ReconcileInterval', '3600', '-WebSearch', 'disabled', '-NonInteractive', '-Apply']
     deadline = time.monotonic() + 80 * 60
+    environment = dict(os.environ, REPOAGENT_IMAGE=value['image'])
     while True:
-        result = command(arguments, check=False, timeout=900)
+        result = command(arguments, check=False, timeout=900, environment=environment)
         # Raw installer output stays private and is never an uploaded artifact.
         (path / 'installer.log').write_text(result.stdout + result.stderr)
         (path / 'installer.log').chmod(0o600)
@@ -267,8 +291,10 @@ def install(path):
         elif 'Broker discovery is still pending. Rerun the same request after at least five seconds.' in text:
             delay = 5
         else:
+            install_failure(path, result)
             raise Refused('Fresh installation failed; preserve private state and inspect the bounded installer diagnostic')
         if time.monotonic() + delay >= deadline:
+            install_failure(path, result)
             raise Refused('Replacement is still not ready after the bounded wait; no new request identity is selected')
         print('Rechecking the same private enrollment request after the required interval; readiness is not promised.')
         time.sleep(delay)

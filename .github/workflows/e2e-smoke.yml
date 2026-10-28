@@ -30,7 +30,6 @@ jobs:
     env:
       IMAGE: repoagent-controller:hosted-smoke
       REPOAGENT_LIVE: '1'
-      REPOAGENT_SMOKE_DIRECTORY: ${{ runner.temp }}/hosted-smoke
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -54,7 +53,7 @@ jobs:
       - name: Sweep owned leftovers and verify participant authority
         env:
           GH_TOKEN: ${{ secrets.REPOAGENT_E2E_GH_TOKEN }}
-        run: python3 scripts/delivery/hosted-smoke.py sweep "$REPOAGENT_SMOKE_DIRECTORY"
+        run: python3 scripts/delivery/hosted-smoke.py sweep "$RUNNER_TEMP/hosted-smoke"
       - name: Build the candidate without credentials
         run: |
           set -euo pipefail
@@ -65,18 +64,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.REPOAGENT_E2E_GH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: python3 scripts/delivery/hosted-smoke.py install "$REPOAGENT_SMOKE_DIRECTORY"
+        run: python3 scripts/delivery/hosted-smoke.py install "$RUNNER_TEMP/hosted-smoke"
       - name: Observe the real Quick Tunnel, receipt and App reply
         env:
           GH_TOKEN: ${{ secrets.REPOAGENT_E2E_GH_TOKEN }}
           REPOAGENT_LIVE: '1'
           REPOAGENT_LIVE_CASE: hosted-smoke
+          REPOAGENT_SMOKE_DIRECTORY: ${{ runner.temp }}/hosted-smoke
         run: bash scripts/live-test.sh
       - name: Close enrollment and remove every owned Discussion
         if: always()
         env:
           GH_TOKEN: ${{ secrets.REPOAGENT_E2E_GH_TOKEN }}
-        run: python3 scripts/delivery/hosted-smoke.py cleanup "$REPOAGENT_SMOKE_DIRECTORY"
+        run: python3 scripts/delivery/hosted-smoke.py cleanup "$RUNNER_TEMP/hosted-smoke"
       - name: Retain nonsecret outcomes only
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
