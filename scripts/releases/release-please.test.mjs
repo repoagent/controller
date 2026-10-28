@@ -8,6 +8,16 @@ function plan(input) {
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
 }
+test('installer and runtime dependencies produce controller patches independently of the broker', () => {
+  for (const file of ['scripts/local-runtime.psm1', 'scripts/private-file.psm1', 'scripts/revoke-approval.ps1',
+    'scripts/image-input.ps1', 'scripts/repository-settings.ps1', 'scripts/controller-enrollment.psm1',
+    'scripts/enroll-controller.ps1', 'scripts/setup-wizard.sh', 'scripts/build-image.sh', 'scripts/build-image.ps1',
+    'scripts/live-test.sh', 'scripts/publish-image.ps1', 'scripts/delivery/verify.sh', 'scripts/delivery/verify-dotnet.sh', 'scripts/delivery/hosted-smoke.py']) {
+    const input = { currentVersion: '1.2.3', commits: [{ sha: 'a'.repeat(40), message: 'fix(controller): repair installed runtime', files: [file] }] };
+    assert.equal(plan({ ...input, component: 'controller' })?.version, '1.2.4', file);
+    assert.equal(plan({ ...input, component: 'broker' }), null, file);
+  }
+});
 test('the first controller release is 1.0.0 with actual generated feature notes', () => {
   const result = plan({ component: 'controller', commits: [{ sha: 'a'.repeat(40), message: 'feat(controller): add queued work', files: ['src/RepoAgentController/BridgeCommand.cs'] }] });
   assert.equal(result.version, '1.0.0');
