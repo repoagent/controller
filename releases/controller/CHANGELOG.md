@@ -2,13 +2,19 @@
 
 ## [1.0.2](https://github.com/repoagent/controller/compare/controller-v1.0.1...controller-v1.0.2) (2026-10-29)
 
+### Bug fixes
 
-### Bug Fixes
+- Broker-backed controllers on Linux and macOS confirm that captured owned agent processes have stopped before reporting successful shutdown; inability to confirm shutdown is an error. Normal stops still drain accepted work, while loss of broker authority stops owned work. ([#308](https://github.com/repoagent/controller/pull/308))
+- Fix trusted Unix launcher startup when Linux or macOS source builds use Windows-style (CRLF) checkout line endings, including native WSL builds. ([#318](https://github.com/repoagent/controller/pull/318))
 
-* **controller:** confirm owned descendants stop before returning ([#308](https://github.com/repoagent/controller/issues/308)) ([3bdb6d4](https://github.com/repoagent/controller/commit/3bdb6d47cdeecc08a97aa841f8105d676a3ede1d))
-* **controller:** enable cloudflared in guarded tool refresh ([d2c3155](https://github.com/repoagent/controller/commit/d2c31553579364e6a9d17a4501a1b739cddef924))
-* **controller:** normalize trusted launcher line endings ([#318](https://github.com/repoagent/controller/issues/318)) ([1912a67](https://github.com/repoagent/controller/commit/1912a67bb33e46792211e2d0a0f5eebbb7b77a12))
-* **controller:** refresh bundled cloudflared from 2026.10.1 to 2026.10.5 ([c781d23](https://github.com/repoagent/controller/commit/c781d23e2bdccecbb95d41222cec820bf58c95a3))
+### Bundled tools
+
+- Update cloudflared from **2026.10.1** to **2026.10.5**. The [qualified tool-refresh run](https://github.com/repoagent/controller/actions/runs/40827240231) passed the real installer, Quick Tunnel, App reply and EYES receipt smoke before updating the pin. Codex **0.165.0** and GitHub CLI **2.103.3** are unchanged.
+
+### Upgrade and limitations
+
+- Adopt a verified `controller-v1.0.2` immutable image or native archive deliberately, preserving configuration, controller state, Codex storage and session history. This patch changes no enrollment/profile, protocol or persisted-state schema; an existing-enrollment live upgrade has not been demonstrated by this release's qualification run.
+- Process shutdown confirmation is lifecycle ownership, not OS containment or a guarantee of discovering historical detached processes. See the [ownership limits](https://github.com/repoagent/controller/blob/main/docs/controller-architecture.md#owned-agent-process-shutdown).
 
 ## [1.0.1](https://github.com/repoagent/controller/compare/controller-v1.0.0...controller-v1.0.1) (2026-10-28)
 
