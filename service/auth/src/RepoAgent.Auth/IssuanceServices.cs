@@ -1,4 +1,5 @@
 using Azure.Core;
+using Azure.Core.Cryptography;
 using Azure.Identity;
 using Azure.Security.KeyVault.Keys.Cryptography;
 using Azure.Storage.Blobs;
@@ -37,9 +38,12 @@ public static class IssuanceServices
             Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(3) },
             Diagnostics = { IsLoggingContentEnabled = false }
         };
+        IKeyEncryptionKeyResolver wrappingResolver = new KeyResolver(wrappingCredential, CryptoOptions(settings.DevelopmentVault is not null));
+        if (settings.DevelopmentVault is { } localVault)
+            wrappingResolver = new DevelopmentWrappingKeyResolver(wrappingResolver, localVault, settings.WrappingKey);
         builder.Services.AddDataProtection().SetApplicationName(settings.ApplicationName)
             .PersistKeysToAzureBlobStorage(keyRing)
-            .ProtectKeysWithAzureKeyVault(settings.WrappingKey, new KeyResolver(wrappingCredential, CryptoOptions(settings.DevelopmentVault is not null)));
+            .ProtectKeysWithAzureKeyVault(settings.WrappingKey, wrappingResolver);
         builder.Services.AddSingleton<ISecretProtection, DataProtectionSecretProtection>();
         builder.Services.AddSingleton(new CryptographyClient(settings.SigningKey, signingCredential,
             CryptoOptions(settings.DevelopmentVault is not null && !settings.UsesDeveloperSigning)));

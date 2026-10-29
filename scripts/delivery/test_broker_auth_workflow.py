@@ -31,6 +31,18 @@ def selected(name, *, event='push', operation='', ref='refs/heads/main', publish
 
 
 class BrokerWorkflowTests(unittest.TestCase):
+    def test_restore_helpers_trigger_broker_verification_and_compiled_check_is_mandatory(self):
+        text = WORKFLOW.read_text()
+        paths = text.split('paths: &auth-paths', 1)[1].split('pull_request:', 1)[0]
+        for helper in ('scripts/delivery/auth-restore-plan.py',
+                       'scripts/delivery/check_auth_restore_foundation.py'):
+            self.assertIn("- '" + helper + "'", paths)
+        verification = text.split('\n  verify-service:\n', 1)[1].split('\n  publish:\n', 1)[0]
+        compiler = verification.index('export BICEP_BIN=')
+        check = verification.index('python3 scripts/delivery/check_auth_restore_foundation.py -v')
+        self.assertLess(compiler, check)
+        self.assertNotIn('continue-on-error', verification)
+
     def test_authority_probe_is_explicit_main_only_and_never_selects_version_get_or_delivery_jobs(self):
         context = dict(event='workflow_dispatch',operation='authority-probe',published='skipped',recorded='skipped')
         self.assertTrue(selected('authority-probe',**context))

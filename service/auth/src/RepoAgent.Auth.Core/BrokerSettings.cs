@@ -33,6 +33,20 @@ public static class BrokerSettings
     // A settings URI names its resource and nothing else: no user information, query or fragment.
     public static bool IsBare(Uri uri) => uri.UserInfo.Length == 0 && uri.Query.Length == 0 && uri.Fragment.Length == 0;
 
+    // Persisted local key-ring ciphertext retains its wrapping key's old published port. Only the configured
+    // emulator's wrapping key name may resolve through its current endpoint; historical versions stay pinned.
+    public static Uri DevelopmentWrappingKey(Uri vault, Uri wrappingKey, string recordedKey)
+    {
+        var currentVault = HttpsUri(vault.AbsoluteUri);
+        var current = KeyUri(wrappingKey.AbsoluteUri);
+        var recorded = KeyUri(recordedKey);
+        if (!currentVault.IsLoopback || currentVault.AbsolutePath != "/"
+            || current.GetLeftPart(UriPartial.Authority) != currentVault.GetLeftPart(UriPartial.Authority)
+            || !recorded.IsLoopback || recorded.Segments[2] != current.Segments[2])
+            throw new InvalidOperationException("Local key-ring keys must name the configured emulator wrapping key.");
+        return new Uri(currentVault, recorded.AbsolutePath);
+    }
+
     // The issuance composition: null without a signing key, the supported incomplete composition that only revokes. Every
     // supplied setting must still be well formed.
     public static IssuanceSettings? Issuance(Func<string, string?> setting, string? environment)

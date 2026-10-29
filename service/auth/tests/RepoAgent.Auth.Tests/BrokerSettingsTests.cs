@@ -13,6 +13,41 @@ public sealed class BrokerSettingsTests
     // The table a remote account's connection string names: the configured endpoint's, so only the loopback guard refuses it.
     private const string RemoteTable = "https://readiness.table.core.windows.net/readiness";
 
+    [Theory]
+    [InlineData("https://localhost:44735/keys/wrapping/old-version", "https://localhost:4997/keys/wrapping/old-version")]
+    [InlineData("https://127.0.0.1:44735/keys/wrapping/older-version", "https://localhost:4997/keys/wrapping/older-version")]
+    [InlineData("https://localhost:4997/keys/wrapping/current-version", "https://localhost:4997/keys/wrapping/current-version")]
+    public void Local_key_ring_resolution_preserves_the_configured_wrapping_key_name_and_historical_version(string recorded, string expected)
+    {
+        Assert.Equal(new Uri(expected), BrokerSettings.DevelopmentWrappingKey(new("https://localhost:4997"),
+            new("https://localhost:4997/keys/wrapping/current-version"), recorded));
+    }
+
+    [Theory]
+    [InlineData("https://remote.vault.azure.net/keys/wrapping/version")]
+    [InlineData("http://localhost:44735/keys/wrapping/version")]
+    [InlineData("https://localhost:44735/keys/signing/version")]
+    [InlineData("https://localhost:44735/secrets/wrapping/version")]
+    [InlineData("https://localhost:44735/keys/wrapping")]
+    [InlineData("https://user:secret@localhost:44735/keys/wrapping/version")]
+    [InlineData("https://localhost:44735/keys/wrapping/version?query")]
+    [InlineData("https://localhost:44735/keys/wrapping/version#fragment")]
+    public void Local_key_ring_resolution_rejects_foreign_or_unpinned_keys(string recorded)
+    {
+        Assert.Throws<InvalidOperationException>(() => BrokerSettings.DevelopmentWrappingKey(new("https://localhost:4997"),
+            new("https://localhost:4997/keys/wrapping/version"), recorded));
+    }
+
+    [Theory]
+    [InlineData("https://remote.vault.azure.net", "https://remote.vault.azure.net/keys/wrapping/version")]
+    [InlineData("https://localhost:4997/path", "https://localhost:4997/keys/wrapping/version")]
+    [InlineData("https://localhost:4997", "https://localhost:44735/keys/wrapping/version")]
+    public void Local_key_ring_resolution_requires_a_matching_current_emulator_configuration(string vault, string wrapping)
+    {
+        Assert.Throws<InvalidOperationException>(() => BrokerSettings.DevelopmentWrappingKey(new(vault), new(wrapping),
+            "https://localhost:44735/keys/wrapping/version"));
+    }
+
     // Refused: the host doesn't start. NotReadyStorageRefused: the host starts and isn't ready, and its first storage use
     // throws; `cleanup --once` exits 2 before its first read.
     public enum Startup { Ready, NotReady, Refused, NotReadyStorageRefused }
@@ -257,6 +292,8 @@ public sealed class BrokerSettingsTests
     [InlineData(null, "Auth:DataProtectionApplicationName", " ")]
     [InlineData("local-vault-development", "Auth:SigningKeyUri", "https://readiness.vault.azure.net/keys/signing/version")]
     [InlineData("local-vault-development", "Auth:DataProtectionKeyUri", "https://readiness.vault.azure.net/keys/wrapping/version")]
+    [InlineData("local-vault-development", "Auth:SigningKeyUri", "https://localhost:61699/keys/signing/version")]
+    [InlineData("local-vault-development", "Auth:DataProtectionKeyUri", "https://localhost:61699/keys/wrapping/version")]
     [InlineData("local-vault-development", "AZURE_AUTHORITY_HOST", "https://localhost:4998")]
     public void Key_Vault_keys_the_key_ring_and_the_local_vault_must_be_what_they_claim(string? scenario, string name, string value)
     {
