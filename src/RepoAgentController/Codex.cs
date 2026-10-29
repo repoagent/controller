@@ -63,8 +63,34 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
         {
             // rust-v0.165.0 TurnError/CodexErrorInfo: only the terminal turn's structured category counts.
             // Intermediate error notifications (including willRetry:true) never complete a turn here.
-            ModelCapacityFailure = (turn?["error"] as JsonObject)?["codexErrorInfo"].OptionalText() == "serverOverloaded"
+            Failure = Failure((turn?["error"] as JsonObject)?["codexErrorInfo"])
         };
+    }
+
+    // Only the pinned v2 discriminants and their nested integer status cross into domain facts.
+    // Unknown, malformed or ambiguous shapes never establish a transient failure; no display-text inference.
+    static AgentFailure? Failure(JsonNode? info)
+    {
+        if (info is JsonValue scalar && scalar.TryGetValue<string>(out var category))
+            return category switch
+            {
+                "serverOverloaded" => new(AgentFailureKind.ModelCapacity),
+                "rateLimitExceeded" => new(AgentFailureKind.RequestThrottled),
+                _ => null
+            };
+        if (info is not JsonObject { Count: 1 } wrapper) return null;
+        var variant = wrapper.First();
+        AgentFailureKind? kind = variant.Key switch
+        {
+            "httpConnectionFailed" => AgentFailureKind.HttpConnection,
+            "responseStreamConnectionFailed" => AgentFailureKind.StreamConnection,
+            "responseStreamDisconnected" => AgentFailureKind.StreamDisconnected,
+            "responseTooManyFailedAttempts" => AgentFailureKind.ResponseAttemptsExhausted,
+            _ => null
+        };
+        return kind is { } known && variant.Value is JsonObject { Count: 1 } details &&
+            details["httpStatusCode"] is JsonValue status && status.TryGetValue<int>(out var code)
+            ? new(known, code) : null;
     }
 
     static AgentSessionStatus Parse(JsonNode? status) =>

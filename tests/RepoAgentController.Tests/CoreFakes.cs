@@ -493,15 +493,19 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
 
     public void Report(string session, AgentSessionStatus status) => Changed?.Invoke(new AgentSessionStatusChanged(Epoch, session, status));
     public void Started(string session, string turn) => Changed?.Invoke(new AgentTurnStarted(Epoch, session, turn));
+    public void TransientFailure(string session, string turn, AgentFailure failure) => Changed?.Invoke(new AgentTurnCompleted(Epoch, session, turn,
+        AgentTurnStatus.Failed, "failed", null)
+    { Failure = failure });
+
     public void CapacityFailure(string session, string turn) => Changed?.Invoke(new AgentTurnCompleted(Epoch, session, turn,
         AgentTurnStatus.Failed, "failed", null)
-    { ModelCapacityFailure = true });
+    { Failure = new(AgentFailureKind.ModelCapacity) });
     /// <summary>Reports a turn ended with <paramref name="status"/>, sent as <paramref name="reported"/> or else as the status's
     /// lowercase name.</summary>
     public void Completed(string session, string turn, AgentTurnStatus status = AgentTurnStatus.Completed, string? rejection = null,
-        int? epoch = null, string? reported = null, bool capacity = false) =>
+        int? epoch = null, string? reported = null, bool capacity = false, AgentFailure? failure = null) =>
         Changed?.Invoke(new AgentTurnCompleted(epoch ?? Epoch, session, turn, status, reported ?? status.ToString().ToLowerInvariant(), rejection)
-        { ModelCapacityFailure = capacity });
+        { Failure = failure ?? (capacity ? new(AgentFailureKind.ModelCapacity) : null) });
     public Func<CancellationToken, Task<AgentUsageObservation>> Usage { get; set; } = _ =>
         Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Unsupported, []));
     public Task<AgentUsageObservation> ReadUsage(CancellationToken ct) => Usage(ct);

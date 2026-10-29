@@ -16,7 +16,7 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
         RecordKeys = [.. RecordOrder.Select(Name)], WaitingKeys = ["inputs", "discussion", "context", "retry"],
         InputKeys = ["observedAt", "change", "receipt", "redelivery"], RetryKeys = ["attempts", "after"],
         PendingKeys = ["operation", "since", "sourceIds", "inputs"], RunningKeys = ["turn", "since", "selection"],
-        RecoveryKeys = ["failedTurn", "selection", "attempts", "after", "suspended"];
+        RecoveryKeys = ["failedTurn", "selection", "attempts", "after", "suspended", "failure"];
 
     // Checked as the state store checked it before the records were typed, so a file that is not a state, or of another version,
     // stops startup as it did. Each Discussion record is read key by key, and each value as the bridge read it then: a value in a
@@ -113,7 +113,11 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
                     var recovery = node.AsObject();
                     return new CapacityRecovery(Required(recovery, "failedTurn"), Selection(Part<JsonObject>(recovery, "selection")),
                         Part<JsonValue>(recovery, "attempts").GetValue<int>(), At(recovery, "after"))
-                    { Suspended = recovery["suspended"]?.GetValue<string>(), Unknown = Unknown(recovery, RecoveryKeys) };
+                    {
+                        Failure = recovery.ContainsKey("failure") ? Failure(Part<JsonObject>(recovery, "failure")) : new(AgentFailureKind.ModelCapacity),
+                        Suspended = recovery["suspended"]?.GetValue<string>(),
+                        Unknown = Unknown(recovery, RecoveryKeys)
+                    };
                 }),
                 Unknown = Unknown(item, RecordKeys)
             };
@@ -174,16 +178,33 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
         RecordKey.Waiting => record.Waiting is { } waiting ? Waiting(waiting) : null,
         RecordKey.Pending => record.Pending is { } pending ? Pending(pending) : null,
         RecordKey.Running => record.Running is { } running ? Running(running) : null,
-        RecordKey.Recovery => record.Recovery is { } recovery ? Kept(new JsonObject
+        RecordKey.Recovery => record.Recovery is { } recovery ? Recovery(recovery) : null,
+        _ => throw new UnreachableException()
+    };
+
+    static AgentFailure Failure(JsonObject item)
+    {
+        if (!Enum.TryParse<AgentFailureKind>(Required(item, "kind"), out var kind) || !Enum.IsDefined(kind) || kind.ToString() != Required(item, "kind") ||
+            item.Any(part => part.Key is not ("kind" or "httpStatus"))) throw new InvalidDataException("Unknown recovery failure");
+        var failure = new AgentFailure(kind, item["httpStatus"]?.GetValue<int>());
+        return failure.Recoverable ? failure : throw new InvalidDataException("Unconfirmed recovery failure");
+    }
+
+    static JsonObject Recovery(CapacityRecovery recovery)
+    {
+        var item = new JsonObject
         {
             ["failedTurn"] = recovery.FailedTurn,
             ["selection"] = Selection(recovery.Selection),
             ["attempts"] = recovery.Attempts,
             ["after"] = Time(recovery.After),
             ["suspended"] = recovery.Suspended
-        }, recovery.Unknown) : null,
-        _ => throw new UnreachableException()
-    };
+        };
+        // Retain the306 durable key/shape for capacity, including records written before reasons existed.
+        if (recovery.Failure.Kind != AgentFailureKind.ModelCapacity)
+            item["failure"] = new JsonObject { ["kind"] = recovery.Failure.Kind.ToString(), ["httpStatus"] = recovery.Failure.HttpStatus };
+        return Kept(item, recovery.Unknown);
+    }
 
     static ModelChoice Selection(JsonObject item) => new(Required(item, "model"), Required(item, "effort"), Required(item, "source"));
     static JsonObject Selection(ModelChoice selection) => new() { ["model"] = selection.Model, ["effort"] = selection.Effort, ["source"] = selection.Source };
