@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.2](https://github.com/repoagent/controller/compare/controller-v1.0.1...controller-v1.0.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* **controller:** confirm owned descendants stop before returning ([#308](https://github.com/repoagent/controller/issues/308)) ([3bdb6d4](https://github.com/repoagent/controller/commit/3bdb6d47cdeecc08a97aa841f8105d676a3ede1d))
+* **controller:** enable cloudflared in guarded tool refresh ([d2c3155](https://github.com/repoagent/controller/commit/d2c31553579364e6a9d17a4501a1b739cddef924))
+* **controller:** normalize trusted launcher line endings ([#318](https://github.com/repoagent/controller/issues/318)) ([1912a67](https://github.com/repoagent/controller/commit/1912a67bb33e46792211e2d0a0f5eebbb7b77a12))
+* **controller:** refresh bundled cloudflared from 2026.10.1 to 2026.10.5 ([c781d23](https://github.com/repoagent/controller/commit/c781d23e2bdccecbb95d41222cec820bf58c95a3))
+
 ## [1.0.1](https://github.com/repoagent/controller/compare/controller-v1.0.0...controller-v1.0.1) (2026-10-28)
 
 ### Maintenance
