@@ -65,6 +65,31 @@ on:
 permissions:
   contents: read
 jobs:
+  verify-owned-processes-macos:
+    concurrency:
+      group: controller-owned-processes-macos-${{ github.ref }}
+      cancel-in-progress: true
+    if: (github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || inputs.verify == true) && inputs.tag == '' && inputs.smoke != true
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          global-json-file: global.json
+      - name: Confirm native owned-process shutdown with real pipes, signals and credentials
+        run: |
+          set -euo pipefail
+          dotnet run --project tests/RepoAgentController.Tests --configuration Release -- \
+            -class RepoAgentController.Tests.BrokerLifetimeTests -result-xml "$RUNNER_TEMP/owned-processes.xml"
+          /usr/bin/python3 - "$RUNNER_TEMP/owned-processes.xml" <<'PYTHON'
+          import sys, xml.etree.ElementTree as ET
+          assemblies = ET.parse(sys.argv[1]).getroot().findall('assembly')
+          if not assemblies or sum(int(a.attrib['total']) for a in assemblies) == 0 or any(int(a.attrib['skipped']) for a in assemblies):
+              sys.exit('Owned-process gate requires actual test execution without skips')
+          PYTHON
   hosted-smoke:
     if: github.repository == 'repoagent/controller' && github.event_name == 'workflow_dispatch' && inputs.smoke == true && inputs.tag == ''
     uses: ./.github/workflows/e2e-smoke.yml

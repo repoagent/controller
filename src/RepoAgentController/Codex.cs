@@ -223,6 +223,7 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
     sealed class Transport : IAsyncDisposable
     {
         readonly Process process;
+        readonly OwnedAgentProcesses owned;
         readonly ConcurrentDictionary<int, (string Method, TaskCompletionSource<JsonNode> Completion)> pending = new();
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2213", Justification = "Concurrent writers can still unwind after process teardown; this managed-only semaphore never creates a wait handle.")]
         readonly SemaphoreSlim writeLock = new(1);
@@ -247,10 +248,17 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             // Supplied credentials are the agent home's auth.json; a keyring store would silently ignore them.
             if (fileCredentials) { start.ArgumentList.Add("-c"); start.ArgumentList.Add("cli_auth_credentials_store=\"file\""); }
             process = Process.Start(start) ?? throw new IOException("Could not start codex app-server");
+            try { owned = new(process); }
+            catch
+            {
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+                finally { process.Dispose(); }
+                throw;
+            }
             reader = Read();
             _ = Task.Run(async () => { while (await process.StandardError.ReadLineAsync() is { } line) Log.Write("codex-stderr", line); });
             // Kill while the parent still owns its descendants. EOF first can orphan a bearer holder.
-            lossRegistration = credentialLost.Register(Terminate);
+            lossRegistration = credentialLost.Register(() => _ = Terminate());
         }
 
         public async Task<JsonNode> Request(string method, JsonNode parameters, CancellationToken ct)
@@ -342,10 +350,10 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             {
                 // Broker teardown always ends the tree, including bootstrap/reload and normal exit.
                 // Checking only IsCancellationRequested before EOF leaves a concurrent-loss gap.
-                if (credentialLost.CanBeCanceled) Terminate();
+                if (credentialLost.CanBeCanceled) await Terminate();
                 else process.StandardInput.Close();
                 try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
-                catch (TimeoutException) { Terminate(); await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
+                catch (TimeoutException) { await Terminate(); await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
                 await reader.WaitAsync(TimeSpan.FromSeconds(3));
             }
             finally
@@ -355,10 +363,6 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             }
         }
 
-        void Terminate()
-        {
-            try { process.Kill(entireProcessTree: true); }
-            catch (InvalidOperationException) when (process.HasExited) { }
-        }
+        Task Terminate() => owned.Stop();
     }
 }

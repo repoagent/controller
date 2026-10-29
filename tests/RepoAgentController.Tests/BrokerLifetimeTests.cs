@@ -27,6 +27,12 @@ public sealed class BrokerLifetimeTests
     public Task User_cancellation_keeps_a_successful_exit_and_drains_agent_work(bool webhooks)
         => AcceptedDrain(webhooks, brokerDenied: false, stopBeforeAcknowledgement: false);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task Normal_stop_confirms_a_grandchild_bearer_holder_has_stopped_before_return(bool webhooks)
+        => AcceptedDrain(webhooks, brokerDenied: false, stopBeforeAcknowledgement: false, grandchild: true);
+
     [Fact]
     public async Task Concurrent_broker_renewal_and_agent_disposal_cannot_orphan_a_bearer_holder()
         => await Exercise("teardown", false, false);
@@ -43,9 +49,9 @@ public sealed class BrokerLifetimeTests
     public Task Normal_stop_does_not_cancel_an_entered_polling_or_webhook_observation(bool webhooks)
         => AcceptedDrain(webhooks, brokerDenied: false, stopBeforeAcknowledgement: true);
 
-    static async Task AcceptedDrain(bool webhooks, bool brokerDenied, bool stopBeforeAcknowledgement)
+    static async Task AcceptedDrain(bool webhooks, bool brokerDenied, bool stopBeforeAcknowledgement, bool grandchild = false)
     {
-        if (!OperatingSystem.IsLinux()) return;
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
         using var fixture = new BrokerAuthenticationTests.Fixture(webhooks: webhooks);
         using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var clock = new RenewalClock(fixture.Clock);
@@ -65,13 +71,14 @@ public sealed class BrokerLifetimeTests
             ["history"] = history,
             ["requests"] = requests,
             ["eof"] = eof,
+            ["grandchild"] = grandchild,
             ["graceful"] = !brokerDenied
         }.ToJsonString());
         WriteExecutable(Path.Combine(tools, "codex"), Agent);
         WriteExecutable(fixture.Gh, GitHub);
         var previousPath = Environment.GetEnvironmentVariable("PATH");
         var previousSettings = Environment.GetEnvironmentVariable("AGENT_RUNTIME_DRAIN_SETTINGS");
-        Process? parent = null, child = null;
+        Process? parent = null, child = null, descendant = null;
         TcpClient? connection = null;
         Task<int>? run = null;
         using var unrelated = Process.Start("sleep", "300")!;
@@ -97,6 +104,11 @@ public sealed class BrokerLifetimeTests
             var proof = JsonNode.Parse(proofLine!)!;
             parent = Process.GetProcessById(proof["parent"]!.GetValue<int>());
             child = Process.GetProcessById(proof["child"]!.GetValue<int>());
+            if (grandchild)
+            {
+                Assert.True(proof["grandchild"]!["credentialCopied"]!.GetValue<bool>());
+                descendant = Process.GetProcessById(proof["grandchild"]!["pid"]!.GetValue<int>());
+            }
             Assert.True(proof["credentialCopied"]!.GetValue<bool>());
             Assert.NotNull(JsonNode.Parse(File.ReadAllText(fixture.State))!["discussions"]!["D1"]!["pending"]);
             if (stopBeforeAcknowledgement)
@@ -120,6 +132,7 @@ public sealed class BrokerLifetimeTests
             Assert.False(run.IsCompleted);
             Assert.False(parent.HasExited);
             Assert.False(child.HasExited);
+            if (descendant is not null) Assert.False(descendant.HasExited);
             Assert.Equal(held, File.ReadAllText(fixture.State));
             Assert.Throws<IOException>(() => { using var conflicting = new FileStream(fixture.State + ".lock", FileMode.Open, FileAccess.ReadWrite, FileShare.None); });
             var enrollment = File.ReadAllText(fixture.EnrollmentFile);
@@ -161,6 +174,7 @@ public sealed class BrokerLifetimeTests
             }
             AssertStopped(parent);
             AssertStopped(child);
+            if (descendant is not null) AssertStopped(descendant);
             Assert.False(unrelated.HasExited);
             Assert.Equal(enrollment, File.ReadAllText(fixture.EnrollmentFile));
             Assert.Equal(agentHistory, File.ReadAllText(history));
@@ -184,7 +198,7 @@ public sealed class BrokerLifetimeTests
                 if (run is { IsCompleted: false } && connection is not null)
                     try { await connection.GetStream().WriteAsync(new byte[] { 1, 2 }, CancellationToken.None); }
                     catch (Exception error) when (error is IOException or SocketException or ObjectDisposedException) { }
-                foreach (var process in new[] { parent, child, unrelated })
+                foreach (var process in new[] { parent, child, descendant, unrelated })
                     if (process is not null && !process.HasExited) process.Kill(true);
                 if (run is not null) await run.WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
             }
@@ -193,6 +207,7 @@ public sealed class BrokerLifetimeTests
                 connection?.Dispose();
                 parent?.Dispose();
                 child?.Dispose();
+                descendant?.Dispose();
                 Environment.SetEnvironmentVariable("PATH", previousPath);
                 Environment.SetEnvironmentVariable("AGENT_RUNTIME_DRAIN_SETTINGS", previousSettings);
             }
@@ -258,7 +273,7 @@ public sealed class BrokerLifetimeTests
 
     static async Task Exercise(string stage, bool webhooks, bool userCancellation, string failure = "denied")
     {
-        if (!OperatingSystem.IsLinux()) return; // Shipping Linux process-tree boundary, observed through /proc.
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
         using var fixture = new BrokerAuthenticationTests.Fixture(webhooks: webhooks);
         using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         using var ready = new TcpListener(IPAddress.Loopback, 0);
@@ -388,6 +403,23 @@ public sealed class BrokerLifetimeTests
 
     static void AssertStopped(Process process)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            using var status = Process.Start(new ProcessStartInfo("/bin/ps")
+            {
+                ArgumentList = { "-p", process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), "-o", "state=" },
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            })!;
+            var stopped = status.WaitForExit(2000);
+            if (!stopped) status.Kill();
+            Assert.True(stopped, "Owned agent process state could not be observed within its bound");
+            var state = status.StandardOutput.ReadToEnd().Trim();
+            Assert.True(process.HasExited || (status.ExitCode == 0 && state.StartsWith('Z')),
+                "Owned agent process is still executing: " + process.Id);
+            return;
+        }
         var stat = "/proc/" + process.Id + "/stat";
         Assert.True(process.HasExited || !File.Exists(stat) || File.ReadAllText(stat).Split(") ")[1][0] == 'Z',
             "Owned agent process is still executing: " + process.Id);
@@ -412,11 +444,21 @@ public sealed class BrokerLifetimeTests
         def start_child():
          global child
          code=r"""
-        import json,os,socket,subprocess,threading
+        import json,os,socket,subprocess,sys,threading
         s=json.load(open(os.environ['AGENT_RUNTIME_DRAIN_SETTINGS']))
         token=subprocess.run(["gh","auth","token"],capture_output=True,text=True).stdout.strip()
+        grandchild=None
+        if s.get('grandchild'):
+         code=r'''
+        import json,os,subprocess,threading
+        token=subprocess.run(['gh','auth','token'],capture_output=True,text=True).stdout.strip()
+        print(json.dumps({'pid':os.getpid(),'credentialCopied':token.startswith('opaque-token-')}),flush=True)
+        threading.Event().wait()
+        '''
+         descendant=subprocess.Popen([sys.executable,'-c',code],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,text=True)
+         grandchild=json.loads(descendant.stdout.readline())
         with socket.create_connection(('127.0.0.1',s['port'])) as ready:
-         ready.sendall((json.dumps({'parent':os.getppid(),'child':os.getpid(),'credentialCopied':token.startswith('opaque-token-')})+'\n').encode())
+         ready.sendall((json.dumps({'parent':os.getppid(),'child':os.getpid(),'credentialCopied':token.startswith('opaque-token-'),'grandchild':grandchild})+'\n').encode())
          if s['stage'] in ('teardown','accepted'):ready.recv(1);os.kill(os.getppid(),signal.SIGUSR1)
          if s['stage']=='accepted':ready.recv(1);os.kill(os.getppid(),signal.SIGUSR2)
         threading.Event().wait()
