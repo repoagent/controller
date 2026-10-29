@@ -56,7 +56,7 @@ Controller and credential broker versions are proposed independently through rev
 - [Container setup](docs/container-setup.md): skills, tools, storage and runtime commands.
 - [Controller operations](docs/controller-operations.md): status, dashboard, logs, credential replacement and recovery.
 - [Enrollment and revocation](docs/controller-enrollment.md): repository approval and controller access.
-- [Isolated broker restore tools](docs/broker-restore-rehearsal.md): maintainer-only planning and typed Table transfer, with a recorded real isolated restore and alert rehearsal. Every run still needs positive token settlement, worker/signing fences and scoped retirement; this is not automatic recovery.
+- [Isolated broker restore tools](docs/broker-restore-rehearsal.md): maintainer-only planning and typed Table transfer, with a recorded real isolated restore, alert and retirement rehearsal. Every run still needs positive token settlement, worker/signing fences and scoped retirement; this is not automatic recovery.
 - [Image updates and rollback](docs/local-runtime.md#update-an-immutable-image-or-restore-the-prior-image): replace the selected image while retaining your data.
 - Hosting lifecycle is outside the controller ([ADR 0009](docs/adr/0009-keep-hosting-lifecycle-out-of-the-controller.md)). Hosted operation will be redesigned around the status endpoint.
 

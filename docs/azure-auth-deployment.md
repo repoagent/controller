@@ -334,9 +334,11 @@ az resource show --ids "$job_id" --api-version 2025-01-01 \
 
 Require actual Manual1/1/retry0/90s readback and unchanged template, environment, Consumption, identity and ownership. Failed/missing/mismatched readback leaves suspension UNCONFIRMED. Do not infer it from ARM success or invent a `job update --trigger-type` flag. The ordinary fixed Schedule apply reactivates runs.
 
-Now inspect every pre-switch and subsequently observed outstanding execution by its actual name. The exact inspection/stop/replica commands are:
+Now inspect every pre-switch and subsequently observed outstanding execution by its actual name.
 
 Reconcile overlapping retained captures and all returned provider pages rather than calling one recent page complete history. [Azure bounds scheduled/event execution history](https://learn.microsoft.com/en-us/azure/container-apps/jobs#get-job-execution-history) to recent successful/failed runs. A missing execution or replica endpoint is not a zero-replica response. An execution positively completed before suspension can be excluded from the outstanding set when its original execution template/configuration and provider success/end records establish completion of every configured worker. For example, #230 had one container, parallelism/completion 1/1 and retry 0, captured before its first run. Do not generalize that evidence to parallel workers, unresolved failures or an unverified current template. Preserve the historical proof rather than substituting 404, an alert aggregate, a null end time or elapsed timeout.
+
+Use the exact inspection/stop/replica commands:
 
 ```sh
 az containerapp job execution show --name "$AUTH_APP_NAME-cleanup" \
@@ -363,7 +365,7 @@ On 2026-10-28, the operator mailbox received both Fired and Resolved notificatio
 
 This proves delivery and resolution of an observed production alert. The failed execution, its cause and a corresponding successful execution have not been identified; it is not evidence of a deliberate isolated rehearsal. No production cleanup failure or restore was initiated for this observation.
 
-The separate [2026-10-29 isolated rehearsal](broker-restore-rehearsal.md#verified-isolated-run-2026-10-29) bound one deliberate execution-only Table-setting failure and later ordinary successful executions to the accepted Broker 1.2.0 image and unchanged persistent Job. Its isolated rule reused the existing action group unchanged; actual Fired 08:18 UTC/Resolved 08:35 UTC and both operator emails were verified. An earlier HTTP400 for unsupported `volumes:null` created no execution; omit null optional fields when constructing the accepted execution template. The later ordinary 08:46 failure remains unexplained and is separate evidence. Do not infer four distinct failed executions from an alert's aggregated value, or invent an execution end time.
+The separate [2026-10-29 isolated rehearsal](broker-restore-rehearsal.md#verified-isolated-run-2026-10-29) bound one deliberate execution-only Table-setting failure and later ordinary successful executions to the accepted Broker 1.2.0 image and unchanged persistent Job. Its isolated rule reused the existing action group unchanged; actual Fired 08:18:12 UTC/Resolved 08:35:52 UTC and both operator emails were independently verified. Use the condition's resolved field, not its last-modified timestamp. An earlier HTTP400 for unsupported `volumes:null` created no execution; omit null optional fields when constructing the accepted execution template. The later ordinary 08:46 failure remains unexplained and is separate evidence. Do not infer four distinct failed executions from an alert's aggregated value, or invent an execution end time. The [retirement record](broker-restore-rehearsal.md#retirement-and-preserved-observations) preserves the original environment-delete timeout, guarded continuation and successful key soft-delete acknowledgment despite a failed extra lookup; it does not fabricate the wrapper's exit status or claim manual purge.
 
 ## Cleanup acceptance remains open
 
