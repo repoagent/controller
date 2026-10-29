@@ -44,6 +44,14 @@ test('actual runtime paths preserve independent components despite misleading sc
   ] }).version, '1.3.0');
 });
 
+test('restore operator and compiled safety helpers belong only to the broker release', () => {
+  for (const file of ['scripts/delivery/auth-restore-plan.py', 'scripts/delivery/check_auth_restore_foundation.py']) {
+    const input = { currentVersion: '1.2.3', commits: [commit('fix: maintain isolated restore safety', [file])] };
+    assert.equal(plan({ ...input, component: 'broker' })?.version, '1.2.4');
+    assert.equal(plan({ ...input, component: 'controller' }), null);
+  }
+});
+
 test('shared maintenance reaches both components and highest owned change wins', () => {
   const commits = [commit('fix(shared): update the reviewed SDK', ['global.json']),
     commit('feat(broker): add a compatible endpoint', [brokerFile], 'b')];

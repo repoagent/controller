@@ -4,6 +4,8 @@ param location string
 param appName string
 param storageName string
 param vaultName string
+// Rehearsal foundation can share explicitly scoped keys without writing the vault.
+param provisionVault bool = true
 param deployApp bool = false
 param staged bool = false
 param image string = ''
@@ -108,7 +110,7 @@ resource brokerTable 'Microsoft.Storage/storageAccounts/tableServices/tables@202
   properties: {}
 }
 
-resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
+resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = if (provisionVault) {
   name: vaultName
   location: location
   tags: union(ownership, { role: 'auth-security' })
@@ -204,7 +206,7 @@ module cleanup 'cleanup.bicep' = if (deployApp && !staged) {
 
 output appName string = appName
 output runtimeIdentityId string = runtime.id
-output keyVaultName string = vault.name
+output keyVaultName string = vaultName
 output dataProtectionBlobUri string = '${storage.properties.primaryEndpoints.blob}data-protection/keyring.xml'
 output runtimeIdentityPrincipalId string = runtime.properties.principalId
 output runtimeIdentityClientId string = runtime.properties.clientId
