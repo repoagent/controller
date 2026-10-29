@@ -257,6 +257,8 @@ public sealed class BrokerSettingsTests
     [InlineData(null, "Auth:DataProtectionApplicationName", " ")]
     [InlineData("local-vault-development", "Auth:SigningKeyUri", "https://readiness.vault.azure.net/keys/signing/version")]
     [InlineData("local-vault-development", "Auth:DataProtectionKeyUri", "https://readiness.vault.azure.net/keys/wrapping/version")]
+    [InlineData("local-vault-development", "Auth:SigningKeyUri", "https://localhost:61699/keys/signing/version")]
+    [InlineData("local-vault-development", "Auth:DataProtectionKeyUri", "https://localhost:61699/keys/wrapping/version")]
     [InlineData("local-vault-development", "AZURE_AUTHORITY_HOST", "https://localhost:4998")]
     public void Key_Vault_keys_the_key_ring_and_the_local_vault_must_be_what_they_claim(string? scenario, string name, string value)
     {
