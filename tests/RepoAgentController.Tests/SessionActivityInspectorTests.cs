@@ -210,6 +210,31 @@ public sealed class SessionActivityInspectorTests
         Assert.Equal(1, runtime.Reads);
     }
 
+    [Fact]
+    public async Task A_mapping_changed_between_subscription_selection_and_snapshot_selection_cannot_mix_sessions()
+    {
+        var runtime = new ActivityRuntime
+        {
+            Answer = new([new("session-b", "turn-b", "new-item", ActivityItemKind.Response, ActivityItemState.Completed, Text: "New session history.")])
+        };
+        var mappings = new ActivityMappings();
+        var selections = 0;
+        mappings.DuringRead = () =>
+        {
+            if (++selections == 2) mappings.Entries = [new("https://github.com/owner/repository/discussions/42", "session-b")];
+        };
+        runtime.DuringRead = () => runtime.Report(new ActivityItemObserved(1,
+            new("session-a", "turn-a", "old-item", ActivityItemKind.Response, ActivityItemState.Completed, Text: "Old subscription update.")));
+        var inspector = Inspector(runtime, mappings);
+        await using var viewer = inspector.Follow("42", ct: TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken);
+        Assert.True(await viewer.MoveNextAsync());
+        Assert.Equal("gap", viewer.Current.Kind);
+        Assert.Null(viewer.Current.Snapshot);
+        Assert.Null(viewer.Current.Item);
+        Assert.False(await viewer.MoveNextAsync());
+        Assert.Equal("session-b", runtime.LastQuery!.SessionId);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

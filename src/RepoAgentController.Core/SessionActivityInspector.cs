@@ -30,6 +30,8 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
         {
             // Subscription precedes the history read. The bounded queue preserves notifications racing the snapshot.
             var snapshot = await Read(discussion, limit, cursor, starting.Token);
+            if (snapshot.Session != selection || snapshot.Epoch != epoch)
+            { yield return new("gap", lifetime, Notice: "Discussion selection or runtime changed while reading history; select it again."); yield break; }
             var raced = watcher.Drain(out var snapshotSequence);
             if (PublicationGap(watcher, epoch) is { } initialGap) { yield return new("gap", lifetime, Notice: initialGap); yield break; }
             var items = snapshot.Items.ToDictionary(item => (item.TurnId, item.Id));
@@ -47,6 +49,8 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
                 else additional.Add(item);
             }
             var reconciled = items.Values.Select(item => Sanitize(item, Math.Min(32768, 128000 / Math.Max(1, items.Count)), false)).ToArray();
+            if (!await StillMapped(discussion, selection, ct))
+            { yield return new("gap", lifetime, Notice: "Discussion mapping changed or became unavailable; select it again."); yield break; }
             if (PublicationGap(watcher, epoch) is { } snapshotGap) { yield return new("gap", lifetime, Notice: snapshotGap); yield break; }
             yield return new("snapshot", lifetime, snapshot with
             { Items = reconciled, Incomplete = snapshot.Incomplete || reconciled.Any(item => item.Incomplete || item.Truncated), Sequence = snapshotSequence });
