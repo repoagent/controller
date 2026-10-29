@@ -525,9 +525,12 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             finally
             {
                 // A request failure is not a confirmed terminal capacity failure. Keep evidence and never blindly retry it.
-                record.Recovery = recovery with { Suspended = offered && !AgentSessions.Refused(error)
+                record.Recovery = recovery with
+                {
+                    Suspended = offered && !AgentSessions.Refused(error)
                     ? "recovery delivery acknowledgement uncertain; inspect prior work before continuing"
-                    : "recovery could not start; operator attention required" };
+                    : "recovery could not start; operator attention required"
+                };
                 record.Pending = null;
                 store.Save();
                 log.Write("capacity-recovery-held", $"{record.Url} session={session} reason={record.Recovery.Suspended}");

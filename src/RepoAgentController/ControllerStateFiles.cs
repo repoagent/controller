@@ -174,9 +174,14 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
         RecordKey.Waiting => record.Waiting is { } waiting ? Waiting(waiting) : null,
         RecordKey.Pending => record.Pending is { } pending ? Pending(pending) : null,
         RecordKey.Running => record.Running is { } running ? Running(running) : null,
-        RecordKey.Recovery => record.Recovery is { } recovery ? Kept(new JsonObject { ["failedTurn"] = recovery.FailedTurn,
-            ["selection"] = Selection(recovery.Selection), ["attempts"] = recovery.Attempts, ["after"] = Time(recovery.After),
-            ["suspended"] = recovery.Suspended }, recovery.Unknown) : null,
+        RecordKey.Recovery => record.Recovery is { } recovery ? Kept(new JsonObject
+        {
+            ["failedTurn"] = recovery.FailedTurn,
+            ["selection"] = Selection(recovery.Selection),
+            ["attempts"] = recovery.Attempts,
+            ["after"] = Time(recovery.After),
+            ["suspended"] = recovery.Suspended
+        }, recovery.Unknown) : null,
         _ => throw new UnreachableException()
     };
 
