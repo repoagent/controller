@@ -133,6 +133,7 @@ public sealed class SessionActivityInspectorTests
         runtime.Report(new ActivityItemObserved(1, new("session-a", "turn-a", "response", ActivityItemKind.Response, ActivityItemState.Running, Text: "token-")));
         Assert.True(await viewer.MoveNextAsync());
         Assert.Equal("", viewer.Current.Item!.Text);
+        Assert.True(viewer.Current.Item.Incomplete);
         runtime.Report(new ActivityItemObserved(1, new("session-a", "turn-a", "response", ActivityItemKind.Response, ActivityItemState.Completed, Text: secret)));
         Assert.True(await viewer.MoveNextAsync());
         Assert.Equal("[REDACTED]", viewer.Current.Item!.Text);
@@ -193,6 +194,46 @@ public sealed class SessionActivityInspectorTests
     }
 
     [Fact]
+    public async Task Follow_does_not_publish_queued_activity_after_the_Discussions_mapping_changes()
+    {
+        var runtime = new ActivityRuntime();
+        var mappings = new ActivityMappings();
+        var inspector = Inspector(runtime, mappings);
+        await using var viewer = inspector.Follow("42", ct: TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken);
+        Assert.True(await viewer.MoveNextAsync());
+        mappings.Entries = [new("https://github.com/owner/repository/discussions/42", "session-b")];
+        runtime.Report(new ActivityItemObserved(1, new("session-a", "turn-a", "old-session-item", ActivityItemKind.Response,
+            ActivityItemState.Completed, Text: "This session is no longer mapped.")));
+        Assert.True(await viewer.MoveNextAsync());
+        Assert.Equal("gap", viewer.Current.Kind);
+        Assert.False(await viewer.MoveNextAsync());
+        Assert.Equal(1, runtime.Reads);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_runtime_reset_after_draining_updates_ends_follow_before_publishing_an_old_item(bool notify)
+    {
+        var runtime = new ActivityRuntime();
+        var mappings = new ActivityMappings();
+        var inspector = Inspector(runtime, mappings);
+        await using var viewer = inspector.Follow("42", ct: TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken);
+        Assert.True(await viewer.MoveNextAsync());
+        mappings.DuringRead = () =>
+        {
+            runtime.ActivityEpoch = 2;
+            if (notify) runtime.Report(new ActivityRuntimeChanged(2));
+        };
+        runtime.Report(new ActivityItemObserved(1, new("session-a", "turn-a", "old-runtime-item", ActivityItemKind.Response,
+            ActivityItemState.Completed, Text: "This runtime has stopped.")));
+        Assert.True(await viewer.MoveNextAsync());
+        Assert.Equal("gap", viewer.Current.Kind);
+        Assert.False(await viewer.MoveNextAsync());
+        Assert.Equal(1, runtime.Reads);
+    }
+
+    [Fact]
     public async Task Large_pages_keep_all_item_identities_and_continuation_within_the_wire_budget()
     {
         var runtime = new ActivityRuntime
@@ -232,7 +273,12 @@ public sealed class SessionActivityInspectorTests
     sealed class ActivityMappings : IActivitySessions
     {
         public IReadOnlyList<ActivitySession> Entries { get; set; } = [new("https://github.com/owner/repository/discussions/42", "session-a")];
-        public Task<IReadOnlyList<ActivitySession>> ActivitySessions(CancellationToken ct) => Task.FromResult(Entries);
+        public Action? DuringRead { get; set; }
+        public Task<IReadOnlyList<ActivitySession>> ActivitySessions(CancellationToken ct)
+        {
+            DuringRead?.Invoke();
+            return Task.FromResult(Entries);
+        }
     }
 
     sealed class ActivityRuntime : IAgentActivity

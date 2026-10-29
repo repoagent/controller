@@ -23,14 +23,15 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
             Interlocked.Decrement(ref watching);
             throw Unavailable("Four activity viewers are already following sessions.");
         }
-        var watcher = new Watcher(selection.SessionId, activity.ActivityEpoch, Identity);
+        var epoch = activity.ActivityEpoch;
+        var watcher = new Watcher(selection.SessionId, epoch, Identity);
         activity.ActivityChanged += watcher.Observe;
         try
         {
             // Subscription precedes the history read. The bounded queue preserves notifications racing the snapshot.
             var snapshot = await Read(discussion, limit, cursor, starting.Token);
             var raced = watcher.Drain(out var snapshotSequence);
-            if (watcher.Gap is { } initialGap) { yield return new("gap", lifetime, Notice: initialGap); yield break; }
+            if (PublicationGap(watcher, epoch) is { } initialGap) { yield return new("gap", lifetime, Notice: initialGap); yield break; }
             var items = snapshot.Items.ToDictionary(item => (item.TurnId, item.Id));
             var additional = new List<ActivityItem>();
             foreach (var update in raced)
@@ -46,15 +47,22 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
                 else additional.Add(item);
             }
             var reconciled = items.Values.Select(item => Sanitize(item, Math.Min(32768, 128000 / Math.Max(1, items.Count)), false)).ToArray();
+            if (PublicationGap(watcher, epoch) is { } snapshotGap) { yield return new("gap", lifetime, Notice: snapshotGap); yield break; }
             yield return new("snapshot", lifetime, snapshot with
             { Items = reconciled, Incomplete = snapshot.Incomplete || reconciled.Any(item => item.Incomplete || item.Truncated), Sequence = snapshotSequence });
             // Items outside the requested history page are upserts, so the provider continuation still describes that page.
             foreach (var item in additional.DistinctBy(item => (item.TurnId, item.Id)))
+            {
+                if (!await StillMapped(discussion, selection, ct))
+                { yield return new("gap", lifetime, Notice: "Discussion mapping changed or became unavailable; select it again."); yield break; }
+                if (PublicationGap(watcher, epoch) is { } interrupted)
+                { yield return new("gap", lifetime, Notice: interrupted, Sequence: watcher.Sequence); yield break; }
                 yield return new("upsert", lifetime, Item: item, Sequence: snapshotSequence);
+            }
             Task<bool>? waiting = null;
             while (!ct.IsCancellationRequested)
             {
-                if (watcher.Gap is { } gap) { yield return new("gap", lifetime, Notice: gap, Sequence: watcher.Sequence); yield break; }
+                if (PublicationGap(watcher, epoch) is { } gap) { yield return new("gap", lifetime, Notice: gap, Sequence: watcher.Sequence); yield break; }
                 waiting ??= watcher.Wait(ct);
                 bool available;
                 var heartbeat = false;
@@ -62,8 +70,10 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
                 catch (TimeoutException) { available = false; heartbeat = true; }
                 if (heartbeat)
                 {
-                    if ((await SelectBounded(discussion, ct)) != selection)
-                    { yield return new("gap", lifetime, Notice: "Discussion mapping changed; select it again."); yield break; }
+                    if (!await StillMapped(discussion, selection, ct))
+                    { yield return new("gap", lifetime, Notice: "Discussion mapping changed or became unavailable; select it again."); yield break; }
+                    if (PublicationGap(watcher, epoch) is { } heartbeatGap)
+                    { yield return new("gap", lifetime, Notice: heartbeatGap); yield break; }
                     yield return new("heartbeat", lifetime, Sequence: watcher.Sequence);
                     continue;
                 }
@@ -71,7 +81,13 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
                 waiting = null;
                 var updates = watcher.Drain(out var updateSequence);
                 foreach (var item in updates)
+                {
+                    if (!await StillMapped(discussion, selection, ct))
+                    { yield return new("gap", lifetime, Notice: "Discussion mapping changed or became unavailable; select it again."); yield break; }
+                    if (PublicationGap(watcher, epoch) is { } interrupted)
+                    { yield return new("gap", lifetime, Notice: interrupted, Sequence: watcher.Sequence); yield break; }
                     yield return new("upsert", lifetime, Item: Sanitize(item, 32768), Sequence: updateSequence);
+                }
             }
         }
         finally
@@ -80,6 +96,9 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
             Interlocked.Decrement(ref watching);
         }
     }
+
+    string? PublicationGap(Watcher watcher, int epoch) => activity.ActivityEpoch == epoch ? watcher.Gap :
+        "Runtime changed or stopped; read a new snapshot.";
 
     sealed class Watcher(string session, int epoch, Func<string, bool> identity)
     {
@@ -219,6 +238,13 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
         return await Select(discussion, bounded.Token).WaitAsync(bounded.Token);
     }
 
+    async Task<bool> StillMapped(string discussion, ActivitySession selected, CancellationToken ct)
+    {
+        try { return await SelectBounded(discussion, ct) == selected; }
+        catch (IOException) { return false; }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return false; }
+    }
+
     async Task<IReadOnlyList<ActivitySession>> Mappings(CancellationToken ct)
     {
         var mapped = await sessions.ActivitySessions(ct);
@@ -273,6 +299,7 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
                 Incomplete = true
             };
         var truncated = item.Truncated;
+        var incomplete = item.Incomplete;
         string? Clean(string? text, bool streaming = false)
         {
             if (text is null) return null;
@@ -285,6 +312,7 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
             {
                 // Keep a suffix private until completion so split deltas cannot reveal a protected secret prefix.
                 var suffix = protectedLength?.Invoke() ?? 0;
+                incomplete |= suffix > 0;
                 if (suffix > 65536) { truncated = true; safe = "[running text withheld until completion]"; }
                 else safe = safe[..Math.Max(0, safe.Length - suffix)];
             }
@@ -305,7 +333,7 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
         var result = Clean(item.Result, true);
         var text = Clean(item.Text, true);
         var reads = item.Reads?.Take(20).Select(read => new InstructionReadEvidence(Clean(read.Path) ?? "")).ToArray();
-        return item with { Name = name, Arguments = arguments, Result = result, Text = text, Reads = reads, Truncated = truncated };
+        return item with { Name = name, Arguments = arguments, Result = result, Text = text, Reads = reads, Truncated = truncated, Incomplete = incomplete };
     }
 
     static ActivityHistoryUnavailable Unavailable(string reason) => new(reason);

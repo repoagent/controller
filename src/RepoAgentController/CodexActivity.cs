@@ -12,7 +12,7 @@ sealed partial class Codex
     readonly HashSet<(string Session, string Turn)> activityTurns = [];
     bool activityTurnGap;
     static readonly string[] PrivateActivityKeys = ["data", "base64", "blob", "url", "auth", "token", "password", "secret", "credential", "config", "_meta"];
-    public int ActivityEpoch => epoch;
+    public int ActivityEpoch => Volatile.Read(ref epoch);
     public event Action<AgentActivityEvent>? ActivityChanged;
 
     public async Task<AgentActivityPage> ReadActivity(AgentActivityQuery query, CancellationToken ct)
@@ -297,9 +297,12 @@ sealed partial class Codex
                 if (properties.Count > 100) limited = true;
                 foreach (var property in properties.Take(100))
                 {
-                    var key = property.Key;
+                    var original = property.Key;
+                    if (original.Length > 256) { limited = true; safe["omittedField"] = "[oversized field name omitted]"; continue; }
+                    var key = Log.Redact(original);
+                    if (key != original) limited = true;
                     if (key.Length > 256) { limited = true; safe["omittedField"] = "[oversized field name omitted]"; continue; }
-                    if (PrivateActivityKeys.Any(privateKey => key.Contains(privateKey, StringComparison.OrdinalIgnoreCase)))
+                    if (PrivateActivityKeys.Any(privateKey => original.Contains(privateKey, StringComparison.OrdinalIgnoreCase)))
                     { limited = true; safe[key] = "[private/binary field omitted]"; }
                     else safe[key] = Safe(property.Value, depth + 1);
                 }
@@ -313,8 +316,10 @@ sealed partial class Codex
             if (node is JsonValue text && text.TryGetValue<string>(out var content))
             {
                 if (content.Length > characters) { limited = true; return JsonValue.Create("[oversized text omitted]"); }
-                characters -= content.Length;
-                return JsonValue.Create(content);
+                var safe = Log.Redact(content); // Redact before JSON escaping can change a protected value's representation.
+                if (safe.Length > characters) { limited = true; return JsonValue.Create("[oversized text omitted]"); }
+                characters -= safe.Length;
+                return JsonValue.Create(safe);
             }
             return node?.DeepClone();
         }
