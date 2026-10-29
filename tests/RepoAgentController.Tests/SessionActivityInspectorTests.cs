@@ -65,6 +65,23 @@ public sealed class SessionActivityInspectorTests
     }
 
     [Fact]
+    public async Task Repository_casing_aliases_preserve_canonical_selection_and_reject_ambiguous_mappings()
+    {
+        const string canonical = "https://github.com/Owner/Repository/discussions/42";
+        var runtime = new ActivityRuntime();
+        var mappings = new ActivityMappings { Entries = [new(canonical, "session-a")] };
+        var inspector = Inspector(runtime, mappings);
+        Assert.Equal(canonical, (await inspector.Read("42", ct: TestContext.Current.CancellationToken)).Session.Discussion);
+        Assert.Equal(canonical, (await inspector.Read(canonical, ct: TestContext.Current.CancellationToken)).Session.Discussion);
+        await Assert.ThrowsAsync<ActivityHistoryUnavailable>(() => inspector.Read("https://github.com/owner/repository/discussions/42",
+            ct: TestContext.Current.CancellationToken)); // URL selection still requires the actual mapped URL.
+        mappings.Entries = [new(canonical, "session-a"), new("https://github.com/owner/repository/discussions/42", "session-b")];
+        await Assert.ThrowsAsync<ActivityHistoryUnavailable>(() => inspector.Read("42", ct: TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<ActivityHistoryUnavailable>(() => inspector.Read(canonical, ct: TestContext.Current.CancellationToken));
+        Assert.Equal(2, runtime.Reads);
+    }
+
+    [Fact]
     public async Task Private_text_redacts_known_secrets_and_escapes_terminal_controls_with_explicit_truncation()
     {
         var runtime = new ActivityRuntime

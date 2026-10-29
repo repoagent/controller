@@ -19,7 +19,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         try
         {
             return store.Discussions.Values.Where(record => record.Problem is null && record.SessionId is { Length: > 0 })
-                .Select(record => new ActivitySession(record.Url, record.SessionId!, record.Url == outbox.DashboardUrl)).ToArray();
+                .Select(record => new ActivitySession(record.Url, record.SessionId!, string.Equals(record.Url, outbox.DashboardUrl, StringComparison.OrdinalIgnoreCase))).ToArray();
         }
         finally { gate.Release(); }
     }

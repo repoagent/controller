@@ -228,10 +228,12 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
 
     async Task<ActivitySession> Select(string discussion, CancellationToken ct)
     {
-        var target = Number(discussion, out var number)
+        var numeric = Number(discussion, out var number);
+        var target = numeric
             ? $"https://github.com/{repository}/discussions/{number.ToString(CultureInfo.InvariantCulture)}" : discussion;
         if (!Discussion(target)) throw Unavailable("Select a mapped Discussion number or its exact repository URL.");
-        var matched = (await Mappings(ct)).Where(item => item.Discussion == target).ToArray();
+        var matched = (await Mappings(ct)).Where(item => string.Equals(item.Discussion, target,
+            numeric ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)).ToArray();
         return matched.Length == 1 ? matched[0] : throw Unavailable("The Discussion has no unambiguous controller-mapped session.");
     }
 
@@ -252,7 +254,7 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
     async Task<IReadOnlyList<ActivitySession>> Mappings(CancellationToken ct)
     {
         var mapped = await sessions.ActivitySessions(ct);
-        var discussionCounts = mapped.GroupBy(item => item.Discussion, StringComparer.Ordinal).ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
+        var discussionCounts = mapped.GroupBy(item => item.Discussion, StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
         var sessionCounts = mapped.GroupBy(item => item.SessionId, StringComparer.Ordinal).ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
         return mapped.Where(item => !item.Dashboard && Discussion(item.Discussion) && redact(item.Discussion) == item.Discussion && Identity(item.SessionId) &&
                 discussionCounts[item.Discussion] == 1 && sessionCounts[item.SessionId] == 1)
@@ -261,9 +263,12 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
 
     bool Discussion(string value)
     {
-        var prefix = $"https://github.com/{repository}/discussions/";
-        return value.StartsWith(prefix, StringComparison.Ordinal) && Number(value[prefix.Length..], out var number) &&
-            value[prefix.Length..] == number.ToString(CultureInfo.InvariantCulture);
+        const string origin = "https://github.com/", path = "/discussions/";
+        var offset = origin.Length + repository.Length + path.Length;
+        return value.Length > offset && value.Length <= 512 && value.StartsWith(origin, StringComparison.Ordinal) &&
+            string.Equals(value.Substring(origin.Length, repository.Length), repository, StringComparison.OrdinalIgnoreCase) &&
+            value[(origin.Length + repository.Length)..].StartsWith(path, StringComparison.Ordinal) &&
+            Number(value[offset..], out var number) && value[offset..] == number.ToString(CultureInfo.InvariantCulture);
     }
 
     static bool Number(string value, out int number) => int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out number) && number > 0;
