@@ -59,7 +59,12 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
     static AgentTurnCompleted Completed(int source, string thread, JsonObject? turn)
     {
         var status = turn?["status"].OptionalText() ?? "";
-        return new(source, thread, turn?["id"].OptionalText(), TurnStatus(status), status, Rejection(turn?["error"] as JsonObject));
+        return new(source, thread, turn?["id"].OptionalText(), TurnStatus(status), status, Rejection(turn?["error"] as JsonObject))
+        {
+            // rust-v0.165.0 TurnError/CodexErrorInfo: only the terminal turn's structured category counts.
+            // Intermediate error notifications (including willRetry:true) never complete a turn here.
+            ModelCapacityFailure = (turn?["error"] as JsonObject)?["codexErrorInfo"].OptionalText() == "serverOverloaded"
+        };
     }
 
     static AgentSessionStatus Parse(JsonNode? status) =>

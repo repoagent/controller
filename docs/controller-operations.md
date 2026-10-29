@@ -105,6 +105,20 @@ Updates use the retained outbox above with one coalesced entry, so writes held b
 
 ## Checkpoints and manual recovery
 
+### Model capacity recovery
+
+After an accepted turn completes with Codex's structured `serverOverloaded` category, the controller saves a recovery intent with the failed turn, exact selected model and reasoning effort, attempt count and next due time. It waits 120 seconds before starting a continuation in that same session. A restart during the wait preserves the due time and selection. Repository defaults or Discussion label changes do not substitute a model for this continuation. Intermediate Codex errors with `willRetry: true` leave retries to Codex; they never start a competing controller turn.
+
+The continuation instructs the agent to inspect its conversation history, current workspace and external effects, including replies, commits and pull requests, then finish only what remains. It does not resend the accepted request. Partial work can already have happened before the capacity failure: this inspection reduces duplicate effects but cannot provide exactly-once external actions. Keep the controller's session data so history remains available.
+
+Each further confirmed terminal capacity failure schedules another full two-minute wait, without an attempt limit or a promise that capacity returns within any deadline. Later Discussion input stays ordered behind the recovery and gets no EYES until accepted. Recovery itself creates no new EYES receipt for the original input. Waiting recovery releases the active-session slot so other Discussions can progress, but keeps `/status` busy. Status and the dashboard show `recovering`, reason `model-capacity`, attempts and next retry time; an active continuation also reports `running: true` and counts against the active-session limit. The dashboard title identifies current model capacity recovery until a successful turn clears it; historical failure evidence remains.
+
+Recovery uses normal session, credential, active-session-limit and managed-checkout admission. Graceful shutdown starts no recovery turn and preserves a scheduled wait for restart. Account quota exhaustion, rate limits, cancellation, unrelated terminal failures, runtime loss and uncorrelated completions do not schedule capacity recovery. There is no automatic model fallback.
+
+If a recovery turn encounters an unrelated failure, loses its runtime, or has an uncertain request acknowledgement, the intent remains visible as held rather than automatically repeating work. Inspect the failure and prior work, restore credentials or establish checkout safety as required, then use an explicit Discussion follow-up to finish remaining work. An uncertain managed checkout continues to require the existing offline recovery procedure; a follow-up cannot bypass that fence. GitHub receipt failures alone never cause accepted input to be replayed.
+
+The typed mapping is verified against the pinned [Codex 0.165.0 error schema](https://github.com/openai/codex/blob/rust-v0.165.0/codex-rs/app-server-protocol/schema/typescript/v2/CodexErrorInfo.ts) and [event mapping](https://github.com/openai/codex/blob/rust-v0.165.0/codex-rs/app-server/src/bespoke_event_handling.rs). The existing Aspire/pinned-tool smoke path owns live adapter and history compatibility; source inspection and core tests do not establish an observed production overload or live recovery.
+
 ### Broker token throttling
 
 A broker HTTP 429 is temporary throttling, not confirmed credential rejection. Token acquisition shares one retry schedule across controller callers. A valid `Retry-After` delta or UTC HTTP date sets the earliest retry; absent, invalid or elapsed values use a 30-second exponential backoff up to five minutes, with zero to five seconds of jitter. Retries do not bypass broker issuance or settlement limits.
