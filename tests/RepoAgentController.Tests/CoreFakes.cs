@@ -217,14 +217,21 @@ sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
     public Task<Discussion?> Find(int number, CancellationToken ct) =>
         Reading("Find", () => conversations.TryGetValue(number, out var held) ? Seen(held.Discussion) : null);
 
+    /// <summary>Optional controlled network wait; may deliberately ignore cancellation.</summary>
+    public Func<Task>? BeforeRead { get; set; }
+
     /// <summary>The top-level comments in order, then the replies to each in that order, as GitHub's pages return them.</summary>
-    public Task<DiscussionConversation> Read(Discussion discussion, CancellationToken ct) => Reading("Read", () =>
+    public async Task<DiscussionConversation> Read(Discussion discussion, CancellationToken ct)
     {
-        var held = conversations[discussion.Number];
-        var roots = held.Comments.Where(comment => comment.ReplyToId is null).ToArray();
-        var replies = roots.SelectMany(root => held.Comments.Where(comment => comment.ReplyToId == root.Id));
-        return new DiscussionConversation(discussion, [.. held.Reactions], [.. roots.Concat(replies).Select(Seen)]);
-    });
+        if (BeforeRead is { } before) await before();
+        return await Reading("Read", () =>
+        {
+            var held = conversations[discussion.Number];
+            var roots = held.Comments.Where(comment => comment.ReplyToId is null).ToArray();
+            var replies = roots.SelectMany(root => held.Comments.Where(comment => comment.ReplyToId == root.Id));
+            return new DiscussionConversation(discussion, [.. held.Reactions], [.. roots.Concat(replies).Select(Seen)]);
+        });
+    }
 
     public Task<IReadOnlyList<string>> Labels(string discussionId, CancellationToken ct) =>
         Reading<IReadOnlyList<string>>("Labels", () => conversations.Values.Single(held => held.Discussion.Id == discussionId).Labels);
@@ -409,6 +416,7 @@ sealed class InMemoryDiscussionStore : IDiscussionStore
                 Waiting = waiting,
                 Pending = record.Pending,
                 Running = record.Running,
+                Recovery = record.Recovery,
                 Unknown = record.Unknown,
                 Unreadable = record.Unreadable
             };
@@ -485,11 +493,19 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
 
     public void Report(string session, AgentSessionStatus status) => Changed?.Invoke(new AgentSessionStatusChanged(Epoch, session, status));
     public void Started(string session, string turn) => Changed?.Invoke(new AgentTurnStarted(Epoch, session, turn));
+    public void TransientFailure(string session, string turn, AgentFailure failure) => Changed?.Invoke(new AgentTurnCompleted(Epoch, session, turn,
+        AgentTurnStatus.Failed, "failed", null)
+    { Failure = failure });
+
+    public void CapacityFailure(string session, string turn) => Changed?.Invoke(new AgentTurnCompleted(Epoch, session, turn,
+        AgentTurnStatus.Failed, "failed", null)
+    { Failure = new(AgentFailureKind.ModelCapacity) });
     /// <summary>Reports a turn ended with <paramref name="status"/>, sent as <paramref name="reported"/> or else as the status's
     /// lowercase name.</summary>
     public void Completed(string session, string turn, AgentTurnStatus status = AgentTurnStatus.Completed, string? rejection = null,
-        int? epoch = null, string? reported = null) =>
-        Changed?.Invoke(new AgentTurnCompleted(epoch ?? Epoch, session, turn, status, reported ?? status.ToString().ToLowerInvariant(), rejection));
+        int? epoch = null, string? reported = null, bool capacity = false, AgentFailure? failure = null) =>
+        Changed?.Invoke(new AgentTurnCompleted(epoch ?? Epoch, session, turn, status, reported ?? status.ToString().ToLowerInvariant(), rejection)
+        { Failure = failure ?? (capacity ? new(AgentFailureKind.ModelCapacity) : null) });
     public Func<CancellationToken, Task<AgentUsageObservation>> Usage { get; set; } = _ =>
         Task.FromResult(new AgentUsageObservation(AgentUsageAvailability.Unsupported, []));
     public Task<AgentUsageObservation> ReadUsage(CancellationToken ct) => Usage(ct);

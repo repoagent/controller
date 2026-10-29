@@ -89,18 +89,22 @@ jobs:
       - name: Build the native owned-process gate
         timeout-minutes: 6
         run: dotnet build tests/RepoAgentController.Tests --configuration Release --nologo
-      - name: Confirm native owned-process shutdown with real pipes, signals and credentials
+      - name: Confirm native owned-process shutdown and private activity inspection
         timeout-minutes: 5
         run: |
           set -euo pipefail
           dotnet tests/RepoAgentController.Tests/bin/Release/net11.0/RepoAgentController.Tests.dll \
             -class RepoAgentController.Tests.BrokerLifetimeTests -class RepoAgentController.Tests.ControllerShutdownTests \
+            -class RepoAgentController.Tests.ActivitySocketTests \
             -result-xml "$RUNNER_TEMP/owned-processes.xml"
           /usr/bin/python3 - "$RUNNER_TEMP/owned-processes.xml" <<'PYTHON'
           import sys, xml.etree.ElementTree as ET
           assemblies = ET.parse(sys.argv[1]).getroot().findall('assembly')
           if not assemblies or sum(int(a.attrib['total']) for a in assemblies) == 0 or any(int(a.attrib['skipped']) for a in assemblies):
               sys.exit('Owned-process gate requires actual test execution without skips')
+          if not any(t.attrib.get('name', '').startswith('RepoAgentController.Tests.ActivitySocketTests.') and t.attrib.get('result') == 'Pass'
+                     for a in assemblies for t in a.findall('./collection/test')):
+              sys.exit('Private activity gate requires actual socket/CLI test execution')
           PYTHON
   hosted-smoke:
     if: github.repository == 'repoagent/controller' && github.event_name == 'workflow_dispatch' && inputs.smoke == true && inputs.tag == ''

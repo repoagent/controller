@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.0](https://github.com/repoagent/controller/compare/controller-v1.0.2...controller-v1.1.0) (2026-10-29)
+
+### Features
+
+- **Private session activity.** On a running Linux/macOS controller, use `activity --state PATH` to list mapped Discussions, select one with `--discussion NUMBER`, and inspect bounded retained history or `--follow` live responses, tool commands/results and available file-read evidence. Inspection uses the existing agent runtime and never starts a turn. Viewer cancellation leaves agent work running. ([#326](https://github.com/repoagent/controller/pull/326))
+- Activity is a local, same-OS-user capability through a private Unix socket, with bounded pages/updates and explicit omissions, truncation or gaps; restart requires a fresh selection/cursor. It supplies no transcript HTTP endpoint or durable live-event replay. Same-UID processes are not isolated. Known controller secrets are redacted, but unknown secrets in tool output can remain visible; treat output and redirected JSON as private operator data. See [activity usage and limits](https://github.com/repoagent/controller/blob/main/docs/controller-operations.md#private-session-activity).
+- **Paced accepted-work recovery.** After a correlated failed terminal turn, continue unfinished work after 120 seconds in the same agent session and exact model/reasoning effort. Supported categories are structured `serverOverloaded`, request throttling `rateLimitExceeded`, and `httpConnectionFailed`, `responseStreamConnectionFailed`, `responseStreamDisconnected` or `responseTooManyFailedAttempts` carrying HTTP 408/500/502/503/504. Repeated supported failures get another full wait; pending recovery survives restart and holds later input while releasing the active-session slot. ([#314](https://github.com/repoagent/controller/pull/314), [#328](https://github.com/repoagent/controller/pull/328))
+- Recovery waits for the agent's terminal completion and does not compete with its own retries. Usage/quota/credits/plan exhaustion, generic HTTP 429, authentication, context limits, cancellation, generic internal/unknown errors and wrappers without an allowed structured HTTP status are excluded. Continuations inspect prior history, workspace and external effects before finishing the remainder; exactly-once external effects cannot be guaranteed. Status/dashboard retain actual reason, attempts and due time. See [recovery behavior and exclusions](https://github.com/repoagent/controller/blob/main/docs/controller-operations.md#model-capacity-recovery).
+
+### Local development
+
+- Local Aspire AppHost runs explicitly enable private, bounded controller/broker traces in their local collector. Normal production execution has no collector enabled by this feature. Agent/tool children do not inherit tracing exporter configuration or its credentials. Exported diagnostic bundles can include other private process data and must remain private. See [local AppHost tracing](https://github.com/repoagent/controller/blob/main/docs/local-apphost.md). ([#325](https://github.com/repoagent/controller/pull/325))
+
+### Upgrade and qualification
+
+- Deliberately adopt the verified 1.1.0 immutable image or native archive only after completed release metadata is available. Preserve controller enrollment, configuration, state, Codex storage/history and the managed checkout. Keep credential/admission and pending-recovery/checkout fences intact; inspect unfinished or uncertain work before rollback. Resetting state or re-enrolling is not a general recovery fix. This minor release changes no enrollment/profile, wire-protocol or persisted-state schema version.
+- Controlled recovery tests and actual shared-runtime normal conversation/activity qualification passed, including live command/read results, viewer cancellation and retained history after restart. Actual failure-specific provider errors, native retry episodes and automatic 120-second/repeated recovery remain unexercised; no live outage or quota exhaustion was induced. These checks do not diagnose historical HTTP 429 incidents or establish production soak coverage. Broker 429 pacing was already present in 1.0.2; process shutdown remains lifecycle ownership, not OS containment.
+- Bundled tools are unchanged from 1.0.2: Codex **0.165.0**, GitHub CLI **2.103.3**, cloudflared **2026.10.5**.
+
 ## [1.0.2](https://github.com/repoagent/controller/compare/controller-v1.0.1...controller-v1.0.2) (2026-10-29)
 
 ### Bug fixes

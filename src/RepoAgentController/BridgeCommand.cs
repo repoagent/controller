@@ -60,6 +60,7 @@ public static class BridgeCommand
             return 0;
         });
         root.Subcommands.Add(statusCommand);
+        ActivityCommand.Add(root);
         var recoveryState = new Option<FileInfo>("--state") { Required = true };
         var recoveryWorkspace = new Option<DirectoryInfo>("--workspace") { Required = true };
         var recoveryStopped = new Option<bool>("--confirm-runtime-stopped")
@@ -233,6 +234,11 @@ public static class BridgeCommand
                                 await using var server = result.GetValue(once) ? null : await ControllerHttpServer.Start(result.GetValue(statusPort),
                                     () => StatusSnapshot.From(status.Snapshot(), managedCheckoutExpected: reconciliation is not null),
                                     webhooks is null ? null : (result.GetValue(listenPort), webhooks.Receive), runtimeToken);
+                                var activityLifetime = Guid.NewGuid().ToString("N");
+                                var inspector = new SessionActivityInspector(github.Repository, activityLifetime, bridge, codex, time,
+                                    Log.Redact, () => Log.ProtectedLength);
+                                await using var activity = result.GetValue(once) ? null : await ActivitySocket.TryStart(statePath, github.Repository,
+                                    inspector, activityLifetime, time, runtimeToken);
                                 if (webhooks is not null)
                                 {
                                     await webhooks.Run(intakeStop.Token, runtimeToken);

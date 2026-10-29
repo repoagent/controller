@@ -28,6 +28,12 @@ static class OperatorStatusJson
             {
                 case SessionActivity.Pending delivery: item["since"] = delivery.Since; item["operation"] = delivery.Operation; break;
                 case SessionActivity.Retrying retry: item["attempts"] = retry.Attempts; item["retryAt"] = retry.RetryAt; break;
+                case SessionActivity.Recovering recovery:
+                    item["reason"] = recovery.Failure.Reason; item["attempts"] = recovery.Attempts; item["retryAt"] = recovery.RetryAt;
+                    if (recovery.Failure.HttpStatus is { } httpStatus) item["httpStatus"] = httpStatus;
+                    item["model"] = recovery.Model; item["effort"] = recovery.Effort; item["suspended"] = recovery.Suspended;
+                    if (recovery.TurnRunning) item["running"] = true;
+                    break;
                 case SessionActivity.Running { Since: { } since }: item["since"] = since; break;
             }
             if (session.Waiting != 0) item["waiting"] = session.Waiting;

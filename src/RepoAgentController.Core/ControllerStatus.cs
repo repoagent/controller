@@ -14,10 +14,12 @@ public sealed class ControllerStatus : IDisposable
     // Events that report failed or blocked work. New failure events become visible by adding their kind here.
     static readonly HashSet<string> FailureKinds = ["fatal", "poll-error", "observation-error", "dispatch-error", "delivery-retry", "receipt-error", "outbox-error",
         "app-refresh-error", "agent-request-blocked", "refresh-blocked", "webhook-error", "webhook-disable-error", "dashboard-error",
-        "codex-auth-failed", "codex-auth-invalid", "codex-auth-error", "selection-error", "label-read-error"];
+        "codex-auth-failed", "codex-auth-invalid", "codex-auth-error", "selection-error", "label-read-error", "capacity-recovery-scheduled", "capacity-recovery-held",
+        "transient-recovery-scheduled", "transient-recovery-held"];
     static readonly HashSet<string> ActivityKinds = ["session-created", "forwarded"];
     // Events after which the saved state holds different work, such as input now waiting for its session.
-    static readonly HashSet<string> WorkKinds = ["input-waiting", "input-requeued", "turn-ended"];
+    static readonly HashSet<string> WorkKinds = ["input-waiting", "input-requeued", "turn-ended", "capacity-recovery-started", "capacity-recovery-completed",
+        "transient-recovery-started", "transient-recovery-completed"];
     readonly IStatusRecord record;
     readonly IDiscussionStore discussions;
     readonly IControllerState settings;
@@ -182,7 +184,19 @@ public sealed class ControllerStatus : IDisposable
             else if (turn)
             {
                 running++;
-                activity = new SessionActivity.Running(discussion.Running is { } current ? Time(current.Since) : null);
+                activity = discussion.Recovery is { } continuing
+                    ? Recovery(continuing) with { TurnRunning = true }
+                    : new SessionActivity.Running(discussion.Running is { } current ? Time(current.Since) : null);
+            }
+            else if (discussion.Recovery is { } recovery)
+            {
+                retrying++;
+                activity = Recovery(recovery);
+            }
+            else if (discussion.UnreadableKeys.ContainsKey(RecordKey.Recovery))
+            {
+                retrying++;
+                activity = new SessionActivity.Retrying(null, null);
             }
             else activity = new SessionActivity.Idle();
             // Observed input held in the controller until its session is idle.
@@ -201,6 +215,9 @@ public sealed class ControllerStatus : IDisposable
     }
 
     static string Time(DateTimeOffset value) => value.ToString("O", CultureInfo.InvariantCulture);
+
+    static SessionActivity.Recovering Recovery(CapacityRecovery recovery) =>
+        new(recovery.Attempts, Time(recovery.After), recovery.Selection.Model, recovery.Selection.Effort, recovery.Suspended) { Failure = recovery.Failure };
 
     /// <summary>Records the end of this lifetime; a fatal failure remains the reported state.</summary>
     public void Dispose()

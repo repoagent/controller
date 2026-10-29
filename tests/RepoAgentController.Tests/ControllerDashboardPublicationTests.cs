@@ -49,6 +49,56 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
     // As the controller's redaction removes the secrets it knows.
     static string Redact(string text) => text.Replace("ghs_secret", "<redacted>", StringComparison.Ordinal);
 
+    [Fact]
+    public async Task Capacity_recovery_is_a_current_blocker_until_success_while_failure_evidence_remains()
+    {
+        Store(("D1", new(First) { SessionId = "S1", Recovery = new("T1", new("gpt-6-luna", "xhigh", "label"), 2, Start.AddMinutes(2)) }));
+        Record("capacity-recovery-scheduled", First + " reason=model-capacity attempts=2 retry-at=2026-10-24T10:02:00Z");
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        Assert.Contains("Model capacity", Published().Title);
+        Assert.Contains("model capacity recovery; attempts 2; next retry 2026-10-24T10:02:00Z", Published().Body);
+        Assert.Equal("busy", StatusSnapshot.From(status.Snapshot()).State);
+        Store(("D1", new(First)
+        {
+            SessionId = "S1",
+            Running = new("T2", Start),
+            Recovery = new("T1", new("gpt-6-luna", "xhigh", "label"), 2, Start.AddMinutes(2))
+        }));
+        Record("capacity-recovery-started", First + " turn=T2 attempts=2");
+        await UsagePublication(publication => publication.Body.Contains("running a turn", StringComparison.Ordinal));
+        Assert.Contains("Model capacity", Published().Title); // Acceptance alone does not establish recovery success.
+        Store(("D1", new(First) { SessionId = "S1" }));
+        Record("capacity-recovery-completed", First + " turn=T2 attempts=2");
+        await UsagePublication(publication => !publication.Title.Contains("Model capacity", StringComparison.Ordinal));
+        Assert.Equal("idle", StatusSnapshot.From(status.Snapshot()).State);
+        Assert.Contains("capacity-recovery-scheduled", Published().Body);
+    }
+
+    [Fact]
+    public async Task Transient_recovery_reports_its_reason_and_status_until_success_and_retains_failure_history()
+    {
+        var recovery = new CapacityRecovery("T1", new("gpt-6-luna", "xhigh", "label"), 2, Start.AddMinutes(2))
+        { Failure = new(AgentFailureKind.ResponseAttemptsExhausted, 502) };
+        Store(("D1", new(First) { SessionId = "S1", Recovery = recovery }));
+        Record("transient-recovery-scheduled", First + " reason=response-attempts-exhausted http-status=502 attempts=2");
+        await using var dashboard = Dashboard();
+        dashboard.Start(TestContext.Current.CancellationToken);
+        Assert.Contains("Transient provider recovery", Published().Title);
+        Assert.Contains("response-attempts-exhausted (HTTP 502)", Published().Body);
+        Assert.Contains("attempts 2; next retry 2026-10-24T10:02:00Z", Published().Body);
+        Store(("D1", new(First) { SessionId = "S1", Running = new("T2", Start), Recovery = recovery }));
+        Record("transient-recovery-started", First + " turn=T2");
+        await UsagePublication(publication => publication.Body.Contains("running a turn", StringComparison.Ordinal));
+        Assert.Contains("Transient provider recovery", Published().Title);
+        Store(("D1", new(First) { SessionId = "S1" }));
+        Record("transient-recovery-completed", First + " turn=T2");
+        await UsagePublication(publication => !publication.Title.Contains("Transient provider recovery", StringComparison.Ordinal));
+        Assert.Equal("idle", StatusSnapshot.From(status.Snapshot()).State);
+        Assert.Contains("transient-recovery-scheduled", Published().Body);
+        Assert.Contains("http-status=502", Published().Body);
+    }
+
     // The published body once the dashboard has republished it naming the release at this URL; each publication arms the next heartbeat.
     async Task<string> Naming(BaselineRelease release)
     {

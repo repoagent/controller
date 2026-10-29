@@ -32,6 +32,13 @@ public abstract record SessionActivity(string State)
     /// <summary>A failed or unacknowledged delivery waiting for its next attempt: the attempts so far and when it is due.</summary>
     public sealed record Retrying(int? Attempts, string? RetryAt) : SessionActivity("retrying");
 
+    /// <summary>Unfinished accepted work awaiting capacity, with its durable selection and next due time.</summary>
+    public sealed record Recovering(int Attempts, string RetryAt, string Model, string Effort, string? Suspended) : SessionActivity("recovering")
+    {
+        public bool TurnRunning { get; init; }
+        public AgentFailure Failure { get; init; } = new(AgentFailureKind.ModelCapacity);
+    }
+
     /// <summary>A running turn, with its start time when the saved record holds one.</summary>
     public sealed record Running(string? Since) : SessionActivity("running");
 }
