@@ -18,7 +18,7 @@ internal sealed class GitHubAppAuthorization(string jwt) : AppAuthorization
 }
 
 // App installations on GitHub, read with the App's JWT or the broker's verifier token.
-internal sealed class GitHubAppInstallations(GitHubRest github, CryptographyClient key) : IAppInstallations
+internal sealed class GitHubAppInstallations(GitHubRest github, CryptographyClient key, bool developerSigning) : IAppInstallations
 {
     public async Task<AppAuthorization> AuthorizeAsync(AppAuthorizationWindow window, CancellationToken ct)
     {
@@ -26,7 +26,10 @@ internal sealed class GitHubAppInstallations(GitHubRest github, CryptographyClie
         var payload = Base64(JsonSerializer.SerializeToUtf8Bytes(new { iat = window.IssuedAt.ToUnixTimeSeconds(), exp = window.ExpiresAt.ToUnixTimeSeconds(), iss = AppId }));
         var unsigned = header + "." + payload;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(3));
+        // Developer signing includes the bounded Azure CLI process before Key Vault's challenge/sign requests.
+        // Keep its three-second process/network bounds, with room for both inside the operation's 15-second lifetime.
+        // Production managed identity retains the existing three-second signing deadline.
+        timeout.CancelAfter(TimeSpan.FromSeconds(developerSigning ? 6 : 3));
         SignResult signature;
         try { signature = await key.SignAsync(SignatureAlgorithm.RS256, SHA256.HashData(Encoding.ASCII.GetBytes(unsigned)), timeout.Token); }
         catch (Exception ex) when (ex is RequestFailedException or AuthenticationFailedException)
