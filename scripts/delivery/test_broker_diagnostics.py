@@ -62,7 +62,7 @@ elif args[:3] == ['rest','--method','get']:
  url=args[args.index('--url')+1]; key=urlsplit(url).path
  fixtures=json.loads(Path(os.environ['TEST_FIXTURES']).read_text())
  if key not in fixtures: sys.exit(92)
- value=fixtures[key]
+ value=fixtures.get('historicalRequests', fixtures[key]) if 'AppRequests' in url else fixtures[key]
  if value == 'FAIL': sys.exit('DO_NOT_EXPORT_SECRET provider error')
  if value == 'OVERSIZE': sys.stdout.write('x'*2100000)
  else:
@@ -116,6 +116,9 @@ class BrokerDiagnosticsTests(unittest.TestCase):
             '/v1/workspaces/11111111-2222-3333-4444-555555555555/query': dict(tables=[dict(name='PrimaryResult',
                 columns=[dict(name=name) for name in ('Name','Reason','Samples','LastObserved','Total','Maximum')],
                 rows=[['repoagent.auth.cleanup.failures','',1,'2026-10-28T13:40:00Z',1,1]])])}
+        fixtures['historicalRequests'] = dict(tables=[dict(columns=[dict(name=name) for name in
+            ('Interval','Endpoint','Status','StoredRows','RepresentedRequests','MissingWeights')],
+            rows=[['2026-10-27T21:35:00Z','renewal','429',2,200,0]])])
         if change:
             change(fixtures, job)
         fixture_path, ledger = folder / 'fixtures.json', folder / 'ledger.jsonl'
@@ -150,6 +153,59 @@ class BrokerDiagnosticsTests(unittest.TestCase):
                 self.assertIn(call[1:3], [['account','show'], ['rest','--method']])
                 if call[1] == 'rest':
                     self.assertEqual(call[3], 'get')
+
+    def test_historical_request_counts_are_sampled_fixed_window_aggregates_not_caller_evidence(self):
+        from urllib.parse import parse_qs, urlsplit
+        result, report, calls, _ = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        history = report['historicalRequests']['observations']
+        self.assertEqual(history['intervals'], [dict(interval='2026-10-27T21:35:00Z', endpoint='renewal',
+            status='429', storedRows=2, representedRequests=200, missingWeights=0)])
+        self.assertFalse(history['completeTrafficCoverage'])
+        request = next(call for call in calls if 'AppRequests' in ' '.join(call))
+        query = parse_qs(urlsplit(request[request.index('--url')+1]).query)['query'][0]
+        for bound in ('2026-10-27T21:30:00Z','2026-10-27T22:15:00Z',
+                      '2026-10-28T05:30:00Z','2026-10-28T06:30:00Z'):
+            self.assertIn(bound, query)
+        self.assertIn('sum(ItemCount)', query)
+        self.assertNotIn('Properties', query)
+
+    def test_historical_unknown_categories_never_echo_provider_values_and_empty_is_not_zero(self):
+        def private(fixtures, job):
+            fixtures['historicalRequests']['tables'][0]['rows'][0][1:3] = [SECRET, SECRET]
+        result, report, _, _ = self.invoke(private)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        row = report['historicalRequests']['observations']['intervals'][0]
+        self.assertEqual((row['endpoint'], row['status']), ('other', 'other'))
+        self.assertNotIn(SECRET, json.dumps(report) + result.stdout + result.stderr)
+        def empty(fixtures, job):
+            fixtures['historicalRequests']['tables'][0]['rows'] = []
+        result, report, _, _ = self.invoke(empty)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        evidence = report['historicalRequests']['observations']
+        self.assertEqual(evidence['observedMinutes'], 0)
+        self.assertFalse(evidence['completeTrafficCoverage'])
+        self.assertIn('Empty results do not prove zero traffic', evidence['coverage'])
+
+    def test_untrusted_historical_results_remain_partial_without_private_output(self):
+        for mode in ('denied', 'oversize', 'partial', 'cap', 'extra-column', 'time', 'fraction', 'null', 'weights'):
+            with self.subTest(mode=mode):
+                def invalid(fixtures, job):
+                    response = fixtures['historicalRequests']
+                    table = response['tables'][0]
+                    if mode == 'denied': fixtures['historicalRequests'] = 'FAIL'
+                    elif mode == 'oversize': fixtures['historicalRequests'] = 'OVERSIZE'
+                    elif mode == 'partial': response['error'] = dict(message=SECRET)
+                    elif mode == 'cap': table['rows'] *= 8192
+                    elif mode == 'extra-column': table['columns'].append(dict(name=SECRET))
+                    elif mode == 'time': table['rows'][0][0] = '2026-10-28T03:00:00Z'
+                    elif mode == 'fraction': table['rows'][0][3] = 1.5
+                    elif mode == 'null': table['rows'][0][4] = None
+                    elif mode == 'weights': table['rows'][0][4] = 1
+                result, report, _, _ = self.invoke(invalid)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(report['historicalRequests']['state'], 'unavailable')
+                self.assertNotIn(SECRET, json.dumps(report) + result.stdout + result.stderr)
 
     def test_replica_snapshot_uses_the_documented_cli_preview_protocol(self):
         result, report, calls, _ = self.invoke()
