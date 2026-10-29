@@ -30,6 +30,7 @@ internal sealed partial class OwnedAgentProcesses
 
     async Task StopSession()
     {
+        Trace("stop-enter");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         var original = new Identity(root, rootStarted, root.Id);
         var captured = new Dictionary<int, Identity> { [root.Id] = original };
@@ -37,9 +38,11 @@ internal sealed partial class OwnedAgentProcesses
         try
         {
             await Freeze(original, deadline.Token);
+            Trace("root-frozen");
             while (true)
             {
                 var table = await Observe(deadline.Token);
+                Trace("capture-observed");
                 // A frozen live witness pins each session's identity until capture is complete.
                 foreach (var witness in sessions.Values)
                     if (!Same(witness) || !table.TryGetValue(witness.Process.Id, out var row) || row.State is not ('T' or 't') || row.UnixSession != witness.UnixSession)
@@ -74,6 +77,7 @@ internal sealed partial class OwnedAgentProcesses
                 await Task.Delay(5, deadline.Token);
             }
             foreach (var item in captured.Values.Reverse()) Signal(item, 9);
+            Trace("kill-delivered");
             while (true)
             {
                 var table = await Observe(deadline.Token);
@@ -121,7 +125,9 @@ internal sealed partial class OwnedAgentProcesses
 
     static async Task Freeze(Identity identity, CancellationToken ct)
     {
+        Trace("freeze-before-signal");
         Signal(identity, OperatingSystem.IsMacOS() ? 17 : 19);
+        Trace("freeze-after-signal");
         while (true)
         {
             var table = await Observe(ct);
@@ -134,34 +140,43 @@ internal sealed partial class OwnedAgentProcesses
 
     static bool Same(Identity identity)
     {
+        Trace("same-enter");
         Process? current = null;
         try
         {
             current = Process.GetProcessById(identity.Process.Id);
-            return current.StartTime == identity.Started;
+            Trace("same-before-start-time");
+            var same = current.StartTime == identity.Started;
+            Trace("same-after-start-time");
+            return same;
         }
         catch (ArgumentException) { return false; }
         catch (Win32Exception error) when (error.NativeErrorCode == 3) { return false; }
-        finally { current?.Dispose(); }
+        finally { Trace("same-before-dispose"); current?.Dispose(); Trace("same-after-dispose"); }
     }
 
     static void Signal(Identity identity, int signal)
     {
+        Trace("signal-enter");
         if (!Same(identity)) return;
+        Trace("signal-same");
         var session = Session(identity.Process.Id);
         if (session == -1 && Marshal.GetLastPInvokeError() == 3) return;
         if (session != identity.UnixSession) throw new IOException("Owned process changed Unix session before signaling");
         if (Kill(identity.Process.Id, signal) != 0 && Marshal.GetLastPInvokeError() != 3)
             throw new IOException("Owned agent signal could not be delivered", new Win32Exception(Marshal.GetLastPInvokeError()));
+        Trace("signal-delivered");
     }
 
     static async Task<Dictionary<int, Observation>> Observe(CancellationToken ct)
     {
+        Trace("observe-enter");
         // Fixed system facility on both supported Unix platforms; never agent PATH, command lines or environments.
         var start = new ProcessStartInfo("/bin/ps") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var argument in new[] { "-ax", "-o", "pid=", "-o", "ppid=", "-o", "state=" }) start.ArgumentList.Add(argument);
         start.Environment["LC_ALL"] = "C";
         using var process = Process.Start(start) ?? throw new IOException("Owned agent process observation could not start");
+        Trace("observe-started");
         try
         {
             var result = new Dictionary<int, Observation>();
@@ -175,16 +190,25 @@ internal sealed partial class OwnedAgentProcesses
                     throw new IOException("Owned agent process observation is malformed");
                 var session = Session(id);
                 if (session == -1 && Marshal.GetLastPInvokeError() == 3) continue;
-                if (session <= 0 || !result.TryAdd(id, new(id, parent, columns[2][0], session))) throw new IOException("Owned Unix session observation is unavailable");
+                // Host/kernel processes can legitimately belong to session zero; our launch-time sessions are positive.
+                if (session < 0 || !result.TryAdd(id, new(id, parent, columns[2][0], session))) throw new IOException("Owned Unix session observation is unavailable");
             }
             await process.WaitForExitAsync(ct);
+            Trace("observe-exited");
             if (process.ExitCode != 0) throw new IOException("Owned agent process observation failed");
             return result;
         }
         finally
         {
+            Trace("observe-cleanup");
             if (!process.HasExited) { process.Kill(); await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(1), CancellationToken.None); }
+            Trace("observe-cleaned");
         }
+    }
+
+    static void Trace(string phase)
+    {
+        if (OperatingSystem.IsMacOS()) Console.Error.WriteLine("OWNED_STOP phase=" + phase);
     }
 
     sealed record Identity(Process Process, DateTime Started, int UnixSession);
