@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0](https://github.com/repoagent/controller/compare/controller-v1.0.2...controller-v1.1.0) (2026-10-29)
+
+
+### Features
+
+* continue accepted work after confirmed transient provider failures ([#328](https://github.com/repoagent/controller/issues/328)) ([18c4660](https://github.com/repoagent/controller/commit/18c4660cac8b7d67a885405779d7a042d482d121))
+* **controller:** recover accepted turns after model capacity failure ([#314](https://github.com/repoagent/controller/issues/314)) ([d00c14d](https://github.com/repoagent/controller/commit/d00c14d543807c8a32f3bfad3b9c803f53162216))
+* inspect mapped session activity through private local IPC ([#326](https://github.com/repoagent/controller/issues/326)) ([1e1ec77](https://github.com/repoagent/controller/commit/1e1ec77755cd5367477c581166862ff1f4eb155b))
+
+
+### Bug Fixes
+
+* export private local AppHost traces to Aspire ([#325](https://github.com/repoagent/controller/issues/325)) ([043983e](https://github.com/repoagent/controller/commit/043983e864c62333cb1bc5f235c72ccfec390fc9))
+
 ## [1.0.2](https://github.com/repoagent/controller/compare/controller-v1.0.1...controller-v1.0.2) (2026-10-29)
 
 ### Bug fixes
