@@ -10,6 +10,7 @@ src/RepoAgentController/CheckoutEvidence.cs
 src/RepoAgentController/CheckoutRecoveryCommand.cs
 src/RepoAgentController/BrokerTokenSource.cs
 src/RepoAgentController/Codex.cs
+src/RepoAgentController/OwnedAgentProcesses.cs
 src/RepoAgentController/CodexUsage.cs
 src/RepoAgentController/DirectAppTokenSource.cs
 src/RepoAgentController/DiscussionWebhooks.cs
