@@ -25,7 +25,8 @@ public sealed class SharedDiscussionJourney
         var enrollment = builder.Configuration["Parameters:controller-enrollment"];
         Assert.False(string.IsNullOrWhiteSpace(enrollment), "The private local-broker enrollment parameter is required.");
         using var binding = JsonDocument.Parse(enrollment);
-        var actor = binding.RootElement.GetProperty("appSlug").GetString() + "[bot]";
+        var appSlug = binding.RootElement.GetProperty("appSlug").GetString();
+        var actor = appSlug + "[bot]";
         var canonical = binding.RootElement.TryGetProperty("controllerSecret", out var controllerSecret);
         var legacy = binding.RootElement.TryGetProperty("deviceSecret", out var legacyControllerSecret);
         Assert.NotEqual(canonical, legacy); // Exactly one naming generation; mixed aliases are ambiguous.
@@ -65,10 +66,12 @@ public sealed class SharedDiscussionJourney
             while (!completed)
             {
                 ct.ThrowIfCancellationRequested();
-                var observed = await Api("query($id:ID!){node(id:$id){... on Discussion{comments(first:20){nodes{body author{login}}} reactions(first:100){nodes{content user{login}}}}}}", new { id = discussion }, ct);
+                var observed = await Api("query($id:ID!){node(id:$id){... on Discussion{comments(first:20){nodes{body author{__typename login}}} reactions(first:100){nodes{content user{login}}}}}}", new { id = discussion }, ct);
                 var current = observed["node"] ?? throw new InvalidOperationException("The fixture Discussion disappeared before acceptance.");
                 var replied = current["comments"]!["nodes"]!.AsArray().Any(comment =>
-                    comment?["author"]?["login"]?.GetValue<string>() == actor && comment["body"]!.GetValue<string>().Contains(marker, StringComparison.Ordinal));
+                    // Discussion authors project App accounts as Bot actors; reactions project their User login.
+                    comment?["author"]?["__typename"]?.GetValue<string>() == "Bot" &&
+                    comment["author"]?["login"]?.GetValue<string>() == appSlug && comment["body"]!.GetValue<string>().Contains(marker, StringComparison.Ordinal));
                 var receipted = current["reactions"]!["nodes"]!.AsArray().Any(reaction =>
                     reaction?["content"]?.GetValue<string>() == "EYES" && reaction["user"]?["login"]?.GetValue<string>() == actor);
                 var status = await controller.GetStringAsync("/status", ct);
