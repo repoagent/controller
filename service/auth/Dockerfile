@@ -4,11 +4,13 @@ WORKDIR /source
 COPY global.json Directory.Build.props .editorconfig ./
 COPY service/auth/global.json service/auth/
 COPY service/auth/Directory.Build.props service/auth/version.txt service/auth/
+COPY src/RepoAgent.LocalTelemetry/RepoAgent.LocalTelemetry.csproj src/RepoAgent.LocalTelemetry/
 WORKDIR /source/service/auth
 COPY service/auth/src/RepoAgent.Auth.Core/RepoAgent.Auth.Core.csproj src/RepoAgent.Auth.Core/
 COPY service/auth/src/RepoAgent.Auth/RepoAgent.Auth.csproj src/RepoAgent.Auth/
 RUN dotnet restore src/RepoAgent.Auth/RepoAgent.Auth.csproj
 COPY service/auth/src/ src/
+COPY src/RepoAgent.LocalTelemetry/ /source/src/RepoAgent.LocalTelemetry/
 ARG SOURCE_REVISION
 ARG BROKER_VERSION
 RUN dotnet publish src/RepoAgent.Auth/RepoAgent.Auth.csproj --configuration Release \

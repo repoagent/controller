@@ -69,6 +69,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
         public async Task<FetchedBranch> Fetch(CancellationToken ct)
         {
             var start = new ProcessStartInfo(Path.Combine(credentials.CredentialDirectory, "bin", "repoagent-git")) { UseShellExecute = false };
+            RepoAgent.LocalTelemetry.LocalTraceSettings.RemoveFrom(start.Environment);
             foreach (var arg in new[] { "fetch", "--directory", root }) start.ArgumentList.Add(arg);
             await Run(start, ct);
             var fetched = Path.Combine(root, ".git", "FETCH_HEAD");
@@ -276,6 +277,7 @@ internal sealed class ManagedCheckout : IRepositoryCheckout, IDisposable
     static Task<string> Local(string git, string root, CancellationToken ct, params string[] arguments)
     {
         var start = new ProcessStartInfo(git) { UseShellExecute = false };
+        RepoAgent.LocalTelemetry.LocalTraceSettings.RemoveFrom(start.Environment);
         foreach (var key in start.Environment.Keys.ToArray())
             if (key.StartsWith("GIT_", StringComparison.Ordinal)) start.Environment.Remove(key);
         start.Environment["GIT_CONFIG_NOSYSTEM"] = "1";

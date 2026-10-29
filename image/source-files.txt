@@ -104,3 +104,7 @@ releases/controller/CHANGELOG.md
 scripts/delivery/controller-release.py
 src/RepoAgentController.Core/IAgentToolCredentials.cs
 src/RepoAgentController.Core/ControllerWebhooks.cs
+src/RepoAgent.LocalTelemetry/RepoAgent.LocalTelemetry.csproj
+src/RepoAgent.LocalTelemetry/LocalTraceSettings.cs
+src/RepoAgent.LocalTelemetry/LocalTraceExport.cs
+src/RepoAgent.LocalTelemetry/AgentTrace.cs

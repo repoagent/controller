@@ -72,3 +72,6 @@ Production rejects local settings files, development storage/vault options and `
 `bash verify.sh` compiles the AppHost and runs the service suite, which needs neither Docker nor Azurite. Start the AppHost to verify the real local composition and inspect its resources in the dashboard. Aspire 13.6.2 and the Key Vault emulator integration 3.1.5 are pinned from current stable releases; [Aspire's storage documentation](https://aspire.dev/integrations/cloud/azure/azure-storage-tables/azure-storage-tables-host/) describes the emulator integration.
 
 Azure infrastructure remains Bicep: compile locally, deploy against the actual resource group, and inspect Azure. This AppHost does not publish or emulate ARM resources.
+
+
+The shared AppHost also enables bounded, privacy-limited local broker request traces through its authenticated Aspire collector, without requiring Azure Monitor. See the [local trace workflow and limits](../../docs/local-apphost.md#local-traces). The Development-only local branch retains the same broker route/status privacy and no-public-context propagation policy; hosted Azure Monitor behavior is unchanged.

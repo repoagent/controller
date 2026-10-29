@@ -48,10 +48,24 @@ public sealed class SharedAppHostTests
 
         var controller = Assert.Single(builder.Resources, resource => resource.Name == "controller");
         var arguments = new List<object>();
-        var context = new CommandLineArgsCallbackContext(arguments, controller, TestContext.Current.CancellationToken);
+        var argumentsContext = new CommandLineArgsCallbackContext(arguments, controller, TestContext.Current.CancellationToken);
         foreach (var annotation in controller.Annotations.OfType<CommandLineArgsCallbackAnnotation>())
-            await annotation.Callback(context);
+            await annotation.Callback(argumentsContext);
 
         Assert.Equal(repositorySettings == true ? 1 : 0, arguments.Count(argument => argument as string == "--repository-settings"));
+
+        foreach (var name in new[] { "auth", "controller" })
+        {
+            var resource = Assert.Single(builder.Resources, resource => resource.Name == name);
+            var environment = new Dictionary<string, object>();
+            var context = new EnvironmentCallbackContext(builder.ExecutionContext, resource, environment, TestContext.Current.CancellationToken);
+            foreach (var annotation in resource.Annotations.OfType<EnvironmentCallbackAnnotation>())
+                await annotation.Callback(context);
+            Assert.DoesNotContain("OTEL_DOTNET_EXPERIMENTAL_OTLP_RETRY", environment.Keys);
+            Assert.Equal("1", environment.GetValueOrDefault("REPOAGENT_LOCAL_TRACING"));
+            Assert.Equal("false", environment.GetValueOrDefault("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"));
+            Assert.Equal("false", environment.GetValueOrDefault("OTEL_DOTNET_EXPERIMENTAL_ASPNETCORE_DISABLE_URL_QUERY_REDACTION"));
+            Assert.Equal("false", environment.GetValueOrDefault("OTEL_DOTNET_EXPERIMENTAL_HTTPCLIENT_DISABLE_URL_QUERY_REDACTION"));
+        }
     }
 }
