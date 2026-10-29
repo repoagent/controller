@@ -47,8 +47,13 @@ sealed partial class Codex
                                 else if (activityTurns.Contains((item.SessionId, item.TurnId)) || activityTurnGap) state = ActivityItemState.Running;
                             }
                         }
-                        visible.Add(item with { StartedAt = Milliseconds(entry["startedAtMs"]), CompletedAt = completed,
-                            State = state, Incomplete = item.Incomplete || state == ActivityItemState.Unknown });
+                        visible.Add(item with
+                        {
+                            StartedAt = Milliseconds(entry["startedAtMs"]),
+                            CompletedAt = completed,
+                            State = state,
+                            Incomplete = item.Incomplete || state == ActivityItemState.Unknown
+                        });
                     }
                 }
                 return new(visible, Continuation("items:", response["nextCursor"].OptionalText()), suppressed);
@@ -153,9 +158,12 @@ sealed partial class Codex
                 {
                     projected = ProjectActivity(session, turn, value["item"] as JsonObject);
                     if (projected is not null) projected = projected with
-                    { StartedAt = Milliseconds(value["startedAtMs"]), CompletedAt = Milliseconds(value["completedAtMs"]),
+                    {
+                        StartedAt = Milliseconds(value["startedAtMs"]),
+                        CompletedAt = Milliseconds(value["completedAtMs"]),
                         State = projected.State == ActivityItemState.Unknown
-                            ? method == "item/completed" ? ActivityItemState.Completed : ActivityItemState.Running : projected.State };
+                            ? method == "item/completed" ? ActivityItemState.Completed : ActivityItemState.Running : projected.State
+                    };
                 }
                 else if (method is "item/agentMessage/delta" or "item/commandExecution/outputDelta")
                 {

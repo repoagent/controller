@@ -5,11 +5,14 @@ global.json
 .agents/skills/repoagent-orientation/SKILL.md
 src/RepoAgentController/AppGitCredential.cs
 src/RepoAgentController/AppGitHubCommand.cs
+src/RepoAgentController/ActivityCommand.cs
+src/RepoAgentController/ActivitySocket.cs
 src/RepoAgentController/BridgeCommand.cs
 src/RepoAgentController/CheckoutEvidence.cs
 src/RepoAgentController/CheckoutRecoveryCommand.cs
 src/RepoAgentController/BrokerTokenSource.cs
 src/RepoAgentController/Codex.cs
+src/RepoAgentController/CodexActivity.cs
 src/RepoAgentController/OwnedAgentProcesses.cs
 src/RepoAgentController/CodexUsage.cs
 src/RepoAgentController/DirectAppTokenSource.cs
@@ -63,6 +66,8 @@ src/RepoAgentController.Core/Discussion.cs
 src/RepoAgentController.Core/GitHubOutbox.cs
 src/RepoAgentController.Core/IWebhookRegistration.cs
 src/RepoAgentController.Core/IAgentRuntime.cs
+src/RepoAgentController.Core/IAgentActivity.cs
+src/RepoAgentController.Core/SessionActivityInspector.cs
 src/RepoAgentController.Core/AgentUsageObservation.cs
 src/RepoAgentController.Core/AgentUsageCollection.cs
 src/RepoAgentController.Core/AgentSessions.cs

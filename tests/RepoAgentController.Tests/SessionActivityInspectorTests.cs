@@ -67,9 +67,12 @@ public sealed class SessionActivityInspectorTests
     [Fact]
     public async Task Private_text_redacts_known_secrets_and_escapes_terminal_controls_with_explicit_truncation()
     {
-        var runtime = new ActivityRuntime { Answer = new([
+        var runtime = new ActivityRuntime
+        {
+            Answer = new([
             new("session-a", "turn-a", "response", ActivityItemKind.Response, ActivityItemState.Completed,
-                Text: "secret\u001b]52;clipboard\a" + new string('x', 40000))]) };
+                Text: "secret\u001b]52;clipboard\a" + new string('x', 40000))])
+        };
         var inspector = new SessionActivityInspector("owner/repository", "lifetime", new ActivityMappings(), runtime,
             TimeProvider.System, text => text.Replace("secret", "[REDACTED]", StringComparison.Ordinal));
         var page = await inspector.Read("42", ct: TestContext.Current.CancellationToken);

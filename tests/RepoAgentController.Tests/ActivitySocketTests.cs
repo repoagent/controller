@@ -15,6 +15,7 @@ public sealed class ActivitySocketTests
         File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var state = Path.Combine(directory, "state.json");
         await File.WriteAllTextAsync(state, "{}", TestContext.Current.CancellationToken);
+        IAsyncEnumerator<ActivityFrame>? stoppedViewer = null;
         try
         {
             var runtime = new Runtime();
@@ -58,14 +59,24 @@ public sealed class ActivitySocketTests
                 }
                 await runtime.Unsubscribed.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
                 Assert.Equal(0, runtime.Observers);
+                stoppedViewer = ActivityClient.Read(state, "42", 100, null, true, TestContext.Current.CancellationToken)
+                    .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+                Assert.True(await stoppedViewer.MoveNextAsync());
             }
             Assert.False(File.Exists(ActivitySocket.Pointer(state)));
+            Assert.True(await stoppedViewer!.MoveNextAsync());
+            Assert.Equal("gap", stoppedViewer.Current.Kind);
+            Assert.False(await stoppedViewer.MoveNextAsync());
             await Assert.ThrowsAnyAsync<IOException>(async () =>
             {
                 await foreach (var unused in ActivityClient.Read(state, "42", 100, null, false, TestContext.Current.CancellationToken)) { }
             });
         }
-        finally { Directory.Delete(directory, true); }
+        finally
+        {
+            if (stoppedViewer is not null) await stoppedViewer.DisposeAsync();
+            Directory.Delete(directory, true);
+        }
     }
 
     sealed class Mappings : IActivitySessions

@@ -262,8 +262,16 @@ public sealed class SessionActivityInspector(string repository, string lifetime,
     ActivityItem Sanitize(ActivityItem item, int budget, bool retainSuffix = true)
     {
         if (item.Kind is ActivityItemKind.Omitted or ActivityItemKind.Unsupported)
-            return item with { Name = item.Kind == ActivityItemKind.Omitted ? "Private activity omitted" : "Unsupported activity item",
-                Arguments = null, Result = null, Text = null, ExitCode = null, Reads = null, Incomplete = true };
+            return item with
+            {
+                Name = item.Kind == ActivityItemKind.Omitted ? "Private activity omitted" : "Unsupported activity item",
+                Arguments = null,
+                Result = null,
+                Text = null,
+                ExitCode = null,
+                Reads = null,
+                Incomplete = true
+            };
         var truncated = item.Truncated;
         string? Clean(string? text, bool streaming = false)
         {

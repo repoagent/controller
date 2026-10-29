@@ -252,14 +252,26 @@ static class ActivityClient
         await stream.WriteAsync(bytes, connecting.Token);
         await stream.WriteAsync("\n"u8.ToArray(), connecting.Token);
         var reader = new ActivityLines(stream);
+        var receivedSnapshot = false;
+        long sequence = 0;
         while (true)
         {
             using var receive = new CancellationTokenSource(TimeSpan.FromSeconds(follow ? 30 : 10));
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct, receive.Token);
             var line = await reader.Read(1024 * 1024, bounded.Token);
-            if (line is null) throw new IOException("Controller activity disconnected; read a new snapshot.");
+            if (line is null)
+            {
+                if (follow && receivedSnapshot)
+                {
+                    yield return new("gap", endpoint.Lifetime, Notice: "Controller disconnected; read a new snapshot.", Sequence: sequence);
+                    yield break;
+                }
+                throw new IOException("Controller activity disconnected; read a new snapshot.");
+            }
             var frame = JsonSerializer.Deserialize(line, ActivityJson.Default.ActivityFrame) ?? throw new IOException("Invalid activity response.");
             if (frame.Lifetime != endpoint.Lifetime || frame.Kind == "error") throw new IOException("Activity is unavailable or the selection is invalid.");
+            receivedSnapshot |= frame.Snapshot is not null;
+            sequence = Math.Max(sequence, Math.Max(frame.Sequence, frame.Snapshot?.Sequence ?? 0));
             yield return frame;
             if (!follow || frame.Kind == "gap") yield break;
         }
