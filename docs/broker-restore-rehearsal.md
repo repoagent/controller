@@ -12,6 +12,8 @@ python3 scripts/delivery/auth-restore-plan.py --run-id 20261029-a1b2c3 > restore
 
 The command uses only the Python standard library and writes JSON to stdout. It never signs in, contacts Azure, reads credentials, initializes Table rows or deploys resources. It fixes the intended subscription, resource group and region, derives run-owned names, and lists the required operator checks. Do not reuse the example identifier without checking availability. A plan does not prove resource freshness or permissions.
 
+The app name is `r230-<runId>` (20 characters), leaving room for its derived `-cleanup` Job name (28 characters) within Azure's 32-character limit. Earlier plans used `repoagent-r230-<runId>` and could create a foundation and API before cleanup Job creation failed. A corrected plan requires a fresh run identifier and a new resource inventory; do not apply it over an earlier partial run or reuse that run's storage, wrapping key or Table state. Record and fence the earlier attempt separately before retiring its resources. This naming correction does not migrate or delete anything, and compiled checks do not establish corrected Azure deployment acceptance.
+
 The plan targets `infra/auth/restore-foundation.bicep`. It creates an isolated environment, workspace, storage account, `brokerstate` Table, Data Protection Blob container, runtime and cleanup identities, Insights and one new wrapping key. It references the existing `repoagent-auth-kv` vault without redeploying it. No API, cleanup Job, role assignment, action group or alert is enabled. The Table remains uninitialized and cannot admit enrollment.
 
 Compile with the repository's pinned Bicep CLI, and inspect the compiled template before any cloud action:
