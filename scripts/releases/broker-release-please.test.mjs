@@ -45,7 +45,8 @@ test('actual runtime paths preserve independent components despite misleading sc
 });
 
 test('restore operator and compiled safety helpers belong only to the broker release', () => {
-  for (const file of ['scripts/delivery/auth-restore-plan.py', 'scripts/delivery/check_auth_restore_foundation.py']) {
+  for (const file of ['scripts/delivery/auth-restore-plan.py', 'scripts/delivery/check_auth_restore_foundation.py',
+    'scripts/operations/RestoreTable/RestoreCommand.cs', 'scripts/operations/RestoreTable.LocalCheck/Program.cs']) {
     const input = { currentVersion: '1.2.3', commits: [commit('fix: maintain isolated restore safety', [file])] };
     assert.equal(plan({ ...input, component: 'broker' })?.version, '1.2.4');
     assert.equal(plan({ ...input, component: 'controller' }), null);

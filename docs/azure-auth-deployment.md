@@ -260,7 +260,7 @@ An initial West Europe identity creation was rejected by Azure with `RequestDisa
 
 ## Cleanup identity bootstrap and scheduling
 
-For #230, the [isolated restore foundation plan](broker-restore-rehearsal.md) derives run-owned storage, identities and a fresh wrapping key while referencing the existing vault without rewriting it. Its offline CLI has no apply mode; runtime deployment, Table initialization/restore and deliberate alert acceptance remain separate operator steps. Do not send rehearsal names through the ordinary deployment path against the shared vault.
+For #230, the [isolated restore tools](broker-restore-rehearsal.md) derive run-owned storage, identities and a fresh wrapping key while referencing the existing vault without rewriting it. The foundation planner has no apply mode. The separate typed Table CLI creates fresh brokerrehearsal/brokerrestore tables in that isolated account, leaving foundation brokerstate unused; runtime deployment, all authority/worker fences and deliberate alert acceptance remain operator steps. Do not send rehearsal names through the ordinary deployment path against the shared vault.
 
 These source routes preserve the exact main-only OIDC subject, Contributor scope, shared noncanceling delivery concurrency and the normal service verification and anonymous image checks. They exclude ordinary build/publication/deploy jobs. Source merge is not permission for live operations below. Use the accepted current-main source and the same anonymously attested public auth image; no rebuild or registry-secret handling is needed.
 
