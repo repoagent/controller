@@ -40,7 +40,7 @@ A turn whose credentials are rejected (`401`/`unauthorized`) logs `codex-auth-fa
 
 ### Private session activity
 
-Run `activity` as the controller's operating-system user, inside its container or native Linux/macOS environment. The controller must already be running in polling or webhook mode; stopped controllers and `--once` have no activity endpoint. The command lists only the controller's unambiguous Discussion-to-session mappings. Select a mapped Discussion number or its exact URL in the configured repository; foreign, dashboard and unmapped selections are refused. There is no arbitrary session ID, runtime-method forwarding or transcript HTTP endpoint.
+Run `activity` as the controller's operating-system user, inside its container or native Linux/macOS environment. The controller must already be running in polling or webhook mode; stopped controllers and `--once` have no activity endpoint. The command lists only the controller's unambiguous Discussion-to-session mappings. Mapping reads use a consistent local snapshot, so repository scans and slow GitHub reads do not block selection or live-update revalidation. New sessions and confirmed deletions update that snapshot. Select a mapped Discussion number or its exact URL in the configured repository; foreign, dashboard and unmapped selections are refused. There is no arbitrary session ID, runtime-method forwarding or transcript HTTP endpoint.
 
 ```sh
 RepoAgentController activity --state /data/bridge-state.json

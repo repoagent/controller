@@ -4,6 +4,87 @@ namespace RepoAgentController.Tests;
 
 public sealed class SessionActivityInspectorTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Retained_mapping_inventory_and_follow_remain_available_while_Discussion_network_read_is_stalled(bool follow)
+    {
+        await using var world = new BridgeWorld();
+        world.GitHub.Open(42, "Please inspect @test-app[bot].");
+        await world.Begin();
+        Assert.True(await world.Poll());
+        var session = world.Saved(42)!.SessionId!;
+        // A new controller reads its retained mapping before any new scan completes.
+        await world.Begin();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        world.GitHub.BeforeRead = () => { entered.SetResult(); return release.Task; };
+        var poll = world.Poll();
+        await entered.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var runtime = new ActivityRuntime
+        {
+            Answer = new([new(session, "turn-a", "response", ActivityItemKind.Response,
+            ActivityItemState.Completed, Text: "Retained response")])
+        };
+        var inspector = new SessionActivityInspector(BridgeWorld.Repository, "lifetime", world.Bridge, runtime, world.Clock, text => text);
+        try
+        {
+            if (!follow)
+            {
+                var inventory = inspector.List(TestContext.Current.CancellationToken);
+                Assert.True(inventory.IsCompleted, "Mapping inventory must not wait for a Discussion network read.");
+                Assert.Equal(session, Assert.Single((await inventory).Sessions).SessionId);
+            }
+            else
+            {
+                await using var viewer = inspector.Follow("42", ct: TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken);
+                var snapshot = viewer.MoveNextAsync();
+                var immediate = snapshot.IsCompleted;
+                if (!immediate) release.TrySetResult();
+                Assert.True(await snapshot);
+                Assert.True(immediate, "Following retained history must not wait for a Discussion network read.");
+                Assert.Equal("snapshot", viewer.Current.Kind);
+                runtime.Report(new ActivityItemObserved(runtime.ActivityEpoch, new(session, "turn-b", "live", ActivityItemKind.Response,
+                    ActivityItemState.Completed, Text: "Live response")));
+                var update = viewer.MoveNextAsync();
+                immediate = update.IsCompleted;
+                if (!immediate) release.TrySetResult();
+                Assert.True(await update);
+                Assert.True(immediate, "Live publication must revalidate mappings without waiting for the network scan.");
+                Assert.Equal("upsert", viewer.Current.Kind);
+                Assert.Equal("Live response", viewer.Current.Item!.Text);
+            }
+        }
+        finally { release.TrySetResult(); await poll; }
+    }
+
+    [Fact]
+    public async Task A_new_mapping_is_published_before_the_next_Discussion_read_and_confirmed_deletion_revokes_it()
+    {
+        await using var world = new BridgeWorld();
+        world.GitHub.Open(41, "Please inspect @test-app[bot].");
+        world.GitHub.Open(42, "Unmentioned Discussion.");
+        await world.Begin();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reads = 0;
+        world.GitHub.BeforeRead = () => ++reads == 1 ? Task.CompletedTask : Hold();
+        Task Hold() { entered.SetResult(); return release.Task; }
+        var poll = world.Poll();
+        await entered.Task.WaitAsync(TestContext.Current.CancellationToken);
+        var inspector = new SessionActivityInspector(BridgeWorld.Repository, "lifetime", world.Bridge, new ActivityRuntime(), world.Clock, text => text);
+        try
+        {
+            Assert.Equal(BridgeWorld.Url(41), Assert.Single((await inspector.List(TestContext.Current.CancellationToken)).Sessions).Discussion);
+        }
+        finally { release.TrySetResult(); await poll; }
+        world.GitHub.BeforeRead = null;
+        world.GitHub.Remove(41);
+        Assert.True(await world.Observe(41));
+        Assert.Empty((await inspector.List(TestContext.Current.CancellationToken)).Sessions);
+        await Assert.ThrowsAsync<ActivityHistoryUnavailable>(() => inspector.Read("41", ct: TestContext.Current.CancellationToken));
+    }
+
     [Fact]
     public async Task Operator_reads_a_mapped_Discussions_previous_response_and_command_result_without_agent_work()
     {
