@@ -37,7 +37,7 @@ public sealed class DiscussionJourney
             var category = categories.FirstOrDefault(c => c!["isAnswerable"]!.GetValue<bool>()) ?? throw new InvalidOperationException("NOT EXERCISED: repository needs an answerable Discussion category.");
             if (HostedSmoke)
             {
-                await HostedDashboard();
+                var dashboard = await HostedDashboard();
                 var marker = "HOSTED_SMOKE_" + run;
                 var fixture = await Create(repo, category, "mention", $"@{actor} Authorized disposable installer smoke. Reply once with {marker}, using the authenticated GitHub response skill. Only perform this test request.");
                 var number = fixture["number"]!.GetValue<int>();
@@ -53,6 +53,7 @@ public sealed class DiscussionJourney
                     var log = await Logs();
                     return log.Split('\n').Any(line => IsEvent(line, "agent-accepted") && line.Contains(" session=" + session + " ", StringComparison.Ordinal)) && AgentTurnsFinished(log);
                 }, "the accepted smoke turn completed before credential closure");
+                await HostedDashboardIdle(dashboard, fixture, DateTimeOffset.UtcNow);
                 Pass("HOSTED_INSTALLER", new { discussion = fixture["url"]!.ToString(), reply = reply["url"]!.ToString(), actor, webhook = "observed", receipt = "EYES" });
                 await Api("mutation($id:ID!){deleteDiscussion(input:{id:$id}){clientMutationId}}", new { id = fixture["id"]!.ToString() });
                 fixtures.Clear();
@@ -241,7 +242,7 @@ public sealed class DiscussionJourney
     static async Task<JsonNode> Comment(JsonNode discussion, string body, string? replyTo = null) =>
         (await Api("mutation($d:ID!,$b:String!,$r:ID){addDiscussionComment(input:{discussionId:$d,body:$b,replyToId:$r}){comment{id url}}}", new { d = discussion["id"]!.ToString(), b = body, r = replyTo }))["addDiscussionComment"]!["comment"]!;
 
-    async Task HostedDashboard()
+    async Task<JsonNode> HostedDashboard()
     {
         var category = Environment.GetEnvironmentVariable("REPOAGENT_DASHBOARD_CATEGORY");
         Assert.False(string.IsNullOrEmpty(category), "Hosted installer must enable the discovered dashboard category.");
@@ -289,6 +290,45 @@ public sealed class DiscussionJourney
             remainingPercentages = Regex.Matches(body, @"\d+(?:\.\d+)?% remaining").Select(match => match.Value).ToArray(),
             observedAt = Regex.Match(body, @"Observed at (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)").Groups[1].Value,
             resets = Regex.Matches(body, @"resets \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ").Select(match => match.Value).ToArray(),
+            artificialTurns = 0,
+            renderedGitHubUi = "not inspected"
+        });
+        return dashboard;
+    }
+
+    async Task HostedDashboardIdle(JsonNode original, JsonNode fixture, DateTimeOffset completedAt)
+    {
+        var url = fixture["url"]!.ToString();
+        var row = $"- [Discussion #{fixture["number"]}]({url}): idle; no input waiting";
+        JsonNode? published = null;
+        var heartbeat = "";
+        await Until(async () =>
+        {
+            published = (await Api("query($id:ID!){node(id:$id){... on Discussion{id url title body author{login}}}}", new { id = original["id"]!.ToString() }))["node"];
+            Assert.NotNull(published);
+            Assert.Equal(original["url"]!.ToString(), published["url"]!.ToString());
+            Assert.True(IsActor(published["author"]?["login"]?.ToString()), "The owned dashboard author changed.");
+            var body = published["body"]!.ToString();
+            Assert.True(body.Contains("<!-- repoagent:controller-dashboard -->", StringComparison.Ordinal), "The owned dashboard marker disappeared.");
+            heartbeat = Regex.Match(body, @"\*\*Last heartbeat:\*\* (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)").Groups[1].Value;
+            if (!DateTimeOffset.TryParse(heartbeat, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var at) || at <= completedAt) return false;
+            var age = DateTimeOffset.UtcNow - at;
+            if (age < TimeSpan.FromSeconds(-5) || age > TimeSpan.FromMinutes(2)) return false;
+            var inventory = Regex.Match(body, @"(?m)^### Tracked Discussions\r?\n(?<rows>[\s\S]*?)(?=^### |\z)").Groups["rows"].Value;
+            var latest = Regex.Match(body, @"(?m)^- \*\*Latest activity:\*\* input delivered from \[[^\]\r\n]+\]\((?<url>[^)\r\n]+)\) at ");
+            return inventory.Split('\n').Count(line => line.TrimEnd('\r') == row) == 1 && latest.Groups["url"].Value == url &&
+                Regex.IsMatch(published["title"]!.ToString(), @" · 0/\d+ active · 0 queued — RepoAgent\z");
+        }, "the same dashboard to publish a fresh post-turn heartbeat, idle Discussion navigation and the exact latest input link");
+        Pass("HOSTED_DASHBOARD_IDLE", new
+        {
+            dashboard = published!["url"]!.ToString(),
+            discussion = url,
+            latestInput = url,
+            heartbeat,
+            title = published["title"]!.ToString(),
+            active = 0,
+            queued = 0,
+            idle = true,
             artificialTurns = 0,
             renderedGitHubUi = "not inspected"
         });
