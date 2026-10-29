@@ -68,6 +68,7 @@ internal static class AppGitCredential
 
     static void Isolate(ProcessStartInfo start, string directory)
     {
+        RepoAgent.LocalTelemetry.LocalTraceSettings.RemoveFrom(start.Environment);
         foreach (var key in start.Environment.Keys.ToArray())
             if ((key.StartsWith("GIT_", StringComparison.Ordinal) && key != "GIT_SSL_CAINFO") || key.StartsWith("SSH_", StringComparison.Ordinal) ||
                 key is "GH_TOKEN" or "GITHUB_TOKEN" or "GH_ENTERPRISE_TOKEN" or "GITHUB_ENTERPRISE_TOKEN" or "GH_DEBUG") start.Environment.Remove(key);

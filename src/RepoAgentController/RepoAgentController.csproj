@@ -30,4 +30,7 @@
   <ItemGroup>
     <ProjectReference Include="../RepoAgentController.Core/RepoAgentController.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RepoAgent.LocalTelemetry/RepoAgent.LocalTelemetry.csproj" />
+  </ItemGroup>
 </Project>

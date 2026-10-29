@@ -56,7 +56,8 @@ internal static class ControllerDevelopment
             .WithEnvironment("CODEX_HOME", codexHome)
             .WithHttpEndpoint(port: statusPort, targetPort: statusPort, name: "status", isProxied: false)
             .WithHttpHealthCheck("/status", endpointName: "status")
-            .WaitFor(auth);
+            .WaitFor(auth)
+            .WithPrivateLocalTracing();
     }
 
     static string Required(IConfiguration configuration, string key) => configuration[key] is { Length: > 0 } value
