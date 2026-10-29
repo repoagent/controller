@@ -83,11 +83,13 @@ sealed class ActivitySocket : IAsyncDisposable
         Directory.CreateDirectory(directory, PrivateDirectory);
         CheckDirectory(directory);
         var path = Path.Combine(directory, "operator.sock");
-        var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        Socket? listener = null;
         var temporary = pointer + "." + Guid.NewGuid().ToString("N") + ".tmp";
         var createdTemporary = false;
+        var transferred = false;
         try
         {
+            listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             listener.Bind(new UnixDomainSocketEndPoint(path));
             File.SetUnixFileMode(path, PrivateFile);
             if (File.GetUnixFileMode(path) != PrivateFile) throw new IOException("Activity socket is not private.");
@@ -101,15 +103,17 @@ sealed class ActivitySocket : IAsyncDisposable
             }
             _ = ManagedCheckout.ReadPrivate(temporary);
             File.Move(temporary, pointer);
-            return new(listener, endpoint, pointer, directory, inspector, clock, ct);
+            var server = new ActivitySocket(listener, endpoint, pointer, directory, inspector, clock, ct);
+            listener = null;
+            transferred = true;
+            return server;
         }
-        catch
+        finally
         {
-            listener.Dispose();
-            if (!Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory);
-            throw;
+            listener?.Dispose();
+            if (!transferred && Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory);
+            if (createdTemporary && File.Exists(temporary)) File.Delete(temporary);
         }
-        finally { if (createdTemporary && File.Exists(temporary)) File.Delete(temporary); }
     }
 
     internal static void CheckDirectory(string path)

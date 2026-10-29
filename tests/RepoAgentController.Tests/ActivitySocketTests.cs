@@ -1,6 +1,6 @@
-using Xunit;
 using System.Diagnostics;
 using System.Text.Json;
+using Xunit;
 
 namespace RepoAgentController.Tests;
 
