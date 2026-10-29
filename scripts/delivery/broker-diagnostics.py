@@ -28,6 +28,10 @@ METRICS = ('repoagent.auth.cleanup.completed', 'repoagent.auth.cleanup.failures'
 REASONS = ('request_concurrency', 'request_minute', 'repository_attempts', 'global_attempts',
            'retained_issuance', 'repository_minute_budget', 'global_minute_budget', 'retained_enrollments',
            'candidate_repositories', 'repository_pending', 'global_pending', 'enrollment_backoff', 'other')
+REQUEST_WINDOWS = (('2026-10-27T21:30:00Z', '2026-10-27T22:15:00Z'),
+                   ('2026-10-28T05:30:00Z', '2026-10-28T06:30:00Z'))
+ENDPOINTS = ('renewal', 'revocation', 'setup-start', 'setup-status', 'setup-completion', 'setup-acknowledgment', 'other')
+REQUEST_STATUSES = ('2xx', '3xx', '4xx', '429', '5xx', 'other')
 
 
 class Refused(Exception):
@@ -262,7 +266,7 @@ def alerts():
     return result
 
 
-def metrics():
+def workspace():
     workspace_path = GROUP + '/providers/Microsoft.OperationalInsights/workspaces/repoagent-auth-logs'
     workspace = read(workspace_path, '2023-09-01')
     if workspace.get('id', '').lower() != workspace_path.lower():
@@ -270,6 +274,11 @@ def metrics():
     workspace_id = workspace['properties']['customerId']
     if not re.fullmatch('[0-9a-fA-F-]{36}', workspace_id):
         raise Unavailable('invalid-response')
+    return workspace_id
+
+
+def metrics():
+    workspace_id = workspace()
     names = ','.join("'" + metric + "'" for metric in METRICS)
     query = f"""AppMetrics
 | where TimeGenerated >= ago(24h) and _ResourceId =~ '{INSIGHTS}'
@@ -299,6 +308,78 @@ def metrics():
     return result
 
 
+def historical_requests():
+    # Exact matched templates from historical/current BrokerEndpoints and TelemetryPrivacy.
+    # Unknown names are grouped before transport; never return provider route/name strings.
+    routes = {name: [] for name in ENDPOINTS[:-1]}
+    for version in (1, 2, 3):
+        for parameter in ('deviceId', 'enrollmentId'):
+            route = f'/v{version}/devices/{{{parameter}}}'
+            routes['renewal'].append('POST ' + route + '/installation-token')
+            routes['revocation'].append('DELETE ' + route)
+        route = f'/v{version}/controller-enrollments/{{enrollmentId}}'
+        routes['renewal'].append('POST ' + route + '/github-token')
+        routes['revocation'].append('DELETE ' + route)
+    for version in (1, 2, 3, 4, 5):
+        routes['setup-start'].append(f'POST /v{version}/enrollments')
+        routes['setup-status'].append(f'GET /v{version}/enrollments/{{id}}')
+        routes['setup-completion'].append(f'POST /v{version}/enrollments/{{id}}/completion')
+        segment = 'controller-enrollments' if version == 5 else 'devices'
+        routes['setup-acknowledgment'].append(f'POST /v{version}/{segment}/{{id}}/acknowledgment')
+    cases = ',\n'.join('Name in (' + ','.join("'" + value + "'" for value in values) + "), '" + name + "'"
+                         for name, values in routes.items())
+    windows = ' or '.join(f'(TimeGenerated >= datetime({start}) and TimeGenerated < datetime({end}))'
+                          for start, end in REQUEST_WINDOWS)
+    query = f"""AppRequests
+| where _ResourceId =~ '{INSIGHTS}'
+| where {windows}
+| extend Endpoint=case({cases}, 'other'), Code=toint(ResultCode)
+| extend Status=case(Code == 429, '429', Code between (200 .. 299), '2xx',
+    Code between (300 .. 399), '3xx', Code between (400 .. 499), '4xx', Code between (500 .. 599), '5xx', 'other')
+| summarize StoredRows=count(), RepresentedRequests=sum(ItemCount), MissingWeights=countif(isnull(ItemCount) or ItemCount < 1)
+    by Interval=bin(TimeGenerated, 1m), Endpoint, Status
+| project Interval, Endpoint, Status, StoredRows, RepresentedRequests, MissingWeights
+| take 8192"""
+    url = 'https://api.loganalytics.azure.com/v1/workspaces/' + workspace() + '/query?' + urlencode(dict(
+        query=query, timespan=REQUEST_WINDOWS[0][0] + '/' + REQUEST_WINDOWS[-1][1]))
+    response = document(['az', 'rest', '--method', 'get', '--url', url, '--resource', 'https://api.loganalytics.io',
+                         '--only-show-errors', '--output', 'json'])
+    if response.get('error') or len(response['tables']) != 1:
+        raise Unavailable('invalid-response')
+    table = response['tables'][0]
+    columns = [column['name'] for column in table['columns']]
+    if len(columns) != 6 or set(columns) != {'Interval','Endpoint','Status','StoredRows','RepresentedRequests','MissingWeights'}:
+        raise Unavailable('invalid-response')
+    if not isinstance(table['rows'], list) or len(table['rows']) >= 8192:
+        raise Unavailable('response-limit')
+    result, seen = [], set()
+    for row in table['rows']:
+        if len(row) != 6:
+            raise Unavailable('invalid-response')
+        value = dict(zip(columns, row))
+        interval = timestamp(value['Interval'])
+        if interval is None or not interval.endswith(':00Z') or not any(start <= interval < end for start, end in REQUEST_WINDOWS):
+            raise Unavailable('invalid-response')
+        endpoint = value['Endpoint'] if value['Endpoint'] in ENDPOINTS else 'other'
+        status = value['Status'] if value['Status'] in REQUEST_STATUSES else 'other'
+        counts = [number(value[name]) for name in ('StoredRows','RepresentedRequests','MissingWeights')]
+        if any(not isinstance(count, int) for count in counts) or counts[0] < 1 or counts[2] > counts[0] \
+                or counts[1] < counts[0] - counts[2]:
+            raise Unavailable('invalid-response')
+        key = interval, endpoint, status
+        if key in seen:
+            raise Unavailable('invalid-response')
+        seen.add(key)
+        result.append(dict(interval=interval, endpoint=endpoint, status=status,
+                           storedRows=counts[0], representedRequests=counts[1], missingWeights=counts[2]))
+    return dict(windows=[dict(start=start, endExclusive=end) for start, end in REQUEST_WINDOWS],
+                intervals=sorted(result, key=lambda item: (item['interval'], item['endpoint'], item['status'])),
+                observedMinutes=len({item['interval'] for item in result}), completeTrafficCoverage=False,
+                coverage='Stored telemetry only; ItemCount-weighted represented counts are sampling estimates, not exact traffic. '
+                         'Missing weights, absent intervals, sampling, ingestion loss, retention or caps may omit requests. '
+                         'Empty results do not prove zero traffic. Aggregates cannot identify callers or historical limiter reasons.')
+
+
 def collect(output):
     source = checked_source()
     if not output.is_absolute() or output.exists():
@@ -308,12 +389,12 @@ def collect(output):
                   observedAt=dt.datetime.now(dt.timezone.utc).isoformat(),
                   target=dict(subscription=SUBSCRIPTION, resourceGroup=RESOURCE_GROUP), settlementProven=False,
                   limits=dict(commandSeconds=30, responseBytes=2*1024*1024, executionRows=20, replicaExecutions=3,
-                              alerts=10, metricsRows=63, metricsWindow='P1D'),
+                              alerts=10, metricsRows=63, metricsWindow='P1D', historicalRequestRows=8191),
                   limitations='Read-only observations do not identify private retained authority, prove settlement, authorize replacement, or establish restore/notification acceptance.')
     for name, operation in (('api', lambda: resource(APP)), ('cleanup', lambda: resource(JOB)),
-                            ('executions', executions), ('alerts', alerts), ('metrics', metrics)):
+                            ('executions', executions), ('alerts', alerts), ('metrics', metrics), ('historicalRequests', historical_requests)):
         report[name] = capture(operation)
-    unavailable = any(report[name]['state'] != 'collected' for name in ('api','cleanup','executions','alerts','metrics'))
+    unavailable = any(report[name]['state'] != 'collected' for name in ('api','cleanup','executions','alerts','metrics','historicalRequests'))
     if report['executions']['state'] == 'collected':
         unavailable |= any(item['state'] != 'collected' for item in report['executions']['observations']['replicas'])
     report['state'] = 'partial' if unavailable else 'collected'
