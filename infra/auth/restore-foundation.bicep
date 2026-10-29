@@ -5,7 +5,8 @@ targetScope = 'resourceGroup'
 param runId string
 
 var location = 'swedencentral'
-var appName = 'repoagent-r230-${runId}'
+// Keep the full run ID while leaving room for the cleanup Job's 32-character limit.
+var appName = 'r230-${runId}'
 var storageName = 'ra230${replace(runId, '-', '')}'
 var wrappingKeyName = 'restore230-${runId}-wrap'
 var vaultName = 'repoagent-auth-kv'
