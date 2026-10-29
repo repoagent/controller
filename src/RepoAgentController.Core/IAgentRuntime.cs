@@ -74,7 +74,11 @@ public sealed record AgentTurnStarted(int Epoch, string SessionId, string? TurnI
 /// the report says it rejected the agent account's credentials; <see cref="AgentSessions"/> decides whether that counts.
 /// </summary>
 public sealed record AgentTurnCompleted(int Epoch, string SessionId, string? TurnId, AgentTurnStatus Status, string ReportedStatus,
-    string? CredentialRejection) : AgentRuntimeEvent(Epoch);
+    string? CredentialRejection) : AgentRuntimeEvent(Epoch)
+{
+    /// <summary>True only for the runtime's structured terminal model-capacity category, never inferred from message text.</summary>
+    public bool ModelCapacityFailure { get; init; }
+}
 
 /// <summary>The runtime process stopped answering; its sessions and turns are gone.</summary>
 public sealed record AgentRuntimeDisconnected(int Epoch) : AgentRuntimeEvent(Epoch);

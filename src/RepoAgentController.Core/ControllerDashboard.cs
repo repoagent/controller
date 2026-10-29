@@ -92,6 +92,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
             : snapshot.Authentication.State == "failed" ? "🔴 GitHub authentication failed"
             : snapshot.CodexAuthentication.State == "failed" ? "🔴 Codex authentication failed"
             : snapshot.Work.AdmissionBlocked == true ? $"🟠 Dispatch blocked · {snapshot.Work.Waiting} queued"
+            : snapshot.Sessions.Any(session => session.Activity is SessionActivity.Recovering) ? "🟠 Model capacity recovery"
             : usage?.Fresh(now) == true && usage.Exhausted ? "🟠 Usage exhausted" + (usage.Reset is { } reset ? " · resets " + reset.UtcDateTime.ToString("dd MMM yyyy HH:mm 'UTC'", CultureInfo.InvariantCulture) : "")
             : null;
         return summary is null
@@ -154,6 +155,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
             SessionActivity.Running => 0,
             SessionActivity.Pending => 1,
             SessionActivity.Retrying => 2,
+            SessionActivity.Recovering => 2,
             _ when session.Waiting != 0 => 3,
             _ => 4
         }).ThenBy(session => session.Discussion, StringComparer.Ordinal).ToArray();
@@ -164,6 +166,8 @@ public sealed class ControllerDashboard : IAsyncDisposable
             {
                 SessionActivity.Pending => "awaiting agent acknowledgement",
                 SessionActivity.Retrying retry => $"delivery failed or was unacknowledged; attempt {(retry.Attempts ?? 0) + 1} at {Time(retry.RetryAt ?? "")}",
+                SessionActivity.Recovering recovery => $"model capacity recovery; attempts {recovery.Attempts}; next retry {Time(recovery.RetryAt)}; model {recovery.Model}; effort {recovery.Effort}" +
+                    (recovery.Suspended is { } suspended ? $"; held: {redact(suspended)}" : ""),
                 SessionActivity.Running turn => stopped is null ? $"running a turn since {Time(turn.Since ?? "")}" : "its turn ended with the controller",
                 _ => session.Waiting == 0 ? "idle; no input waiting" : null
             };

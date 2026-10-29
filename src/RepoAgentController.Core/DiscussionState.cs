@@ -66,6 +66,8 @@ public sealed class DiscussionRecord(string url)
 
     public RunningTurn? Running { get; set; }
 
+    public CapacityRecovery? Recovery { get; set; }
+
     public IReadOnlyList<UnknownKey> Unknown { get; init; } = [];
 
     /// <summary>
@@ -87,7 +89,7 @@ public sealed class DiscussionRecord(string url)
         RecordKey.Labels => false,
         // Waiting input that is not an object: observation of a Discussion with a session replaces it with what it observes.
         RecordKey.Waiting => string.IsNullOrEmpty(SessionId) || key.Value.IsObject,
-        RecordKey.Url or RecordKey.Sources or RecordKey.SessionId or RecordKey.Pending or RecordKey.Running => true,
+        RecordKey.Url or RecordKey.Sources or RecordKey.SessionId or RecordKey.Pending or RecordKey.Running or RecordKey.Recovery => true,
         _ => throw new UnreachableException()
     }).Select(key => key.Value.Reason).FirstOrDefault();
 
@@ -99,7 +101,7 @@ public sealed class DiscussionRecord(string url)
 }
 
 /// <summary>A known key of a <see cref="DiscussionRecord"/>.</summary>
-public enum RecordKey { Url, Sources, Labels, SessionId, Waiting, Pending, Running }
+public enum RecordKey { Url, Sources, Labels, SessionId, Waiting, Pending, Running, Recovery }
 
 /// <summary>JSON as read, in a form no writer leaves, why reading it failed, and whether it is an object of keys.</summary>
 public sealed record UnreadableJson(string Json, string Reason, bool IsObject);
@@ -215,5 +217,14 @@ public sealed record PendingDelivery(string Operation, DateTimeOffset Since, IRe
 /// <summary>The agent turn the Discussion's last delivery started, and since when, until the agent reports it ended.</summary>
 public sealed record RunningTurn(string Turn, DateTimeOffset Since)
 {
+    public IReadOnlyList<UnknownKey> Unknown { get; init; } = [];
+    public ModelChoice? Selection { get; init; }
+}
+
+/// <summary>Durable intent to continue unfinished work in the original session and exact selection after terminal capacity failure.
+/// A suspended intent retains evidence without automatically retrying an unrelated failure or an uncertain delivery.</summary>
+public sealed record CapacityRecovery(string FailedTurn, ModelChoice Selection, int Attempts, DateTimeOffset After)
+{
+    public string? Suspended { get; init; }
     public IReadOnlyList<UnknownKey> Unknown { get; init; } = [];
 }
