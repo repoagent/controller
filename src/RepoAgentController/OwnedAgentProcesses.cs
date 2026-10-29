@@ -11,7 +11,35 @@ internal sealed partial class OwnedAgentProcesses
     readonly Process root;
     readonly DateTime rootStarted;
     readonly Lock sync = new();
+    readonly TaskCompletionSource launched = new(TaskCreationOptions.RunContinuationsAsynchronously);
     Task? stopped;
+
+    // Only the first command forks. After the notice this trusted supervisor uses shell builtins only, and
+    // remains alive until controller stdin closes even when the agent exits with pipe-inheriting descendants.
+    public const string Launcher = """
+        exec 3<&0
+        "$@" <&3 3<&- &
+        agent=$!
+        exec 3<&-
+        printf '\nREPOAGENT_AGENT_LAUNCHED\n' >&2
+        result=0
+        wait "$agent" || result=$?
+        printf '\nREPOAGENT_AGENT_EXITED:%s\n' "$result" >&2
+        exec 1>&- 2>&-
+        while IFS= read -r ignored; do :; done
+        exit "$result"
+        """;
+
+    public bool ConsumeNotice(string line, out int? exitCode)
+    {
+        exitCode = null;
+        if (line == "REPOAGENT_AGENT_LAUNCHED") { launched.TrySetResult(); return true; }
+        const string exited = "REPOAGENT_AGENT_EXITED:";
+        if (!line.StartsWith(exited, StringComparison.Ordinal) ||
+            !int.TryParse(line.AsSpan(exited.Length), NumberStyles.None, CultureInfo.InvariantCulture, out var code) || code > 255) return false;
+        exitCode = code;
+        return true;
+    }
 
     public OwnedAgentProcesses(Process root)
     {
@@ -30,27 +58,28 @@ internal sealed partial class OwnedAgentProcesses
 
     async Task StopSession()
     {
-        Trace("stop-enter");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         var original = new Identity(root, rootStarted, root.Id);
         var captured = new Dictionary<int, Identity> { [root.Id] = original };
         var sessions = new Dictionary<int, Identity> { [root.Id] = original };
         try
         {
-            await Freeze(original, deadline.Token);
-            Trace("root-frozen");
+            // A tracked SIGSTOP child makes the pinned runtime's macOS SIGCHLD loop spin. The trusted
+            // supervisor never freezes: after this notice it cannot fork and keeps the session identity alive.
+            await launched.Task.WaitAsync(deadline.Token);
             while (true)
             {
                 var table = await Observe(deadline.Token);
-                Trace("capture-observed");
-                // A frozen live witness pins each session's identity until capture is complete.
+                // The trusted supervisor or a frozen live descendant pins each session's identity.
                 foreach (var witness in sessions.Values)
-                    if (!Same(witness) || !table.TryGetValue(witness.Process.Id, out var row) || row.State is not ('T' or 't') || row.UnixSession != witness.UnixSession)
+                    if (!Same(witness) || !table.TryGetValue(witness.Process.Id, out var row) || row.State == 'Z' ||
+                        (witness.Process != root && row.State is not ('T' or 't')) || row.UnixSession != witness.UnixSession)
                         throw new IOException("Owned Unix session witness changed before capture could be proved");
                 var members = table.Values.Where(row => sessions.ContainsKey(row.UnixSession)).ToArray();
                 var changed = false;
                 foreach (var row in members.Where(row => row.State != 'Z'))
                 {
+                    if (row.Id == root.Id) continue;
                     if (!captured.TryGetValue(row.Id, out var identity) || !Same(identity))
                     {
                         identity = Capture(row, captured);
@@ -65,7 +94,8 @@ internal sealed partial class OwnedAgentProcesses
                 // Preserve tree coverage for observable descendants that deliberately create another Unix session.
                 foreach (var row in table.Values.Where(row => row.State != 'Z' && !sessions.ContainsKey(row.UnixSession)))
                 {
-                    if (!captured.TryGetValue(row.Parent, out var parent) || !table.TryGetValue(row.Parent, out var owner) || owner.State is not ('T' or 't')) continue;
+                    if (!captured.TryGetValue(row.Parent, out var parent) || !table.TryGetValue(row.Parent, out var owner) ||
+                        (parent.Process != root && owner.State is not ('T' or 't'))) continue;
                     if (!Same(parent)) throw new IOException("Owned descendant ancestry changed before session capture");
                     var identity = captured.GetValueOrDefault(row.Id) ?? Capture(row, captured)
                         ?? throw new IOException("Owned descendant exited before its new Unix session could be captured");
@@ -73,17 +103,14 @@ internal sealed partial class OwnedAgentProcesses
                     sessions.Add(identity.UnixSession, identity);
                     changed = true;
                 }
-                if (!changed) break; // Every current member is stopped/zombie, with live frozen session witnesses.
+                if (!changed) break; // Only the trusted no-fork supervisor can still execute.
                 await Task.Delay(5, deadline.Token);
             }
-            foreach (var item in captured.Values.Reverse()) Signal(item, 9);
-            Trace("kill-delivered");
-            while (true)
-            {
-                var table = await Observe(deadline.Token);
-                if (captured.Values.All(item => !table.TryGetValue(item.Process.Id, out var row) || row.State == 'Z' || !Same(item))) return;
-                await Task.Delay(5, deadline.Token);
-            }
+            var descendants = captured.Values.Where(item => item.Process != root).Reverse().ToArray();
+            foreach (var item in descendants) Signal(item, 9);
+            await ConfirmStopped(descendants, deadline.Token);
+            Signal(original, 9);
+            await ConfirmStopped([original], deadline.Token);
         }
         catch (Exception failure)
         {
@@ -91,8 +118,6 @@ internal sealed partial class OwnedAgentProcesses
             foreach (var item in captured.Values.Reverse())
                 try { Signal(item, 9); }
                 catch (Exception error) when (error is IOException or Win32Exception or InvalidOperationException) { }
-            try { if (Same(original)) root.Kill(entireProcessTree: true); }
-            catch (Exception error) when (error is Win32Exception or InvalidOperationException or AggregateException) { }
             if (failure is OperationCanceledException && deadline.IsCancellationRequested)
                 throw new IOException("Owned agent termination could not be confirmed within its five-second budget", failure);
             throw;
@@ -100,6 +125,16 @@ internal sealed partial class OwnedAgentProcesses
         finally
         {
             foreach (var item in captured.Values.Where(item => item.Process != root)) item.Process.Dispose();
+        }
+    }
+
+    static async Task ConfirmStopped(IReadOnlyCollection<Identity> identities, CancellationToken ct)
+    {
+        while (identities.Count != 0)
+        {
+            var table = await Observe(ct);
+            if (identities.All(item => !table.TryGetValue(item.Process.Id, out var row) || row.State == 'Z' || !Same(item))) return;
+            await Task.Delay(5, ct);
         }
     }
 
@@ -125,9 +160,7 @@ internal sealed partial class OwnedAgentProcesses
 
     static async Task Freeze(Identity identity, CancellationToken ct)
     {
-        Trace("freeze-before-signal");
         Signal(identity, OperatingSystem.IsMacOS() ? 17 : 19);
-        Trace("freeze-after-signal");
         while (true)
         {
             var table = await Observe(ct);
@@ -140,43 +173,34 @@ internal sealed partial class OwnedAgentProcesses
 
     static bool Same(Identity identity)
     {
-        Trace("same-enter");
         Process? current = null;
         try
         {
             current = Process.GetProcessById(identity.Process.Id);
-            Trace("same-before-start-time");
-            var same = current.StartTime == identity.Started;
-            Trace("same-after-start-time");
-            return same;
+            return current.StartTime == identity.Started;
         }
         catch (ArgumentException) { return false; }
         catch (Win32Exception error) when (error.NativeErrorCode == 3) { return false; }
-        finally { Trace("same-before-dispose"); current?.Dispose(); Trace("same-after-dispose"); }
+        finally { current?.Dispose(); }
     }
 
     static void Signal(Identity identity, int signal)
     {
-        Trace("signal-enter");
         if (!Same(identity)) return;
-        Trace("signal-same");
         var session = Session(identity.Process.Id);
         if (session == -1 && Marshal.GetLastPInvokeError() == 3) return;
         if (session != identity.UnixSession) throw new IOException("Owned process changed Unix session before signaling");
         if (Kill(identity.Process.Id, signal) != 0 && Marshal.GetLastPInvokeError() != 3)
             throw new IOException("Owned agent signal could not be delivered", new Win32Exception(Marshal.GetLastPInvokeError()));
-        Trace("signal-delivered");
     }
 
     static async Task<Dictionary<int, Observation>> Observe(CancellationToken ct)
     {
-        Trace("observe-enter");
         // Fixed system facility on both supported Unix platforms; never agent PATH, command lines or environments.
         var start = new ProcessStartInfo("/bin/ps") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var argument in new[] { "-ax", "-o", "pid=", "-o", "ppid=", "-o", "state=" }) start.ArgumentList.Add(argument);
         start.Environment["LC_ALL"] = "C";
         var process = Process.Start(start) ?? throw new IOException("Owned agent process observation could not start");
-        Trace("observe-started");
         try
         {
             var result = new Dictionary<int, Observation>();
@@ -193,31 +217,21 @@ internal sealed partial class OwnedAgentProcesses
                 // Host/kernel processes can legitimately belong to session zero; our launch-time sessions are positive.
                 if (session < 0 || !result.TryAdd(id, new(id, parent, columns[2][0], session))) throw new IOException("Owned Unix session observation is unavailable");
             }
-            await WaitForObserverExit(process, ct);
-            Trace("observe-exited");
+            await process.WaitForExitAsync(ct);
             if (process.ExitCode != 0) throw new IOException("Owned agent process observation failed");
             return result;
         }
         finally
         {
-            Trace("observe-cleanup");
             try
             {
                 await StopObserver(process);
-                Trace("observe-cleaned");
             }
             finally
             {
-                Trace("observe-before-dispose");
                 process.Dispose();
-                Trace("observe-after-dispose");
             }
         }
-    }
-
-    static async Task WaitForObserverExit(Process process, CancellationToken ct)
-    {
-        while (!process.HasExited) await Task.Delay(5, ct);
     }
 
     static async Task StopObserver(Process process)
@@ -225,14 +239,9 @@ internal sealed partial class OwnedAgentProcesses
         if (process.HasExited) return;
         process.Kill();
         using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-        try { await WaitForObserverExit(process, cleanup.Token); }
+        try { await process.WaitForExitAsync(cleanup.Token); }
         catch (OperationCanceledException error) when (cleanup.IsCancellationRequested)
         { throw new IOException("Owned process observer cleanup exceeded its one-second budget", error); }
-    }
-
-    static void Trace(string phase)
-    {
-        if (OperatingSystem.IsMacOS()) Console.Error.WriteLine("OWNED_STOP phase=" + phase);
     }
 
     sealed record Identity(Process Process, DateTime Started, int UnixSession);

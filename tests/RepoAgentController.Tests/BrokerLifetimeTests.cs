@@ -46,6 +46,12 @@ public sealed class BrokerLifetimeTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public Task Native_agent_bootstrap_exit_is_reported_without_waiting_for_inherited_pipes(bool inheritedPipes)
+        => Exercise("exit", false, false, inheritedPipes: inheritedPipes);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public Task Broker_loss_during_normal_drain_stops_owned_work_and_preserves_accepted_evidence(bool webhooks)
         => AcceptedDrain(webhooks, brokerDenied: true, stopBeforeAcknowledgement: false);
 
@@ -281,7 +287,7 @@ public sealed class BrokerLifetimeTests
         protected override void Dispose(bool disposing) { if (disposing) capture.Dispose(); base.Dispose(disposing); }
     }
 
-    static async Task Exercise(string stage, bool webhooks, bool userCancellation, string failure = "denied")
+    static async Task Exercise(string stage, bool webhooks, bool userCancellation, string failure = "denied", bool inheritedPipes = false)
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
         using var fixture = new BrokerAuthenticationTests.Fixture(webhooks: webhooks);
@@ -301,6 +307,7 @@ public sealed class BrokerLifetimeTests
             ["history"] = history,
             ["requests"] = requests,
             ["eof"] = eof,
+            ["inheritedPipes"] = inheritedPipes,
             ["graceful"] = userCancellation
         };
         File.WriteAllText(settingsPath, settings.ToJsonString());
@@ -355,7 +362,8 @@ public sealed class BrokerLifetimeTests
                 Assert.NotNull(JsonNode.Parse(state)!["discussions"]!["D1"]!["pending"]);
             }
             Assert.Equal(1, await fixture.Start()); // Existing live controller still owns the actual state lock.
-            if (userCancellation) await shutdown.CancelAsync();
+            if (stage == "exit") await connection.GetStream().WriteAsync(new byte[] { 1 }, TestContext.Current.CancellationToken);
+            else if (userCancellation) await shutdown.CancelAsync();
             else
             {
                 fixture.Transport.Status = failure == "unavailable" ? HttpStatusCode.ServiceUnavailable
@@ -385,6 +393,7 @@ public sealed class BrokerLifetimeTests
             var exit = await run.WaitAsync(TimeSpan.FromSeconds(8), TestContext.Current.CancellationToken);
             // A completed normal teardown can cancel renewal before denial arrives; either way no child may survive.
             if (stage != "teardown") Assert.Equal(userCancellation ? 0 : 1, exit);
+            if (stage == "exit") Assert.Contains("agent-exited exit=23", fixture.RetainedLog);
             AssertStopped(parent);
             AssertStopped(child);
             Assert.False(unrelated.HasExited);
@@ -472,18 +481,20 @@ public sealed class BrokerLifetimeTests
          grandchild=json.loads(descendant.stdout.readline())
         with socket.create_connection(('127.0.0.1',s['port'])) as ready:
          ready.sendall((json.dumps({'parent':os.getppid(),'child':os.getpid(),'credentialCopied':token.startswith('opaque-token-'),'grandchild':grandchild})+'\n').encode())
-         if s['stage'] in ('teardown','accepted'):ready.recv(1);os.kill(os.getppid(),signal.SIGUSR1)
+         if s['stage'] in ('teardown','accepted','exit'):ready.recv(1);os.kill(os.getppid(),signal.SIGUSR1)
          if s['stage']=='accepted':ready.recv(1);os.kill(os.getppid(),signal.SIGUSR2)
         threading.Event().wait()
         """
          with open(s['history'],'w') as history:history.write('retain agent history\n')
-         child=subprocess.Popen([sys.executable,'-c','import signal\n'+code],stdin=subprocess.DEVNULL,stdout=None if s['stage']=='teardown' else subprocess.DEVNULL)
-         if s['stage'] in ('teardown','accepted'):acknowledged.wait()
+         inherit=s['stage']=='teardown' or (s['stage']=='exit' and s.get('inheritedPipes'))
+         child=subprocess.Popen([sys.executable,'-c','import signal\n'+code],stdin=subprocess.DEVNULL,stdout=None if inherit else subprocess.DEVNULL,stderr=subprocess.DEVNULL if s['stage']=='exit' and not inherit else None)
+         if s['stage'] in ('teardown','accepted','exit'):acknowledged.wait()
         for line in sys.stdin:
          request=json.loads(line)
          with open(s['requests'],'a') as log:log.write(line)
          method=request['method']
          if method=='initialize' and s['stage']=='initialize':start_child();continue
+         if method=='initialize' and s['stage']=='exit':start_child();raise SystemExit(23)
          if method=='turn/start':
           start_child()
           if s['stage'] not in ('teardown','accepted'):continue
