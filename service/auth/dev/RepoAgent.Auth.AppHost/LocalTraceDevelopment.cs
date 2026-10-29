@@ -10,6 +10,8 @@ internal static class LocalTraceDevelopment
         // This callback runs after those defaults, replacing their content-capture and URL-redaction bypasses.
         => resource.WithEnvironment(context =>
         {
+            // Aspire also defaults SDK retries to in_memory. Remove that opt-in; empty/false is not a supported SDK retry policy.
+            context.EnvironmentVariables.Remove("OTEL_DOTNET_EXPERIMENTAL_OTLP_RETRY");
             context.EnvironmentVariables["REPOAGENT_LOCAL_TRACING"] = "1";
             context.EnvironmentVariables["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "false";
             context.EnvironmentVariables["OTEL_DOTNET_EXPERIMENTAL_ASPNETCORE_DISABLE_URL_QUERY_REDACTION"] = "false";

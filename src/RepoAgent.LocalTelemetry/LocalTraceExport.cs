@@ -17,7 +17,8 @@ public static class LocalTraceExport
     }
 
     public static TracerProviderBuilder AddTo(TracerProviderBuilder builder, LocalTraceSettings settings, string version)
-        => builder.SetResourceBuilder(ResourceBuilder.CreateEmpty().AddService(settings.Service, version, settings.Instance))
+        => builder.SetResourceBuilder(ResourceBuilder.CreateEmpty().AddService(settings.Service, serviceVersion: version,
+            autoGenerateServiceInstanceId: false, serviceInstanceId: settings.Instance))
             .SetSampler(new AlwaysOnSampler())
             .AddOtlpExporter(options =>
             {

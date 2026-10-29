@@ -48,6 +48,7 @@ public sealed class SharedAppHostTests
             var context = new EnvironmentCallbackContext(builder.ExecutionContext, resource, environment, TestContext.Current.CancellationToken);
             foreach (var annotation in resource.Annotations.OfType<EnvironmentCallbackAnnotation>())
                 await annotation.Callback(context);
+            Assert.DoesNotContain("OTEL_DOTNET_EXPERIMENTAL_OTLP_RETRY", environment.Keys);
             Assert.Equal("1", environment.GetValueOrDefault("REPOAGENT_LOCAL_TRACING"));
             Assert.Equal("false", environment.GetValueOrDefault("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"));
             Assert.Equal("false", environment.GetValueOrDefault("OTEL_DOTNET_EXPERIMENTAL_ASPNETCORE_DISABLE_URL_QUERY_REDACTION"));

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using OpenTelemetry;
 using OpenTelemetry.Trace;
 using RepoAgent.LocalTelemetry;
 using Xunit;
@@ -60,6 +61,22 @@ public sealed class LocalTracePolicyTests
         using var services = builder.Services.BuildServiceProvider();
 
         Assert.Equal(enabled, services.GetService<LocalTraceLifetime>() is not null);
+    }
+
+    [Fact]
+    public void The_effective_SDK_resource_preserves_the_Aspire_instance_and_service_version_without_extra_attributes()
+    {
+        var values = Configuration();
+        var settings = LocalTraceSettings.Read(name => values.GetValueOrDefault(name), "auth");
+        Assert.NotNull(settings);
+        // No sources or spans are registered: inspect the real SDK resource without an exporter request.
+        using var provider = LocalTraceExport.AddTo(Sdk.CreateTracerProviderBuilder(), settings, "1.2.3").Build();
+        var attributes = provider.GetResource().Attributes.ToDictionary();
+
+        Assert.Equal("1.2.3", attributes["service.version"]);
+        Assert.Equal("auth-instance", attributes["service.instance.id"]);
+        Assert.Equal("auth", attributes["service.name"]);
+        Assert.Equal("service.instance.id,service.name,service.version", string.Join(',', attributes.Keys.Order(StringComparer.Ordinal)));
     }
 
     [Fact]
