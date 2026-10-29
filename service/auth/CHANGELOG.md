@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.0](https://github.com/repoagent/controller/compare/broker-v1.2.0...broker-v1.3.0) (2026-10-29)
+
+
+### Features
+
+* **broker:** plan an isolated restore foundation ([#310](https://github.com/repoagent/controller/issues/310)) ([9d6467c](https://github.com/repoagent/controller/commit/9d6467c8aad0fbcef523a920055ff9b4ecd5b031))
+
+
+### Bug Fixes
+
+* **apphost:** budget developer CLI and vault signing together ([#316](https://github.com/repoagent/controller/issues/316)) ([897f571](https://github.com/repoagent/controller/commit/897f571608b616f1cee67db30652fd16da2a6c60))
+* **apphost:** resolve retained local keyring through current vault ([#313](https://github.com/repoagent/controller/issues/313)) ([859ab1b](https://github.com/repoagent/controller/commit/859ab1b890a04a0a4319332bd9d44fe5936cea23))
+* export private local AppHost traces to Aspire ([#325](https://github.com/repoagent/controller/issues/325)) ([043983e](https://github.com/repoagent/controller/commit/043983e864c62333cb1bc5f235c72ccfec390fc9))
+* keep isolated cleanup Job names within Azure limits ([#321](https://github.com/repoagent/controller/issues/321)) ([77f3f48](https://github.com/repoagent/controller/commit/77f3f48ea5935bfe23f6a1ecc60a11fa31cec7ea))
+
 ## [1.2.0](https://github.com/repoagent/controller/compare/broker-v1.1.0...broker-v1.2.0) (2026-10-29)
 
 
