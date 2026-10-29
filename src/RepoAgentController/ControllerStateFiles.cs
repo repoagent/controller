@@ -115,7 +115,8 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
                         Part<JsonValue>(recovery, "attempts").GetValue<int>(), At(recovery, "after"))
                     {
                         Failure = recovery.ContainsKey("failure") ? Failure(Part<JsonObject>(recovery, "failure")) : new(AgentFailureKind.ModelCapacity),
-                        Suspended = recovery["suspended"]?.GetValue<string>(), Unknown = Unknown(recovery, RecoveryKeys)
+                        Suspended = recovery["suspended"]?.GetValue<string>(),
+                        Unknown = Unknown(recovery, RecoveryKeys)
                     };
                 }),
                 Unknown = Unknown(item, RecordKeys)
@@ -193,8 +194,11 @@ sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControl
     {
         var item = new JsonObject
         {
-            ["failedTurn"] = recovery.FailedTurn, ["selection"] = Selection(recovery.Selection),
-            ["attempts"] = recovery.Attempts, ["after"] = Time(recovery.After), ["suspended"] = recovery.Suspended
+            ["failedTurn"] = recovery.FailedTurn,
+            ["selection"] = Selection(recovery.Selection),
+            ["attempts"] = recovery.Attempts,
+            ["after"] = Time(recovery.After),
+            ["suspended"] = recovery.Suspended
         };
         // Retain the306 durable key/shape for capacity, including records written before reasons existed.
         if (recovery.Failure.Kind != AgentFailureKind.ModelCapacity)

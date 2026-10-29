@@ -545,16 +545,16 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         return true;
     }
 
-    // Caller holds the gate. Ends the running marker of every turn the agent completed or lost. Input of a turn the provider
-    // rejected for its Codex account credentials goes back first in line as a redelivery; it waits for replacement credentials,
-    // since the rejection holds all dispatch. Returns whether that same atomic snapshot held no agent work, only after its
-    // outcomes are saved: a later ActiveTurns read could see a completion this pass has not yet consumed.
     static string RecoveryEvent(CapacityRecovery recovery, string action) =>
         (recovery.Failure.Kind == AgentFailureKind.ModelCapacity ? "capacity" : "transient") + "-recovery-" + action;
 
     static string RecoveryReason(CapacityRecovery recovery) => "reason=" + recovery.Failure.Reason +
         (recovery.Failure.HttpStatus is { } status ? $" http-status={status}" : "");
 
+    // Caller holds the gate. Ends the running marker of every turn the agent completed or lost. Input of a turn the provider
+    // rejected for its Codex account credentials goes back first in line as a redelivery; it waits for replacement credentials,
+    // since the rejection holds all dispatch. Returns whether that same atomic snapshot held no agent work, only after its
+    // outcomes are saved: a later ActiveTurns read could see a completion this pass has not yet consumed.
     bool Settle()
     {
         var (ended, active) = sessions.TakeTurns();

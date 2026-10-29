@@ -487,7 +487,8 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
     public void Report(string session, AgentSessionStatus status) => Changed?.Invoke(new AgentSessionStatusChanged(Epoch, session, status));
     public void Started(string session, string turn) => Changed?.Invoke(new AgentTurnStarted(Epoch, session, turn));
     public void TransientFailure(string session, string turn, AgentFailure failure) => Changed?.Invoke(new AgentTurnCompleted(Epoch, session, turn,
-        AgentTurnStatus.Failed, "failed", null) { Failure = failure });
+        AgentTurnStatus.Failed, "failed", null)
+    { Failure = failure });
 
     public void CapacityFailure(string session, string turn) => Changed?.Invoke(new AgentTurnCompleted(Epoch, session, turn,
         AgentTurnStatus.Failed, "failed", null)
