@@ -25,6 +25,7 @@ public sealed class GitHubOutbox : IAsyncDisposable
     Task running = Task.CompletedTask;
     // The owned dashboard found or created during this lifetime; only the delivering attempt touches these.
     DashboardDiscussion? dashboard;
+    public string? DashboardUrl { get { lock (sync) return dashboard?.Url; } }
     string? dashboardCategory;
     bool dashboardRejected;
 
@@ -225,7 +226,7 @@ public sealed class GitHubOutbox : IAsyncDisposable
                 var found = await FindDashboard(target, ct);
                 if (found is { } existing) await discussions.UpdateDashboard(existing.Id, title, body, ct);
                 var owned = found ?? await discussions.CreateDashboard(target, title, body, ct);
-                (dashboard, dashboardCategory) = (owned, category);
+                lock (sync) (dashboard, dashboardCategory) = (owned, category);
                 return (found is null ? "dashboard-created" : "dashboard", owned.Url);
             default:
                 throw new GitHubRequestException(GitHubFailure.Permanent, $"unsupported outbox operation kind '{kind}'");

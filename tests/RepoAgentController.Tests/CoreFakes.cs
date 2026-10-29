@@ -217,14 +217,21 @@ sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
     public Task<Discussion?> Find(int number, CancellationToken ct) =>
         Reading("Find", () => conversations.TryGetValue(number, out var held) ? Seen(held.Discussion) : null);
 
+    /// <summary>Optional controlled network wait; may deliberately ignore cancellation.</summary>
+    public Func<Task>? BeforeRead { get; set; }
+
     /// <summary>The top-level comments in order, then the replies to each in that order, as GitHub's pages return them.</summary>
-    public Task<DiscussionConversation> Read(Discussion discussion, CancellationToken ct) => Reading("Read", () =>
+    public async Task<DiscussionConversation> Read(Discussion discussion, CancellationToken ct)
     {
-        var held = conversations[discussion.Number];
-        var roots = held.Comments.Where(comment => comment.ReplyToId is null).ToArray();
-        var replies = roots.SelectMany(root => held.Comments.Where(comment => comment.ReplyToId == root.Id));
-        return new DiscussionConversation(discussion, [.. held.Reactions], [.. roots.Concat(replies).Select(Seen)]);
-    });
+        if (BeforeRead is { } before) await before();
+        return await Reading("Read", () =>
+        {
+            var held = conversations[discussion.Number];
+            var roots = held.Comments.Where(comment => comment.ReplyToId is null).ToArray();
+            var replies = roots.SelectMany(root => held.Comments.Where(comment => comment.ReplyToId == root.Id));
+            return new DiscussionConversation(discussion, [.. held.Reactions], [.. roots.Concat(replies).Select(Seen)]);
+        });
+    }
 
     public Task<IReadOnlyList<string>> Labels(string discussionId, CancellationToken ct) =>
         Reading<IReadOnlyList<string>>("Labels", () => conversations.Values.Single(held => held.Discussion.Id == discussionId).Labels);

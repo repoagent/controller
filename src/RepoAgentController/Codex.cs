@@ -8,7 +8,7 @@ namespace RepoAgentController;
 /// The <see cref="IAgentRuntime"/> adapter: the owned Codex app-server process, its JSON-RPC transport and the agent's
 /// lifecycle notifications as runtime events. Session and turn decisions are <see cref="AgentSessions"/>'.
 /// </summary>
-sealed partial class Codex : IAgentRuntime, IAsyncDisposable
+sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
 {
     // Opened by Initialize, so subscribers to Changed see the process from its start.
     Transport? transport;
@@ -39,6 +39,7 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
     // The agent's lifecycle notifications as runtime events, read leniently; other notifications are not lifecycle.
     void Observe(int source, string method, JsonNode? parameters)
     {
+        ObserveActivity(source, method, parameters);
         // Usage updates are sparse; the bounded collector reads full snapshots instead.
         if (method == "account/rateLimits/updated") return;
         if (method == "account/updated") { Changed?.Invoke(new AgentUsageContextChanged(source)); return; }
@@ -125,6 +126,7 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
     {
         if (transport is not null) await transport.DisposeAsync();
         whileStopped(++epoch);
+        ResetActivity();
         Changed?.Invoke(new AgentUsageContextChanged(epoch));
         transport = OpenTransport();
         await Initialize(ct);
@@ -249,7 +251,11 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
     Transport Current => transport ?? throw new InvalidOperationException("Codex app-server has not been initialized");
     Task<JsonNode> Request(string method, JsonNode parameters, CancellationToken ct) => Current.Request(method, parameters, ct);
     Task Write(JsonNode value, CancellationToken ct) => Current.Write(value, ct);
-    public ValueTask DisposeAsync() => transport?.DisposeAsync() ?? ValueTask.CompletedTask;
+    public ValueTask DisposeAsync()
+    {
+        ResetActivity();
+        return transport?.DisposeAsync() ?? ValueTask.CompletedTask;
+    }
 
     sealed class Transport : IAsyncDisposable
     {
@@ -320,20 +326,25 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             pending[id] = (method, completion);
             try
             {
-                await Write(Json.Object(("id", id), ("method", method), ("params", parameters)), ct);
-                return await completion.Task.WaitAsync(TimeSpan.FromSeconds(60), ct);
+                var inspection = method is "thread/items/list" or "thread/turns/list";
+                await Write(Json.Object(("id", id), ("method", method), ("params", parameters)), ct, preserveFrame: inspection);
+                // Viewer deadlines stop awaiting in the core. Retain an issued read until its reply/disconnect so
+                // a slow provider cannot accumulate work beyond the two inspection slots after repeated timeouts.
+                return inspection ? await completion.Task : await completion.Task.WaitAsync(TimeSpan.FromSeconds(60), ct);
             }
             finally { pending.TryRemove(id, out _); }
         }
 
-        public async Task Write(JsonNode value, CancellationToken ct)
+        public async Task Write(JsonNode value, CancellationToken ct, bool preserveFrame = false)
         {
             await writeLock.WaitAsync(ct);
             try
             {
                 credentialLost.ThrowIfCancellationRequested();
-                await process.StandardInput.WriteLineAsync(Json.Encode(value).AsMemory(), ct);
-                await process.StandardInput.FlushAsync(ct);
+                // Cancelling inspection may abandon an answer, never leave half a frame on the owned work transport.
+                var writing = preserveFrame ? credentialLost : ct;
+                await process.StandardInput.WriteLineAsync(Json.Encode(value).AsMemory(), writing);
+                await process.StandardInput.FlushAsync(writing);
             }
             finally { writeLock.Release(); }
         }
@@ -366,9 +377,12 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
                         if (message["error"] is { } error)
                         {
                             // Method-specific provider capability stays inside this adapter.
-                            Exception failure = request.Method == "account/rateLimits/read" && error is JsonObject errorObject &&
-                                errorObject["code"] is JsonValue code && code.TryGetValue<int>(out var errorCode) && errorCode == -32601
-                                ? new UsageUnsupportedException() : new AgentRequestRejected($"Agent request failed: {error}");
+                            var unsupported = error is JsonObject errorObject && errorObject["code"] is JsonValue code &&
+                                code.TryGetValue<int>(out var errorCode) && errorCode == -32601;
+                            Exception failure = request.Method is "thread/items/list" or "thread/turns/list"
+                                ? unsupported ? new ActivityHistoryUnsupported() : new ActivityHistoryUnavailable("Runtime activity history read failed.")
+                                : request.Method == "account/rateLimits/read" && unsupported
+                                    ? new UsageUnsupportedException() : new AgentRequestRejected($"Agent request failed: {error}");
                             completion.TrySetException(failure);
                         }
                         else completion.TrySetResult(message["result"] ?? throw new IOException("Agent response has no result"));

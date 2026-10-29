@@ -10,8 +10,33 @@ namespace RepoAgentController;
 /// </summary>
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "Managed-only semaphores have no wait handles; callbacks and dispatch share their lifetime and may still unwind during controller shutdown.")]
 public sealed class Bridge(string repository, IDiscussions discussions, AppIdentity identity, AgentSessions sessions, StateStore store, GitHubOutbox outbox,
-    HashSet<int> enroll, RepositorySettingsRefresh settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? admission = null)
+    HashSet<int> enroll, RepositorySettingsRefresh settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? admission = null) : IActivitySessions
 {
+    // Immutable values published only at serialized state transitions. A provider read may hold the work gate for
+    // an entire repository scan, so inspection must never acquire that gate just to revalidate an existing mapping.
+    ActivitySession[] activityMappings = CaptureActivityMappings(store);
+
+    /// <summary>Copies the last atomically published mappings without waiting for observation or dispatch network I/O.</summary>
+    public Task<IReadOnlyList<ActivitySession>> ActivitySessions(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var dashboard = outbox.DashboardUrl;
+        return Task.FromResult<IReadOnlyList<ActivitySession>>(Volatile.Read(ref activityMappings)
+            .Select(mapping => mapping with { Dashboard = string.Equals(mapping.Discussion, dashboard, StringComparison.OrdinalIgnoreCase) }).ToArray());
+    }
+
+    static ActivitySession[] CaptureActivityMappings(StateStore state) => state.State.Unreadable is not null ? [] :
+        state.State.Discussions.Values.Where(record => record.Problem is null && record.SessionId is { Length: > 0 })
+            .Select(record => new ActivitySession(record.Url, record.SessionId!)).ToArray();
+
+    void PublishActivityMappings() => Volatile.Write(ref activityMappings, CaptureActivityMappings(store));
+
+    void ReleaseGate()
+    {
+        try { PublishActivityMappings(); }
+        finally { gate.Release(); }
+    }
+
     // Envelope characters per dispatched batch; the pinned agent rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
     // Bootstrap context characters, leaving room in the first batch for the Discussion and its first changes.
@@ -58,6 +83,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
                 store.Save();
             }
             else Interrupted(record);
+        PublishActivityMappings();
     }
 
     public async Task<bool> Poll(CancellationToken ct)
@@ -92,7 +118,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     {
         await gate.WaitAsync(ct);
         try { return await ObserveExclusive(observed, ct); }
-        finally { gate.Release(); }
+        finally { ReleaseGate(); }
     }
 
     async Task<bool> ObserveExclusive(IReadOnlyList<Discussion> observed, CancellationToken ct)
@@ -208,7 +234,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             Settle(); // Returned input is queued before a agent restart can forget the turn that held it.
             return await action();
         }
-        finally { gate.Release(); }
+        finally { ReleaseGate(); }
     }
 
     /// <summary>Applies replacement agent credentials between dispatches and only at a proven global idle boundary.</summary>
@@ -247,7 +273,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
                     abort.ThrowIfCancellationRequested();
                     if (settled) return;
                 }
-                finally { gate.Release(); }
+                finally { ReleaseGate(); }
                 await next.WaitAsync(abort);
             }
         }
@@ -266,7 +292,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         {
             log.Write("repository-settings-error", $"the category enrollment starts could not be saved: {error.Message}");
         }
-        finally { gate.Release(); }
+        finally { ReleaseGate(); }
     }
 
     /// <summary>
@@ -283,7 +309,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             TimeSpan delay;
             await gate.WaitAsync(stop);
             try { delay = NextRetry(); }
-            finally { gate.Release(); }
+            finally { ReleaseGate(); }
             while (true)
             {
                 await Sleep(delay, stop);
@@ -321,7 +347,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             }
             return NextRetry();
         }
-        finally { gate.Release(); }
+        finally { ReleaseGate(); }
     }
 
     void Wake() { if (wake.CurrentCount == 0) try { wake.Release(); } catch (SemaphoreFullException) { } }
@@ -442,6 +468,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
                 record.Pending = pending;
                 store.Save();
                 record.SessionId = session = await sessions.Start(ct);
+                PublishActivityMappings();
                 checkout?.Bind(session);
                 store.Save();
                 log.Write("session-created", $"{record.Url} session={session}");
@@ -720,7 +747,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             if (forgotten.Length == 0) return;
             log.Write("discussion-forgotten", $"{url} reason=not-found session={string.Join(',', forgotten.Select(entry => entry.Value.SessionId ?? ""))}");
         }
-        finally { gate.Release(); }
+        finally { ReleaseGate(); }
     }
 
     // The checkpointed state fields whose values differ, in checkpoint order. A field with no earlier value differs unless it is
