@@ -50,7 +50,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             store.Save();
         }
         foreach (var record in store.Discussions.Values.Where(record => record.Pending is not null).ToArray())
-            if (record.Pending!.Operation == "capacity-recovery")
+            if (record.Pending!.Operation is "capacity-recovery" or "transient-recovery")
             {
                 if (record.Recovery is { } recovery)
                     record.Recovery = recovery with { Suspended = "recovery delivery acknowledgement was lost; inspect prior work before continuing" };
@@ -509,10 +509,10 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             if (!AgentSessions.Admits(sessions.Status(session))) { checkout?.Abandon(); return false; }
             ct.ThrowIfCancellationRequested();
             if (sessions.CredentialLost || sessions.AuthenticationFailure is not null) { checkout?.Abandon(); return false; }
-            record.Pending = new("capacity-recovery", clock.GetUtcNow(), [], 0);
+            record.Pending = new(recovery.Failure.Kind == AgentFailureKind.ModelCapacity ? "capacity-recovery" : "transient-recovery", clock.GetUtcNow(), [], 0);
             store.Save();
             offered = true;
-            var continuation = $"The accepted turn {recovery.FailedTurn} ended because model capacity was unavailable. " +
+            var continuation = $"The accepted turn {recovery.FailedTurn} ended because {recovery.Failure.Description}. " +
                 "Continue unfinished work in this same session. First inspect prior conversation history, the current workspace, " +
                 "and external effects (including GitHub replies, commits and pull requests) to determine what already happened. " +
                 "Preserve completed work and finish only what remains. Do not blindly replay the original request or assume no work ran. " +
@@ -533,7 +533,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
                 };
                 record.Pending = null;
                 store.Save();
-                log.Write("capacity-recovery-held", $"{record.Url} session={session} reason={record.Recovery.Suspended}");
+                log.Write(RecoveryEvent(recovery, "held"), $"{record.Url} session={session} {RecoveryReason(recovery)} hold={record.Recovery.Suspended}");
             }
             return false;
         }
@@ -541,9 +541,15 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         record.Running = new(turn, clock.GetUtcNow()) { Selection = recovery.Selection };
         store.Save();
         checkout?.Confirm();
-        log.Write("capacity-recovery-started", $"{record.Url} session={session} turn={turn} attempts={recovery.Attempts} model={recovery.Selection.Model} effort={recovery.Selection.Effort}");
+        log.Write(RecoveryEvent(recovery, "started"), $"{record.Url} session={session} turn={turn} {RecoveryReason(recovery)} attempts={recovery.Attempts} model={recovery.Selection.Model} effort={recovery.Selection.Effort}");
         return true;
     }
+
+    static string RecoveryEvent(CapacityRecovery recovery, string action) =>
+        (recovery.Failure.Kind == AgentFailureKind.ModelCapacity ? "capacity" : "transient") + "-recovery-" + action;
+
+    static string RecoveryReason(CapacityRecovery recovery) => "reason=" + recovery.Failure.Reason +
+        (recovery.Failure.HttpStatus is { } status ? $" http-status={status}" : "");
 
     // Caller holds the gate. Ends the running marker of every turn the agent completed or lost. Input of a turn the provider
     // rejected for its Codex account credentials goes back first in line as a redelivery; it waits for replacement credentials,
@@ -561,18 +567,18 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             var selection = record.Running!.Selection;
             record.Running = null;
             events.Add(("turn-ended", $"{record.Url} session={outcome.Session} turn={outcome.Turn} status={outcome.Status}"));
-            if (outcome.ModelCapacityFailure && selection is not null)
+            if (outcome.Failure is { Recoverable: true } failure && selection is not null)
             {
-                var recovery = new CapacityRecovery(outcome.Turn, selection, (record.Recovery?.Attempts ?? 0) + 1, clock.GetUtcNow() + TimeSpan.FromSeconds(120));
+                var recovery = new CapacityRecovery(outcome.Turn, selection, (record.Recovery?.Attempts ?? 0) + 1, clock.GetUtcNow() + TimeSpan.FromSeconds(120)) { Failure = failure };
                 record.Recovery = recovery;
-                events.Add(("capacity-recovery-scheduled", $"{record.Url} session={outcome.Session} failed-turn={outcome.Turn} reason=model-capacity attempts={recovery.Attempts} retry-at={recovery.After:O} model={selection.Model} effort={selection.Effort}"));
+                events.Add((RecoveryEvent(recovery, "scheduled"), $"{record.Url} session={outcome.Session} failed-turn={outcome.Turn} {RecoveryReason(recovery)} attempts={recovery.Attempts} retry-at={recovery.After:O} model={selection.Model} effort={selection.Effort}"));
             }
             else if (record.Recovery is { } recovery)
             {
                 if (outcome.Status == "completed")
                 {
                     record.Recovery = null;
-                    events.Add(("capacity-recovery-completed", $"{record.Url} session={outcome.Session} turn={outcome.Turn} attempts={recovery.Attempts}"));
+                    events.Add((RecoveryEvent(recovery, "completed"), $"{record.Url} session={outcome.Session} turn={outcome.Turn} {RecoveryReason(recovery)} attempts={recovery.Attempts}"));
                 }
                 else record.Recovery = recovery with { Suspended = "recovery ended without success: " + outcome.Status };
             }
