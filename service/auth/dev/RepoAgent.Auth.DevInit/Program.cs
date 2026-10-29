@@ -50,7 +50,7 @@ var keys = new KeyClient(vault, new EmulatedTokenCredential(vault.AbsoluteUri),
 var sharedSigning = configuration["SharedSigningKeyUri"];
 var developerSigning = !string.IsNullOrEmpty(sharedSigning);
 // The shared URI is configuration only: this client can initialize keys only in the loopback emulator.
-var signing = developerSigning ? sharedSigning! : (await GetOrCreateKey("development-signing")).Id.AbsoluteUri;
+var signing = developerSigning ? sharedSigning! : LocalKeyUri(await GetOrCreateKey("development-signing"));
 var wrapping = await GetOrCreateKey("wrapping");
 var settings = new
 {
@@ -68,7 +68,7 @@ var settings = new
         SigningKeyUri = signing,
         DevelopmentSigningCredential = developerSigning ? "AzureCli" : null,
         DevelopmentBlobConnectionString = configuration.GetConnectionString("blobs"),
-        DataProtectionKeyUri = wrapping.Id.AbsoluteUri,
+        DataProtectionKeyUri = LocalKeyUri(wrapping),
         DataProtectionBlobUri = container.GetBlobClient("keyring.xml").Uri.AbsoluteUri,
         DataProtectionApplicationName = "repoagent-auth-aspire-local"
     }
@@ -90,4 +90,15 @@ async Task<KeyVaultKey> GetOrCreateKey(string name)
     try { return (await keys.GetKeyAsync(name, cancellationToken: ct)).Value; }
     catch (RequestFailedException exception) when (exception.Status == 404)
     { return (await keys.CreateRsaKeyAsync(new CreateRsaKeyOptions(name) { KeySize = 2048 }, ct)).Value; }
+}
+
+string LocalKeyUri(KeyVaultKey key)
+{
+    // Persisted emulator responses retain the authority from key creation. Isolated Aspire runs can publish a new
+    // loopback port, so keep the returned key name/version at this client's current, already validated local vault.
+    // Shared signing URIs never pass through this local-emulator adapter.
+    var id = key.Id;
+    if (!id.IsLoopback || id.Scheme != "https" || id.UserInfo.Length != 0 || id.Query.Length != 0 || id.Fragment.Length != 0)
+        throw new InvalidOperationException("Emulated key identifiers must be bare loopback HTTPS URIs.");
+    return new Uri(vault, id.AbsolutePath).AbsoluteUri;
 }
