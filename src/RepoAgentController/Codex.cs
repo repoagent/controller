@@ -228,15 +228,16 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
     sealed class Transport : IAsyncDisposable
     {
         readonly Process process;
+        readonly OwnedAgentProcesses owned;
         readonly ConcurrentDictionary<int, (string Method, TaskCompletionSource<JsonNode> Completion)> pending = new();
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2213", Justification = "Concurrent writers can still unwind after process teardown; this managed-only semaphore never creates a wait handle.")]
         readonly SemaphoreSlim writeLock = new(1);
-        readonly Task reader;
+        readonly Task reader, errors;
         readonly int epoch;
         readonly Action<int, string, JsonNode?> observe;
         readonly CancellationToken credentialLost;
         readonly CancellationTokenRegistration lossRegistration;
-        int nextId, closing;
+        int nextId, closing, disconnected;
 
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1068", Justification = "Preserve existing positional callers; this token is distinct from the optional configuration that follows it.")]
         public Transport(string workspace, string githubCommand, string configurationDirectory, int epoch,
@@ -245,17 +246,44 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             this.epoch = epoch; this.observe = observe;
             this.credentialLost = credentialLost;
             credentialLost.ThrowIfCancellationRequested();
-            var start = new ProcessStartInfo("codex") { WorkingDirectory = workspace, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            var executable = AppGitHubCommand.FindExecutable("codex");
+            var start = new ProcessStartInfo("/bin/sh") { WorkingDirectory = workspace, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, StartDetached = true };
             AppGitHubCommand.IsolateEnvironment(start, configurationDirectory);
+            // The trusted supervisor must not import shell functions/options or execute ambient startup hooks.
+            foreach (var name in new[] { "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "BASH_XTRACEFD", "PS4", "CDPATH", "GLOBIGNORE" }) start.Environment.Remove(name);
+            foreach (var name in start.Environment.Keys.Where(name => name.StartsWith("BASH_FUNC_", StringComparison.Ordinal)).ToArray()) start.Environment.Remove(name);
             start.Environment["PATH"] = Path.GetDirectoryName(githubCommand) + Path.PathSeparator + start.Environment["PATH"];
-            start.ArgumentList.Add("app-server");
+            foreach (var argument in new[] { "-c", OwnedAgentProcesses.Launcher.ReplaceLineEndings("\n"), "repoagent-agent", executable, "app-server" }) start.ArgumentList.Add(argument);
             // Supplied credentials are the agent home's auth.json; a keyring store would silently ignore them.
             if (fileCredentials) { start.ArgumentList.Add("-c"); start.ArgumentList.Add("cli_auth_credentials_store=\"file\""); }
             process = Process.Start(start) ?? throw new IOException("Could not start codex app-server");
+            try { owned = new(process); }
+            catch
+            {
+                try { if (!process.HasExited) process.Kill(); }
+                finally { process.Dispose(); }
+                throw;
+            }
             reader = Read();
-            _ = Task.Run(async () => { while (await process.StandardError.ReadLineAsync() is { } line) Log.Write("codex-stderr", line); });
+            errors = Task.Run(ReadErrors);
             // Kill while the parent still owns its descendants. EOF first can orphan a bearer holder.
-            lossRegistration = credentialLost.Register(Terminate);
+            lossRegistration = credentialLost.Register(() => _ = Terminate());
+        }
+
+        async Task ReadErrors()
+        {
+            while (await process.StandardError.ReadLineAsync() is { } line)
+            {
+                if (owned.ConsumeNotice(line, out var exitCode))
+                {
+                    if (exitCode is { } code)
+                    {
+                        Log.Write("agent-exited", $"exit={code}");
+                        Disconnect(new IOException($"Codex app-server exited with code {code}"));
+                    }
+                }
+                else Log.Write("codex-stderr", line);
+            }
         }
 
         public async Task<JsonNode> Request(string method, JsonNode parameters, CancellationToken ct)
@@ -289,6 +317,7 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             {
                 while (await process.StandardOutput.ReadLineAsync() is { } line)
                 {
+                    if (Volatile.Read(ref disconnected) != 0) continue;
                     var message = JsonNode.Parse(line) ?? throw new IOException("Empty agent message");
                     if (message["method"] is not null)
                     {
@@ -322,10 +351,16 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             }
             catch (Exception error)
             {
-                if (Volatile.Read(ref closing) == 0) observe(epoch, "disconnect", null);
-                foreach (var request in pending.Values) request.Completion.TrySetException(error);
-                Log.Write("agent-disconnected", error.Message);
+                Disconnect(error);
             }
+        }
+
+        void Disconnect(Exception error)
+        {
+            if (Interlocked.Exchange(ref disconnected, 1) != 0) return;
+            if (Volatile.Read(ref closing) == 0) observe(epoch, "disconnect", null);
+            foreach (var request in pending.Values) request.Completion.TrySetException(error);
+            Log.Write("agent-disconnected", error.Message);
         }
 
         // Lifecycle identity and error text only: turn items can carry private transcript content.
@@ -347,11 +382,11 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             {
                 // Broker teardown always ends the tree, including bootstrap/reload and normal exit.
                 // Checking only IsCancellationRequested before EOF leaves a concurrent-loss gap.
-                if (credentialLost.CanBeCanceled) Terminate();
+                if (credentialLost.CanBeCanceled) await Terminate();
                 else process.StandardInput.Close();
                 try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
-                catch (TimeoutException) { Terminate(); await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
-                await reader.WaitAsync(TimeSpan.FromSeconds(3));
+                catch (TimeoutException) { await Terminate(); await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
+                await Task.WhenAll(reader, errors).WaitAsync(TimeSpan.FromSeconds(3));
             }
             finally
             {
@@ -360,10 +395,6 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             }
         }
 
-        void Terminate()
-        {
-            try { process.Kill(entireProcessTree: true); }
-            catch (InvalidOperationException) when (process.HasExited) { }
-        }
+        Task Terminate() => owned.Stop();
     }
 }

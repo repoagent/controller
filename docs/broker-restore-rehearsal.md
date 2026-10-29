@@ -1,6 +1,6 @@
 # Isolated broker restore rehearsal
 
-Issue [#230](https://github.com/repoagent/controller/issues/230) requires a real isolated restore and intentional cleanup-failure alert evidence. This first slice supplies an **offline foundation plan**, not a completed rehearsal or automatic restore. It introduces no workflow, HTTP route, runtime image or production state change.
+Issue [#230](https://github.com/repoagent/controller/issues/230) requires a real isolated restore and intentional cleanup-failure alert evidence. The tools supply an offline foundation plan and explicit operator Table commands, not a completed rehearsal or automatic restore. They introduce no workflow activation, HTTP route or runtime image change. Live use requires separately verified operator authority and fences.
 
 ## Plan the foundation
 
@@ -34,9 +34,62 @@ The wrapping key is created through the [ARM key resource](https://learn.microso
 
 Use the operator's normal authorized GitHub CLI profile for real setup v4 enrollment. Keep its native credentials outside Git; no hosted E2E secret retrieval or new hosted handoff is needed. A fresh run-owned repository is preferable only if the normal App installation can select it. Otherwise use run-owned approvals in the existing private test repository while serializing with other test journeys. Repository admin access alone does not prove App installation scope. The App-only repository installation endpoint and OAuth-App installation listing cannot establish that scope using an ordinary personal access token; their401/403 responses are authentication-surface limits. Verify through the actual normal enrollment/provider path before claiming acceptance. Do not touch production Table rows or existing controller enrollments.
 
-The later offline Table helper must preserve EDM types, paginate completely with all writers fenced, initialize only newly created Tables with Int64 Add operations, and restore by Add into a fresh Table. Raw snapshots, protected payloads and credentials stay private. Preserve the isolated key ring, wrapping key and application discriminator. Account keys, counter/clock edits and production Table operations are excluded.
+The operator Table helper below preserves EDM types and transfers state only between its two fresh rehearsal tables. Raw snapshots, protected payloads and credentials stay private. Preserve the isolated key ring, wrapping key and application discriminator separately. Cloud account keys, counter/clock edits and production Table operations are excluded.
 
 The rehearsal API and cleanup Job must use the same exact accepted released image digest as production. Run-owned enrollment must first authorize successfully under the original external epoch. Settle every actual capability using positive durable evidence and original provider expiry plus the documented allowance, then stop/fence all old HTTP and cleanup replicas, signing and publishers. Restore the isolated Table under a fresh external epoch and show old issuance401 plus preserved pre-backup revocation. A new cleanup failure rule must target only the isolated Job and reuse the existing operator action group. Bind deliberate Failed/Succeeded execution evidence, Fired/Resolved native alerts and actual notifications to that isolated provenance. Existing production email evidence cannot replace it. Follow the full [restore and cleanup suspension procedure](azure-auth-deployment.md#cleanup-identity-bootstrap-and-scheduling).
+
+## Typed offline Table commands
+
+The standalone operator project requires the pinned .NET SDK and a native Linux/WSL filesystem. Build once:
+
+```sh
+dotnet build scripts/operations/RestoreTable/RestoreTable.csproj --configuration Release
+operator_dll="$PWD/scripts/operations/RestoreTable/bin/Release/net11.0/RestoreTable.dll"
+run_id=20261029-9f3a76
+private_dir="$HOME/.local/state/repoagent/restore230-$run_id"
+umask 077
+mkdir -p -- "$private_dir"
+```
+
+The existing directory must allow only its owner, have no symlink ancestors and be outside Git. Files are created with mode0600 and never overwritten. Keep this directory and its snapshot out of logs and uploaded artifacts. Windows ACLs are not inferred; use the native Linux filesystem in WSL.
+
+The run ID fixes the only cloud endpoint to `https://ra230202610299f3a76.table.core.windows.net/` for this example. The CLI fixes source `brokerrehearsal` and target `brokerrestore`; it cannot select the foundation's **unused `brokerstate`**, a production account, another table, SAS or a connection string. Requests are also checked at the transport for the exact origin/table and only create/read/Add methods. Authentication uses only the human's native Azure CLI sign-in in the accepted tenant, with no credential copy, default-credential fallback or key export. Verify the account's ARM identity, subscription and run ownership before granting data access.
+
+Fresh Table creation may need a temporary human [Storage Table Data Contributor](https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles/storage#storage-table-data-contributor) grant at the isolated storage account. [Account scope applies to all its tables](https://learn.microsoft.com/en-us/azure/storage/tables/authorize-access-azure-active-directory#resource-scope), including unused brokerstate, which this CLI cannot select. Revoke/split the grant to exact Table scopes after the command completes. Never grant a production account role or enable shared-key authentication for this procedure. Actual authorization and propagation require Azure evidence.
+
+With traffic disabled, initialize only a source table created successfully by this command:
+
+```sh
+dotnet "$operator_dll" initialize --run-id "$run_id" --directory "$private_dir"
+```
+
+It calls CreateTable, records a private creation receipt, Adds the exact two activation quota rows with Int64 values, and verifies the persisted typed rows. It never accepts an existing empty table as fresh. A conflict, partial write or unknown response is unconfirmed; no reset, overwrite, compensation or automatic retry is provided. Configure the later rehearsal runtime with `Broker__TableName=brokerrehearsal`, leaving brokerstate unused.
+
+After real enrollment, positive settlement and all-worker/signing/publication fences, write private `fence.json` with the following exact shape and your actual evidence references and observation time:
+
+```json
+{"schema":1,"runId":"20261029-9f3a76","endpoint":"https://ra230202610299f3a76.table.core.windows.net/","writersStopped":true,"signingFenced":true,"capabilitiesSettled":true,"observedAt":"2026-10-29T00:00:00Z","evidenceReferences":["actual operator fence and settlement receipt"]}
+```
+
+This is an operator attestation, not an automated proof. The helper always reports `settlementProven=false` and `workerFenceProven=false`. It does not inventory authority or authorize restoring state. Then run:
+
+```sh
+dotnet "$operator_dll" snapshot --run-id "$run_id" --directory "$private_dir"
+dotnet "$operator_dll" restore --run-id "$run_id" --directory "$private_dir"
+dotnet "$operator_dll" verify --run-id "$run_id" --directory "$private_dir"
+```
+
+Snapshot follows every continuation page, including empty pages, in two complete passes; differing observed content refuses publication. This is drift detection, not a replacement for the actual fence. It stores explicit String, Boolean, Int32, Int64, finite Double, Guid, Binary and UTC DateTime EDM values, original application properties and a private canonical integrity digest. Provider Timestamp/ETag are excluded and regenerated. The schema, run/account/source binding, duplicates, ordering, types, values and digest are checked before restore can contact storage. Restore requires successful creation of the fresh brokerrestore table, records its creation receipt before the first Add, then verifies all typed content. It never merges/upserts, changes epoch, or repairs partial results. A second restore refuses an existing target.
+
+Limits are 18,948 rows, 1,024 logical pages per pass at 32 rows per page, 64 MiB per snapshot, 128 total entity properties including system fields (124 application properties) and 64 KiB decoded application JSON per entity. Snapshot performs two passes and reports the second pass separately as `validationPages`. A command has a ten-minute cooperative deadline, zero SDK retries and three-second Table network timeout; underlying HTTP replays and identity requests are not a measured wire bound. Any cap, malformed data, incomplete read, conflict or timeout remains unconfirmed. stdout contains only operation/run/table/counts and outcome flags; private material and provider errors are not printed. Preserve failed private artifacts for operator inspection rather than rerunning against an ambiguous target.
+
+For the explicit synthetic local operator journey against an available native loopback Azurite 3.35.0 Table endpoint:
+
+```sh
+dotnet run --project scripts/operations/RestoreTable.LocalCheck -- http://127.0.0.1:10002/devstoreaccount1
+```
+
+It exercises the actual closed CLI, fresh Int64 initialization, refusal of existing source/target, multiple real query pages, all supported EDM kinds and preserved revocation-like fields. It removes only the local tables it created. The endpoint must be literal IPv4 loopback, with no query/credentials; the public development key is accepted only there. The fixture is not real controller authority or Azure RBAC/empty-nonterminal-page acceptance, and is not a separate fake-provider adapter suite. Ordinary broker verification builds it and runs deterministic guard/codec tests without starting an emulator or contacting Azure.
 
 ## Verification contract
 
