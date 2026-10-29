@@ -175,7 +175,7 @@ internal sealed partial class OwnedAgentProcesses
         var start = new ProcessStartInfo("/bin/ps") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var argument in new[] { "-ax", "-o", "pid=", "-o", "ppid=", "-o", "state=" }) start.ArgumentList.Add(argument);
         start.Environment["LC_ALL"] = "C";
-        using var process = Process.Start(start) ?? throw new IOException("Owned agent process observation could not start");
+        var process = Process.Start(start) ?? throw new IOException("Owned agent process observation could not start");
         Trace("observe-started");
         try
         {
@@ -193,7 +193,7 @@ internal sealed partial class OwnedAgentProcesses
                 // Host/kernel processes can legitimately belong to session zero; our launch-time sessions are positive.
                 if (session < 0 || !result.TryAdd(id, new(id, parent, columns[2][0], session))) throw new IOException("Owned Unix session observation is unavailable");
             }
-            await process.WaitForExitAsync(ct);
+            await WaitForObserverExit(process, ct);
             Trace("observe-exited");
             if (process.ExitCode != 0) throw new IOException("Owned agent process observation failed");
             return result;
@@ -201,9 +201,33 @@ internal sealed partial class OwnedAgentProcesses
         finally
         {
             Trace("observe-cleanup");
-            if (!process.HasExited) { process.Kill(); await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(1), CancellationToken.None); }
-            Trace("observe-cleaned");
+            try
+            {
+                await StopObserver(process);
+                Trace("observe-cleaned");
+            }
+            finally
+            {
+                Trace("observe-before-dispose");
+                process.Dispose();
+                Trace("observe-after-dispose");
+            }
         }
+    }
+
+    static async Task WaitForObserverExit(Process process, CancellationToken ct)
+    {
+        while (!process.HasExited) await Task.Delay(5, ct);
+    }
+
+    static async Task StopObserver(Process process)
+    {
+        if (process.HasExited) return;
+        process.Kill();
+        using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        try { await WaitForObserverExit(process, cleanup.Token); }
+        catch (OperationCanceledException error) when (cleanup.IsCancellationRequested)
+        { throw new IOException("Owned process observer cleanup exceeded its one-second budget", error); }
     }
 
     static void Trace(string phase)
