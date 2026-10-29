@@ -59,7 +59,8 @@ public static class IssuanceServices
         builder.Services.AddSingleton(services => new GitHubRest(services.GetRequiredService<HttpClient>()));
         builder.Services.AddSingleton(IssuanceLimits.Read(builder.Configuration));
         builder.Services.AddSingleton(CreateStore);
-        builder.Services.AddSingleton<IAppInstallations, GitHubAppInstallations>();
+        builder.Services.AddSingleton<IAppInstallations>(services => new GitHubAppInstallations(
+            services.GetRequiredService<GitHubRest>(), services.GetRequiredService<CryptographyClient>(), settings.UsesDeveloperSigning));
         builder.Services.AddSingleton<IControllerApprovals, GitHubControllerApprovals>();
         builder.Services.AddSingleton<IGitHubTokens, GitHubTokens>();
         builder.Services.AddSingleton<GitHubTokenIssuer>();
