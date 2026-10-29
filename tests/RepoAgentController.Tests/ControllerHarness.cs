@@ -223,6 +223,7 @@ static class ControllerHarness
             var start = new ProcessStartInfo(AppGitHubCommand.FindExecutable("dotnet"))
             {
                 UseShellExecute = false,
+                StartDetached = true, // Isolate the fixture's foreground process group from the test runner.
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
@@ -258,8 +259,8 @@ static class ControllerHarness
             while (await reader.ReadLineAsync(CancellationToken.None) is { } line) capture!.WriteLine(line);
         }
 
-        /// <summary>Signals only the fixture-owned controller PID, never the test runner or its process group.</summary>
-        public void TerminateChild() => Assert.Equal(0, Kill(child!.Id, 15));
+        /// <summary>Signals the fixture-owned controller PID or its isolated process group, never the test runner's group.</summary>
+        public void TerminateChild(int signal = 15, bool foregroundGroup = false) => Assert.Equal(0, Kill(foregroundGroup ? -child!.Id : child!.Id, signal));
 
         [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
         static extern int Kill(int process, int signal);

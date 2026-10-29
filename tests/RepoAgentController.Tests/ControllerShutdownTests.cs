@@ -6,10 +6,12 @@ namespace RepoAgentController.Tests;
 [Collection("Managed checkout environment")]
 public sealed class ControllerShutdownTests
 {
-    [Fact]
-    public async Task Sigterm_keeps_accepted_agent_work_and_credentials_alive_until_correlated_completion()
+    [Theory]
+    [InlineData(15)] // SIGTERM
+    [InlineData(2)] // SIGINT / Ctrl+C
+    public async Task User_signal_keeps_accepted_agent_work_and_credentials_alive_until_correlated_completion(int signal)
     {
-        if (!OperatingSystem.IsLinux()) return; // Actual shipping OS signal, Unix credential socket and agent relay.
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
         await using var controller = new ControllerHarness.Controller(1);
         await controller.StartChild();
         var turn = await controller.Turn(1); // Agent acknowledgement and durable acceptance have both completed.
@@ -18,13 +20,13 @@ public sealed class ControllerShutdownTests
         Assert.Equal(0, await controller.InvokeWrapper());
 
         Console.WriteLine("SHUTDOWN_SIGNAL accepted=S1/T1 running=true pending=false credential-wrapper-exit=0 completion-withheld=true");
-        controller.TerminateChild();
+        controller.TerminateChild(signal, foregroundGroup: signal == 2);
         // This is the explicit CLI termination-budget observation; completion remains withheld beyond its default 2s.
         await Task.Delay(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
 
         var observedExit = controller.ChildExited ? await controller.ChildExit : (int?)null;
         Assert.False(controller.ChildExited,
-            $"SIGTERM ended the controller while its acknowledged agent turn was still held without correlated completion; child exit={observedExit}, running retained={controller.DiscussionState(1)["running"] is not null}, observed after 3s.");
+            $"Signal {signal} ended the controller while its acknowledged agent turn was still held without correlated completion; child exit={observedExit}, running retained={controller.DiscussionState(1)["running"] is not null}, observed after 3s.");
         Assert.Equal(0, await controller.InvokeWrapper());
         Assert.Single(controller.Agent.Turns);
         await controller.Finish(turn);
@@ -43,7 +45,7 @@ internal static class ControllerShutdownEntrypoint
     {
         if (args.Length > 1 && args[0] == "--controller-shutdown-child")
         {
-            if (!OperatingSystem.IsLinux()) return 1;
+            if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return 1;
             using var provider = new RepositorySettingsTests.Provider();
             using var http = new HttpClient(provider, disposeHandler: false);
             return await BridgeCommand.Run(args[2..], http, args[1], TimeProvider.System);

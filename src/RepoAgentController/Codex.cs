@@ -241,7 +241,7 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             this.epoch = epoch; this.observe = observe;
             this.credentialLost = credentialLost;
             credentialLost.ThrowIfCancellationRequested();
-            var start = new ProcessStartInfo("codex") { WorkingDirectory = workspace, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            var start = new ProcessStartInfo("codex") { WorkingDirectory = workspace, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, StartDetached = true };
             AppGitHubCommand.IsolateEnvironment(start, configurationDirectory);
             start.Environment["PATH"] = Path.GetDirectoryName(githubCommand) + Path.PathSeparator + start.Environment["PATH"];
             start.ArgumentList.Add("app-server");

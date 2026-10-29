@@ -33,6 +33,12 @@ public sealed class BrokerLifetimeTests
     public Task Normal_stop_confirms_a_grandchild_bearer_holder_has_stopped_before_return(bool webhooks)
         => AcceptedDrain(webhooks, brokerDenied: false, stopBeforeAcknowledgement: false, grandchild: true);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task Normal_stop_confirms_an_observable_descendant_in_a_separate_Unix_session_has_stopped(bool webhooks)
+        => AcceptedDrain(webhooks, brokerDenied: false, stopBeforeAcknowledgement: false, grandchild: true, separateUnixSession: true);
+
     [Fact]
     public async Task Concurrent_broker_renewal_and_agent_disposal_cannot_orphan_a_bearer_holder()
         => await Exercise("teardown", false, false);
@@ -49,7 +55,7 @@ public sealed class BrokerLifetimeTests
     public Task Normal_stop_does_not_cancel_an_entered_polling_or_webhook_observation(bool webhooks)
         => AcceptedDrain(webhooks, brokerDenied: false, stopBeforeAcknowledgement: true);
 
-    static async Task AcceptedDrain(bool webhooks, bool brokerDenied, bool stopBeforeAcknowledgement, bool grandchild = false)
+    static async Task AcceptedDrain(bool webhooks, bool brokerDenied, bool stopBeforeAcknowledgement, bool grandchild = false, bool separateUnixSession = false)
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
         using var fixture = new BrokerAuthenticationTests.Fixture(webhooks: webhooks);
@@ -72,6 +78,7 @@ public sealed class BrokerLifetimeTests
             ["requests"] = requests,
             ["eof"] = eof,
             ["grandchild"] = grandchild,
+            ["separateUnixSession"] = separateUnixSession,
             ["graceful"] = !brokerDenied
         }.ToJsonString());
         WriteExecutable(Path.Combine(tools, "codex"), Agent);
@@ -108,6 +115,9 @@ public sealed class BrokerLifetimeTests
             {
                 Assert.True(proof["grandchild"]!["credentialCopied"]!.GetValue<bool>());
                 descendant = Process.GetProcessById(proof["grandchild"]!["pid"]!.GetValue<int>());
+                Assert.Equal(descendant.Id, proof["grandchild"]!["processGroup"]!.GetValue<int>());
+                if (separateUnixSession) Assert.Equal(descendant.Id, proof["grandchild"]!["unixSession"]!.GetValue<int>());
+                else Assert.NotEqual(descendant.Id, proof["grandchild"]!["unixSession"]!.GetValue<int>());
             }
             Assert.True(proof["credentialCopied"]!.GetValue<bool>());
             Assert.NotNull(JsonNode.Parse(File.ReadAllText(fixture.State))!["discussions"]!["D1"]!["pending"]);
@@ -451,8 +461,11 @@ public sealed class BrokerLifetimeTests
         if s.get('grandchild'):
          code=r'''
         import json,os,subprocess,threading
+        settings=json.load(open(os.environ['AGENT_RUNTIME_DRAIN_SETTINGS']))
+        if settings.get('separateUnixSession'):os.setsid()
+        else:os.setpgid(0,0)
         token=subprocess.run(['gh','auth','token'],capture_output=True,text=True).stdout.strip()
-        print(json.dumps({'pid':os.getpid(),'credentialCopied':token.startswith('opaque-token-')}),flush=True)
+        print(json.dumps({'pid':os.getpid(),'credentialCopied':token.startswith('opaque-token-'),'processGroup':os.getpgrp(),'unixSession':os.getsid(0)}),flush=True)
         threading.Event().wait()
         '''
          descendant=subprocess.Popen([sys.executable,'-c',code],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,text=True)
