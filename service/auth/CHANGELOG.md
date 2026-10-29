@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/repoagent/controller/compare/broker-v1.1.0...broker-v1.2.0) (2026-10-29)
+
+
+### Features
+
+* **broker:** add guarded retained-authority probe ([dff8a90](https://github.com/repoagent/controller/commit/dff8a90797165a6e7e690a44eeb52a9570dd759b))
+* **broker:** inspect fixed historical throttle request windows ([1336e76](https://github.com/repoagent/controller/commit/1336e7667331417729c673e9983b78b3954f6b12))
+
 ## [1.1.0](https://github.com/repoagent/controller/compare/broker-v1.0.0...broker-v1.1.0) (2026-10-28)
 
 ### Features and fixes
