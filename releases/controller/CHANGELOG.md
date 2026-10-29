@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.1](https://github.com/repoagent/controller/compare/controller-v1.0.0...controller-v1.0.1) (2026-10-28)
+
+### Maintenance
+
+- Repair controller delivery verification on clean environments. The native/archive and image verification gates provision checksum-pinned JMESPath 1.0.1 in a temporary isolated Python environment, without a global package installation. This is a maintainer verification dependency, not a new controller runtime requirement.
+- Use the settled controller enrollment, controller secret, agent runtime and agent session terminology in installer status and shipped guidance. Existing legacy credential fields and routes remain supported; do not rewrite private enrollment files or approval markers to rename them.
+- Keep controller and broker release proposals independent when ownership-map entries change. Mapping metadata alone does not propose a release; actual owned runtime/build changes still determine component attribution, including genuinely shared changes.
+
+### Upgrade and installation
+
+- Adopt a verified `controller-v1.0.1` immutable image or native archive deliberately. Preserve the existing configuration, controller state, Codex storage and session history. Legacy `baseline-*` installations still require a manual move to a verified semantic image; old release readers may not discover the new tags. There is no self-update.
+- No authentication, credential, enrollment/profile, protocol, persisted-state, controller configuration or deployment-epoch migration is required. Existing approval and renewal contracts remain unchanged.
+- Bundled tools are unchanged from controller 1.0.0: Codex **0.165.0**, GitHub CLI **2.103.3**, and cloudflared **2026.10.1**. This maintenance release does not change tool pins.
+- The native archive still targets **Linux amd64**, requiring **glibc 2.39 or newer** and the normal ICU/OpenSSL dependencies. Windows and ARM native archives are not provided. The archive and image bundle the same version-specific release notes.
+
+### Known limitations
+
+- A [hosted smoke at source dff8a907](https://github.com/repoagent/controller/actions/runs/40786967089) passed installation, Quick Tunnel delivery, an App reply with an EYES receipt, and a second dashboard heartbeat using the unchanged pinned tools. It does not qualify a new tool candidate (#207) or prove renewal of a pre-upgrade existing enrollment against the upgraded deployment (#197).
+- Rendered GitHub light/dark and narrow-screen layouts were not inspected. Account usage was unavailable, and no artificial turns were started to measure it. No actual quota-exhaustion, continuous-uptime or recovery guarantee follows from this smoke.
+- Cleanup confirmed broker closure but reported outstanding tokens as unsettled. Revocation, positive token settlement and durable owner release remain prerequisites for enrollment replacement; health responses and closure acknowledgments do not establish settlement.
+
 ## 1.0.0 (2026-10-28)
 
 ### Features and fixes
