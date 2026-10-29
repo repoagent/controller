@@ -79,6 +79,13 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
         with:
           global-json-file: global.json
+      - name: Exercise launcher source from a CRLF checkout
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          source = Path('src/RepoAgentController/OwnedAgentProcesses.cs')
+          source.write_bytes(source.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
+          PYTHON
       - name: Build the native owned-process gate
         timeout-minutes: 6
         run: dotnet build tests/RepoAgentController.Tests --configuration Release --nologo

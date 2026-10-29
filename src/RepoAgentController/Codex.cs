@@ -248,7 +248,7 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
             foreach (var name in new[] { "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS", "BASH_XTRACEFD", "PS4", "CDPATH", "GLOBIGNORE" }) start.Environment.Remove(name);
             foreach (var name in start.Environment.Keys.Where(name => name.StartsWith("BASH_FUNC_", StringComparison.Ordinal)).ToArray()) start.Environment.Remove(name);
             start.Environment["PATH"] = Path.GetDirectoryName(githubCommand) + Path.PathSeparator + start.Environment["PATH"];
-            foreach (var argument in new[] { "-c", OwnedAgentProcesses.Launcher, "repoagent-agent", executable, "app-server" }) start.ArgumentList.Add(argument);
+            foreach (var argument in new[] { "-c", OwnedAgentProcesses.Launcher.ReplaceLineEndings("\n"), "repoagent-agent", executable, "app-server" }) start.ArgumentList.Add(argument);
             // Supplied credentials are the agent home's auth.json; a keyring store would silently ignore them.
             if (fileCredentials) { start.ArgumentList.Add("-c"); start.ArgumentList.Add("cli_auth_credentials_store=\"file\""); }
             process = Process.Start(start) ?? throw new IOException("Could not start codex app-server");
