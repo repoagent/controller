@@ -60,6 +60,8 @@
     "service/auth/Dockerfile.dockerignore",
     "service/auth/version.txt",
     "infra/auth/",
+    "scripts/operations/RestoreTable/",
+    "scripts/operations/RestoreTable.LocalCheck/",
     "scripts/delivery/auth-pipeline.py",
     "scripts/delivery/auth-restore-plan.py",
     "scripts/delivery/check_auth_restore_foundation.py",

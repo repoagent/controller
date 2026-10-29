@@ -43,6 +43,15 @@ class BrokerWorkflowTests(unittest.TestCase):
         self.assertLess(compiler, check)
         self.assertNotIn('continue-on-error', verification)
 
+    def test_restore_operator_and_local_journey_are_verified_without_running_live_cli(self):
+        text = WORKFLOW.read_text()
+        paths = text.split('paths: &auth-paths', 1)[1].split('pull_request:', 1)[0]
+        for folder in ('RestoreTable', 'RestoreTable.LocalCheck'):
+            self.assertIn("- 'scripts/operations/" + folder + "/**'", paths)
+        verification = text.split('\n  verify-service:\n', 1)[1].split('\n  publish:\n', 1)[0]
+        self.assertIn('dotnet build scripts/operations/RestoreTable.LocalCheck/RestoreTable.LocalCheck.csproj', verification)
+        self.assertNotIn('dotnet run --project scripts/operations/', verification)
+
     def test_authority_probe_is_explicit_main_only_and_never_selects_version_get_or_delivery_jobs(self):
         context = dict(event='workflow_dispatch',operation='authority-probe',published='skipped',recorded='skipped')
         self.assertTrue(selected('authority-probe',**context))
