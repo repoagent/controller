@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.2](https://github.com/repoagent/controller/compare/controller-v1.0.1...controller-v1.0.2) (2026-10-29)
+
+### Bug fixes
+
+- Broker-backed controllers on Linux and macOS confirm that captured owned agent processes have stopped before reporting successful shutdown; inability to confirm shutdown is an error. Normal stops still drain accepted work, while loss of broker authority stops owned work. ([#308](https://github.com/repoagent/controller/pull/308))
+- Fix trusted Unix launcher startup when Linux or macOS source builds use Windows-style (CRLF) checkout line endings, including native WSL builds. ([#318](https://github.com/repoagent/controller/pull/318))
+
+### Bundled tools
+
+- Update cloudflared from **2026.10.1** to **2026.10.5**. The [qualified tool-refresh run](https://github.com/repoagent/controller/actions/runs/40827240231) passed the real installer, Quick Tunnel, App reply and EYES receipt smoke before updating the pin. Codex **0.165.0** and GitHub CLI **2.103.3** are unchanged.
+
+### Upgrade and limitations
+
+- Adopt a verified `controller-v1.0.2` immutable image or native archive deliberately, preserving configuration, controller state, Codex storage and session history. This patch changes no enrollment/profile, protocol or persisted-state schema; an existing-enrollment live upgrade has not been demonstrated by this release's qualification run.
+- Process shutdown confirmation is lifecycle ownership, not OS containment or a guarantee of discovering historical detached processes. See the [ownership limits](https://github.com/repoagent/controller/blob/main/docs/controller-architecture.md#owned-agent-process-shutdown).
+
 ## [1.0.1](https://github.com/repoagent/controller/compare/controller-v1.0.0...controller-v1.0.1) (2026-10-28)
 
 ### Maintenance
