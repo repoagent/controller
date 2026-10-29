@@ -47,6 +47,7 @@ public static class AppGitHubCommand
     internal static void IsolateEnvironment(ProcessStartInfo start, string configurationDirectory)
     {
         foreach (var name in new[] { "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_REPO", "GH_DEBUG", "DEBUG" }) start.Environment.Remove(name);
+        RepoAgent.LocalTelemetry.LocalTraceSettings.RemoveFrom(start.Environment);
         GitHubAppCredentials.SecureDirectory(configurationDirectory);
         start.Environment["GH_CONFIG_DIR"] = configurationDirectory;
         start.Environment["GH_HOST"] = "github.com";

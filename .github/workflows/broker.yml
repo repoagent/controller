@@ -27,6 +27,7 @@ on:
     branches: [main]
     paths: &auth-paths
       - 'service/auth/**'
+      - 'src/RepoAgent.LocalTelemetry/**'
       - 'infra/auth/**'
       - 'scripts/operations/RestoreTable/**'
       - 'scripts/operations/RestoreTable.LocalCheck/**'

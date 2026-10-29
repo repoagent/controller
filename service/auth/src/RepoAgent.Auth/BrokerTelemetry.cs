@@ -22,6 +22,7 @@ public static class BrokerTelemetry
         builder.Services.AddSingleton<DistributedContextPropagator>(new BrokerContextPropagator());
         Sdk.SetDefaultTextMapPropagator(new CompositeTextMapPropagator([]));
         Environment.SetEnvironmentVariable("APPLICATIONINSIGHTS_STATSBEAT_DISABLED", "true");
+        if (TryAddLocal(builder)) return;
         try
         {
             var options = CreateOptions(builder.Configuration, builder.Configuration["Broker:ManagedIdentityClientId"]);
@@ -49,6 +50,37 @@ public static class BrokerTelemetry
         {
             // Malformed optional monitoring must not change broker composition or expose configuration.
             // The deployment preflight rejects malformed hosted monitoring before activation.
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The local TracerProvider owns its privacy processor and exporter; its registered lifetime owns provider disposal.")]
+    private static bool TryAddLocal(WebApplicationBuilder builder)
+    {
+        try
+        {
+            if (!builder.Environment.IsDevelopment() ||
+                RepoAgent.LocalTelemetry.LocalTraceSettings.Read(name => builder.Configuration[name], "auth") is not { } settings) return false;
+            var tracing = Sdk.CreateTracerProviderBuilder()
+                .AddAspNetCoreInstrumentation(options =>
+                {
+                    options.RecordException = false;
+                    options.Filter = context => context.Request.Path != "/health/live" && context.Request.Path != "/health/ready";
+                }).AddProcessor(new BrokerActivityPrivacy());
+            if (RepoAgent.LocalTelemetry.LocalTraceExport.TryStart(tracing, settings, BrokerVersion.Version) is not { } lifetime) return false;
+            builder.Services.AddSingleton(_ => lifetime);
+            builder.Services.AddHostedService<LocalTraceOwner>();
+            return true;
+        }
+        catch (Exception) { return false; }
+    }
+
+    private sealed class LocalTraceOwner(RepoAgent.LocalTelemetry.LocalTraceLifetime lifetime) : IHostedService
+    {
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            lifetime.Dispose();
+            return Task.CompletedTask;
         }
     }
 

@@ -96,6 +96,7 @@ public sealed class AppAuthenticationTests
         Assert.Equal(0, first.Exit);
         Assert.Contains("installation-token-1", first.Output);
         Assert.Contains("a file with spaces.json", first.Output);
+        Assert.DoesNotContain("private-exporter-canary", first.Output);
 
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var refresh = credentials.RefreshUntilCancelled(lifetime.Token);
@@ -298,6 +299,8 @@ public sealed class AppAuthenticationTests
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         if (ambientToken is not null) start.Environment["GH_TOKEN"] = ambientToken;
         start.Environment["GH_REPO"] = "otherhost/owner/repo";
+        foreach (var name in new[] { "OTEL_EXPORTER_OTLP_HEADERS", "ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL", "REPOAGENT_LOCAL_TRACING" })
+            start.Environment[name] = "private-exporter-canary";
         using var process = Process.Start(start)!;
         var output = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
         var error = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
@@ -323,7 +326,7 @@ public sealed class AppAuthenticationTests
             Provider = new Provider(key, Clock);
             http = new HttpClient(Provider);
             Gh = Path.Combine(Directory, "gh-capture");
-            File.WriteAllText(Gh, "#!/bin/sh\nprintf '%s\\n' gh-invoked \"$GH_TOKEN\" \"$GH_CONFIG_DIR\" \"$GH_HOST\" \"GH_REPO=$GH_REPO\" \"$@\"\n");
+            File.WriteAllText(Gh, "#!/bin/sh\nprintf '%s\\n' gh-invoked \"$GH_TOKEN\" \"$GH_CONFIG_DIR\" \"$GH_HOST\" \"GH_REPO=$GH_REPO\" \"$OTEL_EXPORTER_OTLP_HEADERS\" \"$ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL\" \"$REPOAGENT_LOCAL_TRACING\" \"$@\"\n");
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(Gh, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
 

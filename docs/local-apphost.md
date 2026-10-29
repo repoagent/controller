@@ -58,7 +58,7 @@ Optional `Controller` settings:
 | `MentionUser` | Optional mention account; replies still come from the App. |
 | `DashboardCategory` | Existing category for the optional owned dashboard. |
 | `Clone` | Set true only for the enrollment's explicit clone profile. |
-| `RepositorySettings` | Set true only for its explicit repository-settings profile. |
+| `RepositorySettings` | Set true to forward `--repository-settings`, only for its explicit repository-settings profile; false or absent keeps it disabled. |
 
 The `polling` enrollment in the example uses neither profile flag. Repository, App ID, origin and flags must match the saved binding; the controller performs the normal validation. The AppHost requires an HTTPS `localhost` origin belonging to its own local broker and fixes the broker's public/process endpoint to that port. State and Codex storage must be outside the source checkout. It does not copy existing production enrollments or change their origin.
 
@@ -77,6 +77,21 @@ aspire otel logs --apphost service/auth/dev/RepoAgent.Auth.AppHost/RepoAgent.Aut
 ```
 
 The repository's Aspire skill supplies resource/log/trace workflows. Inspect only relevant nonsecret fields; raw JSON state can include resource environments. Check the controller's `/status` is idle before intentionally stopping the stack. Aspire remains an external process supervisor, so an interrupted/forced stop is not evidence that active agent work drained safely.
+
+## Local traces
+
+The AppHost explicitly enables optional local traces for its broker and controller. Aspire supplies its allocated loopback collector endpoint, private authentication headers and service identity; missing or invalid collector configuration disables this path. The broker additionally requires Development. Running the controller outside this AppHost does not enable an exporter by default, and hosted Azure Monitor configuration is unchanged.
+
+```sh
+aspire otel traces --apphost service/auth/dev/RepoAgent.Auth.AppHost/RepoAgent.Auth.AppHost.csproj --format Json
+aspire otel spans --apphost service/auth/dev/RepoAgent.Auth.AppHost/RepoAgent.Auth.AppHost.csproj --format Json
+```
+
+Require actual spans after real work; a successful empty response is not trace acceptance. Broker spans retain only matched route templates, standard methods and integer statuses; health probes are excluded. Controller operations are `agent.initialize`, `agent.session.start`, `agent.session.resume` and `agent.turn.start`. Their duration measures the agent RPC acknowledgement, **not the full model turn**. No cross-service context is propagated merely to join these independent traces.
+
+This path exports no logs, transcripts, request/response payloads, exception details, command arguments, process/environment resource detection or arbitrary resource attributes. It disables Aspire's message-content capture and query-redaction bypass defaults. Collector authentication and all OTEL_/ASPIRE_ configuration are removed from agent and authenticated-tool child environments. Same-account process access is not a security sandbox.
+
+Batches hold at most 256 spans, send at most 32 per batch with a one-second schedule, and bound exporter requests to one second. Overflow/export failures drop observations without changing authorization or work. The final AppHost environment callback removes Aspire's default experimental in-memory retry setting. SDK retry/disk storage is not enabled: separately configured experimental OTLP retry disables this optional path. Shutdown requests a finite one-second drain before SDK disposal; this is not a one-second total teardown guarantee (SDK disposal has its own processor/instrumentation lifecycle). Private dashboard/telemetry storage remains private operational evidence; do not publish raw exports, resource environments or collector headers.
 
 ## Automated journey
 

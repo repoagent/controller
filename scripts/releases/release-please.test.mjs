@@ -130,3 +130,13 @@ test('ownership metadata alone does not propose either component release', () =>
     assert.equal(plan({ component, currentVersion: '1.0.0', commits }), null);
   }
 });
+
+
+test('shared local telemetry runtime edits release both components while AppHost-only configuration does not', () => {
+  for (const component of ['controller', 'broker']) {
+    const input = { component, currentVersion: '1.0.0', commits: [{ sha: 'a'.repeat(40), message: 'fix: preserve local trace privacy',
+      files: ['src/RepoAgent.LocalTelemetry/LocalTraceSettings.cs'] }] };
+    assert.equal(plan(input)?.version, '1.0.1');
+    assert.equal(plan({ ...input, commits: [{ ...input.commits[0], files: ['service/auth/dev/RepoAgent.Auth.AppHost/LocalTraceDevelopment.cs'] }] }), null);
+  }
+});

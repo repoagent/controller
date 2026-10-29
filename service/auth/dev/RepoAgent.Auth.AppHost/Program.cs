@@ -32,7 +32,8 @@ var auth = builder.AddProject<Projects.RepoAgent_Auth>("auth", launchProfileName
     .WithEnvironment("Broker__DevelopmentSettingsFile", settingsFile)
     .WithAzureKeyVaultEmulatorCredentials(vault)
     .WithHttpHealthCheck("/health/ready", endpointName: "https")
-    .WaitForCompletion(initialize);
+    .WaitForCompletion(initialize)
+    .WithPrivateLocalTracing();
 
 builder.AddProject<Projects.RepoAgent_Auth>("cleanup", launchProfileName: null)
     .WithArgs("cleanup", "--watch")
