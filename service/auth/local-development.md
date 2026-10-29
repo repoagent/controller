@@ -28,6 +28,8 @@ Open the dashboard URL printed by Aspire. The API is `https://localhost:7443`, w
 
 The `initialize` process creates a dedicated **local** `brokerstate` Table, seeds its two Int64 quota rows only when creation succeeds, creates the key-ring Blob container, and creates or reuses the local wrapping key (and a generated signing key in the default offline mode). An existing Table with missing metadata fails initialization. It never resets accounting. API and cleanup wait for successful initialization. Local state persists between AppHost runs. Certificates, the emulator database and generated settings stay in the ignored `.local` directory; Azurite data uses an Aspire-owned volume. Stop the AppHost before deliberately deleting local state, and reset both stores together if you need a fresh development environment. Hosted state is independent.
 
+Broker-only isolated runs can reuse persisted emulator keys after Aspire changes the published loopback port. Initialization preserves each local key's name and version while binding its URI to the current local vault endpoint. Shared signing key URIs remain exactly as configured. Configured controller enrollments still require their stable saved broker origin.
+
 ## Signing and real GitHub access
 
 The default generated signing key supports local cryptographic/storage debugging. It cannot authenticate as the published GitHub App, so it does not establish real enrollment or token issuance. The application's App ID and permission profiles remain fixed.
