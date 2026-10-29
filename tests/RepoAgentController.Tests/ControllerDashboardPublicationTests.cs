@@ -59,6 +59,11 @@ public sealed class ControllerDashboardPublicationTests : IAsyncDisposable
         Assert.Contains("Model capacity", Published().Title);
         Assert.Contains("model capacity recovery; attempts 2; next retry 2026-10-24T10:02:00Z", Published().Body);
         Assert.Equal("busy", StatusSnapshot.From(status.Snapshot()).State);
+        Store(("D1", new(First) { SessionId = "S1", Running = new("T2", Start),
+            Recovery = new("T1", new("gpt-6-luna", "xhigh", "label"), 2, Start.AddMinutes(2)) }));
+        Record("capacity-recovery-started", First + " turn=T2 attempts=2");
+        await UsagePublication(publication => publication.Body.Contains("running a turn", StringComparison.Ordinal));
+        Assert.Contains("Model capacity", Published().Title); // Acceptance alone does not establish recovery success.
         Store(("D1", new(First) { SessionId = "S1" }));
         Record("capacity-recovery-completed", First + " turn=T2 attempts=2");
         await UsagePublication(publication => !publication.Title.Contains("Model capacity", StringComparison.Ordinal));

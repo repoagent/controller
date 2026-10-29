@@ -5,6 +5,30 @@ namespace RepoAgentController.Tests;
 public sealed class CapacityRecoveryTests
 {
     [Fact]
+    public async Task Unreadable_recovery_intent_stays_busy_and_cannot_be_bypassed_by_waiting_input()
+    {
+        await using var world = new BridgeWorld { Files = true };
+        world.GitHub.Open(1, "@test-app[bot] work");
+        await world.Begin();
+        await world.Poll();
+        var (session, turn) = world.Running(1);
+        world.Runtime.Report(session, AgentSessionStatus.SystemError);
+        world.Runtime.CapacityFailure(session, turn);
+        await world.Dispatch();
+        world.GitHub.Comment(1, "C1", "later input");
+        await world.Poll();
+        await world.End();
+        var state = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(world.StatePath))!;
+        state["discussions"]!["D1"]!["capacityRecovery"] = "unreadable recovery";
+        File.WriteAllText(world.StatePath, state.ToJsonString());
+        await world.Begin();
+        await world.Dispatch();
+        Assert.Single(world.Turns);
+        Assert.Equal(1, world.Status()["work"]!["retrying"]!.GetValue<int>());
+        Assert.Equal("unreadable recovery", world.Record(1)!["capacityRecovery"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task An_uncorrelated_completion_cannot_consume_the_accepted_input_needed_for_credential_redelivery()
     {
         await using var world = new BridgeWorld();

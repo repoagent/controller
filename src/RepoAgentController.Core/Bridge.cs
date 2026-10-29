@@ -395,7 +395,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         // credentials and checkout admission permit it, and only its successful outcome clears the retained intent.
         if (record.Recovery is not null && record.Waiting is null) return false;
         // Its waiting input, session ID, and URL for the reports below, threw when read for delivery before the records were typed.
-        if (record.UnreadableKeys.FirstOrDefault(key => key.Key is RecordKey.Waiting or RecordKey.SessionId or RecordKey.Url).Value is { } unreadable) throw new InvalidDataException(unreadable.Reason);
+        if (record.UnreadableKeys.FirstOrDefault(key => key.Key is RecordKey.Waiting or RecordKey.SessionId or RecordKey.Url or RecordKey.Recovery).Value is { } unreadable) throw new InvalidDataException(unreadable.Reason);
         var waiting = record.Waiting!;
         var session = record.SessionId ?? "";
         var create = session.Length == 0;

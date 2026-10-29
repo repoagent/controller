@@ -153,6 +153,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
         var inventory = snapshot.Sessions.OrderBy(session => session.Activity switch
         {
             SessionActivity.Running => 0,
+            SessionActivity.Recovering { TurnRunning: true } => 0,
             SessionActivity.Pending => 1,
             SessionActivity.Retrying => 2,
             SessionActivity.Recovering => 2,
@@ -166,7 +167,8 @@ public sealed class ControllerDashboard : IAsyncDisposable
             {
                 SessionActivity.Pending => "awaiting agent acknowledgement",
                 SessionActivity.Retrying retry => $"delivery failed or was unacknowledged; attempt {(retry.Attempts ?? 0) + 1} at {Time(retry.RetryAt ?? "")}",
-                SessionActivity.Recovering recovery => $"model capacity recovery; attempts {recovery.Attempts}; next retry {Time(recovery.RetryAt)}; model {recovery.Model}; effort {recovery.Effort}" +
+                SessionActivity.Recovering recovery => "model capacity recovery; " + (recovery.TurnRunning ? "running a turn; " : "") +
+                    $"attempts {recovery.Attempts}; {(recovery.TurnRunning ? "scheduled" : "next retry")} {Time(recovery.RetryAt)}; model {recovery.Model}; effort {recovery.Effort}" +
                     (recovery.Suspended is { } suspended ? $"; held: {redact(suspended)}" : ""),
                 SessionActivity.Running turn => stopped is null ? $"running a turn since {Time(turn.Since ?? "")}" : "its turn ended with the controller",
                 _ => session.Waiting == 0 ? "idle; no input waiting" : null

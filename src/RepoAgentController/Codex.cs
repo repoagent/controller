@@ -62,7 +62,7 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
         {
             // rust-v0.165.0 TurnError/CodexErrorInfo: only the terminal turn's structured category counts.
             // Intermediate error notifications (including willRetry:true) never complete a turn here.
-            ModelCapacityFailure = turn?["error"]?["codexErrorInfo"].OptionalText() == "serverOverloaded"
+            ModelCapacityFailure = (turn?["error"] as JsonObject)?["codexErrorInfo"].OptionalText() == "serverOverloaded"
         };
     }
 

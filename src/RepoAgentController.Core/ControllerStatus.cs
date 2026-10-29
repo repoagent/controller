@@ -182,12 +182,19 @@ public sealed class ControllerStatus : IDisposable
             else if (turn)
             {
                 running++;
-                activity = new SessionActivity.Running(discussion.Running is { } current ? Time(current.Since) : null);
+                activity = discussion.Recovery is { } continuing
+                    ? Recovery(continuing) with { TurnRunning = true }
+                    : new SessionActivity.Running(discussion.Running is { } current ? Time(current.Since) : null);
             }
             else if (discussion.Recovery is { } recovery)
             {
                 retrying++;
-                activity = new SessionActivity.Recovering(recovery.Attempts, Time(recovery.After), recovery.Selection.Model, recovery.Selection.Effort, recovery.Suspended);
+                activity = Recovery(recovery);
+            }
+            else if (discussion.UnreadableKeys.ContainsKey(RecordKey.Recovery))
+            {
+                retrying++;
+                activity = new SessionActivity.Retrying(null, null);
             }
             else activity = new SessionActivity.Idle();
             // Observed input held in the controller until its session is idle.
@@ -206,6 +213,9 @@ public sealed class ControllerStatus : IDisposable
     }
 
     static string Time(DateTimeOffset value) => value.ToString("O", CultureInfo.InvariantCulture);
+
+    static SessionActivity.Recovering Recovery(CapacityRecovery recovery) =>
+        new(recovery.Attempts, Time(recovery.After), recovery.Selection.Model, recovery.Selection.Effort, recovery.Suspended);
 
     /// <summary>Records the end of this lifetime; a fatal failure remains the reported state.</summary>
     public void Dispose()
