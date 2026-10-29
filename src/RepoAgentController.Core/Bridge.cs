@@ -43,12 +43,21 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         // Turns end with the agent process of their lifetime, however their marker was left.
         foreach (var record in store.Discussions.Values.Where(record => record.Running is not null || record.UnreadableKeys.ContainsKey(RecordKey.Running)).ToArray())
         {
+            if (record.Recovery is { } recovery)
+                record.Recovery = recovery with { Suspended = "recovery turn ended with the controller; inspect prior work before continuing" };
             record.Running = null;
             record.UnreadableKeys.Remove(RecordKey.Running);
             store.Save();
         }
         foreach (var record in store.Discussions.Values.Where(record => record.Pending is not null).ToArray())
-            Interrupted(record);
+            if (record.Pending!.Operation == "capacity-recovery")
+            {
+                if (record.Recovery is { } recovery)
+                    record.Recovery = recovery with { Suspended = "recovery delivery acknowledgement was lost; inspect prior work before continuing" };
+                record.Pending = null;
+                store.Save();
+            }
+            else Interrupted(record);
     }
 
     public async Task<bool> Poll(CancellationToken ct)
@@ -302,7 +311,7 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         {
             Settle();
             // Unreadable waiting input fails its delivery below, as reading it for delivery did before the records were typed.
-            var ready = store.Discussions.Values.Where(record => (record.Waiting is not null || record.UnreadableKeys.ContainsKey(RecordKey.Waiting)) && record.Pending is null)
+            var ready = store.Discussions.Values.Where(record => (record.Recovery is not null || record.Waiting is not null || record.UnreadableKeys.ContainsKey(RecordKey.Waiting)) && record.Pending is null)
                 .OrderBy(record => record.Waiting?.Inputs[0].ObservedAt ?? DateTimeOffset.MinValue).ToArray();
             foreach (var record in ready)
             {
@@ -330,7 +339,8 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     TimeSpan NextRetry()
     {
         var now = clock.GetUtcNow();
-        var due = store.Discussions.Values.Select(record => record.Waiting is { } waiting ? RetryAt(waiting) : DateTimeOffset.MinValue)
+        var due = store.Discussions.Values.Select(record => record.Recovery is { Suspended: null } recovery && record.Running is null
+                ? recovery.After : record.Waiting is { } waiting && record.Recovery is not { Suspended: null } ? RetryAt(waiting) : DateTimeOffset.MinValue)
             .Where(at => at > now).DefaultIfEmpty().Min();
         return due == default ? Timeout.InfiniteTimeSpan : due - now;
     }
@@ -379,8 +389,13 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
     async Task<bool> Dispatch(DiscussionRecord record, CancellationToken ct)
     {
         if (admissionStopped) return false;
+        ct.ThrowIfCancellationRequested();
+        if (record.Recovery is { Suspended: null }) return await Recover(record, ct);
+        // A suspended intent never generates a turn. Explicit later participant input can still finish the work once normal
+        // credentials and checkout admission permit it, and only its successful outcome clears the retained intent.
+        if (record.Recovery is not null && record.Waiting is null) return false;
         // Its waiting input, session ID, and URL for the reports below, threw when read for delivery before the records were typed.
-        if (record.UnreadableKeys.FirstOrDefault(key => key.Key is RecordKey.Waiting or RecordKey.SessionId or RecordKey.Url).Value is { } unreadable) throw new InvalidDataException(unreadable.Reason);
+        if (record.UnreadableKeys.FirstOrDefault(key => key.Key is RecordKey.Waiting or RecordKey.SessionId or RecordKey.Url or RecordKey.Recovery).Value is { } unreadable) throw new InvalidDataException(unreadable.Reason);
         var waiting = record.Waiting!;
         var session = record.SessionId ?? "";
         var create = session.Length == 0;
@@ -464,11 +479,69 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         if (inputs.Count == 0) record.Waiting = null;
         record.Pending = null;
         // Status reports the running turn in every mode until the agent reports it completed.
-        record.Running = new(turn, clock.GetUtcNow());
+        record.Running = new(turn, clock.GetUtcNow()) { Selection = selection };
         store.Save();
         checkout?.Confirm();
         log.Write("forwarded", $"{record.Url} session={session} changes={count} sources={string.Join(',', receipts.Select(receipt => receipt.SubjectId))} waiting={inputs.Count} latest={latest}" + (redelivery ? " redelivery=true" : ""));
         foreach (var source in receipts) outbox.Receipt(source.SubjectId, source.Url, DiscussionMessage.HasEyes(source.ReactionGroups));
+        return true;
+    }
+
+    // Recovery is an instruction to inspect the existing history, never a replay of an accepted Discussion envelope.
+    async Task<bool> Recover(DiscussionRecord record, CancellationToken ct)
+    {
+        var recovery = record.Recovery!;
+        if (record.Problem is { } problem) throw new InvalidDataException(problem);
+        if (recovery.Suspended is not null || recovery.After > clock.GetUtcNow() || record.Running is not null ||
+            record.Pending is not null || sessions.AuthenticationFailure is not null || sessions.CredentialLost ||
+            sessions.ActiveTurns >= ActiveSessionLimit) return false;
+        var session = record.SessionId;
+        if (string.IsNullOrEmpty(session)) return false; // Never substitute a new session for the retained history.
+        if (sessions.Loaded(session) && !AgentSessions.Admits(sessions.Status(session))) return false;
+        using var checkout = admission is null ? null : await admission.Admit(ct);
+        var offered = false;
+        string turn;
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            checkout?.Bind(session);
+            await sessions.Load(session, ct);
+            if (!AgentSessions.Admits(sessions.Status(session))) { checkout?.Abandon(); return false; }
+            ct.ThrowIfCancellationRequested();
+            if (sessions.CredentialLost || sessions.AuthenticationFailure is not null) { checkout?.Abandon(); return false; }
+            record.Pending = new("capacity-recovery", clock.GetUtcNow(), [], 0);
+            store.Save();
+            offered = true;
+            var continuation = $"The accepted turn {recovery.FailedTurn} ended because model capacity was unavailable. " +
+                "Continue unfinished work in this same session. First inspect prior conversation history, the current workspace, " +
+                "and external effects (including GitHub replies, commits and pull requests) to determine what already happened. " +
+                "Preserve completed work and finish only what remains. Do not blindly replay the original request or assume no work ran. " +
+                "If the work is already complete, report that without repeating external effects. Keep the existing Discussion reply routing and authenticated identity.";
+            turn = await sessions.Accept(session, continuation, recovery.Selection, checkout is null ? null : checkout.Accepted, ct);
+        }
+        catch (Exception error) when (!ct.IsCancellationRequested && !sessions.CredentialLost)
+        {
+            try { if (!offered || AgentSessions.Refused(error)) checkout?.Abandon(); else checkout?.Unconfirmed(); }
+            finally
+            {
+                // A request failure is not a confirmed terminal capacity failure. Keep evidence and never blindly retry it.
+                record.Recovery = recovery with
+                {
+                    Suspended = offered && !AgentSessions.Refused(error)
+                    ? "recovery delivery acknowledgement uncertain; inspect prior work before continuing"
+                    : "recovery could not start; operator attention required"
+                };
+                record.Pending = null;
+                store.Save();
+                log.Write("capacity-recovery-held", $"{record.Url} session={session} reason={record.Recovery.Suspended}");
+            }
+            return false;
+        }
+        record.Pending = null;
+        record.Running = new(turn, clock.GetUtcNow()) { Selection = recovery.Selection };
+        store.Save();
+        checkout?.Confirm();
+        log.Write("capacity-recovery-started", $"{record.Url} session={session} turn={turn} attempts={recovery.Attempts} model={recovery.Selection.Model} effort={recovery.Selection.Effort}");
         return true;
     }
 
@@ -482,11 +555,27 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
         var events = new List<(string Kind, string Message)>();
         foreach (var outcome in ended)
         {
-            var batch = running.Remove(outcome.Turn, out var value) ? value : null;
-            var record = store.Discussions.Values.FirstOrDefault(record => record.Running?.Turn == outcome.Turn);
+            var record = store.Discussions.Values.FirstOrDefault(record => record.SessionId == outcome.Session && record.Running?.Turn == outcome.Turn);
             if (record is null) continue;
+            var batch = running.Remove(outcome.Turn, out var value) ? value : null;
+            var selection = record.Running!.Selection;
             record.Running = null;
             events.Add(("turn-ended", $"{record.Url} session={outcome.Session} turn={outcome.Turn} status={outcome.Status}"));
+            if (outcome.ModelCapacityFailure && selection is not null)
+            {
+                var recovery = new CapacityRecovery(outcome.Turn, selection, (record.Recovery?.Attempts ?? 0) + 1, clock.GetUtcNow() + TimeSpan.FromSeconds(120));
+                record.Recovery = recovery;
+                events.Add(("capacity-recovery-scheduled", $"{record.Url} session={outcome.Session} failed-turn={outcome.Turn} reason=model-capacity attempts={recovery.Attempts} retry-at={recovery.After:O} model={selection.Model} effort={selection.Effort}"));
+            }
+            else if (record.Recovery is { } recovery)
+            {
+                if (outcome.Status == "completed")
+                {
+                    record.Recovery = null;
+                    events.Add(("capacity-recovery-completed", $"{record.Url} session={outcome.Session} turn={outcome.Turn} attempts={recovery.Attempts}"));
+                }
+                else record.Recovery = recovery with { Suspended = "recovery ended without success: " + outcome.Status };
+            }
             if (outcome.CredentialsRejected && batch is not null) events.Add(("input-requeued", Requeue(record, batch, outcome.Turn)));
         }
         // A turn lost with its agent process (disconnect) reports no outcome.
@@ -495,6 +584,8 @@ public sealed class Bridge(string repository, IDiscussions discussions, AppIdent
             var turn = record.Running!.Turn;
             running.Remove(turn);
             record.Running = null;
+            if (record.Recovery is { } recovery)
+                record.Recovery = recovery with { Suspended = "agent runtime lost during recovery; checkout safety must be established before continuing" };
             events.Add(("turn-ended", $"{record.Url} session={record.SessionId ?? ""} turn={turn} status=lost"));
         }
         if (events.Count != 0)
