@@ -3,10 +3,22 @@
 ## [1.2.0](https://github.com/repoagent/controller/compare/broker-v1.1.0...broker-v1.2.0) (2026-10-29)
 
 
-### Features
+### Operator diagnostics
 
-* **broker:** add guarded retained-authority probe ([dff8a90](https://github.com/repoagent/controller/commit/dff8a90797165a6e7e690a44eeb52a9570dd759b))
-* **broker:** inspect fixed historical throttle request windows ([1336e76](https://github.com/repoagent/controller/commit/1336e7667331417729c673e9983b78b3954f6b12))
+* Add explicit main-only `operation=authority-probe` to the existing Broker workflow. It invokes the internal retained-authority inspector already shipped in broker 1.1.0, binding the accepted current-main source, published stable broker release, immutable image, ready revision and unique healthy replica before and after the fixed command. It uses the existing console authority and runtime identity; no new role, public HTTP endpoint or arbitrary command/target is introduced. See the [operator procedure](https://github.com/repoagent/controller/blob/broker-v1.2.0/docs/azure-auth-deployment.md#internal-retained-authority-observation).
+* Extend GET-only `operation=diagnostics` with fixed historical request summaries for October 27, 2026 21:30–22:15 UTC and October 28 05:30–06:30 UTC. The existing production Insights/workspace query emits only one-minute endpoint/status categories and bounded counts. Unknown routes become `other`; raw request names, URLs, properties, identifiers and caller/session data are not selected or exported. Stored rows, sampling-weighted represented requests and missing weights remain separate, with explicit incomplete coverage.
+
+### Upgrade and compatibility
+
+* Adopt a verified `broker-v1.2.0` immutable image deliberately through the existing paired API/cleanup deployment. Require matching release metadata, verified image identities, deployed digests and HTTPS readiness before reporting deployment complete. The workflow additions use accepted current-main source; the internal inspector requires broker 1.1.0 or newer and its fixed production runtime identity/Table bindings.
+* No controller upgrade, tool-pin update, credential or authorization migration, protocol/storage-schema migration, deployment-epoch change or RBAC expansion is required. Version selection does not authorize accounting repair, credential recovery, owner reassignment or storage restore. Existing enrollment, approval, renewal and settlement contracts remain unchanged.
+
+### Evidence and limitations
+
+* The real [authority probe 40786288383](https://github.com/repoagent/controller/actions/runs/40786288383) observed an unchanged vacant gate with zero pending and outstanding counts in its fixed operational test repository. The following [hosted smoke 40786967089](https://github.com/repoagent/controller/actions/runs/40786967089) passed fresh installation, Quick Tunnel delivery, EYES receipt, App reply and dashboard heartbeat. These are observations of those runs, not a general readiness, recovery or settlement guarantee. Hosted cleanup confirmed enrollment closure while still reporting outstanding tokens as unsettled.
+* The actual [historical diagnostics 40794497776](https://github.com/repoagent/controller/actions/runs/40794497776) successfully collected an empty request aggregate for both reported windows. Empty results do not prove zero traffic or explain the historical HTTP 429s. The affected source sampled request traces at 1%; retention, ingestion loss and caps can also limit coverage. Weighted counts are estimates, and aggregates cannot identify callers or historical limiter reasons. The investigation remains open under #269.
+* Retained-authority inspection still covers referenced rows only, uses bounded exact reads and detects observed drift without locking the deployment. Missing, malformed, changed or incomplete evidence stays explicit. Stored states, expired clocks and console-session completion do not prove capability settlement or remote process exit status.
+* This release does not establish physical historical rollback/restore acceptance, real renewal of a pre-upgrade enrollment, rendered GitHub light/dark or narrow-screen UI, or compatibility of a newer upstream tool candidate. Those require their own evidence; no automatic recovery or additional authority is granted.
 
 ## [1.1.0](https://github.com/repoagent/controller/compare/broker-v1.0.0...broker-v1.1.0) (2026-10-28)
 
