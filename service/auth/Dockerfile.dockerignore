@@ -3,6 +3,9 @@
 !global.json
 !Directory.Build.props
 !.editorconfig
+!src/
+!src/RepoAgent.LocalTelemetry/
+!src/RepoAgent.LocalTelemetry/**
 !service/
 !service/auth/
 !service/auth/global.json

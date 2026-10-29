@@ -87,6 +87,8 @@ public static class BridgeCommand
             var authorityFailed = false;
             // Before anything can start a child process; validated below like an enrollment file.
             var injectedEnrollment = BrokerTokenSource.TakeInjected(result.GetValue(enrollmentEnvironment));
+            using var localTracing = RepoAgent.LocalTelemetry.AgentTrace.Configure(Environment.GetEnvironmentVariable,
+                typeof(BridgeCommand).Assembly.GetName().Version?.ToString() ?? "unknown");
             try
             {
                 var repo = result.GetValue(repository)!;

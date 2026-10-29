@@ -288,6 +288,7 @@ sealed partial class Codex : IAgentRuntime, IAsyncDisposable
 
         public async Task<JsonNode> Request(string method, JsonNode parameters, CancellationToken ct)
         {
+            using var activity = RepoAgent.LocalTelemetry.AgentTrace.Start(method);
             var id = Interlocked.Increment(ref nextId);
             var completion = new TaskCompletionSource<JsonNode>(TaskCreationOptions.RunContinuationsAsynchronously);
             pending[id] = (method, completion);

@@ -69,7 +69,9 @@ Broker source also includes a maintainer-only [retained-authority observation co
 
 For implementation and design, see the [architecture decisions](docs/adr/), [domain glossary](GLOSSARY.md), [credential broker documentation](service/auth/README.md) and [Controller and Broker delivery workflows](docs/ci-cd.md).
 
-For local development, the [Aspire AppHost](service/auth/local-development.md) runs the broker, local storage and key-ring wrapping. It can also run a [configured native controller on Linux or macOS](docs/local-apphost.md) against a disposable repository. Real GitHub authentication requires an authorized developer's Azure CLI sign-in to the shared signing key; its private key is never copied.
+For local development, the [Aspire AppHost](service/auth/local-development.md) runs the broker, local storage and key-ring wrapping. It can also run a [configured native controller on Linux or macOS](docs/local-apphost.md) against a disposable repository. Optional `Controller:RepositorySettings=true` requires a matching repository-settings enrollment profile; it is disabled by default. Real GitHub authentication requires an authorized developer's Azure CLI sign-in to the shared signing key; its private key is never copied.
+
+The shared local AppHost exports privacy-limited broker request and controller RPC traces to its authenticated Aspire dashboard. Trace batches are optional and may be dropped; see the [local trace workflow](docs/local-apphost.md#local-traces).
 
 Broker-only isolated AppHost runs retain local emulator keys and can read existing wrapped key-ring material across randomized port changes; enrolled controllers require a stable broker origin.
 
