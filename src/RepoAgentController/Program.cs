@@ -13,6 +13,7 @@ namespace RepoAgentController
         // Also scoped to a lifetime's flow: its entries carry that lifetime's time.
         static readonly AsyncLocal<TimeProvider?> time = new();
         public static void Protect(string secret) => secrets.TryAdd(secret, 0);
+        internal static int ProtectedLength => secrets.Keys.Select(secret => secret.Length).DefaultIfEmpty().Max();
         /// <summary>Removes every known secret, as every log entry does.</summary>
         public static string Redact(string message)
         {
