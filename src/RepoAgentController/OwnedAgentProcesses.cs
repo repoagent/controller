@@ -22,10 +22,11 @@ internal sealed partial class OwnedAgentProcesses
         agent=$!
         exec 3<&-
         printf '\nREPOAGENT_AGENT_LAUNCHED\n' >&2
+        exec 1>&-
         result=0
         wait "$agent" || result=$?
         printf '\nREPOAGENT_AGENT_EXITED:%s\n' "$result" >&2
-        exec 1>&- 2>&-
+        exec 2>&-
         while IFS= read -r ignored; do :; done
         exit "$result"
         """;
@@ -72,8 +73,7 @@ internal sealed partial class OwnedAgentProcesses
                 var table = await Observe(deadline.Token);
                 // The trusted supervisor or a frozen live descendant pins each session's identity.
                 foreach (var witness in sessions.Values)
-                    if (!Same(witness) || !table.TryGetValue(witness.Process.Id, out var row) || row.State == 'Z' ||
-                        (witness.Process != root && row.State is not ('T' or 't')) || row.UnixSession != witness.UnixSession)
+                    if (!Witness(witness, table))
                         throw new IOException("Owned Unix session witness changed before capture could be proved");
                 var members = table.Values.Where(row => sessions.ContainsKey(row.UnixSession)).ToArray();
                 var changed = false;
@@ -82,6 +82,8 @@ internal sealed partial class OwnedAgentProcesses
                     if (row.Id == root.Id) continue;
                     if (!captured.TryGetValue(row.Id, out var identity) || !Same(identity))
                     {
+                        if (sessions.Values.Any(witness => witness.Process.Id == row.Id))
+                            throw new IOException("Owned session witness changed during member capture");
                         identity = Capture(row, captured);
                         changed = true;
                         if (identity is null) continue;
@@ -91,18 +93,9 @@ internal sealed partial class OwnedAgentProcesses
                     Signal(identity, OperatingSystem.IsMacOS() ? 17 : 19);
                     changed = true;
                 }
-                // Preserve tree coverage for observable descendants that deliberately create another Unix session.
-                foreach (var row in table.Values.Where(row => row.State != 'Z' && !sessions.ContainsKey(row.UnixSession)))
-                {
-                    if (!captured.TryGetValue(row.Parent, out var parent) || !table.TryGetValue(row.Parent, out var owner) ||
-                        (parent.Process != root && owner.State is not ('T' or 't'))) continue;
-                    if (!Same(parent)) throw new IOException("Owned descendant ancestry changed before session capture");
-                    var identity = captured.GetValueOrDefault(row.Id) ?? Capture(row, captured)
-                        ?? throw new IOException("Owned descendant exited before its new Unix session could be captured");
-                    await Freeze(identity, deadline.Token);
-                    sessions.Add(identity.UnixSession, identity);
-                    changed = true;
-                }
+                // Keep this original snapshot through adoption: a listed live foreign descendant cannot disappear
+                // or lose its parent before proof and then silently cease to be a teardown obligation.
+                changed |= await AdoptSessions(table, sessions, captured, deadline.Token);
                 if (!changed) break; // Only the trusted no-fork supervisor can still execute.
                 await Task.Delay(5, deadline.Token);
             }
@@ -128,6 +121,52 @@ internal sealed partial class OwnedAgentProcesses
         }
     }
 
+    bool Witness(Identity identity, Dictionary<int, Observation> table) =>
+        Same(identity) && table.TryGetValue(identity.Process.Id, out var row) && row.State != 'Z' &&
+        (identity.Process == root || row.State is 'T' or 't') && row.UnixSession == identity.UnixSession;
+
+    async Task<bool> AdoptSessions(Dictionary<int, Observation> table, Dictionary<int, Identity> sessions,
+        Dictionary<int, Identity> captured, CancellationToken ct)
+    {
+        var remaining = table.Values.Where(row => row.State != 'Z' && !sessions.ContainsKey(row.UnixSession)).ToDictionary(row => row.Id);
+        var changed = false;
+        bool adopted;
+        do
+        {
+            adopted = false;
+            foreach (var row in remaining.Values.ToArray())
+            {
+                ct.ThrowIfCancellationRequested();
+                if (sessions.ContainsKey(row.UnixSession)) { remaining.Remove(row.Id); continue; }
+                if (!table.TryGetValue(row.Parent, out var owner) || !sessions.ContainsKey(owner.UnixSession)) continue;
+                if (!captured.TryGetValue(owner.Id, out var parent))
+                    parent = Capture(owner, captured) ?? throw new IOException("Observed owned parent exited before foreign-session capture");
+                if (!Same(parent)) throw new IOException("Observed owned parent changed before foreign-session capture");
+                if (parent.Process != root) await Freeze(parent, ct);
+
+                // A foreign SID is not pinned yet. Do not promote this candidate into failure cleanup's kill set
+                // until a newer observation binds its captured birth/session to the same confirmed owned parent.
+                var candidate = ReadIdentity(row) ?? throw new IOException("Observed foreign descendant exited before origin could be proved");
+                var retained = false;
+                try
+                {
+                    var current = await Observe(ct);
+                    if (!Witness(parent, current) || !current.TryGetValue(row.Id, out var child) || child.State == 'Z' ||
+                        child.Parent != parent.Process.Id || child.UnixSession != candidate.UnixSession || !Same(candidate))
+                        throw new IOException("Foreign descendant origin changed before capture could be proved");
+                    Retain(candidate, captured);
+                    retained = true;
+                    await Freeze(candidate, ct);
+                    sessions.Add(candidate.UnixSession, candidate);
+                }
+                finally { if (!retained) candidate.Process.Dispose(); }
+                remaining.Remove(row.Id);
+                adopted = changed = true;
+            }
+        } while (adopted);
+        return changed;
+    }
+
     static async Task ConfirmStopped(IReadOnlyCollection<Identity> identities, CancellationToken ct)
     {
         while (identities.Count != 0)
@@ -140,7 +179,21 @@ internal sealed partial class OwnedAgentProcesses
 
     static Identity? Capture(Observation row, Dictionary<int, Identity> captured)
     {
-        if (captured.Count >= 512 && !captured.ContainsKey(row.Id)) throw new IOException("Owned agent capture exceeded its process bound");
+        var identity = ReadIdentity(row);
+        if (identity is null) return null;
+        try { Retain(identity, captured); return identity; }
+        catch { identity.Process.Dispose(); throw; }
+    }
+
+    static void Retain(Identity identity, Dictionary<int, Identity> captured)
+    {
+        if (captured.Count >= 512 && !captured.ContainsKey(identity.Process.Id)) throw new IOException("Owned agent capture exceeded its process bound");
+        if (captured.Remove(identity.Process.Id, out var previous)) previous.Process.Dispose();
+        captured.Add(identity.Process.Id, identity);
+    }
+
+    static Identity? ReadIdentity(Observation row)
+    {
         Process? process = null;
         try
         {
@@ -149,8 +202,6 @@ internal sealed partial class OwnedAgentProcesses
             var session = Session(process.Id);
             if (session == -1 && Marshal.GetLastPInvokeError() == 3) { process.Dispose(); return null; }
             if (session != row.UnixSession) throw new IOException("Owned process changed Unix session during capture");
-            if (captured.Remove(row.Id, out var previous)) previous.Process.Dispose();
-            captured.Add(row.Id, identity);
             return identity;
         }
         catch (ArgumentException) { process?.Dispose(); return null; }
