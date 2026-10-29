@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.3.0](https://github.com/repoagent/controller/compare/broker-v1.2.0...broker-v1.3.0) (2026-10-29)
+
+### Operator restore tools
+
+- Add an offline isolated-foundation planner with a fresh run identifier, fixed resource bindings and run-owned storage, wrapping key, identities and isolated Azure environment/monitoring resources. The compiled foundation references the shared vault without rewriting it; it enables no API traffic, cleanup worker, role assignment or restore. Corrected names leave room for Azure's cleanup Job limit. A previously partial run needs a fresh identifier and separately verified retirement, not an in-place naming migration. ([#310](https://github.com/repoagent/controller/pull/310), [#321](https://github.com/repoagent/controller/pull/321))
+- Add explicit source-tree `RestoreTable` operator commands for fresh initialization, private two-pass typed snapshot, fresh-target Add-only restore and exact verification. Commands are bound to the run-owned account and `brokerrehearsal`/`brokerrestore` Tables, preserve application EDM values and refuse ambiguous, incomplete or existing targets. They do not select production state, upsert/repair rows, reset accounting or change the deployment epoch. Use the pinned SDK and native Linux/WSL filesystem; snapshots and receipts remain private. ([#315](https://github.com/repoagent/controller/pull/315))
+- Every live run separately requires established operator permissions, complete inventories, positive capability settlement, signing/HTTP/worker fences and verified source/target/key-ring/image bindings. These tools do not automate disaster recovery, production restore or authorization. See the [procedure, bounds and recorded rehearsal](https://github.com/repoagent/controller/blob/main/docs/broker-restore-rehearsal.md).
+
+### Local development fixes
+
+- Development-only key resolution reads retained local key-ring material through the current loopback vault endpoint while preserving the configured wrapping-key name and pinned versions. Foreign keys, remote/decorated identifiers and invalid development configuration remain refused; production key resolution is unchanged. ([#313](https://github.com/repoagent/controller/pull/313))
+- Developer Azure CLI credential acquisition and Key Vault signing share a six-second budget, with each CLI process/network request still bounded to three seconds. The enclosing broker operation budget and production signing deadline are unchanged. ([#316](https://github.com/repoagent/controller/pull/316))
+- Explicit local Aspire AppHost configuration enables private bounded broker/controller traces. Normal production telemetry configuration is unchanged; agent/tool children do not inherit collector configuration or credentials. Keep diagnostic bundles private. ([#325](https://github.com/repoagent/controller/pull/325))
+
+### Upgrade and qualification
+
+- Adopt a verified `broker-v1.3.0` immutable image through the normal paired API/cleanup deployment; require matching release metadata, deployed digests and HTTPS readiness before claiming deployment success. Existing enrollment, approval, renewal, revocation and quota/settlement contracts remain unchanged. Normal adoption requires no controller upgrade, credential/profile migration, protocol/storage-schema version change, epoch change or RBAC expansion. A restore rehearsal's separately authorized grants/fences are not ordinary upgrade steps.
+- The recorded isolated rehearsal verified typed snapshot/restore, old-epoch grant denial without state writes, preserved revocation, actual alert firing/resolution and operator notifications, and run-owned retirement. It used the already published Broker 1.2.0 image with the new source-tree utilities; it is not Broker 1.3.0 production deployment or soak evidence. Failed/partial/timeout observations remain documented. No historical HTTP 429 cause, current ongoing-fault outcome, automatic recovery or separate 24-hour cleanup/retention acceptance is inferred.
+- This release preserves Controller 1.1.0 and its qualified tool pins; broker and controller versions remain independent. No tag, image, running controller or broker deployment changes merely because these notes are approved.
+
 ## [1.2.0](https://github.com/repoagent/controller/compare/broker-v1.1.0...broker-v1.2.0) (2026-10-29)
 
 
