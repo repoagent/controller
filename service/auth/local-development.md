@@ -30,6 +30,8 @@ The `initialize` process creates a dedicated **local** `brokerstate` Table, seed
 
 Broker-only isolated runs can reuse persisted emulator keys after Aspire changes the published loopback port. Initialization preserves each local key's name and version while binding its URI to the current local vault endpoint. Shared signing key URIs remain exactly as configured. Configured controller enrollments still require their stable saved broker origin.
 
+Existing encrypted local key-ring material can also be read after the emulator's published port changes. Development-only wrapping-key resolution accepts historical bare loopback HTTPS identifiers for the configured wrapping key name, preserves their pinned versions and uses the current local vault. Foreign key names, remote authorities and unpinned or decorated identifiers are refused. Production key resolution remains unchanged.
+
 ## Signing and real GitHub access
 
 The default generated signing key supports local cryptographic/storage debugging. It cannot authenticate as the published GitHub App, so it does not establish real enrollment or token issuance. The application's App ID and permission profiles remain fixed.
