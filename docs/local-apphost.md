@@ -58,7 +58,7 @@ Optional `Controller` settings:
 | `MentionUser` | Optional mention account; replies still come from the App. |
 | `DashboardCategory` | Existing category for the optional owned dashboard. |
 | `Clone` | Set true only for the enrollment's explicit clone profile. |
-| `RepositorySettings` | Set true only for its explicit repository-settings profile. |
+| `RepositorySettings` | Set true to forward `--repository-settings`, only for its explicit repository-settings profile; false or absent keeps it disabled. |
 
 The `polling` enrollment in the example uses neither profile flag. Repository, App ID, origin and flags must match the saved binding; the controller performs the normal validation. The AppHost requires an HTTPS `localhost` origin belonging to its own local broker and fixes the broker's public/process endpoint to that port. State and Codex storage must be outside the source checkout. It does not copy existing production enrollments or change their origin.
 

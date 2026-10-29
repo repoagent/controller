@@ -25,11 +25,14 @@ public sealed class SharedAppHostTests
         });
         Assert.Contains("saved, stable broker origin", error.Message, StringComparison.Ordinal);
     }
-    [Fact]
-    public async Task A_configured_controller_is_part_of_the_shared_AppHost()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    [InlineData(null)]
+    public async Task A_configured_controller_forwards_only_enabled_repository_settings(bool? repositorySettings)
     {
-        using var builder = await DistributedApplicationTestingBuilder.CreateAsync<Projects.RepoAgent_Auth_AppHost>(
-        [
+        var configuration = new List<string>
+        {
             "DcpPublisher:RandomizePorts=false",
             "Controller:Repository=repoagent/e2e-composition",
             "Controller:BrokerOrigin=https://localhost:7443",
@@ -38,9 +41,19 @@ public sealed class SharedAppHostTests
             $"Controller:StateDirectory={Path.Combine(Path.GetTempPath(), "repoagent-composition-state")}",
             "Parameters:controller-enrollment={}",
             "SharedSigningKeyUri=https://example.vault.azure.net/keys/signing/version"
-        ], TestContext.Current.CancellationToken);
+        };
+        if (repositorySettings is not null) configuration.Add($"Controller:RepositorySettings={repositorySettings}");
+        using var builder = await DistributedApplicationTestingBuilder.CreateAsync<Projects.RepoAgent_Auth_AppHost>(
+            [.. configuration], TestContext.Current.CancellationToken);
 
-        Assert.Contains("controller", builder.Resources.Select(resource => resource.Name));
+        var controller = Assert.Single(builder.Resources, resource => resource.Name == "controller");
+        var arguments = new List<object>();
+        var argumentsContext = new CommandLineArgsCallbackContext(arguments, controller, TestContext.Current.CancellationToken);
+        foreach (var annotation in controller.Annotations.OfType<CommandLineArgsCallbackAnnotation>())
+            await annotation.Callback(argumentsContext);
+
+        Assert.Equal(repositorySettings == true ? 1 : 0, arguments.Count(argument => argument as string == "--repository-settings"));
+
         foreach (var name in new[] { "auth", "controller" })
         {
             var resource = Assert.Single(builder.Resources, resource => resource.Name == name);
