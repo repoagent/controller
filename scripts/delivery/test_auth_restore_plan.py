@@ -24,7 +24,7 @@ class RestorePlanTests(unittest.TestCase):
         self.assertEqual(plan['operation'], 'offline-plan')
         self.assertFalse(plan['cloudAccessed'])
         self.assertEqual(plan['parameters']['runId']['value'], '20261029-a1b2c3')
-        self.assertEqual(plan['resources']['appName'], 'repoagent-r230-20261029-a1b2c3')
+        self.assertEqual(plan['resources']['appName'], 'r230-20261029-a1b2c3')
         self.assertEqual(plan['resources']['storageName'], 'ra23020261029a1b2c3')
         self.assertEqual(plan['resources']['wrappingKeyName'], 'restore230-20261029-a1b2c3-wrap')
         self.assertEqual(plan['resources']['vaultName'], 'repoagent-auth-kv')
@@ -42,6 +42,16 @@ class RestorePlanTests(unittest.TestCase):
                 result = self.plan(run_id)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, '')
+
+    def test_provider_failure_run_fits_cleanup_job_name_limit(self):
+        result = self.plan('20261029-9f3a76')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        resources = json.loads(result.stdout)['resources']
+        self.assertLessEqual(len(resources['appName'] + '-cleanup'), 32)
+        self.assertEqual(resources['appName'], 'r230-20261029-9f3a76')
+        self.assertTrue(resources['cleanupIdentityId'].endswith('/r230-20261029-9f3a76-cleanup'))
+        self.assertEqual(resources['storageName'], 'ra230202610299f3a76')
+        self.assertEqual(resources['wrappingKeyName'], 'restore230-20261029-9f3a76-wrap')
 
 
 if __name__ == '__main__':

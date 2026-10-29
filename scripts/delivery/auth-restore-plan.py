@@ -20,7 +20,7 @@ def main():
     subscription = '46f7e5d6-05f3-435b-8089-6c63a203dbfa'
     group = 'rg-repoagent-controller-auth'
     scope = f'/subscriptions/{subscription}/resourceGroups/{group}'
-    app = 'repoagent-r230-' + args.run_id
+    app = 'r230-' + args.run_id
     storage = 'ra230' + args.run_id.replace('-', '')
     wrapping = 'restore230-' + args.run_id + '-wrap'
     vault = scope + '/providers/Microsoft.KeyVault/vaults/repoagent-auth-kv'
