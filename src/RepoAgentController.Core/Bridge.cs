@@ -10,8 +10,20 @@ namespace RepoAgentController;
 /// </summary>
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001", Justification = "Managed-only semaphores have no wait handles; callbacks and dispatch share their lifetime and may still unwind during controller shutdown.")]
 public sealed class Bridge(string repository, IDiscussions discussions, AppIdentity identity, AgentSessions sessions, StateStore store, GitHubOutbox outbox,
-    HashSet<int> enroll, RepositorySettingsRefresh settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? admission = null)
+    HashSet<int> enroll, RepositorySettingsRefresh settings, IAgentInput input, IControllerLog log, TimeProvider clock, ICheckoutAdmission? admission = null) : IActivitySessions
 {
+    /// <summary>Copies only valid mappings under the same gate as observation and dispatch; inspection cannot steer work.</summary>
+    public async Task<IReadOnlyList<ActivitySession>> ActivitySessions(CancellationToken ct)
+    {
+        await gate.WaitAsync(ct);
+        try
+        {
+            return store.Discussions.Values.Where(record => record.Problem is null && record.SessionId is { Length: > 0 })
+                .Select(record => new ActivitySession(record.Url, record.SessionId!, record.Url == outbox.DashboardUrl)).ToArray();
+        }
+        finally { gate.Release(); }
+    }
+
     // Envelope characters per dispatched batch; the pinned agent rejects turn input above 1,048,576 characters.
     const int MaximumBatchCharacters = 256 * 1024;
     // Bootstrap context characters, leaving room in the first batch for the Discussion and its first changes.
