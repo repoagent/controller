@@ -92,6 +92,7 @@ public sealed class ControllerDashboard : IAsyncDisposable
             : snapshot.Authentication.State == "failed" ? "🔴 GitHub authentication failed"
             : snapshot.CodexAuthentication.State == "failed" ? "🔴 Codex authentication failed"
             : snapshot.Work.AdmissionBlocked == true ? $"🟠 Dispatch blocked · {snapshot.Work.Waiting} queued"
+            : snapshot.Sessions.Any(session => session.Activity is SessionActivity.Recovering { Failure.Kind: not AgentFailureKind.ModelCapacity }) ? "🟠 Transient provider recovery"
             : snapshot.Sessions.Any(session => session.Activity is SessionActivity.Recovering) ? "🟠 Model capacity recovery"
             : usage?.Fresh(now) == true && usage.Exhausted ? "🟠 Usage exhausted" + (usage.Reset is { } reset ? " · resets " + reset.UtcDateTime.ToString("dd MMM yyyy HH:mm 'UTC'", CultureInfo.InvariantCulture) : "")
             : null;
@@ -167,7 +168,8 @@ public sealed class ControllerDashboard : IAsyncDisposable
             {
                 SessionActivity.Pending => "awaiting agent acknowledgement",
                 SessionActivity.Retrying retry => $"delivery failed or was unacknowledged; attempt {(retry.Attempts ?? 0) + 1} at {Time(retry.RetryAt ?? "")}",
-                SessionActivity.Recovering recovery => "model capacity recovery; " + (recovery.TurnRunning ? "running a turn; " : "") +
+                SessionActivity.Recovering recovery => (recovery.Failure.Kind == AgentFailureKind.ModelCapacity
+                    ? "model capacity recovery; " : $"{recovery.Failure.Description} recovery; ") + (recovery.TurnRunning ? "running a turn; " : "") +
                     $"attempts {recovery.Attempts}; {(recovery.TurnRunning ? "scheduled" : "next retry")} {Time(recovery.RetryAt)}; model {recovery.Model}; effort {recovery.Effort}" +
                     (recovery.Suspended is { } suspended ? $"; held: {redact(suspended)}" : ""),
                 SessionActivity.Running turn => stopped is null ? $"running a turn since {Time(turn.Since ?? "")}" : "its turn ended with the controller",

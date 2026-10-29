@@ -36,6 +36,7 @@ public abstract record SessionActivity(string State)
     public sealed record Recovering(int Attempts, string RetryAt, string Model, string Effort, string? Suspended) : SessionActivity("recovering")
     {
         public bool TurnRunning { get; init; }
+        public AgentFailure Failure { get; init; } = new(AgentFailureKind.ModelCapacity);
     }
 
     /// <summary>A running turn, with its start time when the saved record holds one.</summary>

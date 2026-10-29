@@ -76,8 +76,38 @@ public sealed record AgentTurnStarted(int Epoch, string SessionId, string? TurnI
 public sealed record AgentTurnCompleted(int Epoch, string SessionId, string? TurnId, AgentTurnStatus Status, string ReportedStatus,
     string? CredentialRejection) : AgentRuntimeEvent(Epoch)
 {
-    /// <summary>True only for the runtime's structured terminal model-capacity category, never inferred from message text.</summary>
-    public bool ModelCapacityFailure { get; init; }
+    /// <summary>Structured terminal failure facts, never inferred from message text or intermediate retry notifications.</summary>
+    public AgentFailure? Failure { get; init; }
+}
+
+/// <summary>Structured failure facts; the core decides whether they permit paced continuation.</summary>
+public enum AgentFailureKind { ModelCapacity, RequestThrottled, HttpConnection, StreamConnection, StreamDisconnected, ResponseAttemptsExhausted }
+
+public sealed record AgentFailure(AgentFailureKind Kind, int? HttpStatus = null)
+{
+    public bool Recoverable => Kind switch
+    {
+        AgentFailureKind.ModelCapacity or AgentFailureKind.RequestThrottled => HttpStatus is null,
+        AgentFailureKind.HttpConnection or AgentFailureKind.StreamConnection or AgentFailureKind.StreamDisconnected or
+            AgentFailureKind.ResponseAttemptsExhausted => HttpStatus is 408 or 500 or 502 or 503 or 504,
+        _ => false
+    };
+    public string Reason => Kind switch
+    {
+        AgentFailureKind.ModelCapacity => "model-capacity",
+        AgentFailureKind.RequestThrottled => "request-throttled",
+        AgentFailureKind.HttpConnection => "http-connection",
+        AgentFailureKind.StreamConnection => "stream-connection",
+        AgentFailureKind.StreamDisconnected => "stream-disconnected",
+        AgentFailureKind.ResponseAttemptsExhausted => "response-attempts-exhausted",
+        _ => "unknown"
+    };
+    public string Description => Kind switch
+    {
+        AgentFailureKind.ModelCapacity => "model capacity was unavailable",
+        AgentFailureKind.RequestThrottled => "request throttling",
+        _ => $"{Reason} (HTTP {HttpStatus})"
+    };
 }
 
 /// <summary>The runtime process stopped answering; its sessions and turns are gone.</summary>

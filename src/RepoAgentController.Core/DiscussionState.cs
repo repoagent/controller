@@ -221,10 +221,11 @@ public sealed record RunningTurn(string Turn, DateTimeOffset Since)
     public ModelChoice? Selection { get; init; }
 }
 
-/// <summary>Durable intent to continue unfinished work in the original session and exact selection after terminal capacity failure.
+/// <summary>Durable intent to continue unfinished work in the original session and exact selection after confirmed terminal provider failure.
 /// A suspended intent retains evidence without automatically retrying an unrelated failure or an uncertain delivery.</summary>
 public sealed record CapacityRecovery(string FailedTurn, ModelChoice Selection, int Attempts, DateTimeOffset After)
 {
+    public AgentFailure Failure { get; init; } = new(AgentFailureKind.ModelCapacity);
     public string? Suspended { get; init; }
     public IReadOnlyList<UnknownKey> Unknown { get; init; } = [];
 }
