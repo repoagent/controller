@@ -23,7 +23,7 @@ import unittest
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
-CONTROLLER = ROOT / 'src/RepoAgentController/bin/Release/net11.0/RepoAgentController.dll'
+CONTROLLER = ROOT / 'src/RepoAgentController/bin/Release/net11.0/repoagent.dll'
 DRIVER = ROOT / 'tests/installers/CredentialDriver/bin/Release/net11.0/CredentialDriver.dll'
 
 

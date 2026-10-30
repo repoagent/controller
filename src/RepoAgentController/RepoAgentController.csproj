@@ -3,7 +3,7 @@
     <OutputType>Exe</OutputType>
     <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../../releases/controller/version.txt').Trim())</Version>
     <ControllerReleaseNotesPath Condition="'$(ControllerReleaseNotesPath)' == ''">$(MSBuildThisFileDirectory)../../releases/controller/RELEASE_NOTES.md</ControllerReleaseNotesPath>
-    <AssemblyName>RepoAgentController</AssemblyName>
+    <AssemblyName>repoagent</AssemblyName>
     <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

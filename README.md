@@ -48,6 +48,8 @@ A normal SIGTERM or Ctrl+C stop of a long-running controller holds new input and
 
 Keep the controller and its host running to receive activity. Preserve its state and Codex storage across restarts. If you enable repository context, the managed checkout is disposable; the agent uses separate worktrees for edits. The supplied GitHub permission profiles support Discussions and optional code reading; they do not grant code pushes or pull request creation. Issues and pull requests are not conversation entry points.
 
+The native controller command is now `repoagent`. This is a breaking rename: `RepoAgentController` is no longer installed and has no compatibility alias. Adopt matching native clients, host wrappers and controller images, update any executable invocations, and restart the selected controller. Preserve its existing state, journals and Codex storage; this upgrade requires neither controller re-enrollment nor a session/state reset.
+
 Controller and credential broker versions are proposed independently through reviewable Release Please PRs. Image adoption remains deliberate; older controllers require one manual move from legacy baseline tags to a verified semantic image. See the [component release policy](docs/releases.md) for compatibility, source attribution and tag protection. Maintainers can [recover a partial controller publication](docs/ci-cd.md#controller-releases) from its retained verified artifact without rebuilding or overwriting its version image.
 
 ## Configuration and operations
