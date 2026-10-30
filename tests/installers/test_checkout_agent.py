@@ -91,7 +91,7 @@ class CheckoutShippingContainer(unittest.TestCase):
             config = home / 'config.toml'
             config.write_text('model_reasoning_effort = "medium"\n'); config.chmod(0o600)
             docker = ['docker', '--host=unix:///var/run/docker.sock', 'run', '--rm', '--add-host', 'host.docker.internal:host-gateway',
-                      '--mount', f'type=bind,src={directory},dst={directory}', '--entrypoint', '/opt/repoagent/controller/RepoAgentController']
+                      '--mount', f'type=bind,src={directory},dst={directory}', '--entrypoint', '/opt/repoagent/controller/repoagent']
             proxy = 'http://host.docker.internal:' + str(provider.server.server_address[1])
             environment = dict(HTTPS_PROXY=proxy, HTTP_PROXY=proxy, ALL_PROXY='', NO_PROXY='',
                                https_proxy=proxy, http_proxy=proxy, all_proxy='', no_proxy='',

@@ -32,9 +32,9 @@
       <Output TaskParameter="TargetOutputs" ItemName="_ControllerTarget" />
     </MSBuild>
     <ItemGroup>
-      <_ControllerExecutable Include="@(_ControllerTarget)" Condition="'%(_ControllerTarget.Filename)' == 'RepoAgentController'" />
-      <_ControllerRuntimeDescriptor Include="@(_ControllerExecutable->'%(RootDir)%(Directory)RepoAgentController.runtimeconfig.json')" />
-      <_ControllerRuntimeDescriptor Include="@(_ControllerExecutable->'%(RootDir)%(Directory)RepoAgentController.deps.json')" />
+      <_ControllerExecutable Include="@(_ControllerTarget)" Condition="'%(_ControllerTarget.Filename)' == 'repoagent'" />
+      <_ControllerRuntimeDescriptor Include="@(_ControllerExecutable->'%(RootDir)%(Directory)repoagent.runtimeconfig.json')" />
+      <_ControllerRuntimeDescriptor Include="@(_ControllerExecutable->'%(RootDir)%(Directory)repoagent.deps.json')" />
     </ItemGroup>
     <Copy SourceFiles="@(_ControllerRuntimeDescriptor)" DestinationFolder="$(OutDir)" />
   </Target>

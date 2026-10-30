@@ -24,7 +24,7 @@ CODEX_SUPPLY = Path('/data/credentials/codex-supply/auth.json')
 SKILLS = Path('/data/config/skills')
 REQUIRED_SKILLS = ('github-discussion', 'repoagent-orientation')  # Packaged beside the controller.
 STATE = '/data/state/bridge.json'
-CONTROLLER = ['/opt/repoagent/controller/RepoAgentController']
+CONTROLLER = ['/opt/repoagent/controller/repoagent']
 INVENTORY = '/opt/repoagent/image-inventory.json'
 # Externally injected controller credential: the unchanged enrollment document. Only the
 # controller process receives it; it is never written, logged or passed as an argument.
@@ -399,7 +399,7 @@ def main():
     elif args.command == 'versions':
         print('RepoAgent container; uid=' + str(os.getuid()), flush=True)
         version = subprocess.check_output(CONTROLLER + ['--version'], text=True).strip()
-        print('RepoAgentController version: ' + version, flush=True)
+        print('repoagent version: ' + version, flush=True)
         run([sys.executable, '--version'])
         for name in ['gh', 'codex', 'rg', 'cloudflared']:
             if shutil.which(name): run([name, '--version'])

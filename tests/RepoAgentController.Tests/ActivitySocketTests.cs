@@ -38,7 +38,7 @@ public sealed class ActivitySocketTests
                 });
                 var start = new ProcessStartInfo(AppGitHubCommand.FindExecutable("dotnet"))
                 { RedirectStandardOutput = true, RedirectStandardError = true };
-                foreach (var argument in new[] { Path.Combine(AppContext.BaseDirectory, "RepoAgentController.dll"), "activity", "--state", state,
+                foreach (var argument in new[] { Path.Combine(AppContext.BaseDirectory, "repoagent.dll"), "activity", "--state", state,
                     "--discussion", "42", "--format", "json" }) start.ArgumentList.Add(argument);
                 using var command = Process.Start(start)!;
                 var stdout = command.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);

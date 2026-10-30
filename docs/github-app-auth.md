@@ -20,7 +20,7 @@ Webhook mode additionally requires owner-approved **Webhooks: read and write** a
 Obtain a private enrollment through the [controller enrollment client](controller-enrollment.md), using the broker operator's canonical HTTPS origin. The deployed maintainer broker is described in [Azure operations](azure-auth-deployment.md). The protected [v1 enrollment file](broker-protocol.md) lets the Linux/macOS controller authenticate without an App PEM; full hosted controller handover and lifecycle acceptance remain separate gates.
 
 ```sh
-RepoAgentController --repo OWNER/REPO --app-id NUMERIC_APP_ID \
+repoagent --repo OWNER/REPO --app-id NUMERIC_APP_ID \
   --broker-url https://credentials.example.org \
   --enrollment-file /run/secrets/controller-enrollment.json \
   --state /data/bridge-state.json --check-auth
@@ -49,7 +49,7 @@ enrollment="$HOME/.repoagent/instances/YOUR_INSTANCE/enrollment.json"
 check_state="$HOME/.repoagent/agent-auth-check"
 install -d -m 700 "$check_state"
 
-dotnet run --project src/RepoAgentController -- \
+dotnet run --project src/repoagent -- \
   --repo OWNER/REPO --app-id APP_ID \
   --broker-url https://credentials.example.org \
   --enrollment-file "$enrollment" \
@@ -111,7 +111,7 @@ A checkpoint is bound to its repository and authenticated actor. Renaming an App
 
 ## Dedicated mention account
 
-RepoAgent uses `@repoagent` as its operator-controlled mention identity; the GitHub App remains the authenticated publisher. Configure `RepoAgentController ... --mention-user repoagent` (omit `@`). This optional setting supports another existing dedicated user too. Startup resolves the real GitHub user through the App-authenticated API and rejects malformed, missing or organization accounts. The mention identity is reported separately from the actual App actor and does not change checkpoint ownership or existing agent sessions.
+RepoAgent uses `@repoagent` as its operator-controlled mention identity; the GitHub App remains the authenticated publisher. Configure `repoagent ... --mention-user repoagent` (omit `@`). This optional setting supports another existing dedicated user too. Startup resolves the real GitHub user through the App-authenticated API and rejects malformed, missing or organization accounts. The mention identity is reported separately from the actual App actor and does not change checkpoint ownership or existing agent sessions.
 
 The bridge reads GitHub's rendered `bodyHTML` and recognizes `a.user-mention` links to that account. Emphasized mentions work; plain profile links, inline code, fenced code and email addresses are not mention links. Rendering metadata stays out of checkpoints and forwarded context, so render-only changes do not replay accepted content. The actual App bot mention and explicit URL enrollment remain available.
 

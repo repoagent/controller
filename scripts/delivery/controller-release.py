@@ -166,7 +166,7 @@ def verify_native(archive, version, commit, notes):
             if not item.isfile() or digest(package.extractfile(item).read()) != match[1]:
                 raise ValueError('Native artifact checksum mismatch')
             checked[match[2]] = match[1]
-        if not {'RepoAgentController', 'VERSION', 'RELEASE_NOTES.md', 'github-discussion/SKILL.md', 'repoagent-orientation/SKILL.md'}.issubset(checked):
+        if not {'repoagent', 'VERSION', 'RELEASE_NOTES.md', 'github-discussion/SKILL.md', 'repoagent-orientation/SKILL.md'}.issubset(checked):
             raise ValueError('Native artifact checksum manifest omits required files')
         version_file = package.extractfile(prefix + 'VERSION').read().decode()
         if f'version={version}\n' not in version_file or f'source_commit={commit}\n' not in version_file:
