@@ -32,7 +32,8 @@ static class RemoteCommand
                     else Console.Error.WriteLine($"{outcome.Outcome}: {outcome.Message}");
                     return 1; // Neither refusal nor unavailability confirms an administrative operation.
                 }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { return 0; }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                { Console.Error.WriteLine("Remote command canceled; the operation is unconfirmed."); return 1; }
                 catch (LocalProtocolException error) { Console.Error.WriteLine(error.Message); return 1; }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Net.Sockets.SocketException or
                     JsonException or OperationCanceledException or ArgumentException)
