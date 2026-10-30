@@ -113,3 +113,6 @@ src/RepoAgent.LocalTelemetry/RepoAgent.LocalTelemetry.csproj
 src/RepoAgent.LocalTelemetry/LocalTraceSettings.cs
 src/RepoAgent.LocalTelemetry/LocalTraceExport.cs
 src/RepoAgent.LocalTelemetry/AgentTrace.cs
+src/RepoAgentController/LocalControllerClient.cs
+src/RepoAgentController/RemoteCommand.cs
+src/RepoAgentController/UnixPeer.cs

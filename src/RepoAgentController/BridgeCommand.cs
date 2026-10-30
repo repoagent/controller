@@ -61,6 +61,7 @@ public static class BridgeCommand
         });
         root.Subcommands.Add(statusCommand);
         ActivityCommand.Add(root);
+        RemoteCommand.Add(root);
         var recoveryState = new Option<FileInfo>("--state") { Required = true };
         var recoveryWorkspace = new Option<DirectoryInfo>("--workspace") { Required = true };
         var recoveryStopped = new Option<bool>("--confirm-runtime-stopped")

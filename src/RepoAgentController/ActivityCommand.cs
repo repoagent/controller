@@ -34,8 +34,9 @@ static class ActivityCommand
                 return 0;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return 0; }
+            catch (LocalProtocolException error) { Console.Error.WriteLine(error.Message); return 1; }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Net.Sockets.SocketException or JsonException or OperationCanceledException or ArgumentException)
-            { Console.Error.WriteLine("Activity unavailable: the controller must be running with a private local endpoint and an unambiguous mapped Discussion. Read a new snapshot after a gap or restart."); return 1; }
+            { Console.Error.WriteLine("Activity unavailable: the controller must be running with a private local endpoint and an unambiguous mapped Discussion. Read a new snapshot after a gap or restart. Install matching repoagent clients/images and restart the selected controller after upgrading."); return 1; }
         });
         root.Subcommands.Add(command);
     }

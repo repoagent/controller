@@ -136,6 +136,19 @@ function Assert-Stopped {
     if (Test-AgentRunning) { throw 'Stop the agent before changing configuration, credentials or skills.' }
 }
 
+function Invoke-RunningCommand {
+    if (@($CommandArguments | Where-Object { $_ -match '^--state(?:=|$)' }).Count) {
+        throw 'The host wrapper selects the installed instance state; use REPOAGENT_INSTANCE, not --state.'
+    }
+    if (-not $existingContainer -or -not $existingContainer.Running) { throw 'The selected controller must already be running.' }
+    Test-CompatibleRuntime
+    $selected = Get-Resource container $containerName
+    if (-not $selected -or $selected.Id -cne $existingContainer.Id -or -not $selected.Running) { throw 'Selected running container identity changed.' }
+    # Host Docker authority is already trusted. This does not elevate controller or agent processes.
+    $identity = if ($Command -eq 'remote') { @('--user', '0') } else { @() }
+    & docker exec @identity $selected.Id /usr/bin/python3 -E /opt/repoagent/runtime.py $Command @CommandArguments
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 function Get-FileMount([string]$Path, [string]$Destination) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "File is missing: $Path" }
     $resolved = (Resolve-Path -LiteralPath $Path).ProviderPath
@@ -275,6 +288,8 @@ switch ($Command) {
         if (@($CommandArguments).Count -eq 1 -and $CommandArguments[0] -eq '--retained') { Invoke-Config logs }
         else { Invoke-Docker logs $containerName @CommandArguments }
     }
+    'activity' { Invoke-RunningCommand }
+    'remote' { Invoke-RunningCommand }
     'status' { Invoke-Config status }
     'versions' { Invoke-Config versions }
     'state' { Invoke-Config state }
@@ -297,6 +312,8 @@ switch ($Command) {
 Usage: .\repoagent.ps1 COMMAND [arguments]
   build | setup | configure | get | login | import-codex-auth | import-enrollment
   check | start | stop | restart | logs [--follow] | logs --retained | status | versions | state
+  activity [--discussion NUMBER_OR_URL] [--follow] [--limit 1..100] [--cursor CURSOR] [--format text|json]
+  remote enable|pair|status|clients|disable [--format text|json] | remote revoke --client ID
   enroll DISCUSSION_URL ... | skills [install SKILLS_JSON [TOKEN_FILE]]
 Configure uses --repository and --app-id with either --key-path or
 --broker-url HTTPS_ORIGIN --enrollment-file PRIVATE_FILE. Broker configure imports the file.
