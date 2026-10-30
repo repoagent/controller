@@ -1,13 +1,14 @@
 namespace RepoAgentController;
 
 // Supplied only by a trusted driving adapter after authenticating the local caller.
-enum LocalCallerPermission { Unknown, Inspection, Administration }
-enum RemoteOperation { Unknown, Enable, Pair, Status, Clients, Revoke, Disable }
-enum RemoteAccessOutcome { Forbidden, Unavailable }
-sealed record RemoteAccessResult(RemoteAccessOutcome Outcome, string Message);
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711", Justification = "These are trusted operation permissions, not legacy code-access-security permissions.")]
+public enum LocalCallerPermission { Unknown, Inspection, Administration }
+public enum RemoteOperation { Unknown, Enable, Pair, Status, Clients, Revoke, Disable }
+public enum RemoteAccessOutcome { Forbidden, Unavailable }
+public sealed record RemoteAccessResult(RemoteAccessOutcome Outcome, string Message);
 
 /// <summary>Fails closed until agent-tool isolation and native command admission are qualified.</summary>
-static class RemoteAccess
+public static class RemoteAccess
 {
     public static RemoteAccessResult Execute(RemoteOperation operation, LocalCallerPermission permission)
     {
