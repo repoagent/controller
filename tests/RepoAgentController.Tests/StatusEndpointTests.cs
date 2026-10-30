@@ -35,12 +35,12 @@ public sealed class StatusEndpointTests
         Assert.Equal(System.Net.HttpStatusCode.NoContent, delivered.StatusCode);
         Assert.Equal(1, deliveries);
         foreach (var port in new[] { statusPort, webhookPort })
-        foreach (var path in new[] { "/v1/activity", "/v1/remote/enable", "/v1/remote/pair", "/v1/remote/status",
+            foreach (var path in new[] { "/v1/activity", "/v1/remote/enable", "/v1/remote/pair", "/v1/remote/status",
             "/v1/remote/clients", "/v1/remote/revoke", "/v1/remote/disable" })
-        {
-            using var privateRoute = await client.PostAsync($"http://127.0.0.1:{port}{path}", null, TestContext.Current.CancellationToken);
-            Assert.Equal(System.Net.HttpStatusCode.NotFound, privateRoute.StatusCode);
-        }
+            {
+                using var privateRoute = await client.PostAsync($"http://127.0.0.1:{port}{path}", null, TestContext.Current.CancellationToken);
+                Assert.Equal(System.Net.HttpStatusCode.NotFound, privateRoute.StatusCode);
+            }
     }
     [Theory]
     [InlineData(new[] { "--status-port", "0" }, "--status-port must be between 1 and 65535")]
