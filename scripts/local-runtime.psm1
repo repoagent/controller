@@ -186,7 +186,7 @@ function Invoke-LocalHelper([string]$Operation, $Marker) {
     return Read-OperatorJson ($output -join "`n") -ControllerDocument
 }
 function Assert-LocalRuntimeAction([string]$Action, [string[]]$Arguments, $ProposedLaunch = $null) {
-    if (-not $brokerMode -or $Action -in @('help','build','stop','logs','get','state','versions','Revoke','Uninstall')) { return }
+    if (-not $brokerMode -or $Action -in @('help','build','stop','logs','get','state','versions','activity','Revoke','Uninstall')) { return }
     if ($Action -eq 'skills' -and @($Arguments)[0] -ne 'install') { return }
     $volume = Get-Resource volume "$containerName-enrollment"
     if (-not $volume) { return }

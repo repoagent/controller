@@ -1,44 +1,59 @@
-using System.Collections.Concurrent;
 using System.Net.Sockets;
-using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Connections;
+using Microsoft.AspNetCore.Connections.Features;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace RepoAgentController;
 
-sealed record ActivityEndpoint(string State, string Repository, string Lifetime, string Socket);
+sealed record ActivityEndpoint(string State, string Repository, string Lifetime, string Socket, int Protocol = 0);
 sealed record ActivityRequest(string State, string Repository, string Lifetime, string? Discussion, int Limit, string? Cursor, bool Follow);
+sealed record RemoteRequest(string State, string Repository, string Lifetime, string? Client = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull, UseStringEnumConverter = true)]
 [JsonSerializable(typeof(ActivityEndpoint))]
 [JsonSerializable(typeof(ActivityRequest))]
 [JsonSerializable(typeof(ActivityFrame))]
+[JsonSerializable(typeof(RemoteRequest))]
+[JsonSerializable(typeof(RemoteAccessResult))]
 sealed partial class ActivityJson : JsonSerializerContext;
 
-/// <summary>Lifetime-bound private operator IPC. Independent from HTTP and credential handoff; no runtime creation authority.</summary>
+/// <summary>One lifetime-bound private Unix HTTP listener for inspection and guarded administration.</summary>
 sealed class ActivitySocket : IAsyncDisposable
 {
+    internal const int Protocol = 1;
+    internal const string ActivityPath = "/v1/activity";
     const UnixFileMode PrivateFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
     const UnixFileMode PrivateDirectory = PrivateFile | UnixFileMode.UserExecute;
-    readonly Socket listener;
+    readonly WebApplication app;
     readonly ActivityEndpoint endpoint;
     readonly string pointer, directory;
     readonly SessionActivityInspector inspector;
     readonly TimeProvider clock;
     readonly CancellationTokenSource stop;
-    readonly ConcurrentDictionary<int, Task> clients = new();
-    readonly Task accepting;
-    int nextClient;
 
-    ActivitySocket(Socket listener, ActivityEndpoint endpoint, string pointer, string directory,
+    ActivitySocket(WebApplication app, ActivityEndpoint endpoint, string pointer, string directory,
         SessionActivityInspector inspector, TimeProvider clock, CancellationToken ct)
     {
-        this.listener = listener; this.endpoint = endpoint; this.pointer = pointer; this.directory = directory;
+        this.app = app; this.endpoint = endpoint; this.pointer = pointer; this.directory = directory;
         this.inspector = inspector; this.clock = clock;
         stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        accepting = Accept();
+        app.MapPost(ActivityPath, Activity);
+        foreach (var operation in new[] { RemoteOperation.Enable, RemoteOperation.Pair, RemoteOperation.Status,
+            RemoteOperation.Clients, RemoteOperation.Revoke, RemoteOperation.Disable })
+            app.MapPost("/v1/remote/" + operation.ToString().ToLowerInvariant(), context => Remote(context, operation));
+        // This host has no TCP listener. Unrecognized routes grant no authority.
+        app.MapFallback(context => { context.Response.StatusCode = StatusCodes.Status403Forbidden; return Task.CompletedTask; });
     }
 
     public static string Pointer(string state) => state + ".activity/endpoint.json";
@@ -49,15 +64,18 @@ sealed class ActivitySocket : IAsyncDisposable
         if (OperatingSystem.IsWindows()) return null;
         try { return await Start(state, repository, lifetime, inspector, clock, ct); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        { Log.Write("activity-unavailable", "Private local activity inspection did not become available within its startup deadline."); return null; }
+        { Log.Write("activity-unavailable", "Private local commands did not become available within their startup deadline."); return null; }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or SocketException or PlatformNotSupportedException or JsonException or ArgumentException)
-        { Log.Write("activity-unavailable", "Private local activity inspection is unavailable on this filesystem."); return null; }
+        { Log.Write("activity-unavailable", "Private local commands are unavailable; use matching clients and restart the selected controller on a private Unix filesystem."); return null; }
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The startup catch awaits server.DisposeAsync on failure; success transfers the server to the caller. CA2000 does not recognize this async cleanup.")]
     public static async Task<ActivitySocket> Start(string state, string repository, string lifetime, SessionActivityInspector inspector,
         TimeProvider clock, CancellationToken ct)
     {
-        if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Activity inspection requires Unix sockets and private Unix file permissions.");
+        if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Local commands require Unix sockets.");
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+            throw new PlatformNotSupportedException("Local commands require Linux or macOS Unix peer credentials.");
         state = Path.GetFullPath(state);
         ManagedCheckout.CheckPath(state);
         var pointer = Pointer(state);
@@ -68,51 +86,85 @@ sealed class ActivitySocket : IAsyncDisposable
         if (File.Exists(pointer))
         {
             var previous = JsonSerializer.Deserialize(ManagedCheckout.ReadPrivate(pointer), ActivityJson.Default.ActivityEndpoint)
-                ?? throw new IOException("Invalid private activity endpoint.");
-            if (previous.State != state || previous.Repository != repository) throw new IOException("Activity endpoint identity changed.");
+                ?? throw new IOException("Invalid private controller endpoint.");
+            if (previous.State != state || previous.Repository != repository) throw new IOException("Controller endpoint identity changed.");
+            // A known legacy descriptor can be retired after its socket is dead, never while its controller is running.
+            // Clients reject it outright; there is no legacy protocol fallback.
+            if (previous.Protocol is not (0 or Protocol)) throw new LocalProtocolException();
             using var probe = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(1), clock);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
             var active = false;
             try { await probe.ConnectAsync(new UnixDomainSocketEndPoint(previous.Socket), bounded.Token); active = true; }
             catch (SocketException) { }
-            if (active) throw new IOException("A private activity endpoint is already running.");
-            File.Delete(pointer); // Stale descriptor only. Never unlink an endpoint named by a previous lifetime.
+            if (active) throw new IOException("A private controller endpoint is already running.");
+            File.Delete(pointer); // Stale descriptor only. Never unlink a previous lifetime's socket.
         }
-        var directory = Path.Combine(OperatingSystem.IsMacOS() ? "/private/tmp" : "/tmp", "repoagent-activity-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Combine(OperatingSystem.IsMacOS() ? "/private/tmp" : "/tmp", "repoagent-local-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory, PrivateDirectory);
         CheckDirectory(directory);
         var path = Path.Combine(directory, "operator.sock");
-        Socket? listener = null;
         var temporary = pointer + "." + Guid.NewGuid().ToString("N") + ".tmp";
         var createdTemporary = false;
-        var transferred = false;
         try
         {
-            listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            listener.Bind(new UnixDomainSocketEndPoint(path));
-            File.SetUnixFileMode(path, PrivateFile);
-            if (File.GetUnixFileMode(path) != PrivateFile) throw new IOException("Activity socket is not private.");
-            listener.Listen(8);
-            var endpoint = new ActivityEndpoint(state, repository, lifetime, path);
-            await using (var output = new FileStream(temporary, new FileStreamOptions
-            { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.Read, UnixCreateMode = PrivateFile }))
+            var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
+            { Args = [], ContentRootPath = AppContext.BaseDirectory, EnvironmentName = Environments.Production });
+            builder.Configuration.Sources.Clear();
+            builder.Logging.ClearProviders();
+            builder.Services.AddSingleton<IHostLifetime, ControlledLifetime>();
+            builder.Services.Configure<SocketTransportOptions>(options => options.Backlog = 8);
+            builder.WebHost.ConfigureKestrel(kestrel =>
             {
-                createdTemporary = true;
-                await JsonSerializer.SerializeAsync(output, endpoint, ActivityJson.Default.ActivityEndpoint, ct);
+                kestrel.AddServerHeader = false;
+                kestrel.Limits.MaxConcurrentConnections = 8;
+                kestrel.Limits.MaxRequestBodySize = 16384;
+                kestrel.Limits.MaxRequestHeadersTotalSize = 8192;
+                kestrel.Limits.MaxRequestHeaderCount = 16;
+                kestrel.Limits.MaxRequestLineSize = 4096;
+                kestrel.Limits.MaxRequestBufferSize = 16384;
+                kestrel.Limits.MaxResponseBufferSize = 65536;
+                kestrel.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(5);
+                kestrel.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(5);
+                kestrel.Limits.MinRequestBodyDataRate = null; // Our body deadline owns this limit.
+                kestrel.ListenUnixSocket(path, listen =>
+                {
+                    listen.Protocols = HttpProtocols.Http1;
+                    listen.Use((connection, next) =>
+                    {
+                        var socket = connection.Features.Get<IConnectionSocketFeature>()?.Socket;
+                        connection.Features.Set(new UnixCaller(UnixPeer.Permission(socket)));
+                        return next(connection);
+                    });
+                });
+            });
+            var app = builder.Build();
+            var endpoint = new ActivityEndpoint(state, repository, lifetime, path, Protocol);
+            var server = new ActivitySocket(app, endpoint, pointer, directory, inspector, clock, ct);
+            try
+            {
+                using var startup = new CancellationTokenSource(TimeSpan.FromSeconds(5), clock);
+                using var starting = CancellationTokenSource.CreateLinkedTokenSource(ct, startup.Token);
+                await app.StartAsync(starting.Token);
+                File.SetUnixFileMode(path, PrivateFile);
+                if (File.GetUnixFileMode(path) != PrivateFile) throw new IOException("Controller socket is not private.");
+                await using (var output = new FileStream(temporary, new FileStreamOptions
+                { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.Read, UnixCreateMode = PrivateFile }))
+                {
+                    createdTemporary = true;
+                    await JsonSerializer.SerializeAsync(output, endpoint, ActivityJson.Default.ActivityEndpoint, starting.Token);
+                }
+                _ = ManagedCheckout.ReadPrivate(temporary);
+                File.Move(temporary, pointer);
+                return server;
             }
-            _ = ManagedCheckout.ReadPrivate(temporary);
-            File.Move(temporary, pointer);
-            var server = new ActivitySocket(listener, endpoint, pointer, directory, inspector, clock, ct);
-            listener = null;
-            transferred = true;
-            return server;
+            catch { await server.DisposeAsync(); throw; }
         }
-        finally
+        catch
         {
-            listener?.Dispose();
-            if (!transferred && Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory);
+            if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory);
             if (createdTemporary && File.Exists(temporary)) File.Delete(temporary);
+            throw;
         }
     }
 
@@ -121,94 +173,90 @@ sealed class ActivitySocket : IAsyncDisposable
         if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         ManagedCheckout.CheckPath(path);
         if (!Directory.Exists(path) || File.GetUnixFileMode(path) != PrivateDirectory)
-            throw new IOException("Activity endpoint requires a private 0700 directory.");
+            throw new IOException("Controller endpoint requires a private 0700 directory.");
     }
 
-    async Task Accept()
+    bool Bound(string state, string repository, string lifetime) =>
+        state == endpoint.State && repository == endpoint.Repository && lifetime == endpoint.Lifetime;
+
+    async Task Activity(HttpContext context)
     {
+        context.Response.Headers.CacheControl = "no-store";
+        // A feature is installed only by the Unix connection middleware, never from headers or request claims.
+        if (context.Features.Get<UnixCaller>()?.Permission is not (LocalCallerPermission.Inspection or LocalCallerPermission.Administration))
+        { context.Response.StatusCode = StatusCodes.Status403Forbidden; return; }
+        using var connection = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, stop.Token);
         try
         {
-            while (!stop.IsCancellationRequested)
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), clock);
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(connection.Token, deadline.Token);
+            var request = await JsonSerializer.DeserializeAsync(context.Request.Body, ActivityJson.Default.ActivityRequest, bounded.Token);
+            if (request is null || !Bound(request.State, request.Repository, request.Lifetime) || request.Limit is < 1 or > 100 ||
+                request.Cursor?.Length > 8192 || request.Discussion?.Length > 512 ||
+                (request.Discussion is null && (request.Cursor is not null || request.Follow)))
+                throw new IOException("Invalid activity selection or controller lifetime.");
+            context.Response.ContentType = "application/x-ndjson";
+            if (request.Discussion is null)
+                await Write(context, new("sessions", endpoint.Lifetime, Inventory: await inspector.List(bounded.Token)), connection.Token);
+            else if (!request.Follow)
+                await Write(context, new("snapshot", endpoint.Lifetime, Snapshot: await inspector.Read(request.Discussion,
+                    request.Limit, request.Cursor, bounded.Token)), connection.Token);
+            else
             {
-                var client = await listener.AcceptAsync(stop.Token);
-                if (clients.Count >= 8) { client.Dispose(); continue; }
-                var id = Interlocked.Increment(ref nextClient);
-                var serving = Serve(client);
-                clients[id] = serving;
-                _ = serving.ContinueWith(_ => clients.TryRemove(id, out var ignored), CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                // The request body deadline ends at setup. A live follower has only per-write deadlines and disconnect cancellation.
+                await foreach (var frame in inspector.Follow(request.Discussion, request.Limit, request.Cursor, connection.Token))
+                    await Write(context, frame, connection.Token);
             }
         }
-        catch (Exception error) when (error is OperationCanceledException or ObjectDisposedException or SocketException) { }
+        catch (Exception)
+        {
+            if (connection.IsCancellationRequested) return;
+            try { await Write(context, new("error", endpoint.Lifetime, Notice: "Activity is unavailable or the selection is invalid; read a new snapshot."), connection.Token); }
+            catch (Exception failure) when (failure is IOException or SocketException or OperationCanceledException or ObjectDisposedException)
+            { context.Abort(); }
+        }
     }
 
-    async Task Serve(Socket client)
+    async Task Remote(HttpContext context, RemoteOperation operation)
     {
-        using (client)
-        await using (var stream = new NetworkStream(client, ownsSocket: false))
+        context.Response.Headers.CacheControl = "no-store";
+        var result = RemoteAccess.Execute(operation, context.Features.Get<UnixCaller>()?.Permission ?? LocalCallerPermission.Unknown);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), clock);
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, stop.Token, deadline.Token);
+        // Check authority before reading a selection or any protected application data, including status and clients.
+        if (result.Outcome != RemoteAccessOutcome.Forbidden)
         {
-            using var connection = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
             try
             {
-                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), clock);
-                using var bounded = CancellationTokenSource.CreateLinkedTokenSource(connection.Token, deadline.Token);
-                var text = await new ActivityLines(stream).Read(16384, bounded.Token);
-                var request = text is null ? null : JsonSerializer.Deserialize(text, ActivityJson.Default.ActivityRequest);
-                if (request is null || request.State != endpoint.State || request.Repository != endpoint.Repository || request.Lifetime != endpoint.Lifetime ||
-                    request.Limit is < 1 or > 100 || request.Cursor?.Length > 8192 || request.Discussion?.Length > 512 ||
-                    (request.Discussion is null && (request.Cursor is not null || request.Follow)))
-                    throw new IOException("Activity request identity or selection is invalid.");
-                if (request.Discussion is null)
-                    await Write(stream, new("sessions", endpoint.Lifetime, Inventory: await inspector.List(bounded.Token)), connection.Token);
-                else if (!request.Follow)
-                    await Write(stream, new("snapshot", endpoint.Lifetime, Snapshot: await inspector.Read(request.Discussion,
-                        request.Limit, request.Cursor, bounded.Token)), connection.Token);
-                else
-                {
-                    // A viewer disappearing cancels inspection immediately, without sending an agent lifecycle command.
-                    var disconnected = PeerClosed(stream, connection);
-                    try
-                    {
-                        await foreach (var frame in inspector.Follow(request.Discussion, request.Limit, request.Cursor, connection.Token))
-                            await Write(stream, frame, connection.Token);
-                    }
-                    finally { await connection.CancelAsync(); await disconnected; }
-                }
+                var request = await JsonSerializer.DeserializeAsync(context.Request.Body, ActivityJson.Default.RemoteRequest, bounded.Token);
+                if (request is null || !Bound(request.State, request.Repository, request.Lifetime) || request.Client?.Length > 512 ||
+                    (operation == RemoteOperation.Revoke && string.IsNullOrWhiteSpace(request.Client)))
+                { context.Response.StatusCode = StatusCodes.Status409Conflict; return; }
             }
-            catch (Exception)
-            {
-                if (!connection.IsCancellationRequested)
-                {
-                    try { await Write(stream, new("error", endpoint.Lifetime, Notice: "Activity is unavailable or the selection is invalid; read a new snapshot."), stop.Token); }
-                    catch (Exception failure) when (failure is IOException or SocketException or OperationCanceledException) { }
-                }
-            }
+            catch (Exception error) when (error is JsonException or IOException or OperationCanceledException or Microsoft.AspNetCore.Http.BadHttpRequestException)
+            { context.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
         }
+        context.Response.StatusCode = result.Outcome == RemoteAccessOutcome.Forbidden ? StatusCodes.Status403Forbidden : StatusCodes.Status503ServiceUnavailable;
+        await context.Response.WriteAsJsonAsync(result, ActivityJson.Default.RemoteAccessResult, cancellationToken: bounded.Token);
     }
 
-    static async Task PeerClosed(NetworkStream stream, CancellationTokenSource connection)
-    {
-        try { _ = await stream.ReadAsync(new byte[1], connection.Token); }
-        catch (Exception error) when (error is IOException or OperationCanceledException or SocketException) { }
-        finally { await connection.CancelAsync(); }
-    }
-
-    async Task Write(NetworkStream stream, ActivityFrame frame, CancellationToken ct)
+    async Task Write(HttpContext context, ActivityFrame frame, CancellationToken ct)
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(frame, ActivityJson.Default.ActivityFrame);
         if (bytes.Length >= 1024 * 1024) throw new IOException("Activity response exceeds its limit.");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), clock);
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
-        await stream.WriteAsync(bytes, bounded.Token);
-        await stream.WriteAsync("\n"u8.ToArray(), bounded.Token);
+        await context.Response.Body.WriteAsync(bytes, bounded.Token);
+        await context.Response.Body.WriteAsync("\n"u8.ToArray(), bounded.Token);
+        await context.Response.Body.FlushAsync(bounded.Token);
     }
 
     public async ValueTask DisposeAsync()
     {
         await stop.CancelAsync();
-        listener.Dispose(); // .NET removes the pathname it bound, inside this lifetime's private random directory.
-        await accepting;
-        await Task.WhenAll(clients.Values);
+        using var drain = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try { await app.StopAsync(drain.Token); }
+        finally { await app.DisposeAsync(); }
         if (File.Exists(pointer))
         {
             try
@@ -221,60 +269,11 @@ sealed class ActivitySocket : IAsyncDisposable
         if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory);
         stop.Dispose();
     }
-}
 
-static class ActivityClient
-{
-    public static async IAsyncEnumerable<ActivityFrame> Read(string state, string? discussion, int limit, string? cursor, bool follow,
-        [EnumeratorCancellation] CancellationToken ct)
+    sealed class ControlledLifetime : IHostLifetime
     {
-        if (OperatingSystem.IsWindows()) throw new IOException("Activity inspection requires a running Linux or macOS controller.");
-        state = Path.GetFullPath(state);
-        var pointer = ActivitySocket.Pointer(state);
-        ActivitySocket.CheckDirectory(Path.GetDirectoryName(pointer)!);
-        var endpoint = JsonSerializer.Deserialize(ManagedCheckout.ReadPrivate(pointer), ActivityJson.Default.ActivityEndpoint)
-            ?? throw new IOException("No running controller activity endpoint.");
-        if (endpoint.State != state || endpoint.Lifetime.Length is 0 or > 128 || endpoint.Repository.Length is 0 or > 256)
-            throw new IOException("Controller activity endpoint identity is invalid.");
-        ActivitySocket.CheckDirectory(Path.GetDirectoryName(endpoint.Socket)!);
-        ManagedCheckout.CheckPath(endpoint.Socket);
-        if (File.GetUnixFileMode(endpoint.Socket) != (UnixFileMode.UserRead | UnixFileMode.UserWrite))
-            throw new IOException("Controller activity socket is not private.");
-        using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        using var connecting = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
-        try { await socket.ConnectAsync(new UnixDomainSocketEndPoint(endpoint.Socket), connecting.Token); }
-        catch (SocketException) { throw new IOException("No running controller activity endpoint."); }
-        await using var stream = new NetworkStream(socket, ownsSocket: false);
-        var request = new ActivityRequest(state, endpoint.Repository, endpoint.Lifetime, discussion, limit, cursor, follow);
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(request, ActivityJson.Default.ActivityRequest);
-        if (bytes.Length > 16384) throw new IOException("Activity selection exceeds its limit.");
-        await stream.WriteAsync(bytes, connecting.Token);
-        await stream.WriteAsync("\n"u8.ToArray(), connecting.Token);
-        var reader = new ActivityLines(stream);
-        var receivedSnapshot = false;
-        long sequence = 0;
-        while (true)
-        {
-            using var receive = new CancellationTokenSource(TimeSpan.FromSeconds(follow ? 30 : 10));
-            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct, receive.Token);
-            var line = await reader.Read(1024 * 1024, bounded.Token);
-            if (line is null)
-            {
-                if (follow && receivedSnapshot)
-                {
-                    yield return new("gap", endpoint.Lifetime, Notice: "Controller disconnected; read a new snapshot.", Sequence: sequence);
-                    yield break;
-                }
-                throw new IOException("Controller activity disconnected; read a new snapshot.");
-            }
-            var frame = JsonSerializer.Deserialize(line, ActivityJson.Default.ActivityFrame) ?? throw new IOException("Invalid activity response.");
-            if (frame.Lifetime != endpoint.Lifetime || frame.Kind == "error") throw new IOException("Activity is unavailable or the selection is invalid.");
-            receivedSnapshot |= frame.Snapshot is not null;
-            sequence = Math.Max(sequence, Math.Max(frame.Sequence, frame.Snapshot?.Sequence ?? 0));
-            yield return frame;
-            if (!follow || frame.Kind == "gap") yield break;
-        }
+        public Task WaitForStartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }
 
