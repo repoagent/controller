@@ -20,6 +20,23 @@ dotnet run --project tests/RepoAgentController.Tests -- -class '*RemoteAccessTes
 
 Result: 88 passed, 0 failed, 0 skipped (including 15 remote gate cases). `git diff --check` passed. The test host ran on Windows; this is not Linux/container process-boundary acceptance.
 
+## Linux owned-startup regression
+
+The remote decision lives in `RepoAgentController.Core/RemoteAccess.cs`, with public domain types for thin adapters and the core's banned-I/O analyzer enabled. The explicit image source inventory includes that file; composing the image context confirmed it is present.
+
+`BrokerLifetimeTests.Owned_agent_launch_disables_native_remote_control_regardless_of_inherited_environment` reuses the existing serialized Unix owned-runtime fixture. It sets the controller's inherited marker to absent or `0`, starts the real `BridgeCommand`/`Codex` process path, and checks the startup environment recorded by the fixture's launched runtime. Both cases require `1`. The previous process-wide value is restored in the fixture's `finally` block. This tests RepoAgent's launch configuration, not the upstream provider's interpretation of that marker.
+
+On Linux Docker with the pinned .NET 11 SDK, removing only the production marker assignment in a disposable source copy caused exactly two intended failures: expected `1`, observed null and `0`. Restoring the assignment passes the startup checks. No production test seam or separate fake-provider suite was introduced.
+
+The first restore attempt lacked a package cache; later attempts used the host NuGet cache read-only with container networking disabled. Early process runs copied CRLF raw-string fixture inputs, causing unrelated shebang startup failures before the intended assertions. Those setup failures are excluded from red/green evidence. The final run normalizes only disposable `/work` C# inputs to LF; no repository-wide source rewrite is part of this change. Binlogs and logs are retained outside the repository.
+Final Linux verification (network disabled; cached packages mounted read-only):
+
+```bash
+dotnet build tests/RepoAgentController.Tests --nologo -p:NuGetAudit=false -p:RestoreIgnoreFailedSources=true /bl:/evidence/335-startup-green-5.binlog
+dotnet exec tests/RepoAgentController.Tests/bin/Debug/net11.0/RepoAgentController.Tests.dll -class '*BrokerLifetimeTests' -class '*RemoteAccessTests' -class '*CheckoutRefreshTests' -class '*AgentSessionsTests' -class '*ControllerShutdownTests' -class '*AgentCredentialReplacementTests' -noLogo
+```
+
+Result: 110 passed, 0 failed, 0 skipped; build had 0 warnings and 0 errors. This includes the 15 core gate cases, the two startup override cases and the real-process shutdown/authority-loss fixtures. It establishes the owned startup configuration and controller invariants with controlled peers, not live remote provider state, OS tool isolation or desktop qualification.
 ## Required before supporting native remote access
 
 [#332](https://github.com/repoagent/controller/issues/332) remains open. Acceptance must establish OS protection of administration and native account/control authority from tools, provider preexecution admission of native commands, active-session/checkout/completion invariants and authority-loss teardown. Use the shared Aspire environment and explicitly authorized disposable desktop account for enable/pair/populated history/live progress/client enumeration/targeted revocation/disable/restart/expiry acceptance. Record versions and sanitized outcomes, clean up clients and credentials, and treat unavailable account/provider access as unexecuted acceptance.
