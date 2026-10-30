@@ -49,7 +49,7 @@ enrollment="$HOME/.repoagent/instances/YOUR_INSTANCE/enrollment.json"
 check_state="$HOME/.repoagent/agent-auth-check"
 install -d -m 700 "$check_state"
 
-dotnet run --project src/repoagent -- \
+dotnet run --project src/RepoAgentController -- \
   --repo OWNER/REPO --app-id APP_ID \
   --broker-url https://credentials.example.org \
   --enrollment-file "$enrollment" \
