@@ -68,6 +68,7 @@ src/RepoAgentController.Core/IWebhookRegistration.cs
 src/RepoAgentController.Core/IAgentRuntime.cs
 src/RepoAgentController.Core/IAgentActivity.cs
 src/RepoAgentController.Core/SessionActivityInspector.cs
+src/RepoAgentController.Core/RemoteAccess.cs
 src/RepoAgentController.Core/AgentUsageObservation.cs
 src/RepoAgentController.Core/AgentUsageCollection.cs
 src/RepoAgentController.Core/AgentSessions.cs
@@ -113,3 +114,6 @@ src/RepoAgent.LocalTelemetry/RepoAgent.LocalTelemetry.csproj
 src/RepoAgent.LocalTelemetry/LocalTraceSettings.cs
 src/RepoAgent.LocalTelemetry/LocalTraceExport.cs
 src/RepoAgent.LocalTelemetry/AgentTrace.cs
+src/RepoAgentController/LocalControllerClient.cs
+src/RepoAgentController/RemoteCommand.cs
+src/RepoAgentController/UnixPeer.cs

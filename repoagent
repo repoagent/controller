@@ -117,6 +117,17 @@ case "${1:-help}" in
     shift
     # Retained logs live in the state volume and survive container replacement.
     if [[ $# -eq 1 && $1 == --retained ]]; then config logs; else docker logs "$name" "$@"; fi ;;
+  activity|remote)
+    command=$1; shift
+    for argument in "$@"; do
+      [[ $argument != --state && $argument != --state=* ]] || { echo 'The wrapper selects installed instance state; use REPOAGENT_INSTANCE, not --state.' >&2; exit 1; }
+    done
+    selected=$(docker inspect --format '{{.Id}} {{.State.Running}}' "$name")
+    [[ $selected =~ ^([a-f0-9]{64})\ true$ ]] || { echo 'The selected controller must already be running.' >&2; exit 1; }
+    selected_id=${BASH_REMATCH[1]}
+    identity=()
+    [[ $command != remote ]] || identity=(--user 0)
+    exec docker exec "${identity[@]}" "$selected_id" /usr/bin/python3 -E /opt/repoagent/runtime.py "$command" "$@" ;;
   status) config status ;;
   versions) config versions ;;
   state) config state ;;
@@ -141,6 +152,8 @@ case "${1:-help}" in
   *)
     cat <<'USAGE'
 Usage: ./repoagent COMMAND
+  activity [--discussion NUMBER_OR_URL] [--follow] [--limit 1..100] [--cursor CURSOR] [--format text|json]
+  remote enable|pair|status|clients|disable [--format text|json] | remote revoke --client ID
   build                           Build pinned bridge, .NET, gh and Codex image
   setup                           Guided App configuration and Codex browser sign-in
   configure --repository OWNER/REPO --app-id ID --key-path /absolute/key.pem

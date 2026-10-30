@@ -51,7 +51,7 @@ class ControllerReleaseCommands(unittest.TestCase):
             (artifact / 'RELEASE_NOTES.md').write_bytes(notes)
             (artifact / 'image-inventory.json').write_text(json.dumps({'controller': {'version': '1.2.3', 'releaseNotesSha256': hashlib.sha256(notes).hexdigest()},
                 'githubCli': {'version': '2.0.0'}, 'agent': {'version': '3.0.0'}}))
-            output = 'RepoAgentController version: 1.2.2\ngh version 2.0.0 (date)\ncodex-cli 3.0.0\n'
+            output = 'repoagent version: 1.2.2\ngh version 2.0.0 (date)\ncodex-cli 3.0.0\n'
             (artifact / 'versions.txt').write_text(output)
             environment = dict(os.environ, GITHUB_SHA='a' * 40)
             result = subprocess.run([sys.executable, str(ROOT / 'scripts/delivery/image-release.py'), 'check', str(artifact)], env=environment, capture_output=True, text=True)
@@ -165,11 +165,11 @@ print('{}')
         inventory = {'controller': {'version': '1.2.3', 'releaseNotesSha256': hashlib.sha256(notes).hexdigest()},
             'githubCli': {'version': '2.0.0'}, 'agent': {'version': '3.0.0'}}
         (artifact / 'image-inventory.json').write_text(json.dumps(inventory))
-        (artifact / 'versions.txt').write_text('RepoAgentController version: 1.2.3+' + 'a' * 40 + '\ngh version 2.0.0 (date)\ncodex-cli 3.0.0\n')
+        (artifact / 'versions.txt').write_text('repoagent version: 1.2.3+' + 'a' * 40 + '\ngh version 2.0.0 (date)\ncodex-cli 3.0.0\n')
         (artifact / 'build.json').write_text(json.dumps({'containerimage.config.digest': 'sha256:' + 'c' * 64}))
         archive = artifact / 'repoagent-controller-1.2.3-linux-amd64.tar.gz'
         files = {'VERSION': ('version=1.2.3\nsource_commit=' + 'a' * 40 + '\nruntime=linux-x64\n').encode(),
-            'RELEASE_NOTES.md': notes, 'RepoAgentController': b'verified fixture executable',
+            'RELEASE_NOTES.md': notes, 'repoagent': b'verified fixture executable',
             'github-discussion/SKILL.md': b'fixture skill', 'repoagent-orientation/SKILL.md': b'fixture skill'}
         files['SHA256SUMS'] = ''.join(hashlib.sha256(content).hexdigest() + '  ' + name + '\n' for name, content in files.items()).encode()
         with tarfile.open(archive, 'w:gz') as package:

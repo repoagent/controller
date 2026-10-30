@@ -24,7 +24,7 @@ CODEX_SUPPLY = Path('/data/credentials/codex-supply/auth.json')
 SKILLS = Path('/data/config/skills')
 REQUIRED_SKILLS = ('github-discussion', 'repoagent-orientation')  # Packaged beside the controller.
 STATE = '/data/state/bridge.json'
-CONTROLLER = ['/opt/repoagent/controller/RepoAgentController']
+CONTROLLER = ['/opt/repoagent/controller/repoagent']
 INVENTORY = '/opt/repoagent/image-inventory.json'
 # Externally injected controller credential: the unchanged enrollment document. Only the
 # controller process receives it; it is never written, logged or passed as an argument.
@@ -381,6 +381,14 @@ def main():
     os.umask(0o077)
     # Sign-in checks and tunnels never inherit an injected controller credential.
     injected = os.environ.pop(ENROLLMENT_VARIABLE, None)
+    # Local commands exec only the matching CLI against this running container's fixed state path.
+    # They do not read account settings, sign in, take controller ownership or start a provider runtime.
+    if len(sys.argv) > 1 and sys.argv[1] in ('activity', 'remote'):
+        arguments = sys.argv[2:]
+        if any(value == '--state' or value.startswith('--state=') for value in arguments):
+            raise ValueError('Container local commands use the selected instance state; --state cannot be overridden.')
+        selected = [] if (sys.argv[1] == 'remote' and not arguments) or any(value in ('--help', '-h') for value in arguments) else ['--state', STATE]
+        os.execv(CONTROLLER[0], CONTROLLER + [sys.argv[1], *arguments, *selected])
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
     configure_arguments(sub.add_parser('configure', allow_abbrev=False))
@@ -399,7 +407,7 @@ def main():
     elif args.command == 'versions':
         print('RepoAgent container; uid=' + str(os.getuid()), flush=True)
         version = subprocess.check_output(CONTROLLER + ['--version'], text=True).strip()
-        print('RepoAgentController version: ' + version, flush=True)
+        print('repoagent version: ' + version, flush=True)
         run([sys.executable, '--version'])
         for name in ['gh', 'codex', 'rg', 'cloudflared']:
             if shutil.which(name): run([name, '--version'])

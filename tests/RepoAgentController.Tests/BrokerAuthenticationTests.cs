@@ -700,10 +700,10 @@ public sealed class BrokerAuthenticationTests
         // The real controller Git credential-helper entry, as Git invokes it for an HTTPS repository path.
         public async Task<(int Exit, string Output)> InvokeGitHelper(string path)
         {
-            var apphost = Path.Combine(AppContext.BaseDirectory, "RepoAgentController");
+            var apphost = Path.Combine(AppContext.BaseDirectory, "repoagent");
             var start = File.Exists(apphost) ? new ProcessStartInfo(apphost) : new ProcessStartInfo("dotnet")
             {
-                ArgumentList = { Path.Combine(AppContext.BaseDirectory, "RepoAgentController.dll") }
+                ArgumentList = { Path.Combine(AppContext.BaseDirectory, "repoagent.dll") }
             };
             foreach (var argument in new[] { "git-helper", CredentialDirectory, "get" }) start.ArgumentList.Add(argument);
             start.RedirectStandardInput = start.RedirectStandardOutput = true;

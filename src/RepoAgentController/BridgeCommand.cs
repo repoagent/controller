@@ -39,7 +39,7 @@ public static class BridgeCommand
         var dashboardCategory = new Option<string?>("--dashboard-category") { Description = "Existing Discussion category for the controller-owned status dashboard; omit to publish no dashboard" };
         var codexAuth = new Option<FileInfo>("--codex-auth") { Description = "Operator-supplied Codex account credentials (auth.json format), separate from GitHub App credentials. Installed into the private CODEX_HOME when it differs from the last supply; replacing the file while running restarts the owned Codex app-server at idle and resumes sessions" };
         var imageInventory = new Option<FileInfo?>("--image-inventory") { Description = "The running baseline image's inventory (/opt/repoagent/image-inventory.json); the dashboard compares its SHA-256 with published baseline releases" };
-        var root = new RootCommand("RepoAgentController: GitHub Discussions → agent Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, enrollmentEnvironment, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, statusPort, reconcileInterval, disableWebhook, once, checkAuth, clone, repositorySettings, logFileBytes, logFiles, dashboardCategory, codexAuth, imageInventory };
+        var root = new RootCommand("repoagent: GitHub Discussions → agent Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, enrollmentEnvironment, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, statusPort, reconcileInterval, disableWebhook, once, checkAuth, clone, repositorySettings, logFileBytes, logFiles, dashboardCategory, codexAuth, imageInventory };
         var ghCredentials = new Option<DirectoryInfo>("--credential-directory") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
@@ -61,6 +61,7 @@ public static class BridgeCommand
         });
         root.Subcommands.Add(statusCommand);
         ActivityCommand.Add(root);
+        RemoteCommand.Add(root);
         var recoveryState = new Option<FileInfo>("--state") { Required = true };
         var recoveryWorkspace = new Option<DirectoryInfo>("--workspace") { Required = true };
         var recoveryStopped = new Option<bool>("--confirm-runtime-stopped")

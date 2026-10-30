@@ -34,9 +34,9 @@ public static class AppGitHubCommand
         GitHubAppCredentials.SecureDirectory(directory);
         var path = Path.Combine(directory, "gh");
         static string Quote(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
-        var apphost = Path.Combine(AppContext.BaseDirectory, "RepoAgentController");
+        var apphost = Path.Combine(AppContext.BaseDirectory, "repoagent");
         var launcher = File.Exists(apphost) ? new[] { apphost } :
-            new[] { FindExecutable("dotnet"), Path.Combine(AppContext.BaseDirectory, "RepoAgentController.dll") };
+            new[] { FindExecutable("dotnet"), Path.Combine(AppContext.BaseDirectory, "repoagent.dll") };
         var command = string.Join(' ', launcher.Concat(new[] {
             "github-command", "--gh-path", executable, "--credential-directory", credentialDirectory }).Select(Quote));
         File.WriteAllText(path, "#!/bin/sh\nexec " + command + " -- \"$@\"\n");

@@ -288,6 +288,9 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
             foreach (var argument in new[] { "-c", OwnedAgentProcesses.Launcher.ReplaceLineEndings("\n"), "repoagent-agent", executable, "app-server" }) start.ArgumentList.Add(argument);
             // Supplied credentials are the agent home's auth.json; a keyring store would silently ignore them.
             if (fileCredentials) { start.ArgumentList.Add("-c"); start.ArgumentList.Add("cli_auth_credentials_store=\"file\""); }
+            // Pinned Codex otherwise restores remembered remote intent from a reused home (ADR 0015).
+            // Override inherited values for every owned launch; this does not isolate tools or alternate runtimes.
+            start.Environment["CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED"] = "1";
             process = Process.Start(start) ?? throw new IOException("Could not start codex app-server");
             try { owned = new(process); }
             catch
