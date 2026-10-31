@@ -11,6 +11,6 @@ public sealed class ControllerCoreTests
         var references = typeof(IControllerLog).Assembly.GetReferencedAssemblies().Select(reference => reference.Name);
 
         Assert.DoesNotContain(references, name => name is "System.Diagnostics.Process" or "System.Net.Http" or "AngleSharp"
-            or "System.CommandLine" or "RepoAgentController");
+            or "System.CommandLine" or "repoagent");
     }
 }

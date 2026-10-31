@@ -22,8 +22,8 @@ internal static class AppGitCredential
     static string Quote(string s) => "'" + s.Replace("'", "'\"'\"'") + "'";
     static string Launcher()
     {
-        var host = Path.Combine(AppContext.BaseDirectory, "RepoAgentController");
-        return File.Exists(host) ? Quote(host) : Quote(AppGitHubCommand.FindExecutable("dotnet")) + " " + Quote(Path.Combine(AppContext.BaseDirectory, "RepoAgentController.dll"));
+        var host = Path.Combine(AppContext.BaseDirectory, "repoagent");
+        return File.Exists(host) ? Quote(host) : Quote(AppGitHubCommand.FindExecutable("dotnet")) + " " + Quote(Path.Combine(AppContext.BaseDirectory, "repoagent.dll"));
     }
     internal static void Install(string bin, string directory)
     {

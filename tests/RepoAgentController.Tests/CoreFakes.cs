@@ -322,6 +322,9 @@ sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
 /// A write can fail on demand, as a full or read-only disk does.</summary>
 sealed class InMemoryControllerState : IControllerState
 {
+    public bool RemoteEnabled { get; private set; }
+    public bool ReadRemoteAccessEnabled() => RemoteEnabled;
+    public void WriteRemoteAccessEnabled(bool enabled) { if (FailWrites) throw new IOException("No space left"); RemoteEnabled = enabled; }
     RecordedSettings? settings;
 
     /// <summary>Later writes throw <see cref="IOException"/>, leaving the earlier record in place.</summary>
@@ -491,6 +494,7 @@ sealed class FakeAgentRuntime(int sessions = 0, int turns = 0) : IAgentRuntime
     public Task<IReadOnlyList<AgentModel>> Models(CancellationToken ct) => ModelsFailure is { } failure
         ? Task.FromException<IReadOnlyList<AgentModel>>(failure) : Task.FromResult(Catalogue);
 
+    public void NativeControl(bool enabled, int? epoch = null) => Changed?.Invoke(new AgentNativeControlChanged(epoch ?? Epoch, enabled));
     public void Report(string session, AgentSessionStatus status) => Changed?.Invoke(new AgentSessionStatusChanged(Epoch, session, status));
     public void Started(string session, string turn) => Changed?.Invoke(new AgentTurnStarted(Epoch, session, turn));
     public void TransientFailure(string session, string turn, AgentFailure failure) => Changed?.Invoke(new AgentTurnCompleted(Epoch, session, turn,

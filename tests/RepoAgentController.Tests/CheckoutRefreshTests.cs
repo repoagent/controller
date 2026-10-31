@@ -397,6 +397,51 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task An_owner_session_reported_active_without_a_turn_identity_excludes_checkout_updates_until_idle()
+    {
+        var opened = Open();
+        var agent = new AgentSessions(runtime, log, opened);
+        runtime.NativeControl(true);
+        runtime.Report("Owner", AgentSessionStatus.Active);
+        runtime.NativeControl(false);
+
+        Assert.Equal((1, 1, false), (agent.ActiveTurns, Saved.Running, Saved.Blocked));
+        Assert.False(await opened.CommitAtIdle(_ => throw new InvalidOperationException("Committed during observed work"), Token));
+        runtime.Report("Owner", AgentSessionStatus.Idle);
+
+        Assert.Equal((0, 0, false), (agent.ActiveTurns, Saved.Running, Saved.Blocked));
+        Assert.True(await opened.CommitAtIdle(_ => Task.CompletedTask, Token));
+    }
+
+    [Fact]
+    public async Task Owner_turns_exclude_checkout_updates_until_their_matching_completions_even_after_disable()
+    {
+        var opened = Open();
+        opened.Observe(new AgentNativeControlChanged(1, true));
+        Assert.True(await opened.CommitAtIdle(_ => Task.CompletedTask, Token));
+        opened.Observe(new AgentTurnStarted(1, "Owner1", "Manual1"));
+        opened.Observe(new AgentTurnStarted(1, "Owner2", "Manual2"));
+        opened.Observe(new AgentSessionStatusChanged(1, "Owner1", AgentSessionStatus.Active));
+        opened.Observe(new AgentNativeControlChanged(1, false));
+        opened.Observe(new AgentSessionStatusChanged(1, "Owner1", AgentSessionStatus.Idle));
+        opened.Observe(new AgentSessionStatusChanged(1, "Owner2", AgentSessionStatus.Idle));
+
+        Assert.Equal((false, 2), (Saved.Blocked, Saved.Running));
+        Assert.False(await opened.CommitAtIdle(_ => throw new InvalidOperationException("Committed during owner work"), Token));
+        opened.Observe(Completed("Owner1", "Manual1"));
+        Assert.Equal((false, 1), (Saved.Blocked, Saved.Running));
+        Assert.False(await opened.CommitAtIdle(_ => throw new InvalidOperationException("Committed before matching completion"), Token));
+
+        opened.Observe(Completed("Owner2", "Manual2"));
+
+        Assert.Equal((false, 0), (Saved.Blocked, Saved.Running));
+        Assert.True(await opened.CommitAtIdle(_ => Task.CompletedTask, Token));
+        opened.Request();
+        await Idle(opened);
+        Assert.Equal(1, checkout.Refreshes);
+    }
+
+    [Fact]
     public async Task An_admission_is_recorded_until_its_acknowledged_turn_completes()
     {
         var started = Open();
@@ -420,10 +465,13 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         Assert.True(await started.CommitAtIdle(_ => Task.CompletedTask, Token));
     }
 
-    [Fact]
-    public async Task A_turn_that_completes_before_its_acknowledgement_keeps_the_admission_until_it_is_acknowledged_and_confirmed()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_turn_that_completes_before_its_acknowledgement_keeps_the_admission_until_it_is_acknowledged_and_confirmed(bool native)
     {
         var started = Open();
+        started.Observe(new AgentNativeControlChanged(1, native));
         using var turn = await started.Admit(Token);
         turn.Bind("S1");
 
@@ -614,10 +662,13 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         Assert.Equal((true, reason), (Saved.Blocked, Saved.Reason));
     }
 
-    [Fact]
-    public async Task A_new_runtime_process_needs_settled_work_ignores_the_earlier_process_and_forgets_its_turns()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_new_runtime_process_needs_settled_work_ignores_the_earlier_process_and_forgets_its_turns(bool native)
     {
         var started = Open();
+        started.Observe(new AgentNativeControlChanged(1, native));
         started.Observe(new AgentTurnStarted(2, "S9", "T9")); // Not yet the current process.
         using (var turn = await started.Admit(Token)) { turn.Bind("S1"); turn.Accepted("S1", "T1"); turn.Confirm(); }
         Assert.Equal("Cannot replace agent transport with unresolved work", Assert.Throws<IOException>(() => started.NewEpoch(2)).Message);
@@ -625,12 +676,32 @@ public sealed class CheckoutRefreshTests : IAsyncDisposable
         started.Observe(Completed("S1", "T1"));
         started.NewEpoch(2);
         started.Observe(new AgentRuntimeDisconnected(1)); // The earlier process.
+        started.Observe(new AgentNativeControlChanged(1, true));
         Assert.False(Saved.Blocked);
 
         // The earlier process's completed T1 is forgotten, so the new one's T1 is unmatched rather than restarted.
         started.Observe(new AgentTurnStarted(2, "S1", "T1"));
         Assert.Equal((true, "Unmatched agent lifecycle event"), (Saved.Blocked, Saved.Reason));
         Assert.Equal("Cannot replace agent transport with unresolved work", Assert.Throws<IOException>(() => started.NewEpoch(3)).Message);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Native_control_keeps_malformed_lifecycle_and_completed_identity_reuse_guards(bool malformed)
+    {
+        var opened = Open();
+        opened.Observe(new AgentNativeControlChanged(1, true));
+        opened.Observe(new AgentTurnStarted(1, "Owner", "T1"));
+        opened.Observe(Completed("Owner", "T1"));
+        opened.Observe(Completed("Owner", "T1"));
+        Assert.Equal((false, 0), (Saved.Blocked, Saved.Running));
+
+        opened.Observe(new AgentTurnStarted(1, "Owner", malformed ? "T\n2" : "T1"));
+
+        Assert.Equal((true, malformed ? "Malformed agent lifecycle identity" : "Agent restarted a completed turn identity"),
+            (Saved.Blocked, Saved.Reason));
+        Assert.False(await opened.CommitAtIdle(_ => Task.CompletedTask, Token));
     }
 
     [Fact]

@@ -61,7 +61,14 @@ public sealed class BrokerLifetimeTests
     public Task Normal_stop_does_not_cancel_an_entered_polling_or_webhook_observation(bool webhooks)
         => AcceptedDrain(webhooks, brokerDenied: false, stopBeforeAcknowledgement: true);
 
-    static async Task AcceptedDrain(bool webhooks, bool brokerDenied, bool stopBeforeAcknowledgement, bool grandchild = false, bool separateUnixSession = false)
+    [Theory]
+    [InlineData(null)]
+    [InlineData("0")]
+    public Task Owned_agent_launch_disables_native_remote_control_regardless_of_inherited_environment(string? inheritedMarker)
+        => AcceptedDrain(false, brokerDenied: false, stopBeforeAcknowledgement: false, inheritedRemoteControlDisabled: inheritedMarker);
+
+    static async Task AcceptedDrain(bool webhooks, bool brokerDenied, bool stopBeforeAcknowledgement, bool grandchild = false,
+        bool separateUnixSession = false, string? inheritedRemoteControlDisabled = null)
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
         using var fixture = new BrokerAuthenticationTests.Fixture(webhooks: webhooks);
@@ -71,6 +78,7 @@ public sealed class BrokerLifetimeTests
         using var ready = new TcpListener(IPAddress.Loopback, 0);
         ready.Start();
         var settingsPath = Path.Combine(fixture.Directory, "agent-settings.json");
+        var startup = Path.Combine(fixture.Directory, "agent-startup.json");
         var history = Path.Combine(fixture.Directory, "history.jsonl");
         var requests = Path.Combine(fixture.Directory, "agent-requests.jsonl");
         var eof = Path.Combine(fixture.Directory, "stdin-closed");
@@ -80,6 +88,7 @@ public sealed class BrokerLifetimeTests
         {
             ["port"] = ((IPEndPoint)ready.LocalEndpoint).Port,
             ["stage"] = "accepted",
+            ["startup"] = startup,
             ["history"] = history,
             ["requests"] = requests,
             ["eof"] = eof,
@@ -91,6 +100,7 @@ public sealed class BrokerLifetimeTests
         WriteExecutable(fixture.Gh, GitHub);
         var previousPath = Environment.GetEnvironmentVariable("PATH");
         var previousSettings = Environment.GetEnvironmentVariable("AGENT_RUNTIME_DRAIN_SETTINGS");
+        var previousRemoteControlDisabled = Environment.GetEnvironmentVariable("CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED");
         Process? parent = null, child = null, descendant = null;
         TcpClient? connection = null;
         Task<int>? run = null;
@@ -99,6 +109,7 @@ public sealed class BrokerLifetimeTests
         {
             Environment.SetEnvironmentVariable("PATH", tools + Path.PathSeparator + previousPath);
             Environment.SetEnvironmentVariable("AGENT_RUNTIME_DRAIN_SETTINGS", settingsPath);
+            Environment.SetEnvironmentVariable("CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED", inheritedRemoteControlDisabled);
             var statusPort = ControllerHarness.FreePort();
             var args = new List<string>
             {
@@ -117,6 +128,7 @@ public sealed class BrokerLifetimeTests
             var proof = JsonNode.Parse(proofLine!)!;
             parent = Process.GetProcessById(proof["parent"]!.GetValue<int>());
             child = Process.GetProcessById(proof["child"]!.GetValue<int>());
+            Assert.Equal("1", JsonNode.Parse(File.ReadAllText(startup))!["remoteControlDisabled"]?.GetValue<string>());
             if (grandchild)
             {
                 Assert.True(proof["grandchild"]!["credentialCopied"]!.GetValue<bool>());
@@ -226,6 +238,7 @@ public sealed class BrokerLifetimeTests
                 descendant?.Dispose();
                 Environment.SetEnvironmentVariable("PATH", previousPath);
                 Environment.SetEnvironmentVariable("AGENT_RUNTIME_DRAIN_SETTINGS", previousSettings);
+                Environment.SetEnvironmentVariable("CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED", previousRemoteControlDisabled);
             }
         }
     }
@@ -455,6 +468,8 @@ public sealed class BrokerLifetimeTests
         #!/usr/bin/python3
         import json,os,signal,subprocess,sys,threading
         s=json.load(open(os.environ['AGENT_RUNTIME_DRAIN_SETTINGS']))
+        if s.get('startup'):
+         with open(s['startup'],'w') as startup:json.dump({'remoteControlDisabled':os.environ.get('CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED')},startup)
         child=None
         acknowledged=threading.Event()
         completed=threading.Event()

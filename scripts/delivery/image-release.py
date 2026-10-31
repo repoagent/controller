@@ -42,7 +42,7 @@ def bundled(artifact):
         version = inventory['controller']['version']
         if not re.fullmatch(r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)', version):
             raise ValueError('Controller inventory version must be stable SemVer')
-        actual = re.findall(r'^RepoAgentController version: ([0-9A-Za-z.+-]+)$', output, re.M)
+        actual = re.findall(r'^repoagent version: ([0-9A-Za-z.+-]+)$', output, re.M)
         if len(actual) != 1 or actual[0].split('+', 1)[0] != version:
             raise ValueError('Compiled controller version differs from the image inventory')
         notes = hashlib.sha256((artifact / 'RELEASE_NOTES.md').read_bytes()).hexdigest()
