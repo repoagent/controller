@@ -8,6 +8,33 @@ namespace RepoAgentController;
 /// <summary>The <see cref="IDiscussionStore"/> and <see cref="IControllerState"/> adapter: the controller's state file and the files beside it.</summary>
 sealed class ControllerStateFiles(string statePath) : IDiscussionStore, IControllerState
 {
+    public bool ReadRemoteAccessEnabled()
+    {
+        var path = statePath + ".remote";
+        if (!File.Exists(path)) return false;
+        var value = ManagedCheckout.ReadPrivate(path).Trim();
+        return value switch { "enabled" => true, "disabled" => false, _ => throw new IOException("Invalid native-access intent record.") };
+    }
+
+    public void WriteRemoteAccessEnabled(bool enabled)
+    {
+        var path = statePath + ".remote";
+        ManagedCheckout.CheckPath(path);
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+            if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            using (var output = new FileStream(temporary, options))
+            {
+                output.Write(System.Text.Encoding.UTF8.GetBytes(enabled ? "enabled\n" : "disabled\n"));
+                output.Flush(true);
+            }
+            File.Move(temporary, path, true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
     static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
     // The order a record's keys are written in.
     static readonly RecordKey[] RecordOrder =

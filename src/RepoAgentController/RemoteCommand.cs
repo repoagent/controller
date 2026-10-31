@@ -8,14 +8,14 @@ static class RemoteCommand
 {
     public static void Add(RootCommand root)
     {
-        var remote = new Command("remote", "Request guarded native remote administration; currently unavailable until isolation and admission are qualified");
+        var remote = new Command("remote", "Manage native access on the selected controller runtime");
         foreach (var operation in new[] { RemoteOperation.Enable, RemoteOperation.Pair, RemoteOperation.Status,
             RemoteOperation.Clients, RemoteOperation.Revoke, RemoteOperation.Disable })
         {
             var state = new Option<FileInfo>("--state") { DefaultValueFactory = _ => new(".bridge-state.json"), Description = "Exact state path of the running controller" };
             var format = new Option<string>("--format") { DefaultValueFactory = _ => "text", Description = "Output text or deliberate local JSON" };
             var selectedClient = new Option<string?>("--client") { Required = true, Description = "Explicit client identifier to revoke; no implicit all-clients selection" };
-            var command = new Command(operation.ToString().ToLowerInvariant(), "Requires administration permission; returns unavailable while native access cannot be safely enabled") { state, format };
+            var command = new Command(operation.ToString().ToLowerInvariant(), "Manage native owner access through the private controller endpoint") { state, format };
             if (operation == RemoteOperation.Revoke) command.Options.Add(selectedClient);
             command.SetAction(async (result, ct) =>
             {
@@ -29,8 +29,15 @@ static class RemoteCommand
                     using var client = new LocalControllerClient(result.GetValue(state)!.FullName);
                     var outcome = await client.Remote(operation, clientId, ct);
                     if (output == "json") Console.WriteLine(JsonSerializer.Serialize(outcome, ActivityJson.Default.RemoteAccessResult));
-                    else Console.Error.WriteLine($"{outcome.Outcome}: {outcome.Message}");
-                    return 1; // Neither refusal nor unavailability confirms an administrative operation.
+                    else
+                    {
+                        var writer = outcome.Outcome == RemoteAccessOutcome.Success ? Console.Out : Console.Error;
+                        writer.WriteLine($"{outcome.Outcome}: {outcome.Message}");
+                        if (outcome.Status is { } status) writer.WriteLine($"desired={(status.DesiredEnabled ? "enabled" : "disabled")} actual={status.Connection.ToString().ToLowerInvariant()} generation={status.Generation} unconfirmed={status.Unconfirmed.ToString().ToLowerInvariant()}");
+                        if (outcome.Pair is { } pair) writer.WriteLine($"code={pair.Code} expires={pair.ExpiresAt:O}");
+                        foreach (var item in outcome.Clients ?? []) writer.WriteLine($"{item.Id}\t{item.Name}\t{item.Device}\t{item.Platform}\t{item.LastSeenAt:O}");
+                    }
+                    return outcome.Outcome == RemoteAccessOutcome.Success ? 0 : 1;
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 { Console.Error.WriteLine("Remote command canceled; the operation is unconfirmed."); return 1; }

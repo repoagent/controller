@@ -40,13 +40,14 @@ sealed class ActivitySocket : IAsyncDisposable
     readonly string pointer, directory;
     readonly SessionActivityInspector inspector;
     readonly TimeProvider clock;
+    readonly RemoteAccess? remote;
     readonly CancellationTokenSource stop;
 
     ActivitySocket(WebApplication app, ActivityEndpoint endpoint, string pointer, string directory,
-        SessionActivityInspector inspector, TimeProvider clock, CancellationToken ct)
+        SessionActivityInspector inspector, TimeProvider clock, CancellationToken ct, RemoteAccess? remote = null)
     {
         this.app = app; this.endpoint = endpoint; this.pointer = pointer; this.directory = directory;
-        this.inspector = inspector; this.clock = clock;
+        this.inspector = inspector; this.clock = clock; this.remote = remote;
         stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         app.MapPost(ActivityPath, Activity);
         foreach (var operation in new[] { RemoteOperation.Enable, RemoteOperation.Pair, RemoteOperation.Status,
@@ -59,10 +60,10 @@ sealed class ActivitySocket : IAsyncDisposable
     public static string Pointer(string state) => state + ".activity/endpoint.json";
 
     public static async Task<ActivitySocket?> TryStart(string state, string repository, SessionActivityInspector inspector,
-        string lifetime, TimeProvider clock, CancellationToken ct)
+        string lifetime, TimeProvider clock, CancellationToken ct, RemoteAccess? remote = null)
     {
         if (OperatingSystem.IsWindows()) return null;
-        try { return await Start(state, repository, lifetime, inspector, clock, ct); }
+        try { return await Start(state, repository, lifetime, inspector, clock, ct, remote); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         { Log.Write("activity-unavailable", "Private local commands did not become available within their startup deadline."); return null; }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or SocketException or PlatformNotSupportedException or JsonException or ArgumentException)
@@ -71,7 +72,7 @@ sealed class ActivitySocket : IAsyncDisposable
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The startup catch awaits server.DisposeAsync on failure; success transfers the server to the caller. CA2000 does not recognize this async cleanup.")]
     public static async Task<ActivitySocket> Start(string state, string repository, string lifetime, SessionActivityInspector inspector,
-        TimeProvider clock, CancellationToken ct)
+        TimeProvider clock, CancellationToken ct, RemoteAccess? remote = null)
     {
         if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Local commands require Unix sockets.");
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
@@ -140,7 +141,7 @@ sealed class ActivitySocket : IAsyncDisposable
             });
             var app = builder.Build();
             var endpoint = new ActivityEndpoint(state, repository, lifetime, path, Protocol);
-            var server = new ActivitySocket(app, endpoint, pointer, directory, inspector, clock, ct);
+            var server = new ActivitySocket(app, endpoint, pointer, directory, inspector, clock, ct, remote);
             try
             {
                 using var startup = new CancellationTokenSource(TimeSpan.FromSeconds(5), clock);
@@ -220,23 +221,36 @@ sealed class ActivitySocket : IAsyncDisposable
     async Task Remote(HttpContext context, RemoteOperation operation)
     {
         context.Response.Headers.CacheControl = "no-store";
-        var result = RemoteAccess.Execute(operation, context.Features.Get<UnixCaller>()?.Permission ?? LocalCallerPermission.Unknown);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), clock);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25), clock);
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, stop.Token, deadline.Token);
-        // Check authority before reading a selection or any protected application data, including status and clients.
-        if (result.Outcome != RemoteAccessOutcome.Forbidden)
+        RemoteAccessResult result;
+        var permission = context.Features.Get<UnixCaller>()?.Permission ?? LocalCallerPermission.Unknown;
+        // Authority precedes parsing or any protected application read.
+        if (permission != LocalCallerPermission.Administration)
+            result = new(RemoteAccessOutcome.Forbidden, "Remote administration permission is required.");
+        else
         {
+            RemoteRequest? request;
             try
             {
-                var request = await JsonSerializer.DeserializeAsync(context.Request.Body, ActivityJson.Default.RemoteRequest, bounded.Token);
+                using var reading = new CancellationTokenSource(TimeSpan.FromSeconds(5), clock);
+                using var body = CancellationTokenSource.CreateLinkedTokenSource(bounded.Token, reading.Token);
+                request = await JsonSerializer.DeserializeAsync(context.Request.Body, ActivityJson.Default.RemoteRequest, body.Token);
                 if (request is null || !Bound(request.State, request.Repository, request.Lifetime) || request.Client?.Length > 512 ||
                     (operation == RemoteOperation.Revoke && string.IsNullOrWhiteSpace(request.Client)))
                 { context.Response.StatusCode = StatusCodes.Status409Conflict; return; }
             }
             catch (Exception error) when (error is JsonException or IOException or OperationCanceledException or Microsoft.AspNetCore.Http.BadHttpRequestException)
             { context.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
+            result = remote is null ? new(RemoteAccessOutcome.Unavailable, "This controller has no native-access runtime.")
+                : await remote.Execute(operation, permission, request.Client, bounded.Token);
         }
-        context.Response.StatusCode = result.Outcome == RemoteAccessOutcome.Forbidden ? StatusCodes.Status403Forbidden : StatusCodes.Status503ServiceUnavailable;
+        context.Response.StatusCode = result.Outcome switch
+        {
+            RemoteAccessOutcome.Forbidden => StatusCodes.Status403Forbidden,
+            RemoteAccessOutcome.Unavailable => StatusCodes.Status503ServiceUnavailable,
+            _ => StatusCodes.Status200OK
+        };
         await context.Response.WriteAsJsonAsync(result, ActivityJson.Default.RemoteAccessResult, cancellationToken: bounded.Token);
     }
 

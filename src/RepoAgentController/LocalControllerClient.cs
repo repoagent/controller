@@ -71,8 +71,8 @@ sealed class LocalControllerClient : IDisposable
     {
         var request = new RemoteRequest(Endpoint.State, Endpoint.Repository, Endpoint.Lifetime, selectedClient);
         using var response = await Send("/v1/remote/" + operation.ToString().ToLowerInvariant(),
-            JsonSerializer.SerializeToUtf8Bytes(request, ActivityJson.Default.RemoteRequest), TimeSpan.FromSeconds(5), ct);
-        if (response.StatusCode is not (HttpStatusCode.Forbidden or HttpStatusCode.ServiceUnavailable))
+            JsonSerializer.SerializeToUtf8Bytes(request, ActivityJson.Default.RemoteRequest), TimeSpan.FromSeconds(30), ct);
+        if (response.StatusCode is not (HttpStatusCode.OK or HttpStatusCode.Forbidden or HttpStatusCode.ServiceUnavailable))
             throw new IOException("Remote selection or controller lifetime is invalid.");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
@@ -83,13 +83,14 @@ sealed class LocalControllerClient : IDisposable
         {
             var count = await stream.ReadAsync(buffer, bounded.Token);
             if (count == 0) break;
-            if (bytes.Length + count > 16384) throw new IOException("Remote response exceeds its limit.");
+            if (bytes.Length + count > 8 * 1024 * 1024) throw new IOException("Remote response exceeds its limit.");
             bytes.Write(buffer, 0, count);
         }
         var result = JsonSerializer.Deserialize(bytes.GetBuffer().AsSpan(0, checked((int)bytes.Length)), ActivityJson.Default.RemoteAccessResult)
             ?? throw new IOException("Invalid remote response.");
         if ((response.StatusCode == HttpStatusCode.Forbidden && result.Outcome != RemoteAccessOutcome.Forbidden) ||
-            (response.StatusCode == HttpStatusCode.ServiceUnavailable && result.Outcome != RemoteAccessOutcome.Unavailable))
+            (response.StatusCode == HttpStatusCode.ServiceUnavailable && result.Outcome != RemoteAccessOutcome.Unavailable) ||
+            (response.StatusCode == HttpStatusCode.OK && result.Outcome is RemoteAccessOutcome.Forbidden or RemoteAccessOutcome.Unavailable))
             throw new IOException("Invalid remote outcome.");
         return result;
     }

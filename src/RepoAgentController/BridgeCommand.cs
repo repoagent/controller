@@ -204,6 +204,7 @@ public static class BridgeCommand
                             store.Discussions.Values.Any(record => record.HoldsPending), time, new ControllerLog());
                         await using var codex = new Codex(agentRoot, wrapper, agentConfig, checkout is not null, credentials.BrokerCredentialLost,
                             suppliedCredentials: agentCredentials is not null);
+                        using var remoteAccess = new RemoteAccess(codex, new ControllerStateFiles(statePath), time);
                         var sessions = new AgentSessions(codex, new ControllerLog(), reconciliation, credentials.BrokerCredentialLost, agentCredentials is not null);
                         // Status counts a turn by its session too, so it stays running after its Discussion record is forgotten.
                         sessions.TurnsChanged += status.Running;
@@ -239,7 +240,7 @@ public static class BridgeCommand
                                 var inspector = new SessionActivityInspector(github.Repository, activityLifetime, bridge, codex, time,
                                     Log.Redact, () => Log.ProtectedLength);
                                 await using var activity = result.GetValue(once) ? null : await ActivitySocket.TryStart(statePath, github.Repository,
-                                    inspector, activityLifetime, time, runtimeToken);
+                                    inspector, activityLifetime, time, runtimeToken, remoteAccess);
                                 if (webhooks is not null)
                                 {
                                     await webhooks.Run(intakeStop.Token, runtimeToken);

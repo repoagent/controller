@@ -26,9 +26,8 @@ static partial class UnixPeer
                 if (GetPeerId(socket.SafeHandle, out peer, out _) != 0) return LocalCallerPermission.Unknown;
             }
             else return LocalCallerPermission.Unknown;
-            // Tools currently share the controller UID, including root in a root-run installation.
-            // Only a distinct host/container root identity can represent trusted administration.
-            if (peer == EffectiveUserId()) return LocalCallerPermission.Inspection;
+            // Access to this private container/host socket authorizes the trusted owner (ADR 0016).
+            if (peer == EffectiveUserId()) return LocalCallerPermission.Administration;
             return peer == 0 ? LocalCallerPermission.Administration : LocalCallerPermission.Unknown;
         }
         catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException or PlatformNotSupportedException or ObjectDisposedException)
