@@ -271,7 +271,7 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
         readonly Action<int, string, JsonNode?> observe;
         readonly CancellationToken credentialLost;
         readonly CancellationTokenRegistration lossRegistration;
-        int nextId, closing, disconnected;
+        int nextId, closing, disconnected, remoteFrameInFlight;
 
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1068", Justification = "Preserve existing positional callers; this token is distinct from the optional configuration that follows it.")]
         public Transport(string workspace, string githubCommand, string configurationDirectory, int epoch,
@@ -332,7 +332,8 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
             try
             {
                 var inspection = method is "thread/items/list" or "thread/turns/list";
-                await Write(Json.Object(("id", id), ("method", method), ("params", parameters)), ct, preserveFrame: inspection || method.StartsWith("remoteControl/", StringComparison.Ordinal));
+                var remote = method.StartsWith("remoteControl/", StringComparison.Ordinal);
+                await Write(Json.Object(("id", id), ("method", method), ("params", parameters)), ct, preserveFrame: inspection || remote, cancelWaiting: remote);
                 // Viewer deadlines stop awaiting in the core. Retain an issued read until its reply/disconnect so
                 // a slow provider cannot accumulate work beyond the two inspection slots after repeated timeouts.
                 return inspection ? await completion.Task : await completion.Task.WaitAsync(TimeSpan.FromSeconds(60), ct);
@@ -340,18 +341,39 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
             finally { pending.TryRemove(id, out _); }
         }
 
-        public async Task Write(JsonNode value, CancellationToken ct, bool preserveFrame = false)
+        public async Task Write(JsonNode value, CancellationToken ct, bool preserveFrame = false, bool cancelWaiting = false)
         {
+            // A queued command remains cancelable and cannot write after its caller abandons it.
             await writeLock.WaitAsync(ct);
+            if (cancelWaiting) Volatile.Write(ref remoteFrameInFlight, 1);
+            var writing = WriteFrame(value, preserveFrame, cancelWaiting, ct);
+            if (!cancelWaiting) { await writing; return; }
+            // The caller may stop waiting while the single lock-owning frame finishes. Observe a later failure even
+            // when that caller has left; cancellation must neither truncate JSON nor release the next writer early.
+            _ = writing.ContinueWith(static completed => { _ = completed.Exception; }, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            await writing.WaitAsync(ct);
+        }
+
+        async Task WriteFrame(JsonNode value, bool preserveFrame, bool cancelWaiting, CancellationToken ct)
+        {
             try
             {
+                if (cancelWaiting)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (Volatile.Read(ref closing) != 0) throw new IOException("Agent runtime is stopping.");
+                }
                 credentialLost.ThrowIfCancellationRequested();
-                // Cancelling inspection may abandon an answer, never leave half a frame on the owned work transport.
                 var writing = preserveFrame ? credentialLost : ct;
                 await process.StandardInput.WriteLineAsync(Json.Encode(value).AsMemory(), writing);
                 await process.StandardInput.FlushAsync(writing);
             }
-            finally { writeLock.Release(); }
+            finally
+            {
+                if (cancelWaiting) Volatile.Write(ref remoteFrameInFlight, 0);
+                writeLock.Release();
+            }
         }
 
         async Task Read()
@@ -428,7 +450,9 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
             {
                 // Broker teardown always ends the tree, including bootstrap/reload and normal exit.
                 // Checking only IsCancellationRequested before EOF leaves a concurrent-loss gap.
-                if (credentialLost.CanBeCanceled) await Terminate();
+                // A retained remote frame can still own stdin after its caller canceled. Stop the owned tree
+                // before closing that writer; synchronous Close cannot flush an in-flight blocked write.
+                if (credentialLost.CanBeCanceled || Volatile.Read(ref remoteFrameInFlight) != 0) await Terminate();
                 else process.StandardInput.Close();
                 try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
                 catch (TimeoutException) { await Terminate(); await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
