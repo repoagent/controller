@@ -1,6 +1,6 @@
 namespace RepoAgentController;
 
-/// <summary>Excludes checkout updates from all admitted agent work, including uncertain work.</summary>
+/// <summary>Excludes checkout updates from admitted and observed agent work, including uncertain work.</summary>
 public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAsyncDisposable
 {
     static readonly TimeSpan DeferredRetry = TimeSpan.FromSeconds(5);
@@ -17,9 +17,11 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
     readonly bool originalJournalMissing;
     readonly OrderedDictionary<string, RefreshAdmission> active;
     readonly Dictionary<(string Thread, string Turn), (bool Done, long Sequence)> turns = [];
+    // Some owner sessions announce status without subscribed turn notifications.
+    readonly HashSet<string> observedActive = [];
     Task worker = Task.CompletedTask;
     AgentSessions? sessions;
-    bool blocked, eligible;
+    bool blocked, eligible, nativeControl;
     long sequence;
     long? retryStarted;
     int epoch = 1;
@@ -48,13 +50,14 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
         Save();
     }
 
-    bool Busy => active.Count != 0 || turns.Values.Any(turn => !turn.Done);
+    bool Busy => active.Count != 0 || observedActive.Count != 0 || turns.Values.Any(turn => !turn.Done);
     void Save()
     {
         journal.Blocked = blocked;
         // A replacement cannot establish what the missing journal recorded. Keep its original absence across this lifetime.
         if (originalJournalMissing) return;
-        if (!blocked) journal.Running = turns.Values.Count(turn => !turn.Done);
+        if (!blocked) journal.Running = turns.Values.Count(turn => !turn.Done) +
+            observedActive.Count(thread => !turns.Any(turn => turn.Key.Thread == thread && !turn.Value.Done));
         try { store.Write(journal); }
         catch { blocked = true; throw; }
     }
@@ -348,7 +351,7 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
         lock (journalLock)
         {
             if (Busy || blocked) throw new IOException("Cannot replace agent transport with unresolved work");
-            this.epoch = epoch; turns.Clear();
+            this.epoch = epoch; turns.Clear(); observedActive.Clear(); nativeControl = false;
         }
     }
     public void Observe(AgentRuntimeEvent change)
@@ -358,16 +361,27 @@ public sealed class CheckoutRefresh : IAgentTurnJournal, ICheckoutAdmission, IAs
             if (change.Epoch != epoch) return;
             try
             {
+                if (change is AgentNativeControlChanged control) { nativeControl = control.Enabled; return; }
                 if (change is AgentRuntimeDisconnected) { Fault("Agent transport disconnected; completion unknown"); return; }
-                if (Lifecycle(change) is not (var thread, var turn, var completed)) return;
-                var key = (thread, turn);
-                var known = turns.TryGetValue(key, out var previous);
-                var awaiting = active.Any(item => item.Value.Thread == thread && item.Value.Turn == "");
-                if (!known && !awaiting) throw new IOException("Unmatched agent lifecycle event");
-                if (completed && known && previous.Done) return;
-                if (!completed && known && previous.Done) throw new IOException("Agent restarted a completed turn identity");
-                Track(key, completed || previous.Done, ++sequence);
-                Complete(); Save();
+                if (change is AgentSessionStatusChanged status && (nativeControl || observedActive.Contains(status.SessionId)))
+                {
+                    if (!Valid(status.SessionId)) throw new IOException("Malformed agent session identity");
+                    if (status.Status == AgentSessionStatus.Active) observedActive.Add(status.SessionId);
+                    else observedActive.Remove(status.SessionId);
+                    Save();
+                }
+                else if (Lifecycle(change) is (var thread, var turn, var completed))
+                {
+                    var key = (thread, turn);
+                    var known = turns.TryGetValue(key, out var previous);
+                    var awaiting = active.Any(item => item.Value.Thread == thread && item.Value.Turn == "");
+                    if (!known && !awaiting && !nativeControl) throw new IOException("Unmatched agent lifecycle event");
+                    if (completed && known && previous.Done) return;
+                    if (!completed && known && previous.Done) throw new IOException("Agent restarted a completed turn identity");
+                    Track(key, completed || previous.Done, ++sequence);
+                    Complete(); Save();
+                }
+                else return;
             }
             catch (Exception error) { blocked = true; try { Fault(error.Message); } catch { } }
         }
