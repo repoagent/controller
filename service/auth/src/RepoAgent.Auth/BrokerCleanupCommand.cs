@@ -52,10 +52,10 @@ internal static class BrokerCleanupCommand
             return new(new TableBrokerState(table), options.DeploymentEpoch, budget);
         }
 
-        public void Export(IReadOnlyList<CleanupObservation> observations)
+        public void Export(IReadOnlyList<CleanupObservation> observations, IReadOnlyList<Exception> exceptions)
         {
             if (BrokerTelemetry.CreateOptions(configuration!, options!.ManagedIdentityClientId) is { } telemetry)
-                BrokerTelemetry.ExportCleanupOnce(observations, telemetry);
+                BrokerTelemetry.ExportCleanupOnce(observations, telemetry, exceptions);
         }
 
         public void Dispose() => budget?.Dispose();

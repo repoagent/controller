@@ -21,6 +21,8 @@ resource insights 'Microsoft.Insights/components@2020-02-02' = {
     Application_Type: 'web'
     WorkspaceResourceId: logs.id
     DisableLocalAuth: true
+    // Application-side completion/severity sampling preserves failures; ingestion must not sample again.
+    SamplingPercentage: 100
     DisableIpMasking: false
     IngestionMode: 'LogAnalytics'
   }

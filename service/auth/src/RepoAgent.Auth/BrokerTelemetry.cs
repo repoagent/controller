@@ -15,10 +15,12 @@ namespace RepoAgent.Auth;
 /// <summary>Optional, privacy-limited observations; never part of broker authorization.</summary>
 public static class BrokerTelemetry
 {
+    private static readonly Action<ILogger, Exception?> CleanupError =
+        LoggerMessage.Define(LogLevel.Error, new EventId(1), "Broker cleanup failure");
     public static void AddHttp(WebApplicationBuilder builder)
     {
         builder.Logging.AddFilter(null, LogLevel.Warning);
-        builder.Logging.AddFilter<OpenTelemetryLoggerProvider>(null, LogLevel.Warning);
+        builder.Logging.AddFilter<OpenTelemetryLoggerProvider>(null, LogLevel.Information);
         builder.Services.AddSingleton<DistributedContextPropagator>(new BrokerContextPropagator());
         Sdk.SetDefaultTextMapPropagator(new CompositeTextMapPropagator([]));
         Environment.SetEnvironmentVariable("APPLICATIONINSIGHTS_STATSBEAT_DISABLED", "true");
@@ -36,15 +38,18 @@ public static class BrokerTelemetry
             builder.Services.AddOpenTelemetry()
                 .ConfigureResource(resource => resource.Clear().AddService("repoagent-auth", serviceVersion: BrokerVersion.Version, serviceInstanceId: "repoagent-auth"))
                 .WithTracing(tracing => tracing
+                    .SetSampler(new AlwaysOnSampler())
                     .AddAspNetCoreInstrumentation(value =>
                     {
                         value.RecordException = false;
                         value.Filter = context => context.Request.Path != "/health/live" && context.Request.Path != "/health/ready";
                     })
                     .AddProcessor(new BrokerActivityPrivacy())
-                    .AddAzureMonitorTraceExporter())
+                    .AddProcessor(new BrokerRequestExportProcessor(new AzureMonitorTraceExporter(options), errors: true))
+                    .AddProcessor(new BrokerRequestExportProcessor(new AzureMonitorTraceExporter(RoutineOptions(options)), errors: false)))
                 .WithMetrics(metrics => metrics.AddMeter(BrokerRejections.MeterName).AddAzureMonitorMetricExporter())
-                .WithLogging(logging => logging.AddProcessor(new BrokerLogPrivacy()).AddAzureMonitorLogExporter());
+                .WithLogging(logging => logging.AddProcessor(new BrokerLogPrivacy())
+                    .AddProcessor(new BrokerLogExportProcessor(new AzureMonitorLogExporter(options))));
         }
         catch (Exception)
         {
@@ -92,7 +97,7 @@ public static class BrokerTelemetry
             ConnectionString = monitoring.Connection,
             Credential = new ManagedIdentityCredential(new ManagedIdentityCredentialOptions(ManagedIdentityId.FromUserAssignedClientId(monitoring.ClientId))
             { Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(1) } }),
-            SamplingRatio = 0.01F,
+            SamplingRatio = 1F,
             TracesPerSecond = null,
             EnableTraceBasedLogsSampler = false,
             EnableLiveMetrics = false,
@@ -101,6 +106,14 @@ public static class BrokerTelemetry
             DisableOfflineStorage = true,
             Retry = { MaxRetries = 0, NetworkTimeout = TimeSpan.FromSeconds(1) }
         };
+    }
+
+    private static AzureMonitorExporterOptions RoutineOptions(AzureMonitorExporterOptions source)
+    {
+        var target = new AzureMonitorExporterOptions();
+        CopyOptions(source, target);
+        target.SamplingRatio = 0.01F;
+        return target;
     }
 
     private static void CopyOptions(AzureMonitorExporterOptions source, AzureMonitorExporterOptions target)
@@ -118,7 +131,8 @@ public static class BrokerTelemetry
 
     /// <summary>One completed invocation, including failures. SDK options are supplied by the trusted composition.</summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA2000", Justification = "MeterProvider owns its reader, which owns the exporter; disposing them independently would duplicate ownership.")]
-    public static void ExportCleanupOnce(IReadOnlyList<CleanupObservation> observations, AzureMonitorExporterOptions options)
+    public static void ExportCleanupOnce(IReadOnlyList<CleanupObservation> observations, AzureMonitorExporterOptions options,
+        IReadOnlyList<Exception>? exceptions = null)
     {
         try
         {
@@ -130,6 +144,11 @@ public static class BrokerTelemetry
             options.Retry.NetworkTimeout = TimeSpan.FromSeconds(1);
             options.DisableOfflineStorage = true;
             options.EnableLiveMetrics = options.EnableStandardMetrics = options.EnablePerformanceCounters = false;
+            if (exceptions is { Count: > 0 })
+            {
+                try { ExportCleanupErrors(exceptions, options); }
+                catch (Exception) { } // Failed log export must not prevent the alert metric attempt.
+            }
             using var meter = new Meter("RepoAgent.Auth.Cleanup");
             var reader = new BaseExportingMetricReader(new AzureMonitorMetricExporter(options))
             { TemporalityPreference = MetricReaderTemporalityPreference.Delta };
@@ -143,6 +162,23 @@ public static class BrokerTelemetry
         {
             // Preserve the already-written summary and authoritative exit code, including on disposal failure.
         }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000", Justification = "The registered logger provider owns its processor and exporter; the service container disposes the provider.")]
+    private static void ExportCleanupErrors(IReadOnlyList<Exception> exceptions, AzureMonitorExporterOptions options)
+    {
+        var services = new ServiceCollection();
+        var processor = new BrokerLogExportProcessor(new AzureMonitorLogExporter(options));
+        services.AddLogging(logging => logging.ClearProviders().AddOpenTelemetry(logging => logging
+            .SetResourceBuilder(ResourceBuilder.CreateEmpty().AddService("repoagent-auth-cleanup", serviceVersion: BrokerVersion.Version, serviceInstanceId: "repoagent-auth-cleanup"))
+            .AddProcessor(new BrokerLogPrivacy())
+            .AddProcessor(processor)));
+        using var container = services.BuildServiceProvider();
+        var factory = container.GetRequiredService<ILoggerFactory>();
+        var logger = factory.CreateLogger("RepoAgent.Auth.Cleanup");
+        foreach (var exception in exceptions)
+            CleanupError(logger, exception);
+        processor.ForceFlush(2000);
     }
 
     private sealed class DeadlineCredential(TokenCredential inner, CancellationToken deadline) : TokenCredential
