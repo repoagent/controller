@@ -14,7 +14,7 @@ public interface IAgentTurnJournal
 
 /// <summary>
 /// The agent sessions and turns of the runtime's current process, tracked from its responses and events: which sessions are
-/// loaded and oriented, their latest reported status, each accepted turn until its completion, completions that overtook their
+/// loaded and oriented, their latest reported status, accepted and observed owner turns until completion, completions that overtook their
 /// acceptance, and the agent account's credential health, which the runtime reports only through turn outcomes.
 /// </summary>
 public sealed class AgentSessions
@@ -42,9 +42,12 @@ public sealed class AgentSessions
     readonly Dictionary<string, (AgentSessionStatus Status, long Version)> statuses = [];
     readonly Dictionary<string, string> turns = [];
     readonly HashSet<(string Session, string Turn)> finished = [];
+    // Owner observations are separate: a late controller acknowledgement must not overwrite them.
+    readonly HashSet<(string Session, string Turn)> observed = [];
+    bool nativeControl;
     // Guarded by statusLock across epochs: turn completions not yet taken by TakeTurns.
     readonly List<TurnOutcome> ended = [];
-    /// <summary>Raised on the runtime's reader after a status report, turn completion or transport loss.</summary>
+    /// <summary>Raised on the runtime's reader after a status report, observed turn start, turn completion or transport loss.</summary>
     public event Action? StatusChanged;
     /// <summary>
     /// Raised with the sessions running a turn whenever they may have changed: as <see cref="StatusChanged"/>, and after a turn is
@@ -79,7 +82,12 @@ public sealed class AgentSessions
             if (change.Epoch == epoch)
                 switch (change)
                 {
+                    case AgentNativeControlChanged control: nativeControl = control.Enabled; break;
                     case AgentRuntimeDisconnected: Forget(); changed = true; break;
+                    case AgentTurnStarted { TurnId: { } startedTurn } started
+                        when nativeControl && Valid(started.SessionId) && Valid(startedTurn) && !finished.Contains((started.SessionId, startedTurn)):
+                        changed = observed.Add((started.SessionId, startedTurn));
+                        break;
                     case AgentSessionStatusChanged { SessionId.Length: > 0 } report:
                         Report(report.SessionId, report.Status); changed = true;
                         log.Write("session-status", $"session={report.SessionId} status={RuntimeStatus(report.SessionId)}");
@@ -87,6 +95,7 @@ public sealed class AgentSessions
                     case AgentTurnCompleted { SessionId.Length: > 0, TurnId: { } turn } completed:
                         var id = completed.SessionId;
                         // The agent reports idle before turn/completed; the session admits input after both.
+                        observed.Remove((id, turn));
                         if (turns.GetValueOrDefault(id) == turn) turns.Remove(id);
                         else { if (finished.Count >= 256) finished.Clear(); finished.Add((id, turn)); }
                         completion = completed;
@@ -112,7 +121,7 @@ public sealed class AgentSessions
     }
 
     // Caller holds statusLock.
-    void Forget() { statuses.Clear(); resumed.Clear(); oriented.Clear(); turns.Clear(); finished.Clear(); }
+    void Forget() { statuses.Clear(); resumed.Clear(); oriented.Clear(); turns.Clear(); finished.Clear(); observed.Clear(); nativeControl = false; }
 
     // Caller holds statusLock.
     void Report(string id, AgentSessionStatus status)
@@ -122,8 +131,11 @@ public sealed class AgentSessions
     }
     long Version(string id) => statuses.TryGetValue(id, out var value) ? value.Version : 0;
     AgentSessionStatus RuntimeStatus(string id) => statuses.TryGetValue(id, out var value) ? value.Status : AgentSessionStatus.Unknown;
-    // An accepted turn holds its session until that turn's completion, whatever status the agent reports meanwhile.
-    AgentSessionStatus Current(string id) => turns.ContainsKey(id) ? AgentSessionStatus.Active : RuntimeStatus(id);
+    // A tracked turn holds its session until that turn's completion, whatever status the agent reports meanwhile.
+    AgentSessionStatus Current(string id) => turns.ContainsKey(id) || observed.Any(turn => turn.Session == id)
+        ? AgentSessionStatus.Active : RuntimeStatus(id);
+
+    static bool Valid(string id) => id.Length is > 0 and <= 256 && !id.Any(char.IsControl);
 
     /// <summary>Broker credential loss has begun terminating the agent process; this controller lifetime is ending.</summary>
     public bool CredentialLost => credentialLost.IsCancellationRequested;
@@ -148,17 +160,17 @@ public sealed class AgentSessions
     }
 
     // Caller holds statusLock.
-    IEnumerable<string> Running() => statuses.Keys.Union(turns.Keys).Where(id => Current(id) == AgentSessionStatus.Active);
+    IEnumerable<string> Running() => statuses.Keys.Union(turns.Keys).Union(observed.Select(turn => turn.Session)).Where(id => Current(id) == AgentSessionStatus.Active);
 
     /// <summary>
-    /// Restarts the runtime when it runs no accepted turn and reports no active session, calling <paramref name="prepare"/>
+    /// Restarts the runtime when it runs no tracked turn and reports no active session, calling <paramref name="prepare"/>
     /// while no runtime process runs. Sessions resume on their next input. False while work runs.
     /// </summary>
     /// <remarks>The caller excludes concurrent dispatch, which loads sessions and starts turns.</remarks>
     public async Task<bool> RestartWhenIdle(Action prepare, CancellationToken ct)
     {
         lock (statusLock)
-            if (turns.Count != 0 || statuses.Values.Any(value => value.Status == AgentSessionStatus.Active)) return false;
+            if (turns.Count != 0 || observed.Count != 0 || statuses.Values.Any(value => value.Status == AgentSessionStatus.Active)) return false;
         await Restart(prepare, ct);
         authenticationFailure = null;
         Volatile.Write(ref authenticated, 0);
@@ -261,6 +273,7 @@ public sealed class AgentSessions
         {
             if (orient && resumed.Contains(id)) oriented.Add(id);
             // Agent reports active only after this response, and its completion can overtake it.
+            if (response.Ended) observed.Remove((id, turn));
             if (!finished.Remove((id, turn)) && !response.Ended) turns[id] = turn;
             TurnsChanged?.Invoke([.. Running()]);
         }

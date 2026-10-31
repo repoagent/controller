@@ -24,6 +24,90 @@ public sealed class AgentSessionsTests
         sessions.Accept(session, """{"changes":[]}""", Selection, (id, turn) => order.Add($"accepted {id} {turn}"), TestContext.Current.CancellationToken);
 
     [Fact]
+    public async Task An_owner_turn_holds_its_session_until_matching_completion_even_after_idle_and_disable()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        runtime.NativeControl(true);
+        runtime.Started("Owner", "Manual1");
+        runtime.Report("Owner", AgentSessionStatus.Idle);
+        runtime.NativeControl(false);
+
+        Assert.Equal((AgentSessionStatus.Active, 1), (sessions.Status("Owner"), sessions.ActiveTurns));
+        Assert.Equal(["Owner"], sessions.TakeTurns().Running);
+        Assert.False(await sessions.RestartWhenIdle(() => { }, ct));
+        runtime.Completed("Owner", "Other");
+        Assert.Equal(1, sessions.ActiveTurns);
+
+        runtime.Completed("Owner", "Manual1");
+
+        Assert.Equal((AgentSessionStatus.Idle, 0), (sessions.Status("Owner"), sessions.ActiveTurns));
+        Assert.Empty(sessions.TakeTurns().Running);
+        Assert.True(await sessions.RestartWhenIdle(() => { }, ct));
+    }
+
+    [Fact]
+    public async Task An_already_ended_controller_acceptance_releases_its_observed_start()
+    {
+        var session = await sessions.Start(TestContext.Current.CancellationToken);
+        runtime.NativeControl(true);
+        runtime.Answer(request =>
+        {
+            runtime.Started(request.SessionId, "T1");
+            return new("T1", true);
+        });
+
+        await Accept(session);
+
+        Assert.Equal((AgentSessionStatus.Idle, 0), (sessions.Status(session), sessions.ActiveTurns));
+    }
+
+    [Fact]
+    public async Task A_late_controller_acceptance_does_not_remove_an_owner_turn_started_after_its_completion()
+    {
+        var session = await sessions.Start(TestContext.Current.CancellationToken);
+        runtime.NativeControl(true);
+        runtime.Answer(request =>
+        {
+            runtime.Started(request.SessionId, "T1");
+            runtime.Completed(request.SessionId, "T1");
+            runtime.Started(request.SessionId, "Manual1");
+            runtime.Report(request.SessionId, AgentSessionStatus.Idle);
+            return new("T1", false);
+        });
+
+        await Accept(session);
+
+        Assert.Equal((AgentSessionStatus.Active, 1), (sessions.Status(session), sessions.ActiveTurns));
+        runtime.Completed(session, "Manual1");
+        Assert.Equal((AgentSessionStatus.Idle, 0), (sessions.Status(session), sessions.ActiveTurns));
+        Assert.Equal(["T1", "Manual1"], sessions.TakeTurns().Ended.Select(turn => turn.Turn));
+    }
+
+    [Fact]
+    public async Task Owner_turn_observation_is_explicit_epoch_scoped_and_rejects_malformed_starts()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        runtime.Started("Disabled", "T1");
+        Assert.Equal(0, sessions.ActiveTurns);
+        runtime.NativeControl(true);
+        runtime.Started("", "T1");
+        runtime.Started("Owner", "");
+        runtime.Started("Owner", "T\n1");
+        runtime.Started("Owner", new string('T', 257));
+        Assert.Equal(0, sessions.ActiveTurns);
+        runtime.Started("Owner", "T1");
+        Assert.Equal(1, sessions.ActiveTurns);
+        runtime.Completed("Owner", "T1");
+        runtime.Started("Owner", "T1"); // A completed identity does not start new work.
+        Assert.Equal(0, sessions.ActiveTurns);
+        Assert.True(await sessions.RestartWhenIdle(() => { }, ct));
+        runtime.NativeControl(true, epoch: 1); // A replaced runtime cannot re-enable observations.
+        runtime.Started("Owner", "T2");
+        runtime.Completed("Owner", "T2", epoch: 1);
+        Assert.Equal(0, sessions.ActiveTurns);
+    }
+
+    [Fact]
     public async Task A_completion_that_overtakes_its_acceptance_ends_the_turn_and_the_journal_records_it_before_the_acceptance()
     {
         var ct = TestContext.Current.CancellationToken;
