@@ -61,6 +61,9 @@ public sealed class AgentRequestRejected(string message) : IOException(message);
 /// <summary>Something the runtime process with this epoch reported.</summary>
 public abstract record AgentRuntimeEvent(int Epoch);
 
+/// <summary>The owned runtime permits trusted owner interaction; scoped to this process epoch.</summary>
+public sealed record AgentNativeControlChanged(int Epoch, bool Enabled) : AgentRuntimeEvent(Epoch);
+
 /// <summary>The runtime reported a session's status.</summary>
 public sealed record AgentSessionStatusChanged(int Epoch, string SessionId, AgentSessionStatus Status) : AgentRuntimeEvent(Epoch);
 
