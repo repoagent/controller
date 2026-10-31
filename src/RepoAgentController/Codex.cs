@@ -40,6 +40,7 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
     void Observe(int source, string method, JsonNode? parameters)
     {
         ObserveActivity(source, method, parameters);
+        ObserveRemote(source, method, parameters);
         // Usage updates are sparse; the bounded collector reads full snapshots instead.
         if (method == "account/rateLimits/updated") return;
         if (method == "account/updated") { Changed?.Invoke(new AgentUsageContextChanged(source)); return; }
@@ -140,11 +141,12 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
     public async Task Initialize(CancellationToken ct)
     {
         transport ??= OpenTransport();
-        var initialized = await Request("initialize", Json.Object(("clientInfo", Json.Object(("name", "github_discussion_bridge"), ("version", "0.1.0"))), ("capabilities", Json.Object(("experimentalApi", false)))), ct);
+        var initialized = await Request("initialize", Json.Object(("clientInfo", Json.Object(("name", "github_discussion_bridge"), ("version", "0.1.0"))), ("capabilities", Json.Object(("experimentalApi", true)))), ct);
         agentHome = initialized.Text("codexHome");
         await Write(Json.Object(("method", "initialized")), ct);
         // Agent honours skill inputs only for discovered skills; the packaged ones sit beside this executable.
         await Request("skills/extraRoots/set", Json.Object(("extraRoots", new JsonArray(Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory)))), ct);
+        if (RemoteAccessReady is { } ready) await ready(ct);
     }
 
     static JsonObject PackagedSkill(string name) =>
@@ -288,7 +290,7 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
             foreach (var argument in new[] { "-c", OwnedAgentProcesses.Launcher.ReplaceLineEndings("\n"), "repoagent-agent", executable, "app-server" }) start.ArgumentList.Add(argument);
             // Supplied credentials are the agent home's auth.json; a keyring store would silently ignore them.
             if (fileCredentials) { start.ArgumentList.Add("-c"); start.ArgumentList.Add("cli_auth_credentials_store=\"file\""); }
-            // Pinned Codex otherwise restores remembered remote intent from a reused home (ADR 0015).
+            // Pinned Codex otherwise restores remembered remote intent from a reused home. Controller intent is restored explicitly (ADR 0016).
             // Override inherited values for every owned launch; this does not isolate tools or alternate runtimes.
             start.Environment["CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED"] = "1";
             process = Process.Start(start) ?? throw new IOException("Could not start codex app-server");
@@ -330,7 +332,7 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
             try
             {
                 var inspection = method is "thread/items/list" or "thread/turns/list";
-                await Write(Json.Object(("id", id), ("method", method), ("params", parameters)), ct, preserveFrame: inspection);
+                await Write(Json.Object(("id", id), ("method", method), ("params", parameters)), ct, preserveFrame: inspection || method.StartsWith("remoteControl/", StringComparison.Ordinal));
                 // Viewer deadlines stop awaiting in the core. Retain an issued read until its reply/disconnect so
                 // a slow provider cannot accumulate work beyond the two inspection slots after repeated timeouts.
                 return inspection ? await completion.Task : await completion.Task.WaitAsync(TimeSpan.FromSeconds(60), ct);

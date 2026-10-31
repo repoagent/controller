@@ -322,6 +322,9 @@ sealed class InMemoryDiscussions(TimeProvider? clock = null) : IDiscussions
 /// A write can fail on demand, as a full or read-only disk does.</summary>
 sealed class InMemoryControllerState : IControllerState
 {
+    public bool RemoteEnabled { get; private set; }
+    public bool ReadRemoteAccessEnabled() => RemoteEnabled;
+    public void WriteRemoteAccessEnabled(bool enabled) { if (FailWrites) throw new IOException("No space left"); RemoteEnabled = enabled; }
     RecordedSettings? settings;
 
     /// <summary>Later writes throw <see cref="IOException"/>, leaving the earlier record in place.</summary>

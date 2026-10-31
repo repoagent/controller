@@ -25,8 +25,10 @@ public sealed class ActivitySocketTests
             var runtime = new Runtime();
             var inspector = new SessionActivityInspector("owner/repository", "lifetime", new Mappings(), runtime,
                 TimeProvider.System, text => text);
+            var remoteRuntime = new RemoteRuntime();
+            using var remoteAccess = new RemoteAccess(remoteRuntime, new InMemoryControllerState(), TimeProvider.System);
             await using (var server = await ActivitySocket.Start(state, "owner/repository", "lifetime", inspector,
-                TimeProvider.System, TestContext.Current.CancellationToken))
+                TimeProvider.System, TestContext.Current.CancellationToken, remoteAccess))
             {
                 Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite,
                     File.GetUnixFileMode(ActivitySocket.Pointer(state)));
@@ -42,14 +44,21 @@ public sealed class ActivitySocketTests
                 using var response = await direct.PostAsync("http://localhost/v1/activity", body, TestContext.Current.CancellationToken);
                 Assert.Equal(HttpStatusCode.OK, response.StatusCode);
                 Assert.Contains("previous response", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken), StringComparison.Ordinal);
-                foreach (var operation in new[] { "enable", "pair", "status", "clients", "revoke", "disable" })
+                // The actual same-UID peer, including root, may administer. Binding precedes side effects.
+                using (var invalid = new StringContent("not JSON", Encoding.UTF8, "application/json"))
+                using (var rejected = await direct.PostAsync("http://localhost/v1/remote/enable", invalid, TestContext.Current.CancellationToken))
+                    Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+                using (var staleRemote = new StringContent(JsonSerializer.Serialize(new RemoteRequest(state, "owner/repository", "previous-lifetime"),
+                    ActivityJson.Default.RemoteRequest), Encoding.UTF8, "application/json"))
+                using (var rejected = await direct.PostAsync("http://localhost/v1/remote/enable", staleRemote, TestContext.Current.CancellationToken))
+                    Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+                Assert.Equal(AgentRemoteConnection.Disabled, remoteRuntime.Status.Connection);
+                await UnrelatedPeerIsDenied(socket);
+                using (var owner = new LocalControllerClient(state))
                 {
-                    // Deliberately invalid input: authorization must precede parsing or protected reads.
-                    using var deniedBody = new StringContent("not JSON", Encoding.UTF8, "application/json");
-                    using var denied = await direct.PostAsync("http://localhost/v1/remote/" + operation, deniedBody, TestContext.Current.CancellationToken);
-                    Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
-                    var refusal = JsonSerializer.Deserialize(await denied.Content.ReadAsStringAsync(TestContext.Current.CancellationToken), ActivityJson.Default.RemoteAccessResult);
-                    Assert.Equal(RemoteAccessOutcome.Forbidden, refusal!.Outcome);
+                    var enabled = await owner.Remote(RemoteOperation.Enable, null, TestContext.Current.CancellationToken);
+                    Assert.Equal(RemoteAccessOutcome.Success, enabled.Outcome);
+                    Assert.Equal(AgentRemoteConnection.Connected, enabled.Status!.Connection);
                 }
                 using (var unknown = await direct.PostAsync("http://localhost/v1/remote/unknown", null, TestContext.Current.CancellationToken))
                     Assert.Equal(HttpStatusCode.Forbidden, unknown.StatusCode);
@@ -95,7 +104,7 @@ public sealed class ActivitySocketTests
                 using var json = JsonDocument.Parse(await stdout);
                 Assert.Equal("previous response", json.RootElement.GetProperty("snapshot").GetProperty("items")[0].GetProperty("text").GetString());
 
-                // Even a root-run controller's same-UID CLI has inspection authority only.
+                // The CLI uses the same authenticated peer and the selected running instance.
                 start.ArgumentList.Clear();
                 foreach (var argument in new[] { Path.Combine(AppContext.BaseDirectory, "repoagent.dll"), "remote", "status", "--state", state })
                     start.ArgumentList.Add(argument);
@@ -103,9 +112,9 @@ public sealed class ActivitySocketTests
                 var remoteOutput = remote.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
                 var remoteError = remote.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
                 await remote.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
-                Assert.Equal(1, remote.ExitCode);
-                Assert.Empty(await remoteOutput);
-                Assert.Contains("Forbidden", await remoteError, StringComparison.Ordinal);
+                Assert.Equal(0, remote.ExitCode);
+                Assert.Contains("actual=connected", await remoteOutput, StringComparison.Ordinal);
+                Assert.Empty(await remoteError);
                 using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
                 await using (var viewer = ActivityClient.Read(state, "42", 100, null, true, cancellation.Token).GetAsyncEnumerator(cancellation.Token))
                 {
@@ -146,6 +155,37 @@ public sealed class ActivitySocketTests
         {
             if (stoppedViewer is not null) await stoppedViewer.DisposeAsync();
             Directory.Delete(directory, true);
+        }
+    }
+
+    static async Task UnrelatedPeerIsDenied(string socket)
+    {
+        // Exercise SO_PEERCRED independently of the outer filesystem boundary in this disposable fake-runtime fixture.
+        if (!OperatingSystem.IsLinux() || Environment.UserName != "root" || !File.Exists("/usr/bin/setpriv") || !File.Exists("/usr/bin/curl")) return;
+        var directory = Path.GetDirectoryName(socket)!;
+        var directoryMode = File.GetUnixFileMode(directory);
+        var socketMode = File.GetUnixFileMode(socket);
+        try
+        {
+            File.SetUnixFileMode(directory, directoryMode | UnixFileMode.OtherExecute);
+            File.SetUnixFileMode(socket, socketMode | UnixFileMode.OtherWrite);
+            var start = new ProcessStartInfo("/usr/bin/setpriv") { RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var argument in new[] { "--reuid", "65534", "--regid", "65534", "--clear-groups", "/usr/bin/curl", "--silent", "--show-error",
+                "--max-time", "5", "--unix-socket", socket, "--request", "POST", "--data", "not JSON", "--write-out", "\n%{http_code}", "http://localhost/v1/remote/enable" })
+                start.ArgumentList.Add(argument);
+            using var caller = Process.Start(start)!;
+            var output = caller.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+            var error = caller.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await caller.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.Equal(0, caller.ExitCode);
+            Assert.Empty(await error);
+            Assert.EndsWith("\n403", await output, StringComparison.Ordinal);
+            Assert.Contains("Forbidden", await output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.SetUnixFileMode(socket, socketMode);
+            File.SetUnixFileMode(directory, directoryMode);
         }
     }
 

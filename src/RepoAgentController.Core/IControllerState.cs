@@ -3,6 +3,9 @@ namespace RepoAgentController;
 /// <summary>What the controller keeps beside its Discussion state across lifetimes.</summary>
 public interface IControllerState
 {
+    bool ReadRemoteAccessEnabled() => false;
+    void WriteRemoteAccessEnabled(bool enabled) => throw new IOException("Remote access intent storage is unavailable.");
+
     /// <summary>The repository settings this controller last recorded, or null when none are recorded or the record is unreadable.</summary>
     RecordedSettings? ReadSettings();
 

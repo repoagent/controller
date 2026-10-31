@@ -144,9 +144,7 @@ function Invoke-RunningCommand {
     Test-CompatibleRuntime
     $selected = Get-Resource container $containerName
     if (-not $selected -or $selected.Id -cne $existingContainer.Id -or -not $selected.Running) { throw 'Selected running container identity changed.' }
-    # Host Docker authority is already trusted. This does not elevate controller or agent processes.
-    $identity = if ($Command -eq 'remote') { @('--user', '0') } else { @() }
-    & docker exec @identity $selected.Id /usr/bin/python3 -E /opt/repoagent/runtime.py $Command @CommandArguments
+    & docker exec $selected.Id /usr/bin/python3 -E /opt/repoagent/runtime.py $Command @CommandArguments
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 function Get-FileMount([string]$Path, [string]$Destination) {

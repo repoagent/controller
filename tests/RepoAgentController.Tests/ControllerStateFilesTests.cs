@@ -16,6 +16,21 @@ public sealed class ControllerStateFilesTests : IDisposable
     public ControllerStateFilesTests() => Directory.CreateDirectory(directory);
 
     [Fact]
+    public void Native_access_intent_defaults_disabled_and_survives_a_new_controller_state_adapter()
+    {
+        var path = Path.Combine(directory, "remote-state.json");
+        var files = new ControllerStateFiles(path);
+        Assert.False(files.ReadRemoteAccessEnabled());
+        files.WriteRemoteAccessEnabled(true);
+        Assert.True(new ControllerStateFiles(path).ReadRemoteAccessEnabled());
+        files.WriteRemoteAccessEnabled(false);
+        Assert.False(new ControllerStateFiles(path).ReadRemoteAccessEnabled());
+        Assert.Equal("disabled", File.ReadAllText(path + ".remote").Trim());
+        if (!OperatingSystem.IsWindows())
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path + ".remote"));
+    }
+
+    [Fact]
     public void Recorded_settings_round_trip_unchanged_and_a_value_of_an_unknown_state_is_kept()
     {
         // As RepositorySettingsRefresh recorded it before the core owned the decisions; its JSON encoder escapes '&' and '+'.
