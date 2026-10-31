@@ -17,7 +17,8 @@ public interface ICleanupBudget
 // (reclamation and retirement), each walk both families of ledgers (pending enrollments, then issuance operations) one
 // ledger per turn, from a durable cursor. A failed turn keeps its lane and family where they were, and the run goes on
 // with the others. Traversal owns no lifecycle authority: every decision is redaction's or reclamation's.
-public sealed class BrokerCleanup(IBrokerState state, string deploymentEpoch, ICleanupBudget budget, TimeProvider clock)
+public sealed class BrokerCleanup(IBrokerState state, string deploymentEpoch, ICleanupBudget budget, TimeProvider clock,
+    Action<Exception>? observeFailure = null)
 {
     public static readonly TimeSpan Deadline = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan Retention = TimeSpan.FromHours(24);
@@ -64,6 +65,7 @@ public sealed class BrokerCleanup(IBrokerState state, string deploymentEpoch, IC
                 }
                 catch (Exception ex)
                 {
+                    ObserveFailure(ex);
                     failures++;
                     if (ex is StateConflict) conflicts++;
                     unavailable[lane, family] = true;
@@ -75,11 +77,18 @@ public sealed class BrokerCleanup(IBrokerState state, string deploymentEpoch, IC
         catch (OperationCanceledException) when (token.IsCancellationRequested) { stopReason = "time-budget"; }
         catch (Exception ex)
         {
+            ObserveFailure(ex);
             failures++;
             if (ex is StateConflict) conflicts++;
             stopReason = budget.Exceeded ? "budget-invariant-failed" : "storage-or-state-failed";
         }
         return failures == 0 ? 0 : 1;
+    }
+
+    private void ObserveFailure(Exception exception)
+    {
+        try { observeFailure?.Invoke(exception); }
+        catch (Exception) { } // Optional observations cannot change cleanup authority or its exit code.
     }
 
     // The run's summary, as the cleanup command prints it and monitoring reads it.

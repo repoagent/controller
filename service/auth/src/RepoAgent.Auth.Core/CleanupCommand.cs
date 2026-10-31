@@ -10,7 +10,7 @@ public interface ICleanupHost
     CleanupComposition Open();
 
     // Exports the observations, or nothing when monitoring isn't configured. It throws when monitoring is malformed or fails.
-    void Export(IReadOnlyList<CleanupObservation> observations);
+    void Export(IReadOnlyList<CleanupObservation> observations, IReadOnlyList<Exception> exceptions);
 }
 
 public sealed record CleanupComposition(IBrokerState State, string DeploymentEpoch, ICleanupBudget Budget);
@@ -40,11 +40,12 @@ public sealed class CleanupCommand(ICleanupHost host, TextWriter output, TextWri
             error.WriteLine("Invalid cleanup configuration.");
             return 2;
         }
-        var cleanup = new BrokerCleanup(composition.State, composition.DeploymentEpoch, composition.Budget, clock);
+        var exceptions = new List<Exception>();
+        var cleanup = new BrokerCleanup(composition.State, composition.DeploymentEpoch, composition.Budget, clock, exceptions.Add);
         var exitCode = await cleanup.RunAsync(ct);
         var summary = JsonSerializer.SerializeToElement(cleanup.Summary());
         output.WriteLine(summary.GetRawText());
-        try { host.Export(Observations(summary)); }
+        try { host.Export(Observations(summary), exceptions); }
         catch (Exception) { } // Optional telemetry never changes the result or emits configuration details.
         return exitCode;
     }

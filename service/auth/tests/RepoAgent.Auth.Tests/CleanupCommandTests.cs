@@ -105,6 +105,8 @@ public sealed class CleanupCommandTests
         Assert.Equal(storeFails ? 1 : 0, summary.GetProperty("failures").GetInt32());
         Assert.Equal(1, host.Exported);
         Assert.Equal(CleanupCommand.Observations(summary), host.Observations);
+        Assert.Equal(storeFails ? 1 : 0, host.Exceptions!.Count);
+        if (storeFails) Assert.IsType<BrokerStateUnavailable>(Assert.Single(host.Exceptions));
     }
 
     // The summary's monitored values as the cleanup-observation alert reads them. A stale cursor counts only with an overdue
@@ -148,6 +150,7 @@ public sealed class CleanupCommandTests
         public int Opened { get; private set; }
         public int Exported { get; private set; }
         public IReadOnlyList<CleanupObservation>? Observations { get; private set; }
+        public IReadOnlyList<Exception>? Exceptions { get; private set; }
         public Exception? OpenFails { get; init; }
         public Exception? ExportFails { get; init; }
         public StringWriter Output { get; } = new();
@@ -162,11 +165,12 @@ public sealed class CleanupCommandTests
             return new(budget, f.DeploymentEpoch, budget);
         }
 
-        public void Export(IReadOnlyList<CleanupObservation> observations)
+        public void Export(IReadOnlyList<CleanupObservation> observations, IReadOnlyList<Exception> exceptions)
         {
             var failure = ExportFails;
             Exported++;
             Observations = observations;
+            Exceptions = exceptions;
             if (failure is not null) throw failure;
         }
 
