@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/repoagent/controller/compare/broker-v1.3.0...broker-v1.3.1) (2026-10-31)
+
+
+### Bug Fixes
+
+* **broker:** retain failures while sampling routine telemetry ([#340](https://github.com/repoagent/controller/issues/340)) ([501ac1f](https://github.com/repoagent/controller/commit/501ac1fa9a706f0aec2ce727897e18794d9fbd74))
+
 ## [1.3.0](https://github.com/repoagent/controller/compare/broker-v1.2.0...broker-v1.3.0) (2026-10-29)
 
 ### Operator restore tools
