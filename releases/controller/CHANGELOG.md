@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.1](https://github.com/repoagent/controller/compare/controller-v1.1.0...controller-v1.1.1) (2026-10-31)
+
+
+### Bug Fixes
+
+* **controller:** refresh bundled cloudflared from 2026.10.5 to 2026.10.7 ([4da6736](https://github.com/repoagent/controller/commit/4da67365a6053de4059c74ca26d666161c14ce8e))
+* **controller:** refresh bundled Codex from 0.165.0 to 0.166.0 ([51df963](https://github.com/repoagent/controller/commit/51df963ede8121b83e2e1904b68977fd00382c39))
+
 ## [1.1.0](https://github.com/repoagent/controller/compare/controller-v1.0.2...controller-v1.1.0) (2026-10-29)
 
 ### Features
