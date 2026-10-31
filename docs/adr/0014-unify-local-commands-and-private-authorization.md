@@ -1,5 +1,7 @@
 # Unify local commands and private authorization
 
+> Authorization/isolation and desktop-admission restrictions below were superseded on 2026-10-31 by [ADR 0016](0016-trust-container-owner-for-native-remote-access.md). Shared transport, naming and privacy decisions remain in force.
+
 Accepted on 2026-10-30. Implementation and migration are tracked in [#332](https://github.com/repoagent/controller/issues/332); this decision does not describe functionality already shipped in controller 1.1.0.
 
 The shipped activity viewer and proposed native remote-access management both address a running controller's existing agent runtime. We will use one `repoagent` CLI and one private HTTP transport over a per-instance Unix-domain socket, with server-enforced permissions for each operation. Sharing connection infrastructure reduces divergent instance selection and lifecycle behavior; it must not turn inspection permission into administration authority.

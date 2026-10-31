@@ -1,5 +1,7 @@
 # Keep native remote access unavailable until both safety boundaries qualify
 
+> Superseded on 2026-10-31 by [ADR 0016](0016-trust-container-owner-for-native-remote-access.md). This records the earlier unavailable-only implementation, which does not satisfy the clarified owner-access requirement.
+
 Accepted on 2026-10-30 for [#335](https://github.com/repoagent/controller/issues/335), implementing the unavailable alternative in [ADR 0014](0014-unify-local-commands-and-private-authorization.md). The controller refuses every native remote operation until agent-tool isolation and preexecution admission of native commands can both be established. This does not provide supported native remote access; [#332](https://github.com/repoagent/controller/issues/332) remains open for enablement and real acceptance.
 
 ## Concrete current process arrangement
