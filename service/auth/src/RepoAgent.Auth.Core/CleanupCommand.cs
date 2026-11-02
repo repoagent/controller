@@ -22,7 +22,7 @@ public sealed record CleanupObservation(string Metric, double Value);
 // configuration exit 2 before the store is opened; optional telemetry never changes the result.
 public sealed class CleanupCommand(ICleanupHost host, TextWriter output, TextWriter error, TimeProvider clock)
 {
-    // `cleanup --watch` repeats the run every minute, and only in the Development environment.
+    // `cleanup --watch` repeats the run every five minutes, and only in the Development environment.
     public static bool Watches(IReadOnlyList<string> args, string? environment) =>
         args is ["cleanup", "--watch"] && environment == "Development";
 
@@ -50,29 +50,13 @@ public sealed class CleanupCommand(ICleanupHost host, TextWriter output, TextWri
         return exitCode;
     }
 
-    // The summary as metrics: one completion, the failures and unknown deadlines, the oldest cursor and cycle ages, how many
-    // cycle ages are unknown, the oldest observed overdue payload, and whether a cursor and an overdue payload are both at
-    // least 15 minutes old. An age that no lane observed isn't recorded.
-    public static IReadOnlyList<CleanupObservation> Observations(JsonElement summary)
-    {
-        static double? Number(JsonElement item) => item.ValueKind == JsonValueKind.Number ? item.GetDouble() : null;
-        var ages = summary.GetProperty("cursorAndCycleAges").EnumerateArray().ToArray();
-        var cursor = ages.Select(age => Number(age.GetProperty("cursorAgeSeconds"))).Max();
-        var cycle = ages.Select(age => Number(age.GetProperty("cycleAgeSeconds"))).Max();
-        var overdue = Number(summary.GetProperty("oldestObservedOverduePayloadAgeSeconds"));
-        var observations = new List<CleanupObservation>();
-        void Record(string name, double? value)
-        {
-            if (value is { } number) observations.Add(new("repoagent.auth.cleanup." + name, number));
-        }
-        Record("completed", 1);
-        Record("failures", summary.GetProperty("failures").GetInt32());
-        Record("unknown_deadlines", summary.GetProperty("unknownDeadlineCount").GetInt32());
-        Record("cursor_age_max_seconds", cursor);
-        Record("cycle_age_max_seconds", cycle);
-        Record("cycle_age_unknown", ages.Count(age => age.GetProperty("cycleAgeSeconds").ValueKind == JsonValueKind.Null));
-        Record("overdue_payload_age_max_seconds", overdue);
-        Record("stale_cursor_with_overdue_observation", cursor >= 900 && overdue >= 900 ? 1 : 0);
-        return observations;
-    }
+    public static IReadOnlyList<CleanupObservation> Observations(JsonElement summary) =>
+    [
+        new("repoagent.auth.cleanup.completed", summary.GetProperty("incompleteCoverage").GetBoolean() ? 0 : 1),
+        new("repoagent.auth.cleanup.failures", summary.GetProperty("failures").GetInt32()),
+        new("repoagent.auth.cleanup.examined", summary.GetProperty("examinedRecords").GetInt32()),
+        new("repoagent.auth.cleanup.changed", summary.GetProperty("changedRecords").GetInt32()),
+        new("repoagent.auth.cleanup.conflicts", summary.GetProperty("conflicts").GetInt32()),
+        new("repoagent.auth.cleanup.dispatches", summary.GetProperty("sdkTableDispatches").GetInt32())
+    ];
 }

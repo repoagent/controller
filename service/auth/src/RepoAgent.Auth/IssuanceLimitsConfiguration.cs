@@ -9,6 +9,8 @@ internal static class IssuanceLimitsConfiguration
         public static IssuanceLimits Read(IConfiguration configuration)
         {
             var section = configuration.GetSection("Broker:Issuance");
+            foreach (var retired in new[] { "RepositoryAttempts", "GlobalAttempts" })
+                if (section[retired] is not null) throw new InvalidOperationException($"Broker:Issuance:{retired} is retired; only current minute work is accounted.");
             var ceiling = new IssuanceLimits();
             return new(Limit(section, nameof(ceiling.RepositoryAdmissions), ceiling.RepositoryAdmissions),
                 Limit(section, nameof(ceiling.GlobalAdmissions), ceiling.GlobalAdmissions),
@@ -17,9 +19,7 @@ internal static class IssuanceLimitsConfiguration
                 Limit(section, nameof(ceiling.RepositorySigns), ceiling.RepositorySigns),
                 Limit(section, nameof(ceiling.GlobalSigns), ceiling.GlobalSigns),
                 Limit(section, nameof(ceiling.RepositoryMints), ceiling.RepositoryMints),
-                Limit(section, nameof(ceiling.GlobalMints), ceiling.GlobalMints),
-                Limit(section, nameof(ceiling.RepositoryAttempts), ceiling.RepositoryAttempts),
-                Limit(section, nameof(ceiling.GlobalAttempts), ceiling.GlobalAttempts));
+                Limit(section, nameof(ceiling.GlobalMints), ceiling.GlobalMints));
         }
     }
 

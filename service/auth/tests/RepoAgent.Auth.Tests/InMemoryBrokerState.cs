@@ -115,6 +115,24 @@ internal sealed class InMemoryBrokerState : IBrokerState
         return new([.. answer.Rows.Select(row => new ListedRecord<T>(new(row.Scope, row.Name), row.Row, row.Version))], answer.Continuation);
     }
 
+    public async Task<StatePage<CurrentRepository>> ListDueAsync(DateTimeOffset due, string? continuation, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        Interlocked.Increment(ref lists);
+        if (BeforeList is { } before) await before(CurrentRepository.Scope);
+        var start = continuation ?? "";
+        lock (sync)
+        {
+            if (EmptyPages > 0) { EmptyPages--; return new([], start); }
+            var available = rows.Where(r => r.Key.Scope == CurrentRepository.Scope && r.Key.Name.StartsWith("repository:", StringComparison.Ordinal)
+                && string.CompareOrdinal(r.Key.Name, start) > 0 && r.Value.Row.TryGetValue("NextCleanupAt", out var at)
+                && at is DateTimeOffset when && when <= due).OrderBy(r => r.Key.Name, StringComparer.Ordinal).ToList();
+            var selected = available.Take(PageSize).ToList();
+            return new([.. selected.Select(r => new ListedRecord<CurrentRepository>(new(r.Key.Scope, r.Key.Name), new Dictionary<string, object>(r.Value.Row), r.Value.Version))],
+                available.Count > selected.Count ? selected[^1].Key.Name : null);
+        }
+    }
+
     // Writes a record the way another writer would, with a new version.
     public StateVersion Seed<T>(StateKey<T> key, T record) where T : BrokerRecord, new() => Put(key.Scope, key.Name, record.ToRow());
 

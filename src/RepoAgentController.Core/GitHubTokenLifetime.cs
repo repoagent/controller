@@ -86,10 +86,10 @@ public sealed class GitHubTokenLifetime : IDisposable
                     log.Write("app-token-refreshed", $"actor={AgentLogin} expires={fresh.ExpiresAt:O}");
                     return fresh;
                 }
-                catch (GitHubTokenThrottledException error)
+                catch (Exception error) when (error is GitHubTokenThrottledException or GitHubTokenUnavailableException)
                 {
                     throttles = Math.Min(throttles + 1, 5);
-                    var delay = error.RetryAfter is { } supplied && supplied > TimeSpan.Zero ? supplied
+                    var delay = (error as GitHubTokenThrottledException)?.RetryAfter is { } supplied && supplied > TimeSpan.Zero ? supplied
                         : TimeSpan.FromSeconds(Math.Min(300, 30 * (1 << (throttles - 1))) + Random.Shared.Next(6));
                     now = clock.GetUtcNow();
                     retryAt = delay > DateTimeOffset.MaxValue - now ? DateTimeOffset.MaxValue : now + delay;
@@ -120,7 +120,10 @@ public sealed class GitHubTokenLifetime : IDisposable
                             }, null, until, Timeout.InfiniteTimeSpan);
                         }
                     }
-                    ThrottleLog("app-token-throttled", $"GitHub token acquisition throttled; retry at {retryAt:O}. Existing token remains usable only until its safety cutoff.");
+                    // A first acquisition can be retried by a later call without closing the lifetime.
+                    // An already-held credential still obeys the safety cutoff above.
+                    if (error is GitHubTokenUnavailableException && ForAgent() is null) throw;
+                    ThrottleLog("app-token-throttled", $"GitHub token acquisition {(error is GitHubTokenUnavailableException ? "temporarily unavailable" : "throttled")}; retry at {retryAt:O}. Existing token remains usable only until its safety cutoff.");
                 }
                 catch (Exception error)
                 {

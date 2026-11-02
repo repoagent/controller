@@ -1,6 +1,6 @@
 namespace RepoAgent.Auth;
 
-// Protects the secrets the broker stores, such as GitHub tokens and setup completions, so that only
+// Protects the secrets the broker stores, the short-lived setup completion, so that only
 // the broker's key ring reads them back, and only under the purpose that protected them.
 public interface ISecretProtection
 {

@@ -151,60 +151,68 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
 
     public async Task<GitHubTokenLease> Acquire(CancellationToken ct)
     {
+        var caller = ct;
         // ResponseHeadersRead ends HttpClient.Timeout at the headers; bound body consumption too.
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60), clock);
         using var acquisition = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
         ct = acquisition.Token;
-        var route = canonicalNames ? $"/v{version}/controller-enrollments/{enrollmentId}/github-token" : $"/v{version}/devices/{enrollmentId}/installation-token";
-        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, route));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        HttpResponseMessage response;
-        try { response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct); }
-        catch (HttpRequestException) { throw Invalid("broker transport failed"); }
-        using (response)
+        try
         {
-            if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            var route = canonicalNames ? $"/v{version}/controller-enrollments/{enrollmentId}/github-token" : $"/v{version}/devices/{enrollmentId}/installation-token";
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(origin, route));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            using (response)
             {
-                TimeSpan? delay = null;
-                if (response.Headers.TryGetValues("Retry-After", out var values) && values.ToArray() is [var value] &&
-                    RetryConditionHeaderValue.TryParse(value, out var retry))
-                    delay = retry.Delta ?? (retry.Date is { } date ? date - clock.GetUtcNow() : null);
-                throw new GitHubTokenThrottledException(delay);
+                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    TimeSpan? delay = null;
+                    if (response.Headers.TryGetValues("Retry-After", out var values) && values.ToArray() is [var value] &&
+                        RetryConditionHeaderValue.TryParse(value, out var retry))
+                        delay = retry.Delta ?? (retry.Date is { } date ? date - clock.GetUtcNow() : null);
+                    throw new GitHubTokenThrottledException(delay);
+                }
+                if ((int)response.StatusCode >= 500) throw new GitHubTokenUnavailableException();
+                if (!response.IsSuccessStatusCode) throw Invalid($"broker request failed (HTTP {(int)response.StatusCode})");
+                if (response.Content.Headers.ContentLength > MaximumBytes) throw Invalid("response exceeds 64 KiB");
+                await using var stream = await response.Content.ReadAsStreamAsync(ct);
+                var bytes = new byte[MaximumBytes + 1];
+                var length = 0;
+                while (length < bytes.Length)
+                {
+                    var read = await stream.ReadAsync(bytes.AsMemory(length), ct);
+                    if (read == 0) break;
+                    length += read;
+                }
+                using var document = Parse(bytes.AsMemory(0, length));
+                var result = document.RootElement;
+                CheckFields(result, [.. Fields, "token", "expiresAt"]);
+                CheckBinding(result);
+                var approved = enrollment.RootElement;
+                foreach (var field in new[] { "appId", "installationId", "repositoryId" })
+                    if (Id(result, field) != Id(approved, field)) throw Invalid("lease immutable identity differs from enrollment");
+                foreach (var field in new[] { "appSlug", "repository" })
+                    if (!string.Equals(Text(result, field), Text(approved, field), StringComparison.OrdinalIgnoreCase))
+                        throw Invalid("lease App/repository differs from enrollment");
+                if (NamesProfile && Text(result, "policyVersion") != Text(approved, "policyVersion"))
+                    throw Invalid("lease approval policy differs from enrollment");
+                var token = Text(result, "token");
+                var expiryText = Text(result, "expiresAt");
+                if (token.Length == 0 || token.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)) ||
+                    !Regex.IsMatch(expiryText, @"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z") ||
+                    !DateTimeOffset.TryParse(expiryText, CultureInfo.InvariantCulture, DateTimeStyles.None, out var expiry) ||
+                    expiry <= clock.GetUtcNow().AddMinutes(5) || expiry > clock.GetUtcNow().AddMinutes(65))
+                    throw Invalid("unusable installation token or expiry");
+                Log.Protect(token);
+                return new(token, expiry);
             }
-            if (!response.IsSuccessStatusCode) throw Invalid($"broker request failed (HTTP {(int)response.StatusCode})");
-            if (response.Content.Headers.ContentLength > MaximumBytes) throw Invalid("response exceeds 64 KiB");
-            await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            var bytes = new byte[MaximumBytes + 1];
-            var length = 0;
-            while (length < bytes.Length)
-            {
-                var read = await stream.ReadAsync(bytes.AsMemory(length), ct);
-                if (read == 0) break;
-                length += read;
-            }
-            using var document = Parse(bytes.AsMemory(0, length));
-            var result = document.RootElement;
-            CheckFields(result, [.. Fields, "token", "expiresAt"]);
-            CheckBinding(result);
-            var approved = enrollment.RootElement;
-            foreach (var field in new[] { "appId", "installationId", "repositoryId" })
-                if (Id(result, field) != Id(approved, field)) throw Invalid("lease immutable identity differs from enrollment");
-            foreach (var field in new[] { "appSlug", "repository" })
-                if (!string.Equals(Text(result, field), Text(approved, field), StringComparison.OrdinalIgnoreCase))
-                    throw Invalid("lease App/repository differs from enrollment");
-            if (NamesProfile && Text(result, "policyVersion") != Text(approved, "policyVersion"))
-                throw Invalid("lease approval policy differs from enrollment");
-            var token = Text(result, "token");
-            var expiryText = Text(result, "expiresAt");
-            if (token.Length == 0 || token.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)) ||
-                !Regex.IsMatch(expiryText, @"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z") ||
-                !DateTimeOffset.TryParse(expiryText, CultureInfo.InvariantCulture, DateTimeStyles.None, out var expiry) ||
-                expiry <= clock.GetUtcNow().AddMinutes(5) || expiry > clock.GetUtcNow().AddMinutes(65))
-                throw Invalid("unusable installation token or expiry");
-            Log.Protect(token);
-            return new(token, expiry);
         }
+        catch (HttpRequestException) { throw new GitHubTokenUnavailableException(); }
+        catch (IOException) { throw new GitHubTokenUnavailableException(); }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested && !caller.IsCancellationRequested)
+        { throw new GitHubTokenUnavailableException(); }
+
     }
 
     void CheckBinding(JsonElement value)

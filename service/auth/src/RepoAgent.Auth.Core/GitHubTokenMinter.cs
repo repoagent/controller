@@ -3,15 +3,14 @@ using static RepoAgent.Auth.IssuancePolicy;
 namespace RepoAgent.Auth;
 
 // A GitHub token GitHub minted, and whether its scope is exactly what the broker asked for. A token out of scope is
-// still known: the caller records it durably and revokes it, rather than lose a capability GitHub granted.
+// still known: the caller makes a bounded best-effort revocation before discarding it.
 public sealed record KnownGitHubToken(GitHubToken Token, bool ScopeValid);
 
 // Mints and revokes GitHub tokens, and decides what GitHub's answers prove. A minted token is in scope only when GitHub
 // reports exactly the one repository and the runtime authority asked for, with a lifetime the broker can serve.
 public sealed class GitHubTokenMinter(IGitHubTokens tokens, TimeProvider clock)
 {
-    // Only an answer that carries a usable token makes a token known. Any other answer denies, and the claimed
-    // send stays unresolved.
+    // Only an answer that carries a usable token makes a token known. Any other answer denies, and the request can be retried by the controller.
     public async Task<KnownGitHubToken> MintAsync(AppAuthorization app, long installationId, RepositoryIdentity repository,
         RuntimeAuthority authority, CancellationToken ct)
     {
@@ -23,7 +22,7 @@ public sealed class GitHubTokenMinter(IGitHubTokens tokens, TimeProvider clock)
             && OnlyThe(repository, minted) && minted.Permissions is { } permissions && authority.MatchesExactly(permissions));
     }
 
-    // Returns only when GitHub confirmed the revocation. Otherwise the token stays known, and charged, until it expires.
+    // Returns only when GitHub confirmed the revocation. Otherwise the caller discards it and relies on GitHub expiry.
     public async Task RevokeAsync(GitHubToken token, CancellationToken ct)
     {
         if (!await tokens.RevokeAsync(token, ct)) throw new IssuanceDenied();

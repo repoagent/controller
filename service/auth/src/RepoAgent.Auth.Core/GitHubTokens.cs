@@ -4,7 +4,7 @@ namespace RepoAgent.Auth;
 public interface IGitHubTokens
 {
     // Asks GitHub, with the App authorization, to mint one GitHub token on the installation for the repository and
-    // exactly the runtime authority. Every call is one mint the broker has already charged and durably claimed.
+    // exactly the runtime authority. Every call is one mint the broker has already charged to its minute budget.
     Task<GitHubRead<MintedGitHubToken>> MintAsync(AppAuthorization app, long installationId, RepositoryIdentity repository,
         RuntimeAuthority authority, CancellationToken ct);
 

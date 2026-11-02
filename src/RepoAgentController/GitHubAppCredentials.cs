@@ -44,6 +44,7 @@ public sealed class GitHubAppCredentials : IDisposable
 
     public Task Initialize(long? expectedInstallation, CancellationToken ct) => lifetime.Initialize(expectedInstallation, ct);
     public void Invalidate() => lifetime.Invalidate();
+    internal void Reject(string token) => lifetime.Reject(token);
 
     /// <summary>Removes installation-token files that earlier controller versions persisted beside the state.</summary>
     internal static void ClearCache(string credentialDirectory)

@@ -77,8 +77,8 @@ resource metrics 'Microsoft.Insights/metricAlerts@2018-03-01' = [for rule in met
 var cleanupQuery = format('''
 AppMetrics
 | where TimeGenerated > ago(15m) and _ResourceId =~ '{0}' and AppRoleName == 'repoagent-auth-cleanup'
-| summarize completed=maxif(Max, Name == 'repoagent.auth.cleanup.completed' and TimeGenerated > ago(5m)), failures=maxif(Max, Name == 'repoagent.auth.cleanup.failures'), unknown=maxif(Max, Name == 'repoagent.auth.cleanup.unknown_deadlines'), stale=maxif(Max, Name == 'repoagent.auth.cleanup.stale_cursor_with_overdue_observation'), cycle=maxif(Max, Name == 'repoagent.auth.cleanup.cycle_age_max_seconds'), cycleUnknown=maxif(Max, Name == 'repoagent.auth.cleanup.cycle_age_unknown')
-| project Alert=iff(isnull(completed) or isnull(failures) or isnull(unknown) or isnull(stale) or isnull(cycleUnknown) or failures > 0 or unknown > 0 or stale > 0 or cycle >= 21600 or cycleUnknown > 0, 1, 0)
+| summarize completed=maxif(Max, Name == 'repoagent.auth.cleanup.completed'), failures=maxif(Max, Name == 'repoagent.auth.cleanup.failures')
+| project Alert=iff(isnull(completed) or completed < 1 or isnull(failures) or failures > 0, 1, 0)
 ''', insights.id)
 var volumeQuery = format('''
 union AppMetrics, AppRequests, AppTraces, AppExceptions, AppDependencies

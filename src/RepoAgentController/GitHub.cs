@@ -61,29 +61,39 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
 
     async Task<string> Api(string method, string resource, JsonNode? input, CancellationToken ct, bool include = false)
     {
-        var credential = await credentials.GetCredential(ct);
-        var arguments = new List<string> { "api", resource, "--hostname", "github.com", "--method", method,
-            "--header", "X-GitHub-Api-Version: 2026-03-10" };
-        if (include) arguments.Add("--include");
-        if (input is not null) arguments.AddRange(["--input", "-"]);
-        var start = AppGitHubCommand.Create(executable, credential, credentials.CredentialDirectory, arguments);
-        start.RedirectStandardInput = input is not null;
-        start.RedirectStandardOutput = true;
-        start.RedirectStandardError = true;
-        using var process = Process.Start(start) ?? throw new IOException("Could not start gh");
-        var output = process.StandardOutput.ReadToEndAsync(ct);
-        var error = process.StandardError.ReadToEndAsync(ct);
-        if (input is not null)
+        for (var attempt = 0; ; attempt++)
         {
-            await process.StandardInput.WriteAsync(Json.Encode(input));
-            process.StandardInput.Close();
+            var credential = await credentials.GetCredential(ct);
+            // Include the authoritative HTTP status even for callers that only need the body.
+            var arguments = new List<string> { "api", resource, "--hostname", "github.com", "--method", method,
+                "--header", "X-GitHub-Api-Version: 2026-03-10", "--include" };
+            if (input is not null) arguments.AddRange(["--input", "-"]);
+            var start = AppGitHubCommand.Create(executable, credential, credentials.CredentialDirectory, arguments);
+            start.RedirectStandardInput = input is not null;
+            start.RedirectStandardOutput = true;
+            start.RedirectStandardError = true;
+            using var process = Process.Start(start) ?? throw new IOException("Could not start gh");
+            var output = process.StandardOutput.ReadToEndAsync(ct);
+            var error = process.StandardError.ReadToEndAsync(ct);
+            if (input is not null)
+            {
+                await process.StandardInput.WriteAsync(Json.Encode(input));
+                process.StandardInput.Close();
+            }
+            try { await process.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromSeconds(60), ct); }
+            catch { if (!process.HasExited) process.Kill(true); throw; }
+            var text = await output;
+            var failure = await error;
+            var response = Included(text);
+            if (response?.Status == 401 && attempt == 0)
+            {
+                credentials.Reject(credential.Token);
+                continue; // Definite authentication rejection, never an ambiguous mutation or a 403/rate limit.
+            }
+            if ((process.ExitCode != 0 || response?.Status >= 400) && !(include && response is not null))
+                throw new IOException($"gh failed: {failure}");
+            return include ? text : response?.Body ?? text;
         }
-        try { await process.WaitForExitAsync(ct).WaitAsync(TimeSpan.FromSeconds(60), ct); }
-        catch { if (!process.HasExited) process.Kill(true); throw; }
-        var text = await output;
-        // With --include, gh prints any HTTP response it received, including rejections, for classification.
-        if (process.ExitCode != 0 && !(include && text.StartsWith("HTTP/", StringComparison.Ordinal))) throw new IOException($"gh failed: {await error}");
-        return text;
     }
 
     public async Task VerifyIdentity(CancellationToken ct)

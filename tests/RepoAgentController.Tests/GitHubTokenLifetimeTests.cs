@@ -27,6 +27,33 @@ public sealed class GitHubTokenLifetimeTests
     }
 
     [Fact]
+    public async Task Temporary_broker_failure_keeps_the_enrollment_and_recovers_within_the_existing_lifetime()
+    {
+        using var world = new World(finalFailure: true);
+        await world.Initialize();
+        world.Clock.Advance(TimeSpan.FromMinutes(56));
+        world.Source.AcquireNext = _ => Task.FromException<GitHubTokenLease>(new GitHubTokenUnavailableException());
+        Assert.Equal("token-1", await world.Lifetime.GetToken(Token));
+        Assert.False(world.Lifetime.AuthorityLost.IsCancellationRequested);
+        world.Source.AcquireNext = null;
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.Equal("token-3", await world.Lifetime.GetToken(Token));
+        Assert.False(world.Lifetime.AuthorityLost.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task Temporary_failure_with_no_usable_token_does_not_permanently_revoke_the_enrollment()
+    {
+        using var world = new World(finalFailure: true);
+        world.Source.AcquireNext = _ => Task.FromException<GitHubTokenLease>(new GitHubTokenUnavailableException());
+        await Assert.ThrowsAsync<GitHubTokenUnavailableException>(() => world.Initialize());
+        Assert.False(world.Lifetime.AuthorityLost.IsCancellationRequested);
+        world.Source.AcquireNext = null;
+        world.Clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.Equal("token-2", await world.Lifetime.GetToken(Token));
+    }
+
+    [Fact]
     public async Task Initialization_binds_the_identity_and_scope_without_exposing_an_uninitialized_token()
     {
         using var world = new World();

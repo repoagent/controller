@@ -4,8 +4,6 @@ public sealed record BrokerOptions(Uri TableEndpoint, string TableName, string D
     string? ManagedIdentityClientId, int RequestLimitPerMinute, int ConcurrentRequestLimit, int RequestTimeoutSeconds, Uri? BrokerOrigin = null)
 {
     public int CandidateRepositoryLimit { get; init; } = 128;
-    public int RetainedEnrollmentLimit { get; init; } = 256;
-    public int RetainedIssuanceLimit { get; init; } = 4096;
 
     // The Broker settings, by their configuration path ("Broker:TableEndpoint"). Development storage may name a loopback
     // emulator's table endpoint.
@@ -31,14 +29,14 @@ public sealed record BrokerOptions(Uri TableEndpoint, string TableName, string D
             && (!Uri.TryCreate(configuredOrigin, UriKind.Absolute, out origin) || origin.Scheme != "https"
                 || origin.HostNameType != UriHostNameType.Dns || origin.AbsolutePath != "/" || !BrokerSettings.IsBare(origin)))
             throw new InvalidOperationException("Broker:BrokerOrigin must be a canonical HTTPS origin.");
+        foreach (var retired in new[] { "RetainedEnrollmentLimit", "RetainedIssuanceLimit" })
+            if (Broker(retired) is not null) throw new InvalidOperationException($"Broker:{retired} is retired; schema 2 stores no issuance history.");
         return new(endpoint, table, epoch, clientId,
             Limit(Broker, "RequestLimitPerMinute", 120, 10_000),
             Limit(Broker, "ConcurrentRequestLimit", 8, 128),
             Limit(Broker, "RequestTimeoutSeconds", 15, 60), origin)
         {
-            CandidateRepositoryLimit = Limit(Broker, nameof(CandidateRepositoryLimit), 128, 128),
-            RetainedEnrollmentLimit = Limit(Broker, nameof(RetainedEnrollmentLimit), 256, 256),
-            RetainedIssuanceLimit = Limit(Broker, nameof(RetainedIssuanceLimit), 4096, 4096)
+            CandidateRepositoryLimit = Limit(Broker, nameof(CandidateRepositoryLimit), 128, 128)
         };
     }
 

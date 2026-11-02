@@ -1,5 +1,7 @@
 # Controller enrollment for the shared GitHub App
 
+> **Schema-2 policy update:** [ADR 0017](adr/0017-keep-broker-tokens-in-request-memory.md) and the [current broker state contract](../service/auth/retained-state.md) supersede the historical token-accounting/settlement and storage-cleanup descriptions below. The current broker persists no GitHub tokens, mint outcomes or audit history. Closure stops new issuance; previously issued or lost tokens expire at GitHub. Adoption requires a new initialized Table and fresh enrollment. Existing wire field names and permission profiles remain versioned; legacy Table state is not migrated in place.
+
 Run the installer from a trusted checkout. Fresh enrollment uses **setup v4**, **PowerShell 7.4 or later**, an authenticated host **GitHub CLI (`gh`)**, and the broker operator's canonical HTTPS origin. The host writes one direct repository Agent variable ([ADR 0012](adr/0012-use-repository-agent-variables-for-settings-and-approval.md)). It creates no deployment Environment and performs no broker browser sign-in. Its GitHub credential stays in gh, outside the broker, controller and image.
 
 Public `-Action Enroll -Apply` also requires the Docker CLI and a working local

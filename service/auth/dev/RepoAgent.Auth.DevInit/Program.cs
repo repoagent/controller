@@ -18,32 +18,21 @@ var ct = deadline.Token;
 var created = await table.CreateIfNotExistsAsync(ct);
 if (created.GetRawResponse().Status is 201 or 204)
 {
-    await table.AddEntityAsync(new TableEntity("global:enrollment-v1", "quota")
+    await table.AddEntityAsync(new TableEntity("broker:current-v2", "quota")
     {
-        ["RetentionSchemaVersion"] = 1L,
-        ["CandidateCount"] = 0L,
-        ["RetainedEnrollmentCount"] = 0L,
-        ["Count"] = 0L
-    }, ct);
-    await table.AddEntityAsync(new TableEntity("global:issuance-v1", "quota")
-    {
-        ["RetentionSchemaVersion"] = 1L,
-        ["RetainedIssuanceCount"] = 0L,
+        ["SchemaVersion"] = 2L,
+        ["Repositories"] = 0L,
         ["Window"] = 0L,
         ["Admissions"] = 0L,
         ["Reads"] = 0L,
         ["Signs"] = 0L,
-        ["Mints"] = 0L,
-        ["Slots"] = 0L
+        ["Mints"] = 0L
     }, ct);
 }
-// Missing metadata in an existing store is an error, never a reason to reset accounting.
-foreach (var partition in new[] { "global:enrollment-v1", "global:issuance-v1" })
-{
-    var row = (await table.GetEntityAsync<TableEntity>(partition, "quota", cancellationToken: ct)).Value;
-    if (row.GetInt64("RetentionSchemaVersion") != 1L)
-        throw new InvalidOperationException("Existing local quota schema is invalid.");
-}
+// Never initialize/reset metadata over an existing legacy Table. Recreate local emulator state for the cutover.
+var quota = (await table.GetEntityAsync<TableEntity>("broker:current-v2", "quota", cancellationToken: ct)).Value;
+if (quota.GetInt64("SchemaVersion") != 2L)
+    throw new InvalidOperationException("Existing local quota schema is invalid; a fresh schema-2 Table is required.");
 await container.CreateIfNotExistsAsync(cancellationToken: ct);
 var keys = new KeyClient(vault, new EmulatedTokenCredential(vault.AbsoluteUri),
     new KeyClientOptions { DisableChallengeResourceVerification = true });
