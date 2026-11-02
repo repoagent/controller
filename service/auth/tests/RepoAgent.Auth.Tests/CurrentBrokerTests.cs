@@ -39,6 +39,17 @@ public sealed class CurrentBrokerTests
     }
 
     [Fact]
+    public async Task Setup_remains_readable_when_the_clock_advances_between_reads()
+    {
+        var f = new InMemoryBroker();
+        f.Clock.ReadStep = TimeSpan.FromTicks(1);
+        var setup = await f.Enrollment().StartRepositoryVariableAsync(Request(), InMemoryBroker.SetupSecret, Token, 5);
+        Assert.Equal(200, setup.Status);
+        Assert.Equal(f.Row.Deadline, f.Row.NextCleanupAt);
+        Assert.Equal(200, (await f.Enrollment().StatusAsync(f.Row.PendingId!, InMemoryBroker.SetupSecret, Token, 5)).Status);
+    }
+
+    [Fact]
     public async Task Hundreds_of_renewals_mint_fresh_tokens_and_never_grow_storage()
     {
         var (f, id, secret) = await Active();

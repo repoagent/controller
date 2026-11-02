@@ -210,7 +210,7 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
         }
         catch (HttpRequestException) { throw new GitHubTokenUnavailableException(); }
         catch (IOException) { throw new GitHubTokenUnavailableException(); }
-        catch (OperationCanceledException) when (deadline.IsCancellationRequested && !caller.IsCancellationRequested)
+        catch (OperationCanceledException) when (!caller.IsCancellationRequested)
         { throw new GitHubTokenUnavailableException(); }
 
     }

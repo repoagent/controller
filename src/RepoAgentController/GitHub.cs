@@ -85,10 +85,11 @@ sealed class GitHub(string repository, GitHubAppCredentials credentials, string 
             var text = await output;
             var failure = await error;
             var response = Included(text);
-            if (response?.Status == 401 && attempt == 0)
+            if (response?.Status == 401)
             {
                 credentials.Reject(credential.Token);
-                continue; // Definite authentication rejection, never an ambiguous mutation or a 403/rate limit.
+                // Retry one definite rejection; a rejected replacement is invalidated and surfaced.
+                if (attempt == 0) continue;
             }
             if ((process.ExitCode != 0 || response?.Status >= 400) && !(include && response is not null))
                 throw new IOException($"gh failed: {failure}");

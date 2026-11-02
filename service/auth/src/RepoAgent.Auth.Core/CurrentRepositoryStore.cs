@@ -73,6 +73,7 @@ public sealed class CurrentRepositoryStore(IBrokerState state, string epoch, Tim
         }
         var contract = request.Approval;
         var repository = request.RepositoryId.ToString(CultureInfo.InvariantCulture);
+        var deadline = clock.GetUtcNow().Add(PendingLifetime);
         var row = new CurrentRepository
         {
             SchemaVersion = 2,
@@ -91,8 +92,8 @@ public sealed class CurrentRepositoryStore(IBrokerState state, string epoch, Tim
             SetupVersion = contract.SetupVersion,
             PolicyVersion = contract.Policy,
             Challenge = EnrollmentSecrets.Generate(),
-            Deadline = clock.GetUtcNow().Add(PendingLifetime),
-            NextCleanupAt = clock.GetUtcNow().Add(PendingLifetime),
+            Deadline = deadline,
+            NextCleanupAt = deadline,
             Window = read?.Value.Window ?? 0,
             Admissions = read?.Value.Admissions ?? 0,
             Reads = read?.Value.Reads ?? 0,

@@ -39,6 +39,11 @@ sys.exit(0 if status == 200 else 1)
         if (recover) Assert.True((await github.Rest("GET", "issues", null, TestContext.Current.CancellationToken))!["ok"]!.GetValue<bool>());
         else await Assert.ThrowsAsync<IOException>(() => github.Rest("GET", "issues", null, TestContext.Current.CancellationToken));
         Assert.Equal(status == 401 ? 2 : 1, fixture.Transport.Requests.Count);
+        if (status == 401 && !recover)
+        {
+            Assert.DoesNotContain("opaque-token-2", (await fixture.InvokeWrapper()).Output);
+            Assert.Equal("opaque-token-3", await credentials.GetToken(TestContext.Current.CancellationToken));
+        }
     }
 
     [Fact]
@@ -280,6 +285,26 @@ sys.exit(0 if status == 200 else 1)
         var result = await fixture.InvokeWrapper();
         Assert.NotEqual(0, result.Exit);
         Assert.DoesNotContain("gh-invoked", result.Output);
+    }
+
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("transport")]
+    [InlineData("server")]
+    public async Task Temporary_broker_failure_keeps_usable_credentials_and_retries_without_reinstallation(string failure)
+    {
+        using var fixture = new Fixture();
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        fixture.Transport.Defect = failure;
+        if (failure == "server") fixture.Transport.Status = HttpStatusCode.ServiceUnavailable;
+        Assert.Equal("opaque-token-1", await credentials.GetToken(TestContext.Current.CancellationToken));
+        Assert.False(credentials.BrokerCredentialLost.IsCancellationRequested);
+        fixture.Transport.Defect = null;
+        fixture.Transport.Status = HttpStatusCode.OK;
+        fixture.Clock.Advance(TimeSpan.FromSeconds(36));
+        Assert.Equal("opaque-token-3", await credentials.GetToken(TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -804,6 +829,7 @@ sys.exit(0 if status == 200 else 1)
             if (Defect == "oversized") body = new string('x', 65537);
             var status = Defect == "redirect" ? HttpStatusCode.TemporaryRedirect : Status;
             if (Defect == "transport") throw new HttpRequestException("transport unavailable");
+            if (Defect == "timeout") throw new TaskCanceledException("HTTP transport timeout");
             return new HttpResponseMessage(status) { Content = Body is not null ? new StreamContent(Body) : new StringContent(status == HttpStatusCode.OK ? body : "DO-NOT-LOG") };
         }
     }
