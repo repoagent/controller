@@ -70,7 +70,7 @@ jobs:
       group: controller-owned-processes-macos-${{ github.ref }}
       cancel-in-progress: true
     if: (github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || inputs.verify == true) && inputs.tag == '' && inputs.smoke != true
-    runs-on: macos-15-intel
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
