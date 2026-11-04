@@ -22,6 +22,9 @@ One noncanceling Broker delivery lock serializes workflow publishers and deploym
 
 ## Deploy or roll back deliberately
 
+Set `AUTH_DEPLOYMENT_PAUSED=true` during a prepared storage cutover to publish/verify a release without deploying it. After the actual writer fence and target-state validation, clear the pause and select `operation=deploy-release` for that immutable release. The pause does not establish storage readiness or change grants.
+
+
 Normal source pushes verify code and propose release work; they do not redeploy an already released version under changed source. Approved broker release publication and deployment use the existing main-branch workflow and OIDC trust. Both the HTTP API and cleanup Job receive **one verified immutable digest**. Successful deployment requires both images to match, the latest API revision to be ready, and public live/ready HTTPS checks to pass.
 
 To retry an approved release:

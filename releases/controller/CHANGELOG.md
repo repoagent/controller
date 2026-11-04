@@ -5,12 +5,11 @@
 
 ### ⚠ BREAKING CHANGES
 
-* **broker:** Broker schema2 requires a freshly initialized dedicated Table and controller re-enrollment. Closing an enrollment prevents future publication; already-issued or lost tokens remain subject to GitHub expiry. Closes #342.
 * RepoAgentController is removed without an alias. Adopt matching native clients, wrappers and images, update invocations and restart the selected controller while preserving enrollment, state and Codex storage.
 
 ### Features
 
-* **broker:** simplify state and keep GitHub tokens in request memory ([#343](https://github.com/repoagent/controller/issues/343)) ([43690b2](https://github.com/repoagent/controller/commit/43690b248c3db4c8ea7151407047ac6feb321636))
+* **controller:** retry temporary broker failures and refresh GitHub-rejected tokens ([#343](https://github.com/repoagent/controller/issues/343)) ([43690b2](https://github.com/repoagent/controller/commit/43690b248c3db4c8ea7151407047ac6feb321636))
 * enable native Codex owner access through repoagent ([#337](https://github.com/repoagent/controller/issues/337)) ([bb88432](https://github.com/repoagent/controller/commit/bb88432ca73eafdda30c87befd2b4b8b3234c04a))
 
 
@@ -18,6 +17,10 @@
 
 * **controller:** refresh bundled cloudflared from 2026.10.5 to 2026.10.7 ([4da6736](https://github.com/repoagent/controller/commit/4da67365a6053de4059c74ca26d666161c14ce8e))
 * **controller:** refresh bundled Codex from 0.165.0 to 0.166.0 ([51df963](https://github.com/repoagent/controller/commit/51df963ede8121b83e2e1904b68977fd00382c39))
+
+### Upgrade notes
+
+* Existing controller enrollment files, repository approvals, state and Codex storage are preserved. Upgrading to controller 2.0.0 does not require controller re-enrollment; the deployed broker 2.0.0 preserves active enrollment bindings.
 
 ## [1.1.0](https://github.com/repoagent/controller/compare/controller-v1.0.2...controller-v1.1.0) (2026-10-29)
 

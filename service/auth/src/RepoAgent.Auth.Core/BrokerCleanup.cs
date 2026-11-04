@@ -25,7 +25,8 @@ public sealed class BrokerCleanup(IBrokerState state, string deploymentEpoch, IC
         var token = linked.Token;
         try
         {
-            _ = await new CurrentRepositoryStore(state, deploymentEpoch, clock).QuotaAsync(token);
+            var store = new CurrentRepositoryStore(state, deploymentEpoch, clock);
+            _ = await store.QuotaAsync(token);
             var due = clock.GetUtcNow();
             string? continuation = null;
             do
@@ -46,7 +47,7 @@ public sealed class BrokerCleanup(IBrokerState state, string deploymentEpoch, IC
                         row.Validate(Number(row.RepositoryId), IssuanceValues.Text(row.Epoch));
                         if (row.NextCleanupAt is null || row.NextCleanupAt > due || row.State == "closed") continue;
                         row.Close();
-                        await state.CommitAsync(new StateTransaction().Replace(key, row, read.Version), token);
+                        await store.SaveAsync(read, token);
                         changed++;
                     }
                     catch (StateConflict) { conflicts++; }

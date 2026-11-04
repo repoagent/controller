@@ -8,6 +8,7 @@ All current records use partition `broker:current-v2`:
 
 - `quota`: fixed global minute counters and admitted repository count.
 - `repository:<numeric ID>`: one current enrollment/setup, its repository work counters and `NextCleanupAt`.
+- `legacy:<UUID>`: one routing field for each imported active UUID-only enrollment; removed in the same transaction when that enrollment closes, expires or is replaced. New enrollments need no locator.
 
 At most `Broker:CandidateRepositoryLimit` repositories are admitted (default and maximum 128). Closed records keep only their current random enrollment ID, epoch, state and minute counters. A fresh setup replaces that same record with a fresh random ID/challenge. The row count stops growing with token renewals, including failed renewals. Existing entity/transaction size bounds and configured global/per-repository admission, read, sign and mint limits still apply. Old cumulative retained-issuance and outstanding-slot quotas do not apply to this model.
 
@@ -23,9 +24,9 @@ Schema 1 is not upgraded online. Stop/fence old writers and plan a deliberate cu
 
 Missing or malformed metadata denies admission and cleanup; neither runtime nor cleanup initializes or resets it. Do not seed it over an existing Table to infer freshness. The local emulator initializer uses the same schema and refuses an old Table; recreate local emulator state for this cutover.
 
-Use a fresh installer and approval/enrollment after changing the target. Existing UUID-only enrollments from schema 1 require re-enrollment. New enrollment IDs are opaque `<repository ID>_<random UUID>` values within the existing wire ID grammar. Setup versions 1–5 and runtime versions 1–3 retain their exact field names, permission profiles and marker formats. The installer accepts the new routing prefix and verifies that it matches the approved repository; it still reads historical UUID-only markers.
+A fenced one-time import can preserve valid acknowledged active schema-1 enrollments, their exact IDs, secret hashes, approval bindings, original expiries and minute counters. Existing controllers and approval values need no changes. The pure `LegacyEnrollmentImport` converter refuses revoked, expired, unacknowledged, mismatched or corrupt authority; no token state, pending completion or historical record is imported. Validate matching source gates/locators, absent revocation receipts and unchanged source versions before committing the fresh target. Otherwise use fresh enrollment; never infer authority from token history. New enrollment IDs are opaque `<repository ID>_<random UUID>` values within the existing wire ID grammar. Setup versions 1–5 and runtime versions 1–3 retain their exact field names, permission profiles and marker formats. The installer accepts the new routing prefix and verifies that it matches the approved repository; it still reads historical UUID-only markers.
 
-The old Table is never read or mutated by the new request/cleanup path. Historical schema readers remain only for the explicit read-only authority inspector and backup fixtures. Delete/archive old state only through a separately planned operator cutover after fencing its writers; a source change does not perform that action. Rolling back requires the matching old storage and explicit operator recovery, not pointing an older binary at schema 2.
+The old Table is never read or mutated by the new request/cleanup path. Historical schemas support only the explicit read-only authority inspector, backup fixtures and the one-time current-authority conversion. Delete/archive old state only through a separately planned operator cutover after fencing its writers; a source change does not perform that action. Rolling back requires the matching old storage and explicit operator recovery, not pointing an older binary at schema 2.
 
 ## Credential lifecycle
 

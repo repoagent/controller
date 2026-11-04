@@ -12,7 +12,10 @@ public sealed class ControllerSelfRevocation(IBrokerState state, string epoch, T
         {
             var hash = ControllerSecret.Hash(secret) ?? throw new IssuanceDenied(401);
             var store = new CurrentRepositoryStore(state, epoch, clock);
-            var read = await store.LoadAsync(enrollmentId, cancellationToken);
+            var read = await store.FindAsync(enrollmentId, cancellationToken);
+            // Missing UUID routing proves that this broker cannot authorize that frozen ID.
+            // Keep DELETE retries successful after closure removes its locator, without history.
+            if (read is null) return LegacyEnrollmentLocator.IsLegacyId(enrollmentId) ? 204 : 401;
             var row = read.Value;
             if (row.EnrollmentId != enrollmentId) return 401;
             if (row.State == "closed") return 204;

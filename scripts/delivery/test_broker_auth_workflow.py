@@ -17,13 +17,13 @@ def condition(name):
 
 
 def selected(name, *, event='push', operation='', ref='refs/heads/main', published='success', cancelled=False,
-             approved=True, verified='success', recorded='success', repository='repoagent/controller'):
+             approved=True, verified='success', recorded='success', repository='repoagent/controller', deployment_paused=''):
     context = {'github.event_name': event, 'github.ref': ref, 'inputs.operation': operation,
-               'github.repository': repository,
+               'github.repository': repository, 'vars.AUTH_DEPLOYMENT_PAUSED': deployment_paused,
                'needs.publish.result': published, 'needs.verify-service.result': verified,
                'needs.release-metadata.result': recorded, 'needs.select-release.outputs.release': 'true' if approved else 'false'}
     expression = condition(name).replace('!cancelled()', repr(not cancelled))
-    expression = re.sub(r'(?:github|inputs|needs)\.[a-z_.-]+', lambda match: repr(context[match[0]]), expression)
+    expression = re.sub(r'(?:github|inputs|needs|vars)\.[a-zA-Z_.-]+', lambda match: repr(context[match[0]]), expression)
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     if not re.fullmatch(r'(?:\s|\(|\)|==|!=|and|or|True|False)*', re.sub(r"'[^']*'", '', expression)):
         raise AssertionError('Unsupported workflow expression: ' + condition(name))
@@ -108,6 +108,17 @@ class BrokerWorkflowTests(unittest.TestCase):
         for result in ['failure', 'cancelled', 'skipped']:
             with self.subTest(metadata=result):
                 self.assertFalse(selected('deploy', recorded=result))
+
+    def test_cutover_pause_blocks_only_deployment_and_publication_can_finish(self):
+        self.assertTrue(selected('verify-service', deployment_paused='true'))
+        self.assertTrue(selected('publish', deployment_paused='true'))
+        self.assertTrue(selected('release-metadata', deployment_paused='true'))
+        for context in ({}, {'event': 'workflow_dispatch', 'operation': 'release'},
+                        {'event': 'workflow_dispatch', 'operation': 'deploy-image', 'published': 'skipped'},
+                        {'event': 'workflow_dispatch', 'operation': 'deploy-release', 'published': 'skipped'}):
+            with self.subTest(context=context):
+                self.assertFalse(selected('deploy', deployment_paused='true', **context))
+                self.assertTrue(selected('deploy', deployment_paused='false', **context))
 
     def test_explicit_image_rollback_runs_without_build_or_publication(self):
         context = dict(event='workflow_dispatch', operation='deploy-image', published='skipped')
