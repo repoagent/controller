@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.0.0](https://github.com/repoagent/controller/compare/broker-v1.3.1...broker-v2.0.0) (2026-11-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **broker:** Broker schema2 requires a freshly initialized dedicated Table and controller re-enrollment. Closing an enrollment prevents future publication; already-issued or lost tokens remain subject to GitHub expiry. Closes #342.
+
+### Features
+
+* **broker:** simplify state and keep GitHub tokens in request memory ([#343](https://github.com/repoagent/controller/issues/343)) ([43690b2](https://github.com/repoagent/controller/commit/43690b248c3db4c8ea7151407047ac6feb321636))
+
+
+### Bug Fixes
+
+* **broker:** preserve active controller enrollments during table cutover ([#346](https://github.com/repoagent/controller/issues/346)) ([650efdf](https://github.com/repoagent/controller/commit/650efdf1d485fda996127ca0a940fb7e327fafcd))
+
 ## [1.3.1](https://github.com/repoagent/controller/compare/broker-v1.3.0...broker-v1.3.1) (2026-10-31)
 
 
