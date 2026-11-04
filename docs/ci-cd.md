@@ -10,7 +10,7 @@ Local prerequisites are the pinned SDK, Python 3 with its `venv` module, clang a
 
 The installer (`install.*`, `repoagent*`, `scripts/*.ps1`) and the container runtime (`container/`) have no automated tests ([ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)). Test changes manually against the local AppHost using the [run steps](local-apphost.md); credential-dependent live acceptance remains tracked in [#204](https://github.com/repoagent/controller/issues/204).
 
-The repository has four workflow entry points: **Controller**, **Broker**, the scheduled **Baseline tool refresh** (with a reusable per-tool helper), and **Hosted installer smoke**. Controller owns verification, image publication and native tagged releases. Broker owns verification, deployment and recovery operations. Superseded read-only checks are cancelled; publication and deployment writes finish once started.
+The delivery entry points are **Release Please**, **Controller**, **Controller release**, **Broker**, the scheduled **Baseline tool refresh** (with a reusable per-tool helper), **Hosted installer smoke**, and manual-only **Controller macOS**. Controller verifies changes on Linux; Controller release publishes Linux images and native tagged releases. Controller macOS runs native process and credential-handoff checks only when explicitly dispatched; PR, main and release validation never wait for it. See [verification instructions](code-quality.md#verification) for manual macOS dispatch. Broker owns verification, deployment and recovery operations. Superseded read-only checks are cancelled; publication and deployment writes finish once started.
 
 ## Controller releases
 
