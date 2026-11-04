@@ -41,7 +41,7 @@ public sealed class CurrentRepository : BrokerRecord
             return;
         }
         if (NextCleanupAt != (State == "active" ? ExpiresAt : Deadline)) throw new IssuanceDenied();
-        if (CurrentRepositoryStore.RepositoryOf(Text(EnrollmentId)) != repository || !Approval.Allows(Text(Profile))
+        if ((!LegacyEnrollmentLocator.IsLegacyId(EnrollmentId) && CurrentRepositoryStore.RepositoryOf(Text(EnrollmentId)) != repository) || !Approval.Allows(Text(Profile))
             || !IssuancePolicy.IsRepositoryName(Repository) || !Approval.AcceptsVariable(Text(Variable))) throw new IssuanceDenied();
         if (Marker is not null && Marker != CreateMarker()) throw new IssuanceDenied();
         if (State is "pending" or "completed")

@@ -19,9 +19,13 @@ public sealed class CurrentRepositoryStore(IBrokerState state, string epoch, Tim
 
     public async Task<Versioned<CurrentRepository>> LoadAsync(string id, CancellationToken ct)
     {
-        var repository = RepositoryOf(id);
+        var legacy = LegacyEnrollmentLocator.IsLegacyId(id);
+        var repository = legacy
+            ? Number((await state.ReadAsync(LegacyEnrollmentLocator.Key(id), ct) ?? throw new IssuanceDenied(401)).Value.RepositoryId)
+            : RepositoryOf(id);
         var read = await state.ReadAsync(CurrentRepository.Key(repository), ct) ?? throw new IssuanceDenied(401);
         read.Value.Validate(repository, epoch);
+        if (legacy && read.Value.EnrollmentId != id) throw new IssuanceDenied(401);
         return read;
     }
 
@@ -103,6 +107,7 @@ public sealed class CurrentRepositoryStore(IBrokerState state, string epoch, Tim
         // Start's provider charge is made by ChargeAsync immediately before discovery/mint.
         var tx = new StateTransaction().Replace(CurrentBrokerQuota.Key, global.Value, global.Version);
         if (read is null) tx.Add(key, row); else tx.Replace(key, row, read.Version);
+        if (read is not null) await RemoveLegacyLocatorAsync(tx, read.Value, ct);
         var versions = await state.CommitAsync(tx, ct);
         return new(row, versions[1] ?? throw new IssuanceDenied());
     }
@@ -114,9 +119,21 @@ public sealed class CurrentRepositoryStore(IBrokerState state, string epoch, Tim
 
     public async Task<Versioned<CurrentRepository>> SaveAsync(Versioned<CurrentRepository> read, CancellationToken ct)
     {
-        var version = await state.CommitAsync(new StateTransaction()
-            .Replace(CurrentRepository.Key(Number(read.Value.RepositoryId)), read.Value, read.Version), ct);
+        var transaction = new StateTransaction().Replace(CurrentRepository.Key(Number(read.Value.RepositoryId)), read.Value, read.Version);
+        if (read.Value.State == "closed") await RemoveLegacyLocatorAsync(transaction, read.Value, ct);
+        var version = await state.CommitAsync(transaction, ct);
         return new(read.Value, version[0] ?? throw new IssuanceDenied());
+    }
+
+    private async Task RemoveLegacyLocatorAsync(StateTransaction transaction, CurrentRepository row, CancellationToken ct)
+    {
+        if (!LegacyEnrollmentLocator.IsLegacyId(row.EnrollmentId)) return;
+        var key = LegacyEnrollmentLocator.Key(Text(row.EnrollmentId));
+        if (await state.ReadAsync(key, ct) is { } locator)
+        {
+            if (locator.Value.RepositoryId != row.RepositoryId) throw new IssuanceDenied();
+            transaction.Delete(key, locator.Version);
+        }
     }
 
     public async Task<Versioned<CurrentBrokerQuota>> QuotaAsync(CancellationToken ct)
