@@ -80,12 +80,19 @@ public sealed class LegacyEnrollmentImportTests
         Assert.Null(row.PendingId); Assert.Null(row.SetupSecretHash); Assert.Null(row.ProtectedCompletion);
     }
 
-    [Fact]
-    public async Task Revocation_removes_legacy_routing_atomically_and_restored_approval_cannot_reopen_it()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Revocation_removes_legacy_routing_and_retries_succeed_even_after_a_lost_response(bool lostResponse)
     {
         var (f, id, secret) = await Imported();
         var marker = f.GitHub.Marker;
+        if (lostResponse) f.State.AfterCommit = _ => throw new BrokerStateUnavailable("lost reply");
+        Assert.Equal(lostResponse ? 503 : 204, await new ControllerSelfRevocation(f.State, InMemoryBroker.Epoch, f.Clock).RevokeAsync(id, secret, Token));
+        f.State.AfterCommit = null;
+        var commits = f.State.Commits;
         Assert.Equal(204, await new ControllerSelfRevocation(f.State, InMemoryBroker.Epoch, f.Clock).RevokeAsync(id, secret, Token));
+        Assert.Equal(commits, f.State.Commits);
         Assert.Null(f.State.Get(LegacyEnrollmentLocator.Key(id)));
         Assert.Null(f.Row.ControllerSecretHash);
         f.GitHub.Marker = marker;

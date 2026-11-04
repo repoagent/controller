@@ -17,13 +17,23 @@ public sealed class CurrentRepositoryStore(IBrokerState state, string epoch, Tim
             ? Id(repository) : throw new IssuanceDenied(401);
     }
 
-    public async Task<Versioned<CurrentRepository>> LoadAsync(string id, CancellationToken ct)
+    public async Task<Versioned<CurrentRepository>> LoadAsync(string id, CancellationToken ct) =>
+        await FindAsync(id, ct) ?? throw new IssuanceDenied(401);
+
+    public async Task<Versioned<CurrentRepository>?> FindAsync(string id, CancellationToken ct)
     {
         var legacy = LegacyEnrollmentLocator.IsLegacyId(id);
-        var repository = legacy
-            ? Number((await state.ReadAsync(LegacyEnrollmentLocator.Key(id), ct) ?? throw new IssuanceDenied(401)).Value.RepositoryId)
-            : RepositoryOf(id);
-        var read = await state.ReadAsync(CurrentRepository.Key(repository), ct) ?? throw new IssuanceDenied(401);
+        long repository;
+        if (legacy)
+        {
+            var locator = await state.ReadAsync(LegacyEnrollmentLocator.Key(id), ct);
+            if (locator is null) return null;
+            repository = Number(locator.Value.RepositoryId);
+            if (repository <= 0) throw new IssuanceDenied();
+        }
+        else repository = RepositoryOf(id);
+        var read = await state.ReadAsync(CurrentRepository.Key(repository), ct);
+        if (read is null) return null;
         read.Value.Validate(repository, epoch);
         if (legacy && read.Value.EnrollmentId != id) throw new IssuanceDenied(401);
         return read;
