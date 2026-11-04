@@ -67,23 +67,17 @@ public static class IssuanceServices
         if (settings.Enrolls) builder.Services.AddSingleton(CreateEnrollmentService);
         return settings;
     }
-    // The issuance store over the broker state, for this deployment's epoch and retained-ledger ceiling.
-    public static IssuanceStore CreateStore(IServiceProvider services)
+    public static CurrentRepositoryStore CreateStore(IServiceProvider services)
     {
         var options = services.GetRequiredService<BrokerOptions>();
-        return new(services.GetRequiredService<IBrokerState>(), options.DeploymentEpoch, options.RetainedIssuanceLimit,
-            services.GetRequiredService<ISecretProtection>(), services.GetRequiredService<TimeProvider>(),
-            services.GetRequiredService<IssuanceLimits>());
+        return new(services.GetRequiredService<IBrokerState>(), options.DeploymentEpoch,
+            services.GetRequiredService<TimeProvider>(), services.GetRequiredService<IssuanceLimits>(), options.CandidateRepositoryLimit);
     }
-    // Enrollment over the broker state, for this deployment's epoch, retained ceilings and public origin.
     public static EnrollmentService CreateEnrollmentService(IServiceProvider services)
     {
         var options = services.GetRequiredService<BrokerOptions>();
-        var clock = services.GetRequiredService<TimeProvider>();
-        var store = new EnrollmentStore(services.GetRequiredService<IBrokerState>(), options.DeploymentEpoch,
-            new(options.CandidateRepositoryLimit, options.RetainedEnrollmentLimit, options.RetainedIssuanceLimit),
-            services.GetRequiredService<ISecretProtection>(), clock, services.GetRequiredService<IssuanceLimits>());
-        return new(store, services.GetRequiredService<IGitHubTokens>(), services.GetRequiredService<IAppInstallations>(),
-            services.GetRequiredService<IControllerApprovals>(), options.BrokerOrigin, clock);
+        return new(services.GetRequiredService<CurrentRepositoryStore>(), services.GetRequiredService<IGitHubTokens>(),
+            services.GetRequiredService<IAppInstallations>(), services.GetRequiredService<IControllerApprovals>(),
+            services.GetRequiredService<ISecretProtection>(), options.BrokerOrigin, services.GetRequiredService<TimeProvider>());
     }
 }

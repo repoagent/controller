@@ -21,10 +21,8 @@ APP = GROUP + '/providers/Microsoft.App/containerApps/repoagent-auth'
 JOB = GROUP + '/providers/Microsoft.App/jobs/repoagent-auth-cleanup'
 INSIGHTS = GROUP + '/providers/Microsoft.Insights/components/repoagent-auth-insights'
 METRICS = ('repoagent.auth.cleanup.completed', 'repoagent.auth.cleanup.failures',
-           'repoagent.auth.cleanup.unknown_deadlines', 'repoagent.auth.cleanup.cursor_age_max_seconds',
-           'repoagent.auth.cleanup.cycle_age_max_seconds', 'repoagent.auth.cleanup.cycle_age_unknown',
-           'repoagent.auth.cleanup.overdue_payload_age_max_seconds',
-           'repoagent.auth.cleanup.stale_cursor_with_overdue_observation', 'repoagent.broker.rejections')
+           'repoagent.auth.cleanup.examined', 'repoagent.auth.cleanup.changed',
+           'repoagent.auth.cleanup.conflicts', 'repoagent.auth.cleanup.dispatches', 'repoagent.broker.rejections')
 REASONS = ('request_concurrency', 'request_minute', 'repository_attempts', 'global_attempts',
            'retained_issuance', 'repository_minute_budget', 'global_minute_budget', 'retained_enrollments',
            'candidate_repositories', 'repository_pending', 'global_pending', 'enrollment_backoff', 'other')

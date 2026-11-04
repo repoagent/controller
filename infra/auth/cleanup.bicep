@@ -31,7 +31,7 @@ resource job 'Microsoft.App/jobs@2025-01-01' = if (!identityOnly) {
       triggerType: 'Schedule'
       replicaRetryLimit: 0
       replicaTimeout: 90
-      scheduleTriggerConfig: { cronExpression: '* * * * *', parallelism: 1, replicaCompletionCount: 1 }
+      scheduleTriggerConfig: { cronExpression: '*/5 * * * *', parallelism: 1, replicaCompletionCount: 1 }
     }
     template: {
       containers: [{

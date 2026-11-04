@@ -50,6 +50,20 @@ internal sealed class TableBrokerState(TableClient table) : IBrokerState
         return page is null ? new([], null) : new([.. page.Values.Select(Listed<T>)], page.ContinuationToken);
     }
 
+    public async Task<StatePage<CurrentRepository>> ListDueAsync(DateTimeOffset due, string? continuation, CancellationToken ct)
+    {
+        try
+        {
+            var filter = TableClient.CreateQueryFilter($"PartitionKey eq {CurrentRepository.Scope} and RowKey ge {"repository:"} and RowKey lt {"repository;"} and NextCleanupAt le {due}");
+            await using var pages = table.QueryAsync<TableEntity>(filter, maxPerPage: 1000, cancellationToken: ct)
+                .AsPages(continuation, pageSizeHint: 1000).GetAsyncEnumerator(ct);
+            return await pages.MoveNextAsync()
+                ? new([.. pages.Current.Values.Select(Listed<CurrentRepository>)], pages.Current.ContinuationToken)
+                : new([], null);
+        }
+        catch (Exception ex) when (FromTable(ex, ct)) { throw new BrokerStateUnavailable("The broker table did not answer cleanup.", ex); }
+    }
+
     private static ListedRecord<T> Listed<T>(TableEntity row) where T : BrokerRecord, new()
     {
         Dictionary<string, object>? properties;

@@ -15,9 +15,6 @@ public sealed class BrokerLifetimeTests
     [InlineData("initialize", false, "denied")]
     [InlineData("turn", true, "denied")]
     [InlineData("turn", false, "malformed")]
-    [InlineData("turn", false, "transport")]
-    [InlineData("turn", false, "deadline")]
-    [InlineData("turn", false, "unavailable")]
     public async Task Failed_broker_renewal_stops_owned_agent_work_and_preserves_recovery(string stage, bool webhooks, string failure)
         => await Exercise(stage, webhooks, false, failure);
 

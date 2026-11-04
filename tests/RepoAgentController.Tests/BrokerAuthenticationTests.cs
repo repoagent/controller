@@ -9,6 +9,43 @@ namespace RepoAgentController.Tests;
 
 public sealed class BrokerAuthenticationTests
 {
+    [Theory]
+    [InlineData(401, true)]
+    [InlineData(401, false)]
+    [InlineData(403, false)]
+    [InlineData(500, false)]
+    public async Task Controller_requests_refresh_once_on_GitHub_401_and_never_on_403_or_500(int status, bool recover)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        using var fixture = new Fixture();
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        var script = """
+#!/usr/bin/env python3
+import json, os, sys
+status = MOCK_STATUS
+if MOCK_RECOVER and os.environ.get('GH_TOKEN') == 'opaque-token-2':
+    status = 200
+print('HTTP/2.0 ' + str(status) + ' Response')
+print('Content-Type: application/json')
+print()
+print(json.dumps({'ok': True} if status == 200 else {'message': 'rejected'}))
+sys.exit(0 if status == 200 else 1)
+""".Replace("MOCK_STATUS", status.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("MOCK_RECOVER", recover ? "True" : "False", StringComparison.Ordinal);
+        File.WriteAllText(fixture.Gh, script);
+        File.SetUnixFileMode(fixture.Gh, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var github = new GitHub("owner/repository", credentials, fixture.Gh);
+        if (recover) Assert.True((await github.Rest("GET", "issues", null, TestContext.Current.CancellationToken))!["ok"]!.GetValue<bool>());
+        else await Assert.ThrowsAsync<IOException>(() => github.Rest("GET", "issues", null, TestContext.Current.CancellationToken));
+        Assert.Equal(status == 401 ? 2 : 1, fixture.Transport.Requests.Count);
+        if (status == 401 && !recover)
+        {
+            Assert.DoesNotContain("opaque-token-2", (await fixture.InvokeWrapper()).Output);
+            Assert.Equal("opaque-token-3", await credentials.GetToken(TestContext.Current.CancellationToken));
+        }
+    }
+
     [Fact]
     public async Task Startup_takes_enrollment_from_a_named_environment_variable_that_children_never_inherit()
     {
@@ -250,8 +287,28 @@ public sealed class BrokerAuthenticationTests
         Assert.DoesNotContain("gh-invoked", result.Output);
     }
 
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("transport")]
+    [InlineData("server")]
+    public async Task Temporary_broker_failure_keeps_usable_credentials_and_retries_without_reinstallation(string failure)
+    {
+        using var fixture = new Fixture();
+        using var credentials = fixture.Credentials();
+        await credentials.Initialize(null, TestContext.Current.CancellationToken);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(56));
+        fixture.Transport.Defect = failure;
+        if (failure == "server") fixture.Transport.Status = HttpStatusCode.ServiceUnavailable;
+        Assert.Equal("opaque-token-1", await credentials.GetToken(TestContext.Current.CancellationToken));
+        Assert.False(credentials.BrokerCredentialLost.IsCancellationRequested);
+        fixture.Transport.Defect = null;
+        fixture.Transport.Status = HttpStatusCode.OK;
+        fixture.Clock.Advance(TimeSpan.FromSeconds(36));
+        Assert.Equal("opaque-token-3", await credentials.GetToken(TestContext.Current.CancellationToken));
+    }
+
     [Fact]
-    public async Task Stalled_broker_body_times_out_clears_credentials_and_allows_a_fresh_start()
+    public async Task Stalled_broker_body_preserves_a_usable_token_and_recovers_in_the_same_lifetime()
     {
         using var fixture = new Fixture();
         using var credentials = fixture.Credentials();
@@ -267,18 +324,14 @@ public sealed class BrokerAuthenticationTests
             await stalledBody.Reading.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             fixture.Clock.Advance(TimeSpan.FromSeconds(60));
             // Real time is only a failure watchdog; the acquisition deadline uses the fixture clock.
-            var error = await Record.ExceptionAsync(() => renewal.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
-            Assert.IsAssignableFrom<OperationCanceledException>(error);
+            Assert.Equal("opaque-token-1", await renewal.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
             Assert.False(cancellation.IsCancellationRequested);
-            var failed = await fixture.InvokeWrapper();
-            Assert.NotEqual(0, failed.Exit);
-            Assert.DoesNotContain("gh-invoked", failed.Output);
-            Assert.DoesNotContain("human-token", failed.Output);
+            Assert.False(credentials.BrokerCredentialLost.IsCancellationRequested);
+            Assert.Contains("opaque-token-1", (await fixture.InvokeWrapper()).Output);
 
             fixture.Transport.Body = null;
-            await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.GetToken(cancellation.Token));
-            using var restarted = fixture.Credentials();
-            await restarted.Initialize(null, cancellation.Token).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            fixture.Clock.Advance(TimeSpan.FromSeconds(36));
+            Assert.Equal("opaque-token-3", await credentials.GetToken(cancellation.Token));
             var recovered = await fixture.InvokeWrapper();
             Assert.Equal(0, recovered.Exit);
             Assert.Contains("opaque-token-3", recovered.Output);
@@ -776,6 +829,7 @@ public sealed class BrokerAuthenticationTests
             if (Defect == "oversized") body = new string('x', 65537);
             var status = Defect == "redirect" ? HttpStatusCode.TemporaryRedirect : Status;
             if (Defect == "transport") throw new HttpRequestException("transport unavailable");
+            if (Defect == "timeout") throw new TaskCanceledException("HTTP transport timeout");
             return new HttpResponseMessage(status) { Content = Body is not null ? new StreamContent(Body) : new StringContent(status == HttpStatusCode.OK ? body : "DO-NOT-LOG") };
         }
     }

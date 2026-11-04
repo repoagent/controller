@@ -24,7 +24,7 @@ On .NET 11.0.0-rc.3.26522.148, the direct command started the distributed applic
 
 On WSL the trust command can report partial success when Windows PowerShell or browser certificate tools are unavailable. The OpenSSL trust directory above is used by the native .NET services. Browser trust is configured separately if needed; do not disable TLS validation.
 
-Open the dashboard URL printed by Aspire. The API is `https://localhost:7443`, with `/health/live` and `/health/ready`. Cleanup runs the same application's `cleanup --watch` Development-only mode once per minute; Azure retains the scheduled `cleanup --once` Job. Azurite uses ports 27000–27002; Key Vault uses 4997 so persisted key URIs stay stable. The dashboard uses 15888 and its local resource/telemetry endpoints use 18889–18890.
+Open the dashboard URL printed by Aspire. The API is `https://localhost:7443`, with `/health/live` and `/health/ready`. Cleanup runs the same application's `cleanup --watch` Development-only mode once every five minutes; Azure retains the scheduled `cleanup --once` Job. Azurite uses ports 27000–27002; Key Vault uses 4997 so persisted key URIs stay stable. The dashboard uses 15888 and its local resource/telemetry endpoints use 18889–18890.
 
 The `initialize` process creates a dedicated **local** `brokerstate` Table, seeds its two Int64 quota rows only when creation succeeds, creates the key-ring Blob container, and creates or reuses the local wrapping key (and a generated signing key in the default offline mode). An existing Table with missing metadata fails initialization. It never resets accounting. API and cleanup wait for successful initialization. Local state persists between AppHost runs. Certificates, the emulator database and generated settings stay in the ignored `.local` directory; Azurite data uses an Aspire-owned volume. Stop the AppHost before deliberately deleting local state, and reset both stores together if you need a fresh development environment. Hosted state is independent.
 
@@ -75,3 +75,5 @@ Azure infrastructure remains Bicep: compile locally, deploy against the actual r
 
 
 The shared AppHost also enables bounded, privacy-limited local broker request traces through its authenticated Aspire collector, without requiring Azure Monitor. See the [local trace workflow and limits](../../docs/local-apphost.md#local-traces). The Development-only local branch retains the same broker route/status privacy and no-public-context propagation policy; hosted Azure Monitor behavior is unchanged.
+
+The broker now requires schema-2 state. Its loopback initializer refuses an existing schema-1 Table; reset the local emulator volume or create a fresh local Table before adopting this version. It never resets an existing quota. See [initialization and retention](retained-state.md).

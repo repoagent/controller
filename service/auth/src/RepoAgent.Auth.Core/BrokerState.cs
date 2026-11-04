@@ -20,6 +20,11 @@ public interface IBrokerState
     // that breaks the store's bounds or that has no version fails only the caller that reads it.
     Task<StatePage<T>> ListAsync<T>(StateRange<T> range, string after, string? continuation, CancellationToken ct)
         where T : BrokerRecord, new();
+    // Server-filtered current-state query. A complete page (up to 1000 entities) is processed
+    // before requesting its continuation. There is no durable traversal cursor.
+    Task<StatePage<CurrentRepository>> ListDueAsync(DateTimeOffset due, string? continuation, CancellationToken ct) =>
+        throw new NotSupportedException("This state adapter does not support current-state cleanup.");
+
 }
 
 // Where one record lives: a scope, which a transaction never spans, and the record's name within it. Factories on the

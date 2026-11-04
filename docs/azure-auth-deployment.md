@@ -1,5 +1,7 @@
 # Azure authentication-service deployment
 
+> **Schema-2 cutover required:** the current source mints tokens without storing them and runs a single cleanup pass every five minutes. The deployed/historical evidence below describes schema 1. Before adopting this source, fence old writers, provision and initialize a fresh Table, grant the existing identities access to that exact Table, deploy API/Job against it, and re-enroll controllers using the upgraded installer. Replace the old cycle-age alert with the current completion/failure rule. [State initialization and cutover](../service/auth/retained-state.md) and [ADR 0017](adr/0017-keep-broker-tokens-in-request-memory.md) are authoritative for the new retention and expiry-based revocation policy. Do not apply this build directly to the legacy Table or claim this source edit changed live Azure resources.
+
 The maintainer-operated [credential broker](../GLOSSARY.md) will run as an Azure Container App. Its deployment resources belong in one resource group, `rg-repoagent-controller-auth`, in Sweden Central (`swedencentral`). User-hosted controllers have separate deployment requirements; see the [controller deployment research](research/2026-10-20-azure-controller-deployment.md).
 
 ## Current state

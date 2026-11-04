@@ -146,7 +146,8 @@ function Check-Marker([string]$Text) {
     Assert-Fields $m @('version','approvalKind','githubHost','appId','appSlug','repositoryId','repository','installationId','enrollmentId','challenge','profile','policyVersion','epoch','variable')
     foreach ($key in @('version','appId','repositoryId','installationId')) { Assert-Id $m[$key] }
     if ($m.version -ne $setupVersion -or $m.approvalKind -cne $approvalKind -or $m.githubHost -cne 'github.com' -or $m.appId -ne 5387625 -or $m.appSlug -cne 'repo-agent-connector' -or $m.repositoryId -ne $config.repositoryId -or $m.repository -ine $Repository -or $m.variable -cne $ApprovalVariable -or $m.profile -cne $Profile -or $m.policyVersion -cne $policy) { Stop-Enrollment 'Broker approval marker differs from the trusted host intent.' }
-    Assert-Text $m.enrollmentId '\A[0-9a-f]{32}\z'
+    Assert-Text $m.enrollmentId '\A(?:[1-9][0-9]*_)?[0-9a-f]{32}\z'
+    if ($m.enrollmentId.Contains('_') -and $m.enrollmentId.Split('_')[0] -cne [string]$config.repositoryId) { Stop-Enrollment 'Enrollment routing differs from the approved repository.' }
     Assert-Text $m.challenge '\A[A-Za-z0-9_-]{43}\z'
     Assert-Text $m.epoch '\A[A-Za-z0-9_-]{1,128}\z'
     if ($config.marker -and $config.marker -cne $Text) { Stop-Enrollment 'Broker changed the saved marker.' }
