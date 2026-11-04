@@ -26,6 +26,14 @@ bash service/auth/verify.sh
 
 The shared gate checks equal SDK policies and solution coverage of every C# project under src, tests and service/auth (also in Git archives), builds all projects in Release with analyzers, and runs `dotnet format RepoAgent.slnx --no-restore --verify-no-changes --severity warn`. Both existing Controller and Broker verification scripts invoke it. Live and shared AppHost tests compile without executing credential-dependent scenarios. The shared AppHost project has a [separate opt-in real-provider journey](local-apphost.md#automated-journey); its two composition/origin checks are not evidence of a completed provider run. The controller gate executes its xUnit/process/delivery suites and Linux AOT/native smoke; the broker gate executes actual service tests and rejects zero execution.
 
+Normal Controller CI and Linux release verification run on Linux. To check native macOS process shutdown, credential handoff and private activity inspection, explicitly dispatch the separate [Controller macOS workflow](../.github/workflows/controller-macos.yml):
+
+```sh
+gh workflow run controller-macos.yml --repo repoagent/controller --ref main
+```
+
+This manual check requires actual test execution without skips. It does not run on PRs, pushes or release validation.
+
 Container build inputs matter: the controller's source inventory and explicit `COPY` statements include shared policy before build. The test Containerfile does the same. Broker Docker builds use the repository root with `-f service/auth/Dockerfile`; its Dockerfile-specific allowlist sends only shared policy, SDK selections and broker production sources. Shared policy stays above `service/auth`, including during restore; banned symbols arrive with production sources. The publication and archived-source bootstrap paths use this same context. Neither context includes worktrees, artifacts or development credentials.
 
 Temporary migration probes insert actual-project violations and require CA2016, RS0030 in both cores, xUnit1031 and ASP0024 in both hosts. Each file is removed afterwards. The composed-context delivery test also inserts a cancellation violation and requires CA2016, proving that composition preserves enforcement.
