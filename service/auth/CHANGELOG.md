@@ -5,7 +5,7 @@
 
 ### ⚠ BREAKING CHANGES
 
-* **broker:** Broker schema2 requires a freshly initialized dedicated Table and controller re-enrollment. Closing an enrollment prevents future publication; already-issued or lost tokens remain subject to GitHub expiry. Closes #342.
+* **broker:** Broker schema2 requires a freshly initialized dedicated Table and a fenced import of valid active enrollment bindings. Existing controllers, credentials and repository approvals need no changes. Token history is not migrated. Closing an enrollment prevents future publication; already-issued or lost tokens remain subject to GitHub expiry. Closes #342.
 
 ### Features
 
