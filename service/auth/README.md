@@ -66,3 +66,5 @@ Application Insights retains server error/exception observations and approximate
 `dotnet RepoAgent.Auth.dll --version` or `--version --json` reads compiled version/source without credentials. Service versions are separate from enrollment and storage schema versions. [Broker releases](../../docs/broker-releases.md) and the [Azure runbook](../../docs/azure-auth-deployment.md) govern delivery and adoption.
 
 The [local Aspire AppHost](local-development.md) composes local storage, wrapping and optional shared-vault signing. Its initializer creates schema-2 metadata only in a newly created loopback Table. Reset old emulator state or choose a fresh local Table for the storage cutover; it never resets an existing legacy Table.
+
+A fenced schema-1 cutover may preserve valid active enrollments with their exact existing IDs, hashes, approval bindings and original expiry/counters. Frozen UUID-only IDs use one current routing row, deleted on closure/expiry/replacement. Existing controllers need no host access, approval rewrite or re-enrollment. See [current-state cutover](retained-state.md#fresh-table-initialization).
