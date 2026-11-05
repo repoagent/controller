@@ -180,8 +180,6 @@ def configure(args, *, persist=True):
     image_publishing = getattr(args, 'image_publishing', False)
     if config and bool(config.get('imagePublishing', False)) != image_publishing:
         raise ValueError('Changing image-publishing authority requires a fresh instance and enrollment.')
-    if image_publishing:
-        config['imagePublishing'] = True
     repository_settings = getattr(args, 'repository_settings', False)
     # Broker reads need an explicit repository-settings profile (runtime v3), so the choice is
     # fixed for the instance like clone. Direct-App instances only change their own token request.
@@ -213,6 +211,8 @@ def configure(args, *, persist=True):
         config['repositorySettings'] = True
     else:
         config.pop('repositorySettings', None)
+    if image_publishing:
+        config['imagePublishing'] = True
     config.update(clone=clone, repository=args.repository, appId=args.app_id, keyPath=args.key_path,
                   brokerUrl=broker_url,
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,

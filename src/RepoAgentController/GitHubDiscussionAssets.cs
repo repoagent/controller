@@ -69,7 +69,7 @@ internal sealed class GitHubDiscussionAssets(HttpClient http, string repository,
 
     async Task<byte[]?> Content(string path, string commit, CancellationToken ct)
     {
-        var file = await Send("GET", Repo("contents/" + path + "?ref=" + commit), null, ct, missing: true);
+        var file = await Send("GET", Repo("contents/" + path + "?ref=" + commit), null, ct, missing: true, mediaType: "application/vnd.github.object+json");
         if (file is null) return null;
         if (file.Text("type") != "file" || file["size"]?.GetValue<long>() is not (>= 0 and <= DiscussionAsset.MaximumBytes))
             throw new IOException("Invalid or oversized stored asset");
@@ -83,7 +83,7 @@ internal sealed class GitHubDiscussionAssets(HttpClient http, string repository,
 
     string Repo(string path) => "repos/" + repository + "/" + path;
 
-    async Task<JsonNode?> Send(string method, string path, JsonNode? body, CancellationToken ct, bool missing = false, bool conflict = false)
+    async Task<JsonNode?> Send(string method, string path, JsonNode? body, CancellationToken ct, bool missing = false, bool conflict = false, string mediaType = "application/vnd.github+json")
     {
         var token = await credential(ct);
         if (!string.Equals(token.Repository, repository, StringComparison.OrdinalIgnoreCase) || token.Profile?.EndsWith("-images", StringComparison.Ordinal) != true)
@@ -91,7 +91,7 @@ internal sealed class GitHubDiscussionAssets(HttpClient http, string repository,
         using var request = new HttpRequestMessage(new HttpMethod(method), new Uri(new Uri("https://api.github.com/"), path));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
         request.Headers.UserAgent.ParseAdd("repoagent-assets/1");
-        request.Headers.Accept.ParseAdd("application/vnd.github+json");
+        request.Headers.Accept.ParseAdd(mediaType);
         request.Headers.Add("X-GitHub-Api-Version", "2026-03-10");
         if (body is not null) request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
