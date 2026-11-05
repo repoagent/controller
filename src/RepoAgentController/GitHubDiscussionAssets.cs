@@ -30,14 +30,21 @@ internal sealed class GitHubDiscussionAssets(HttpClient http, string repository,
 
     public async Task<AssetBranch?> Read(string path, CancellationToken ct)
     {
+        var commit = await Head(ct);
+        if (commit is null) return null;
+        var owner = await Content(MarkerPath, commit, ct);
+        var owned = marker is not null && owner is not null && marker.AsSpan().SequenceEqual(owner);
+        return new(commit, owned, owned ? await Content(path, commit, ct) : null);
+    }
+
+    async Task<string?> Head(CancellationToken ct)
+    {
         var head = await Send("GET", Repo("git/ref/heads/" + DiscussionAssets.Branch), null, ct, missing: true);
         if (head is null) return null;
         var commit = head["object"]?.Text("sha") ?? "";
         if (head.Text("ref") != "refs/heads/" + DiscussionAssets.Branch || head["object"]?.Text("type") != "commit" ||
             commit.Length != 40 || !commit.All(char.IsAsciiHexDigitLower)) throw new IOException("Invalid asset branch reference");
-        var owner = await Content(MarkerPath, commit, ct);
-        var owned = marker is not null && owner is not null && marker.AsSpan().SequenceEqual(owner);
-        return new(commit, owned, owned ? await Content(path, commit, ct) : null);
+        return commit;
     }
 
     public async Task<bool> Append(AssetBranch? expected, string path, ReadOnlyMemory<byte> content, CancellationToken ct)
@@ -59,8 +66,17 @@ internal sealed class GitHubDiscussionAssets(HttpClient http, string repository,
         var update = expected is null
             ? Json.Object(("ref", "refs/heads/" + DiscussionAssets.Branch), ("sha", commit!.Text("sha")))
             : Json.Object(("sha", commit!.Text("sha")), ("force", false));
-        return await Send(expected is null ? "POST" : "PATCH", Repo(expected is null ? "git/refs" : "git/refs/heads/" + DiscussionAssets.Branch),
-            update, ct, conflict: true) is not null;
+        try
+        {
+            return await Send(expected is null ? "POST" : "PATCH", Repo(expected is null ? "git/refs" : "git/refs/heads/" + DiscussionAssets.Branch),
+                update, ct, referenceUpdate: true) is not null;
+        }
+        catch (ReferenceUpdateException)
+        {
+            // Status alone cannot distinguish a competing writer from validation or branch-rule rejection.
+            if (await Head(ct) != expected?.Commit) return false;
+            throw;
+        }
     }
 
     static JsonObject Entry(string path, string sha) => Json.Object(("path", path), ("mode", "100644"), ("type", "blob"), ("sha", sha));
@@ -83,25 +99,36 @@ internal sealed class GitHubDiscussionAssets(HttpClient http, string repository,
 
     string Repo(string path) => "repos/" + repository + "/" + path;
 
-    async Task<JsonNode?> Send(string method, string path, JsonNode? body, CancellationToken ct, bool missing = false, bool conflict = false, string mediaType = "application/vnd.github+json")
+    sealed class ReferenceUpdateException(int status) : IOException($"Asset publication failed (HTTP {status}) updating the branch reference; check the App's repository permission and branch rules");
+
+    async Task<JsonNode?> Send(string method, string path, JsonNode? body, CancellationToken ct, bool missing = false, bool referenceUpdate = false, string mediaType = "application/vnd.github+json")
     {
-        var token = await credential(ct);
-        if (!string.Equals(token.Repository, repository, StringComparison.OrdinalIgnoreCase) || token.Profile?.EndsWith("-images", StringComparison.Ordinal) != true)
-            throw new InvalidOperationException("Image publication requires the approved repository's image-publishing profile");
-        using var request = new HttpRequestMessage(new HttpMethod(method), new Uri(new Uri("https://api.github.com/"), path));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
-        request.Headers.UserAgent.ParseAdd("repoagent-assets/1");
-        request.Headers.Accept.ParseAdd(mediaType);
-        request.Headers.Add("X-GitHub-Api-Version", "2026-03-10");
-        if (body is not null) request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
-        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-        if (response.StatusCode == HttpStatusCode.Unauthorized) await reject(token.Token, ct);
-        if (missing && response.StatusCode == HttpStatusCode.NotFound) return null;
-        if (conflict && response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.UnprocessableEntity) return null;
-        if (!response.IsSuccessStatusCode) throw new IOException($"Asset publication failed (HTTP {(int)response.StatusCode}) during {method}; check the App's repository permission and branch rules");
-        if (response.Content.Headers.ContentLength > 16 * 1024 * 1024) throw new IOException("Oversized GitHub asset response");
-        await response.Content.LoadIntoBufferAsync(16 * 1024 * 1024, ct);
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        return await JsonNode.ParseAsync(stream, cancellationToken: ct) ?? throw new IOException("Empty GitHub asset response");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(http.Timeout == Timeout.InfiniteTimeSpan ? TimeSpan.FromSeconds(60) : http.Timeout);
+        var work = deadline.Token;
+        try
+        {
+            var token = await credential(work);
+            if (!string.Equals(token.Repository, repository, StringComparison.OrdinalIgnoreCase) || token.Profile?.EndsWith("-images", StringComparison.Ordinal) != true)
+                throw new InvalidOperationException("Image publication requires the approved repository's image-publishing profile");
+            using var request = new HttpRequestMessage(new HttpMethod(method), new Uri(new Uri("https://api.github.com/"), path));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+            request.Headers.UserAgent.ParseAdd("repoagent-assets/1");
+            request.Headers.Accept.ParseAdd(mediaType);
+            request.Headers.Add("X-GitHub-Api-Version", "2026-03-10");
+            if (body is not null) request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, work);
+            if (response.StatusCode == HttpStatusCode.Unauthorized) await reject(token.Token, work);
+            if (missing && response.StatusCode == HttpStatusCode.NotFound) return null;
+            if (referenceUpdate && response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.UnprocessableEntity)
+                throw new ReferenceUpdateException((int)response.StatusCode);
+            if (!response.IsSuccessStatusCode) throw new IOException($"Asset publication failed (HTTP {(int)response.StatusCode}) during {method}; check the App's repository permission and branch rules");
+            if (response.Content.Headers.ContentLength > 16 * 1024 * 1024) throw new IOException("Oversized GitHub asset response");
+            await response.Content.LoadIntoBufferAsync(16 * 1024 * 1024, work);
+            await using var stream = await response.Content.ReadAsStreamAsync(work);
+            return await JsonNode.ParseAsync(stream, cancellationToken: work) ?? throw new IOException("Empty GitHub asset response");
+        }
+        catch (OperationCanceledException error) when (!ct.IsCancellationRequested)
+        { throw new IOException("Asset publication request timed out", error); }
     }
 }
