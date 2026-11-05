@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/repoagent/controller/compare/controller-v2.0.0...controller-v2.1.0) (2026-11-05)
+
+
+### Features
+
+* publish Discussion images through explicit App profiles ([5092a68](https://github.com/repoagent/controller/commit/5092a684ba264df1e5f498e7b119f39911d5234b))
+
 ## [2.0.0](https://github.com/repoagent/controller/compare/controller-v1.1.0...controller-v2.0.0) (2026-11-04)
 
 
