@@ -7,6 +7,19 @@
 
 * publish Discussion images through explicit App profiles ([5092a68](https://github.com/repoagent/controller/commit/5092a684ba264df1e5f498e7b119f39911d5234b))
 
+### Upgrade and activation notes
+
+* Image publishing is off by default and requires accepted repository-wide Contents write for the App installation. Broker installations must first deploy broker 2.1.0 or later, then create a fresh image-profile enrollment and instance. Use installer `-ImagePublishing` or native startup `--image-publishing` with matching clone/settings selections.
+* Own-App installations can use `--image-publishing` with their private-key configuration and accepted Contents-write permission; no credential broker or broker enrollment is required.
+* A normal binary upgrade preserves existing enrollment, approval, state and Codex storage. Adopting a fresh image-publishing instance does not automatically migrate prior agent sessions; retain the old instance's history and recovery material.
+
+* Controllers older than 2.1.0 reject runtime-v4 image enrollments. To roll back a broker-backed image instance, stop it, revoke its image enrollment and use a fresh compatible profile/instance. Preserve prior history/state and the published asset branch. Own-App users must remove the unsupported image flag when returning to an older controller.
+
+### Known limitations
+
+* Private-browser image rendering acceptance has not yet been completed. Verify actual images in Discussion posts, comments and replies for authorized viewers, and denied unauthenticated access, before private-repository activation.
+* Contents write covers the whole repository; the asset branch/helper is not an authorization boundary. Images and editable sources remain on `repoagent-assets`, and GitHub's native attachment endpoint restriction still applies. See [image setup and acceptance](https://github.com/repoagent/controller/blob/main/docs/discussion-images.md).
+
 ## [2.0.0](https://github.com/repoagent/controller/compare/controller-v1.1.0...controller-v2.0.0) (2026-11-04)
 
 
