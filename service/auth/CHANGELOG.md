@@ -7,6 +7,16 @@
 
 * publish Discussion images through explicit App profiles ([5092a68](https://github.com/repoagent/controller/commit/5092a684ba264df1e5f498e7b119f39911d5234b))
 
+### Upgrade and rollback notes
+
+* Adds explicitly approved image-publishing profiles under setup v5/runtime v4. Deploy this broker before adopting a controller image profile. Existing enrollments keep their exact authority; upgrading the broker does not change App permissions, repository approvals, storage schema or deployment epoch.
+* Image publishing requires App/installation acceptance of repository-wide Contents write and a fresh matching controller enrollment. The dedicated asset branch is not a permission restriction.
+* Before rolling the broker back below 2.1.0, revoke any image-profile enrollments and use fresh compatible profiles. Older brokers do not recognize the new approval policy; preserve existing state and recovery material.
+
+### Known limitations
+
+* Image storage and rendering are provided by the controller. Private-browser rendering acceptance remains required before enabling the feature in private repositories; publication and broker readiness do not establish it. See [image setup and acceptance](https://github.com/repoagent/controller/blob/main/docs/discussion-images.md).
+
 ## [2.0.0](https://github.com/repoagent/controller/compare/broker-v1.3.1...broker-v2.0.0) (2026-11-04)
 
 
