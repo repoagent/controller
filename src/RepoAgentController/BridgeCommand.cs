@@ -16,7 +16,7 @@ public static class BridgeCommand
         var appId = new Option<string>("--app-id") { Required = true, Description = "GitHub App ID or client ID" };
         var privateKey = new Option<FileInfo>("--private-key") { Description = "GitHub App PEM private-key file" };
         var brokerUrl = new Option<string>("--broker-url") { Description = "Enrolled HTTPS credential broker origin" };
-        var enrollmentFile = new Option<FileInfo>("--enrollment-file") { Description = "Protected broker enrollment file (v1, explicit clone v2 or repository-settings v3)" };
+        var enrollmentFile = new Option<FileInfo>("--enrollment-file") { Description = "Protected broker enrollment file (v1, explicit clone v2, repository-settings v3 or image-publishing v4)" };
         var enrollmentEnvironment = new Option<string>("--enrollment-environment") { Description = "Name of an environment variable holding an externally injected broker enrollment; it is removed before any child process starts" };
         var installationId = new Option<long?>("--installation-id") { Description = "Expected installation ID (otherwise discover it for --repo)" };
         var repositoryId = new Option<long?>("--repository-id") { Description = "Expected immutable repository ID for broker clone mode" };
@@ -32,6 +32,7 @@ public static class BridgeCommand
         var disableWebhook = new Option<bool>("--disable-webhook") { Description = "Deactivate this stopped controller's saved webhook without starting agent work" };
         var once = new Option<bool>("--once") { Description = "Observe one poll, then exit (agent work may still be running)" };
         var clone = new Option<bool>("--clone") { Description = "Use explicitly approved clone-capable credentials" };
+        var images = new Option<bool>("--image-publishing") { Description = "Publish Discussion images on repoagent-assets; requires an explicit repository-wide Contents write grant and fresh broker image profile" };
         var checkAuth = new Option<bool>("--check-auth") { Description = "Verify App installation identity and prepare authenticated gh, then exit without starting Codex" };
         var repositorySettings = new Option<bool>("--repository-settings") { Description = "Read REPOAGENT_ repository Agent variables with an explicit Agent variables: read runtime permission (direct App, or a broker enrollment with a repository-settings profile)" };
         var logFileBytes = new Option<long>("--log-file-bytes") { DefaultValueFactory = _ => RetainedLog.DefaultFileBytes, Description = $"Maximum bytes per retained log file beside --state ({RetainedLog.MinimumFileBytes}..{RetainedLog.MaximumFileBytes}); retained logs never exceed --log-files × this size" };
@@ -39,7 +40,7 @@ public static class BridgeCommand
         var dashboardCategory = new Option<string?>("--dashboard-category") { Description = "Existing Discussion category for the controller-owned status dashboard; omit to publish no dashboard" };
         var codexAuth = new Option<FileInfo>("--codex-auth") { Description = "Operator-supplied Codex account credentials (auth.json format), separate from GitHub App credentials. Installed into the private CODEX_HOME when it differs from the last supply; replacing the file while running restarts the owned Codex app-server at idle and resumes sessions" };
         var imageInventory = new Option<FileInfo?>("--image-inventory") { Description = "The running baseline image's inventory (/opt/repoagent/image-inventory.json); the dashboard compares its SHA-256 with published baseline releases" };
-        var root = new RootCommand("repoagent: GitHub Discussions → agent Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, enrollmentEnvironment, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, statusPort, reconcileInterval, disableWebhook, once, checkAuth, clone, repositorySettings, logFileBytes, logFiles, dashboardCategory, codexAuth, imageInventory };
+        var root = new RootCommand("repoagent: GitHub Discussions → agent Codex sessions, authenticated as a GitHub App") { repository, appId, privateKey, brokerUrl, enrollmentFile, enrollmentEnvironment, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, statusPort, reconcileInterval, disableWebhook, once, checkAuth, clone, repositorySettings, images, logFileBytes, logFiles, dashboardCategory, codexAuth, imageInventory };
         var ghCredentials = new Option<DirectoryInfo>("--credential-directory") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
@@ -60,6 +61,7 @@ public static class BridgeCommand
             return 0;
         });
         root.Subcommands.Add(statusCommand);
+        AssetCommand.Add(root);
         ActivityCommand.Add(root);
         RemoteCommand.Add(root);
         var recoveryState = new Option<FileInfo>("--state") { Required = true };
@@ -99,8 +101,8 @@ public static class BridgeCommand
                 if (string.IsNullOrWhiteSpace(result.GetValue(appId))) throw new ArgumentException("--app-id must not be empty");
                 if (result.GetValue(installationId) is <= 0) throw new ArgumentException("--installation-id must be positive");
                 if (result.GetValue(repositoryId) is <= 0) throw new ArgumentException("--repository-id must be positive");
-                if (result.GetValue(repositoryId) is not null && (!result.GetValue(clone) || result.GetValue(brokerUrl) is null))
-                    throw new ArgumentException("--repository-id requires broker clone mode");
+                if (result.GetValue(repositoryId) is not null && (!(result.GetValue(clone) || result.GetValue(images)) || result.GetValue(brokerUrl) is null))
+                    throw new ArgumentException("--repository-id requires broker clone or image-publishing mode");
                 var urlText = result.GetValue(webhookUrl);
                 Uri? publicUrl = null;
                 if (result.GetValue(listenPort) is < 1 or > 65535) throw new ArgumentException("--listen-port must be between 1 and 65535");
@@ -152,7 +154,7 @@ public static class BridgeCommand
                     var agentCredentials = result.GetValue(codexAuth) is { } supplied ? CodexCredentials.Open(supplied.FullName) : null;
                     using var ownedHttp = transport is null ? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(60) } : null;
                     var http = transport ?? ownedHttp!;
-                    var profile = new RuntimeProfile(publicUrl is not null, result.GetValue(clone), result.GetValue(repositorySettings));
+                    var profile = new RuntimeProfile(publicUrl is not null, result.GetValue(clone), result.GetValue(repositorySettings), result.GetValue(images));
                     using var credentials = broker is null
                         ? new GitHubAppCredentials(http, result.GetValue(appId)!, pem!.FullName, repo, credentialDirectory, time, profile)
                         : GitHubAppCredentials.FromBroker(http, broker, injected is null ? BrokerTokenSource.EnrollmentFile(enrollment!.FullName) : BrokerTokenSource.Injected(injected, injectedEnrollment),
@@ -167,6 +169,8 @@ public static class BridgeCommand
                         return await new GitHubWebhookRegistration(github, statePath).Deactivate() ? 0 : 1;
                     if (result.GetValue(clone)) AppGitCredential.Install(Path.Combine(credentialDirectory, "bin"), credentialDirectory);
                     var wrapper = AppGitHubCommand.InstallWrapper(Path.Combine(credentialDirectory, "bin"), executable, credentialDirectory);
+                    if (profile.Images) AppGitHubCommand.InstallAssetWrapper(Path.Combine(credentialDirectory, "bin"), credentialDirectory);
+                    else File.Delete(Path.Combine(credentialDirectory, "bin", "repoagent-assets"));
                     var settings = new RepositorySettingsRefresh(RepositorySettingsCatalogue.Settings, !result.GetValue(repositorySettings) ? null
                         : credentials.SettingsUnreadable is { } unreadable ? new UnreadableRepositorySettings(unreadable) : new GitHubRepositorySettings(github), new ControllerStateFiles(statePath), time, new ControllerLog());
                     await settings.Refresh(cancellationToken);
@@ -203,7 +207,7 @@ public static class BridgeCommand
                             store.Discussions.Values.Any(record => record.HoldsSession) || Directory.Exists(statePath + ".checkout-evidence"),
                             store.Discussions.Values.Any(record => record.HoldsPending), time, new ControllerLog());
                         await using var codex = new Codex(agentRoot, wrapper, agentConfig, checkout is not null, credentials.BrokerCredentialLost,
-                            suppliedCredentials: agentCredentials is not null);
+                            suppliedCredentials: agentCredentials is not null, imagePublishing: profile.Images);
                         using var remoteAccess = new RemoteAccess(codex, new ControllerStateFiles(statePath), time);
                         var sessions = new AgentSessions(codex, new ControllerLog(), reconciliation, credentials.BrokerCredentialLost, agentCredentials is not null);
                         // Status counts a turn by its session too, so it stays running after its Discussion record is forgotten.

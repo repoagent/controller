@@ -106,7 +106,11 @@ function Get-ApprovalLocation([string]$Location, [string]$Kind, [int]$SetupVersi
     return $match[0]
 }
 function Get-ApprovalPolicy([int]$SetupVersion, [string]$Profile) {
-    Assert-Text $Profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?\z'
+    Assert-Text $Profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?(?:-images)?\z'
+    if ($Profile.EndsWith('-images', [StringComparison]::Ordinal)) {
+        if ($SetupVersion -ne 5) { throw 'Image publishing requires a fresh setup v5 enrollment.' }
+        return 'repository-agent-images-approval-v5'
+    }
     $settings = $Profile.EndsWith('-settings', [StringComparison]::Ordinal)
     $clone = $Profile.Contains('-clone', [StringComparison]::Ordinal)
     if ($SetupVersion -eq 2 -and -not $settings) { return $(if ($clone) { 'repository-agent-clone-approval-v2' } else { 'repository-agent-approval-v2' }) }
@@ -132,7 +136,7 @@ function Get-ApprovalStateKind($State) {
     } else { throw 'Unsupported approval state version.' }
     Assert-Id $State.repositoryId
     Assert-Text $State.repository '\A[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\z'
-    Assert-Text $State.profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?\z'
+    Assert-Text $State.profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?(?:-images)?\z'
     if ($State.version -ne 1) { $null = Get-ApprovalPolicy -SetupVersion $State.setupVersion -Profile $State.profile }
     Assert-Text $State.approvalVariable '\A[A-Z_][A-Z0-9_]{0,99}\z'
     $null = Get-BrokerOrigin $State.brokerOrigin

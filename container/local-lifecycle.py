@@ -84,7 +84,7 @@ def marker(value):
         if type(binding[name]) is not int or not 0 < binding[name] < 2**63:
             raise ValueError('Invalid numeric identity')
     patterns = {'repository': r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', 'enrollmentId': r'[A-Za-z0-9_-]{1,128}',
-                'brokerOrigin': r'https://[A-Za-z0-9.-]+(?::[0-9]+)?', 'profile': r'(polling|webhook)(-clone)?(-settings)?',
+                'brokerOrigin': r'https://[A-Za-z0-9.-]+(?::[0-9]+)?', 'profile': r'(polling|webhook)(-clone)?(-settings)?(-images)?',
                 'approvalVariable': r'[A-Z_][A-Z0-9_]{0,99}', 'expectedValueSha256': r'[a-f0-9]{64}'}
     for name, pattern in patterns.items():
         if not isinstance(binding[name], str) or not re.fullmatch(pattern, binding[name]):
@@ -113,10 +113,10 @@ def verify_binding(expected, config=None):
     # Accept the legacy toolUpdates field when inspecting old instances; it no longer selects tools.
     fields = {'repository', 'appId', 'installationId', 'brokerUrl', 'keyPath', 'mentionUser', 'model', 'mode',
               'publicUrl', 'listenPort', 'reconcileInterval', 'toolUpdates', 'webSearch', 'clone', 'enroll', 'repositoryId',
-              'repositorySettings', 'dashboardCategory'}
+              'repositorySettings', 'imagePublishing', 'dashboardCategory'}
     if set(config) - fields or any(not isinstance(config.get(key), str) for key in ('repository', 'appId', 'brokerUrl', 'mode')):
         raise ValueError('Invalid runtime settings')
-    types = {'clone': bool, 'listenPort': int, 'reconcileInterval': int, 'enroll': list, 'repositoryId': int, 'repositorySettings': bool}
+    types = {'clone': bool, 'listenPort': int, 'reconcileInterval': int, 'enroll': list, 'repositoryId': int, 'repositorySettings': bool, 'imagePublishing': bool}
     for key, value in config.items():
         if value is not None and type(value) is not types.get(key, int if key == 'installationId' else str):
             raise ValueError('Invalid runtime setting type')
@@ -131,20 +131,21 @@ def verify_binding(expected, config=None):
         raise ValueError('Selected installation differs')
     if config.get('repositoryId') is not None and config['repositoryId'] != binding['repositoryId']:
         raise ValueError('Selected immutable repository differs')
+    images = bool(config.get('imagePublishing'))
     settings = bool(config.get('repositorySettings'))
     profile = (('polling' if config.get('mode') == 'polling' else 'webhook') + ('-clone' if config.get('clone') else '')
-               + ('-settings' if settings else ''))
+               + ('-settings' if settings else '') + ('-images' if images else ''))
     if profile != binding['profile']:
         raise ValueError('Selected profile differs')
     if checked(TARGETS[0], missing=True):
         credential = read(TARGETS[0])
         fields = {'protocolVersion', 'brokerOrigin', 'githubHost', 'enrollmentId', 'controllerSecret', 'appId', 'appSlug', 'installationId', 'repositoryId', 'repository', 'permissions'}
         # Clone (v2) and repository-settings (v3) enrollments name their profile and policy.
-        if credential.get('protocolVersion') in (2, 3):
+        if credential.get('protocolVersion') in (2, 3, 4):
             fields |= {'profile', 'policyVersion'}
         if type(credential.get('protocolVersion')) is not int:
             raise ValueError('Invalid enrollment version')
-        if set(credential) != fields or credential['protocolVersion'] != (3 if settings else 2 if config.get('clone') else 1) or credential['githubHost'] != 'github.com':
+        if set(credential) != fields or credential['protocolVersion'] != (4 if images else 3 if settings else 2 if config.get('clone') else 1) or credential['githubHost'] != 'github.com':
             raise ValueError('Invalid enrollment')
         for key in ('repositoryId', 'appId', 'installationId'):
             if type(credential[key]) is not int or not 0 < credential[key] < 2**63:
@@ -154,8 +155,8 @@ def verify_binding(expected, config=None):
         permissions = {'discussions': 'write'}
         if profile.startswith('webhook'):
             permissions['repository_hooks'] = 'write'
-        if config.get('clone'):
-            permissions['contents'] = 'read'
+        if config.get('clone') or images:
+            permissions['contents'] = 'write' if images else 'read'
         if settings:
             permissions['agent_variables' if binding['approvalKind'] == 'repository-agent-variable' else 'actions_variables'] = 'read'
         if credential['protocolVersion'] > 1 and 'metadata' in credential['permissions']:
@@ -168,6 +169,8 @@ def verify_binding(expected, config=None):
                     'repository-agent-variable': ('repository-agent-settings-approval-v4', 'repository-agent-settings-approval-v5')} if settings else \
             {'repository-actions-variable': ('repository-actions-clone-approval-v3',),
              'repository-agent-variable': ('repository-agent-clone-approval-v2', 'repository-agent-clone-approval-v4', 'repository-agent-clone-approval-v5')}
+        if images:
+            policies = {'repository-agent-variable': ('repository-agent-images-approval-v5',)}
         if credential['protocolVersion'] > 1 and credential['policyVersion'] not in policies.get(binding['approvalKind'], ()):
             raise ValueError('Enrollment policy differs')
         for key in ('repository', 'repositoryId', 'enrollmentId', 'appId', 'installationId', 'brokerOrigin'):

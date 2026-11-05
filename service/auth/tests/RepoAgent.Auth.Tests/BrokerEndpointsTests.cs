@@ -22,7 +22,7 @@ public sealed class BrokerEndpointsTests
 
         var mapped = ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints).OfType<RouteEndpoint>()
             .Select(e => string.Join(',', e.Metadata.GetRequiredMetadata<IHttpMethodMetadata>().HttpMethods) + " " + e.RoutePattern.RawText);
-        var runtime = Enumerable.Range(1, 3).SelectMany(v => new[] { $"DELETE /v{v}/devices/{{enrollmentId}}", $"POST /v{v}/devices/{{enrollmentId}}/installation-token",
+        var runtime = Enumerable.Range(1, 4).SelectMany(v => new[] { $"DELETE /v{v}/devices/{{enrollmentId}}", $"POST /v{v}/devices/{{enrollmentId}}/installation-token",
             $"DELETE /v{v}/controller-enrollments/{{enrollmentId}}", $"POST /v{v}/controller-enrollments/{{enrollmentId}}/github-token" });
         var setup = Enumerable.Range(1, 5).SelectMany(v => new[] { $"POST /v{v}/enrollments", $"GET /v{v}/enrollments/{{id}}",
             $"POST /v{v}/enrollments/{{id}}/completion", v == 5 ? $"POST /v{v}/controller-enrollments/{{id}}/acknowledgment" : $"POST /v{v}/devices/{{id}}/acknowledgment" });

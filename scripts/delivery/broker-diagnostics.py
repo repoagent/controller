@@ -310,7 +310,7 @@ def historical_requests():
     # Exact matched templates from historical/current BrokerEndpoints and TelemetryPrivacy.
     # Unknown names are grouped before transport; never return provider route/name strings.
     routes = {name: [] for name in ENDPOINTS[:-1]}
-    for version in (1, 2, 3):
+    for version in (1, 2, 3, 4):
         for parameter in ('deviceId', 'enrollmentId'):
             route = f'/v{version}/devices/{{{parameter}}}'
             routes['renewal'].append('POST ' + route + '/installation-token')

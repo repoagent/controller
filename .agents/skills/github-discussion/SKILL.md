@@ -21,4 +21,6 @@ mutation($discussionId: ID!, $replyToId: ID, $body: String!) {
 
 Inspect both process status and GraphQL `errors`; require a returned comment ID/URL before reporting publication success. A failed or uncertain publication needs operator inspection; avoid automatic repeated publication. The bridge does not mirror terminal output, so a terminal answer alone does not deliver your response. Finish with operational status and published URLs.
 
+When your session instructions supply a `repoagent-assets` command, publish generated PNG/JPEG images or editable SVG/Mermaid sources with its absolute path, `--discussion NUMBER` and the local file path. Embed its returned Markdown in the intended Discussion post or response through the authenticated `gh` command. Keep the original files until publication succeeds. The helper uses the approved repository's asset branch and current App credentials. When it is unavailable or fails, retain the files and state the publication limitation; operator setup controls this optional authority.
+
 The bridge owns the agent's automatic EYES receipts. Leave those receipts in place. For other conversational reactions, use `addReaction`/`removeReaction` on the subject's ID when useful or requested. Continue the same conversation after an answer is accepted.

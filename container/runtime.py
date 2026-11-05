@@ -30,10 +30,10 @@ INVENTORY = '/opt/repoagent/image-inventory.json'
 # controller process receives it; it is never written, logged or passed as an argument.
 ENROLLMENT_VARIABLE = 'REPOAGENT_ENROLLMENT'
 # Nonsecret configuration supplied with it, one REPOAGENT_<OPTION> per configure option.
-EXTERNAL_OPTIONS = ('repository', 'app-id', 'broker-url', 'clone', 'repository-settings', 'installation-id', 'repository-id',
+EXTERNAL_OPTIONS = ('repository', 'app-id', 'broker-url', 'clone', 'repository-settings', 'image-publishing', 'installation-id', 'repository-id',
                     'mention-user', 'model', 'web-search', 'mode', 'public-url', 'listen-port',
                     'reconcile-interval', 'dashboard-category')
-FLAG_OPTIONS = ('clone', 'repository-settings')
+FLAG_OPTIONS = ('clone', 'repository-settings', 'image-publishing')
 
 
 def external_name(option):
@@ -73,6 +73,8 @@ def bridge_args(config, *, check_auth=False, injected=False):
         args += ['--private-key', '/run/secrets/github-app.pem']
     if config.get('clone', False):
         args += ['--clone']
+    if config.get('imagePublishing', False):
+        args += ['--image-publishing']
     if config.get('repositorySettings', False):
         args += ['--repository-settings']
     if config.get('installationId'):
@@ -175,6 +177,11 @@ def configure(args, *, persist=True):
         url = urllib.parse.urlsplit(args.public_url)
         if url.scheme != 'https' or not url.hostname or url.username or url.password or url.path not in ('', '/') or url.query or url.fragment:
             raise ValueError('Fixed URL needs a public HTTPS origin without credentials, path, query or fragment.')
+    image_publishing = getattr(args, 'image_publishing', False)
+    if config and bool(config.get('imagePublishing', False)) != image_publishing:
+        raise ValueError('Changing image-publishing authority requires a fresh instance and enrollment.')
+    if image_publishing:
+        config['imagePublishing'] = True
     repository_settings = getattr(args, 'repository_settings', False)
     # Broker reads need an explicit repository-settings profile (runtime v3), so the choice is
     # fixed for the instance like clone. Direct-App instances only change their own token request.
@@ -187,8 +194,8 @@ def configure(args, *, persist=True):
     if repository_id is None:
         repository_id = config.get('repositoryId')
     if repository_id is not None:
-        if repository_id <= 0 or not broker or not clone:
-            raise ValueError('Expected repository ID requires broker clone mode and a positive ID.')
+        if repository_id <= 0 or not broker or not (clone or image_publishing):
+            raise ValueError('Expected repository ID requires broker clone or image-publishing mode and a positive ID.')
         if config.get('repositoryId') is not None and config['repositoryId'] != repository_id:
             raise ValueError('Changing expected repository identity requires a fresh instance and enrollment.')
         config['repositoryId'] = repository_id
@@ -364,6 +371,7 @@ def configure_arguments(configure_parser):
     configure_parser.add_argument('--enrollment-file')
     configure_parser.add_argument('--clone', action='store_true')
     configure_parser.add_argument('--repository-settings', action='store_true')
+    configure_parser.add_argument('--image-publishing', action='store_true')
     configure_parser.add_argument('--installation-id', type=int)
     configure_parser.add_argument('--repository-id', type=int)
     configure_parser.add_argument('--mention-user', default='repoagent')

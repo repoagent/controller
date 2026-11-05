@@ -16,13 +16,14 @@ internal sealed class DirectAppTokenSource : IGitHubTokenSource
     readonly TimeProvider clock;
     RuntimeProfile profile;
     bool clone => profile.ManagedClone;
+    bool bound => clone || profile.Images;
     public string? SettingsUnreadable { get; private set; }
     long repositoryId;
     string canonicalRepository = "";
-    public long? RepositoryId => clone ? repositoryId : null;
-    public string? GitRepository => clone ? canonicalRepository : null;
-    // Direct App credentials name the clone profile Git credential helpers accept; repository settings do not change it.
-    public string? GitProfile => clone ? (profile with { Settings = false }).Name : null;
+    public long? RepositoryId => bound ? repositoryId : null;
+    public string? GitRepository => bound ? canonicalRepository : null;
+    // Image profiles also bind the asset publisher to this repository; frozen clone profiles keep their names.
+    public string? GitProfile => profile.Images ? profile.Name : clone ? (profile with { Settings = false }).Name : null;
     long installationId;
     string appSlug = "";
     public string AppSlug => appSlug;
@@ -54,6 +55,8 @@ internal sealed class DirectAppTokenSource : IGitHubTokenSource
             throw new InvalidOperationException("Configured installation ID does not match the repository's App installation");
         if (installation["permissions"]?.Text("discussions") != "write")
             throw new InvalidOperationException("Install the GitHub App on this repository with Discussions read/write permission");
+        if (profile.Images && installation["permissions"]?.Text("contents") != "write")
+            throw new InvalidOperationException("Image publishing requires explicitly approved Contents write permission");
         if (clone && installation["permissions"]?.Text("contents") is not ("read" or "write"))
             throw new InvalidOperationException("Clone mode requires Contents read permission");
         if (profile.Webhooks && installation["permissions"]?.Text("repository_hooks") != "write")
@@ -74,11 +77,11 @@ internal sealed class DirectAppTokenSource : IGitHubTokenSource
     {
         var permissions = profile.Permissions();
         var request = Json.Object(("permissions", permissions));
-        if (clone && repositoryId > 0) request["repository_ids"] = new JsonArray(repositoryId);
+        if (bound && repositoryId > 0) request["repository_ids"] = new JsonArray(repositoryId);
         else request["repositories"] = new JsonArray(repository.Split('/')[1]);
         var result = await Send(HttpMethod.Post, $"app/installations/{installationId}/access_tokens", CreateJwt(),
             request, ct);
-        if (clone)
+        if (bound)
         {
             var granted = result["permissions"] as JsonObject;
             if (result.Text("repository_selection") != "selected" || granted is null || granted.Count < permissions.Count || granted.Any(p =>
@@ -98,7 +101,7 @@ internal sealed class DirectAppTokenSource : IGitHubTokenSource
         var freshToken = result.Text("token");
         if (string.IsNullOrWhiteSpace(freshToken) ||
             !DateTimeOffset.TryParse(result.Text("expires_at"), out var expiry) || expiry <= clock.GetUtcNow().AddMinutes(5) ||
-            (clone && (expiry > clock.GetUtcNow().AddMinutes(65) || freshToken.Any(char.IsWhiteSpace) || freshToken.Any(char.IsControl))))
+            (bound && (expiry > clock.GetUtcNow().AddMinutes(65) || freshToken.Any(char.IsWhiteSpace) || freshToken.Any(char.IsControl))))
             throw new InvalidOperationException("GitHub returned an unusable installation token or expiry");
         Log.Protect(freshToken);
         return new(freshToken, expiry);

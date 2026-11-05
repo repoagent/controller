@@ -26,11 +26,12 @@ param(
     [ValidateSet('Broker', 'OwnApp')][string]$Authentication,
     [string]$BrokerOrigin,
     [string]$StateDirectory,
-    [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone', 'polling-settings', 'webhook-settings', 'polling-clone-settings', 'webhook-clone-settings')][string]$EnrollmentProfile,
+    [ValidateSet('polling', 'webhook', 'polling-clone', 'webhook-clone', 'polling-settings', 'webhook-settings', 'polling-clone-settings', 'webhook-clone-settings', 'polling-images', 'webhook-images', 'polling-clone-images', 'webhook-clone-images', 'polling-settings-images', 'webhook-settings-images', 'polling-clone-settings-images', 'webhook-clone-settings-images')][string]$EnrollmentProfile,
     [switch]$Clone,
     # Read REPOAGENT_ repository settings: selects the explicit repository-settings profile
     # (runtime v3, Agent variables read) for Broker, or the direct-App flag for OwnApp.
     [switch]$RepositorySettings,
+    [switch]$ImagePublishing,
     [string]$ApprovalStatePath,
     [string]$EnrollmentFile,
     [string]$GitHubEnvironment,
@@ -102,6 +103,10 @@ if ($Action -eq 'Enroll') {
     $enrollOptions = @{}
     if ($PSBoundParameters.ContainsKey('ControllerEnrollmentVersion')) { $enrollOptions.ControllerEnrollmentVersion = $ControllerEnrollmentVersion }
     if ($EnrollmentProfile) { $enrollOptions.Profile = $EnrollmentProfile }
+    if ($ImagePublishing) {
+        if ($EnrollmentProfile -and -not $EnrollmentProfile.EndsWith('-images', [StringComparison]::Ordinal)) { throw 'ImagePublishing requires an image enrollment profile.' }
+        if (-not $EnrollmentProfile) { $enrollOptions.Profile = 'polling' + $(if ($Clone) { '-clone' } else { '' }) + $(if ($RepositorySettings) { '-settings' } else { '' }) + '-images' }
+    }
     if ($ApprovalLocation) { $enrollOptions.ApprovalLocation = $ApprovalLocation }
     & "$PSScriptRoot/scripts/enroll-controller.ps1" @enrollOptions -Repository $Repository -BrokerOrigin $BrokerOrigin `
         -StateDirectory $StateDirectory -ApprovalVariable $ApprovalVariable `
@@ -200,6 +205,7 @@ try {
         # Old launch records remain loadable; their tool-update choice is ignored.
         if ($saved.Contains('toolUpdates')) { $fields += 'toolUpdates' }
         if ($saved.Contains('clone')) { $fields += 'clone' }
+        if ($saved.Contains('imagePublishing')) { $fields += 'imagePublishing' }
         if ($saved.Contains('repositorySettings')) { $fields += 'repositorySettings' }
         if ($saved.Contains('dashboardCategory')) { $fields += 'dashboardCategory' }
         if ($saved.Contains('launchState')) { $fields += 'launchState' }
@@ -221,6 +227,10 @@ try {
     if ($saved -and $saved.Contains('repositorySettings') -and $saved.repositorySettings -cnotin @('true','false')) { Stop-Install 'Invalid saved repository-settings selection.' }
     $resolvedSettings = if ($provided.ContainsKey('RepositorySettings')) { [bool]$RepositorySettings } else { [bool]$savedSettings }
     if ($saved -and $resolvedSettings -ne [bool]$savedSettings) { Stop-Install 'Changing repository-settings authority requires a fresh instance and enrollment.' }
+    $savedImages = $saved -and $saved.Contains('imagePublishing') -and $saved.imagePublishing -ceq 'true'
+    if ($saved -and $saved.Contains('imagePublishing') -and $saved.imagePublishing -cnotin @('true','false')) { Stop-Install 'Invalid saved image-publishing selection.' }
+    $resolvedImages = if ($provided.ContainsKey('ImagePublishing')) { [bool]$ImagePublishing } else { [bool]$savedImages }
+    if ($saved -and $resolvedImages -ne [bool]$savedImages) { Stop-Install 'Changing image-publishing authority requires a fresh instance and enrollment.' }
     $Authentication = Setting Authentication $(if ($AppId -or $KeyPath) { 'OwnApp' } else { 'Broker' })
     if ($Authentication -notin @('Broker','OwnApp')) { Stop-Install 'Authentication must be Broker or OwnApp.' }
     $approvalPath = Join-Path $StateDirectory 'approval.json'
@@ -263,11 +273,12 @@ try {
         Select-RepositoryContext
         $expectedProfile = if ($resolvedClone) { if ($Mode -eq 'polling') { 'polling-clone' } else { 'webhook-clone' } } else { 'polling' }
         if ($resolvedSettings) { $expectedProfile += '-settings' }
+        if ($resolvedImages) { $expectedProfile += '-images' }
         $resolvedProfile = Setting EnrollmentProfile $(if ($EnrollmentProfile) { $EnrollmentProfile } else { $expectedProfile })
         if ($resolvedProfile -cne $expectedProfile -or (-not $resolvedClone -and $Mode -ne 'polling')) {
             Stop-Install 'Mode and clone selection must match the enrollment profile; ordinary guided setup supports polling only.'
         }
-        if (($resolvedClone -or $resolvedSettings) -and $approval -and $approval.profile -cne $expectedProfile) { Stop-Install 'Changing clone or repository-settings authority requires a fresh instance and enrollment.' }
+        if (($resolvedClone -or $resolvedSettings -or $resolvedImages) -and $approval -and $approval.profile -cne $expectedProfile) { Stop-Install 'Changing clone, repository-settings or image-publishing authority requires a fresh instance and enrollment.' }
         $ApprovalVariable = $ApprovalVariable.ToUpperInvariant()
         $enrollOptions = @{ Repository=$Repository; BrokerOrigin=$BrokerOrigin; ApprovalVariable=$ApprovalVariable; Profile=$resolvedProfile; StateDirectory=$StateDirectory; NonInteractive=$true }
         if ($PSBoundParameters.ContainsKey('ControllerEnrollmentVersion')) { $enrollOptions.ControllerEnrollmentVersion = $ControllerEnrollmentVersion }
@@ -341,7 +352,7 @@ try {
         $match = [regex]::Match((Get-Content "$PSScriptRoot/scripts/compose-image.py" -Raw), "(?m)^RUNTIME = '([^']+)'\r?$")
         if (-not $match.Success) { Stop-Install 'Cannot read the maintained base image selection.' }; $match.Groups[1].Value
     }
-    $plan = [ordered]@{ clone=$(if ($resolvedClone) { 'true' } else { 'false' }); repositorySettings=$(if ($resolvedSettings) { 'true' } else { 'false' }); schemaVersion=1; instance=$Instance; stateDirectory=$StateDirectory; authentication=$Authentication; repository=$Repository;
+    $plan = [ordered]@{ imagePublishing=$(if ($resolvedImages) { 'true' } else { 'false' }); clone=$(if ($resolvedClone) { 'true' } else { 'false' }); repositorySettings=$(if ($resolvedSettings) { 'true' } else { 'false' }); schemaVersion=1; instance=$Instance; stateDirectory=$StateDirectory; authentication=$Authentication; repository=$Repository;
         brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; enrollmentProfile=$resolvedProfile; imageManifest=$ImageManifest;
         imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
@@ -353,8 +364,9 @@ try {
     }
     Write-Host "Instance: $Instance; repository: $Repository; authentication: $Authentication; mode: $Mode"
     Write-Host "Dashboard: $(if ($DashboardCategory) { $DashboardCategory } else { 'disabled' })."
+    if ($resolvedImages) { Write-Host "Image publishing: explicit repository-wide Contents write. The asset branch does not restrict token authority. Fresh instance and approval required." }
     if ($resolvedClone) {
-        Write-Host "Repository context: $resolvedProfile; Contents read, Discussions write$(if ($Mode -ne 'polling') { ', repository hooks write' }). Fresh instance and approval required."
+        Write-Host "Repository context: $resolvedProfile; Contents $(if ($resolvedImages) { 'write' } else { 'read' }), Discussions write$(if ($Mode -ne 'polling') { ', repository hooks write' }). Fresh instance and approval required."
         Write-Host 'Persistent checkout: /workspace/repository. Trust this exact repository root for agent instructions, project configuration and local skills.'
     }
     if ($resolvedSettings) {
@@ -420,6 +432,7 @@ try {
     if ($DashboardCategory) { $configuration += "--dashboard-category=$DashboardCategory" }
     if ($resolvedClone) { $configuration += '--clone' }
     if ($resolvedSettings) { $configuration += '--repository-settings' }
+    if ($resolvedImages) { $configuration += '--image-publishing' }
     if ($InstallationId) { $configuration += @('--installation-id', $InstallationId) }
     $configuration += @('--listen-port', $ListenPort, '--reconcile-interval', $ReconcileInterval, "--public-url=$PublicUrl")
     if ($Authentication -eq 'Broker') { $configuration += @('--broker-url', $BrokerOrigin, '--enrollment-file', $enrollmentPath) }
