@@ -120,3 +120,6 @@ src/RepoAgent.LocalTelemetry/AgentTrace.cs
 src/RepoAgentController/LocalControllerClient.cs
 src/RepoAgentController/RemoteCommand.cs
 src/RepoAgentController/UnixPeer.cs
+src/RepoAgentController.Core/DiscussionAssets.cs
+src/RepoAgentController/GitHubDiscussionAssets.cs
+src/RepoAgentController/AssetCommand.cs

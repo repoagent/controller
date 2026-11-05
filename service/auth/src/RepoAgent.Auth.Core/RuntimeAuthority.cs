@@ -14,6 +14,15 @@ public sealed class RuntimeAuthority : IEquatable<RuntimeAuthority>
     public static RuntimeAuthority For(ApprovalContract contract, string profile)
     {
         if (!contract.Allows(profile)) throw new IssuanceDenied();
+        if (contract.IsImages)
+        {
+            var original = profile[..^"-images".Length];
+            var settings = original.EndsWith("-settings", StringComparison.Ordinal);
+            var permissions = Frozen(settings ? original[..^"-settings".Length] : original);
+            permissions["contents"] = "write";
+            if (settings) permissions["agent_variables"] = "read";
+            return new(permissions);
+        }
         if (!contract.IsSettings) return new(Frozen(profile));
         return new(new Dictionary<string, string>(Frozen(profile[..^"-settings".Length]))
         {

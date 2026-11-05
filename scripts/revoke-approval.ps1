@@ -262,19 +262,22 @@ try {
             $enrollment = Read-PrivateJson ([IO.Path]::GetFullPath($EnrollmentFile))
             $fields = @('protocolVersion','brokerOrigin','githubHost','enrollmentId','controllerSecret','appId','appSlug','installationId','repositoryId','repository','permissions')
             # Runtime v2 (clone) and v3 (repository-settings profiles) name their profile and policy.
+            $images = $enrollment.protocolVersion -eq 4
             $clone = $enrollment.protocolVersion -eq 2
             $settings = $enrollment.protocolVersion -eq 3
-            if ($clone -or $settings) { $fields += @('profile','policyVersion') }
+            if ($clone -or $settings -or $images) { $fields += @('profile','policyVersion') }
             Assert-Fields $enrollment $fields
             $policy = if ($script:Legacy) { 'repository-approval-v1' }
                 else { Get-ApprovalPolicy -SetupVersion $location.SetupVersion -Profile $saved.profile }
-            $expectedRuntime = if ($saved.profile.EndsWith('-settings', [StringComparison]::Ordinal)) { 3 }
+            $expectedRuntime = if ($saved.profile.EndsWith('-images', [StringComparison]::Ordinal)) { 4 }
+                elseif ($saved.profile.EndsWith('-settings', [StringComparison]::Ordinal)) { 3 }
                 elseif ($saved.profile.Contains('-clone', [StringComparison]::Ordinal)) { 2 } else { 1 }
             if ($enrollment.protocolVersion -ne $expectedRuntime) { throw 'Runtime profile differs from saved approval.' }
             if ($clone -and ($enrollment.profile -cnotin @('polling-clone','webhook-clone') -or $enrollment.policyVersion -cne $policy)) { throw 'Clone enrollment differs.' }
             if ($settings -and ($enrollment.profile -cnotin @('polling-settings','webhook-settings','polling-clone-settings','webhook-clone-settings') -or $enrollment.policyVersion -cne $policy)) { throw 'Repository-settings profile enrollment differs.' }
+            if ($images -and ($enrollment.profile -cne $saved.profile -or $enrollment.policyVersion -cne $policy)) { throw 'Image profile enrollment differs.' }
             Assert-Text $enrollment.enrollmentId '\A[A-Za-z0-9_-]{1,128}\z'
-            if ($enrollment.protocolVersion -notin @(1,2,3) -or $enrollment.githubHost -cne 'github.com' -or $enrollment.repositoryId -ne $repositoryId -or $enrollment.repository -ine $Repository) { throw 'Private enrollment differs.' }
+            if ($enrollment.protocolVersion -notin @(1,2,3,4) -or $enrollment.githubHost -cne 'github.com' -or $enrollment.repositoryId -ne $repositoryId -or $enrollment.repository -ine $Repository) { throw 'Private enrollment differs.' }
             # Only a trusted saved setup origin may receive the optional credential.
             if (-not $ApprovalStatePath -or (Get-BrokerOrigin $enrollment.brokerOrigin) -cne (Get-BrokerOrigin $saved.brokerOrigin)) { throw 'Trusted broker origin is required.' }
             $marker = Read-OperatorJson $saved.marker -ControllerDocument

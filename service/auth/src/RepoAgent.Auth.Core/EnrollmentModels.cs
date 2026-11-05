@@ -29,7 +29,7 @@ public sealed record RepositoryVariableEnrollmentRequest(string IdempotencyId, l
             || Variable is null || Variable.Length is < 1 or > 100 || char.IsAsciiDigit(Variable[0])
             || Variable.StartsWith("GITHUB_", StringComparison.OrdinalIgnoreCase)
             || !Variable.All(c => char.IsAsciiLetterOrDigit(c) || c == '_') || Profile is not ("polling" or "webhook" or "polling-clone" or "webhook-clone"
-                or "polling-settings" or "webhook-settings" or "polling-clone-settings" or "webhook-clone-settings")) throw new IssuanceDenied(400);
+                or "polling-settings" or "webhook-settings" or "polling-clone-settings" or "webhook-clone-settings") && !ApprovalContract.IsImageProfile(Profile)) throw new IssuanceDenied(400);
     }
     // The setups share this body grammar; domain separation keeps one idempotency ID from replaying a request
     // across approval locations or setup versions.

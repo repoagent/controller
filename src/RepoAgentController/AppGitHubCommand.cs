@@ -28,18 +28,23 @@ public static class AppGitHubCommand
         return process.ExitCode;
     }
 
-    public static string InstallWrapper(string directory, string executable, string credentialDirectory)
+    public static string InstallWrapper(string directory, string executable, string credentialDirectory) =>
+        Install(directory, "gh", ["github-command", "--gh-path", executable, "--credential-directory", credentialDirectory], true);
+
+    internal static string InstallAssetWrapper(string directory, string credentialDirectory) =>
+        Install(directory, "repoagent-assets", ["asset-publish", "--credential-directory", credentialDirectory], false);
+
+    static string Install(string directory, string name, string[] arguments, bool separator)
     {
         if (OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("The App-authenticated gh wrapper requires a Linux or macOS runtime");
         GitHubAppCredentials.SecureDirectory(directory);
-        var path = Path.Combine(directory, "gh");
+        var path = Path.Combine(directory, name);
         static string Quote(string value) => "'" + value.Replace("'", "'\"'\"'") + "'";
         var apphost = Path.Combine(AppContext.BaseDirectory, "repoagent");
         var launcher = File.Exists(apphost) ? new[] { apphost } :
             new[] { FindExecutable("dotnet"), Path.Combine(AppContext.BaseDirectory, "repoagent.dll") };
-        var command = string.Join(' ', launcher.Concat(new[] {
-            "github-command", "--gh-path", executable, "--credential-directory", credentialDirectory }).Select(Quote));
-        File.WriteAllText(path, "#!/bin/sh\nexec " + command + " -- \"$@\"\n");
+        var command = string.Join(' ', launcher.Concat(arguments).Select(Quote));
+        File.WriteAllText(path, "#!/bin/sh\nexec " + command + (separator ? " --" : "") + " \"$@\"\n");
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
     }

@@ -8,6 +8,7 @@ The controller currently supports **GitHub Discussions with Codex**, with one co
 
 - **Shared conversations.** Everyone in a Discussion works with the same agent session across its comment threads. Follow-up messages retain the conversation's context, including after controller restarts when its storage is preserved.
 - **Discussion activity.** The agent receives new and edited messages, reactions and who added them, answer and state changes, and confirmed comment or reply deletions.
+- **Optional pictures.** An explicitly approved image-publishing profile lets the agent store images and editable diagram sources on a separate `repoagent-assets` branch and embed them in Discussions. This requires repository-wide Contents write; see [setup and verification limits](docs/discussion-images.md).
 - **Flexible conversation starts.** Mention the App bot or a configured mention account such as `@repoagent`, select a Discussion by URL, or automatically start sessions for new Discussions in chosen categories.
 - **Model selection.** Set repository defaults for the Codex model and reasoning effort, or override them per Discussion with a label such as `repoagent:sol6.1:xhigh`. Changes apply to the next turn.
 - **Queued work and concurrency limits.** Follow-ups wait while the agent is busy. A configurable limit controls how many Discussions run at once; the default is four.
@@ -48,7 +49,7 @@ Choose how the controller receives activity:
 
 A normal SIGTERM or Ctrl+C stop of a long-running controller holds new input and waits for active agent work to finish; pending credential replacement cannot restart the agent after shutdown begins. Credential authority loss still stops owned work immediately.
 
-Keep the controller and its host running to receive activity. Preserve its state and Codex storage across restarts. If you enable repository context, the managed checkout is disposable; the agent uses separate worktrees for edits. The supplied GitHub permission profiles support Discussions and optional code reading; they do not grant code pushes or pull request creation. Issues and pull requests are not conversation entry points.
+Keep the controller and its host running to receive activity. Preserve its state and Codex storage across restarts. If you enable repository context, the managed checkout is disposable; the agent uses separate worktrees for edits. Default GitHub permission profiles support Discussions and optional code reading. Image publishing adds an explicit repository-wide code-write grant; no supplied profile grants pull request creation. Issues and pull requests are not conversation entry points.
 
 The native controller command is now `repoagent`. This is a breaking rename: `RepoAgentController` is no longer installed and has no compatibility alias. Adopt matching native clients, host wrappers and controller images, update any executable invocations, and restart the selected controller. Preserve its existing state, journals and Codex storage; this upgrade requires neither controller re-enrollment nor a session/state reset.
 

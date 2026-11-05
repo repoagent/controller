@@ -30,11 +30,11 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
     bool settings => profile.Settings;
     readonly int version;
     // Clone (v2) and repository-settings (v3) files and leases name their profile and approval policy.
-    bool NamesProfile => clone || settings;
+    bool NamesProfile => clone || settings || profile.Images;
     string[] Fields => NamesProfile ? [.. BindingFields, "profile", "policyVersion"] : BindingFields;
-    public long? RepositoryId => clone ? Id(enrollment.RootElement, "repositoryId") : null;
-    public string? GitRepository => clone ? Text(enrollment.RootElement, "repository") : null;
-    public string? GitProfile => clone ? Text(enrollment.RootElement, "profile") : null;
+    public long? RepositoryId => clone || profile.Images ? Id(enrollment.RootElement, "repositoryId") : null;
+    public string? GitRepository => clone || profile.Images ? Text(enrollment.RootElement, "repository") : null;
+    public string? GitProfile => clone || profile.Images ? Text(enrollment.RootElement, "profile") : null;
     readonly string enrollmentId;
     readonly string secret;
     readonly bool canonicalNames;
@@ -62,7 +62,7 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
                 throw Invalid("this setup v3 (Actions-variable) enrollment is retired because approval and settings moved to Agent variables; revoke it and enroll afresh");
             // A repository-settings profile is explicit on both sides: frozen profiles are never widened, and a
             // repository-settings profile is never consumed as a frozen one.
-            if (settings && version != 3) throw Invalid("--repository-settings requires a controller enrollment with a repository-settings profile (runtime v3); frozen profiles are not widened");
+            if (!profile.Images && settings && version != 3) throw Invalid("--repository-settings requires a controller enrollment with a repository-settings profile (runtime v3); frozen profiles are not widened");
             if (!settings && version == 3) throw Invalid("a repository-settings profile requires --repository-settings");
             if (version != profile.Version) throw Invalid("explicit runtime selection differs from enrollment version");
             canonicalNames = root.TryGetProperty("enrollmentId", out _);
@@ -73,7 +73,7 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
             if (!long.TryParse(appId, NumberStyles.None, CultureInfo.InvariantCulture, out var id) || id != Id(root, "appId") ||
                 !string.Equals(repository, Text(root, "repository"), StringComparison.OrdinalIgnoreCase))
                 throw Invalid("CLI App/repository differs from enrollment");
-            if (expectedRepositoryId is { } expected && (!clone || expected <= 0 || Id(root, "repositoryId") != expected))
+            if (expectedRepositoryId is { } expected && (!(clone || profile.Images) || expected <= 0 || Id(root, "repositoryId") != expected))
                 throw Invalid("CLI repository ID differs from enrollment");
             ValidateInstallation(expectedInstallationId);
             enrollmentId = Text(root, canonicalNames ? "enrollmentId" : "deviceId");
@@ -222,10 +222,13 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
         if (!Name(Text(value, "appSlug"))) throw Invalid("invalid App slug");
         var parts = Text(value, "repository").Split('/');
         if (parts.Length != 2 || !parts.All(Name)) throw Invalid("invalid repository name");
-        if (settings && (Text(value, "profile") != profile.Name ||
+        if (profile.Images && (!canonicalNames || Text(value, "profile") != profile.Name ||
+            Text(value, "policyVersion") != "repository-agent-images-approval-v5"))
+            throw Invalid("image-publication policy differs");
+        if (!profile.Images && settings && (Text(value, "profile") != profile.Name ||
             Text(value, "policyVersion") != (canonicalNames ? "repository-agent-settings-approval-v5" : SettingsPolicy)))
             throw Invalid("repository-settings policy differs");
-        if (clone && !settings && (Text(value, "profile") != profile.Name ||
+        if (!profile.Images && clone && !settings && (Text(value, "profile") != profile.Name ||
             (canonicalNames ? Text(value, "policyVersion") != "repository-agent-clone-approval-v5" : Text(value, "policyVersion") is not (ClonePolicy or LegacyClonePolicy))))
             throw Invalid("clone policy differs");
         var permissions = value.GetProperty("permissions");

@@ -9,7 +9,7 @@ internal static class BrokerEndpoints
     public static void Map(WebApplication app)
     {
         // Runtime v1: frozen non-clone, v2: frozen clone, v3: repository-settings profiles.
-        foreach (var version in new[] { 1, 2, 3 })
+        foreach (var version in new[] { 1, 2, 3, 4 })
         {
             app.MapDelete($"/v{version}/devices/{{enrollmentId}}", (string enrollmentId, HttpContext context, ControllerSelfRevocation revocation) =>
                 AnswerAsync(context, request => BrokerRoutes.RevokeAsync(request, enrollmentId, revocation, version)));

@@ -24,7 +24,7 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1068", Justification = "Preserve existing positional callers; this token is distinct from the optional configuration that follows it.")]
     public Codex(string workspace, string githubCommand, string configurationDirectory, bool verifyRoot = false,
-            CancellationToken credentialLost = default, bool suppliedCredentials = false)
+            CancellationToken credentialLost = default, bool suppliedCredentials = false, bool imagePublishing = false)
     {
         this.workspace = workspace;
         this.suppliedCredentials = suppliedCredentials;
@@ -32,6 +32,7 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
         this.verifyRoot = verifyRoot;
         this.credentialLost = credentialLost;
         instructions = Instructions + $" GitHub authentication is the configured GitHub App installation. Use the authenticated gh command at {githubCommand} for all GitHub calls; invoke that absolute path if a login shell changes PATH. The wrapper reads current credentials on every invocation. For approved clone mode use gh repo clone and the sibling repoagent-git fetch --directory CHECKOUT command for Git network access; ordinary local Git remains available. Keep this identity; do not run gh auth login or bypass the wrapper.";
+        if (imagePublishing) instructions += $" To publish images or editable diagram sources, use {Path.Combine(Path.GetDirectoryName(githubCommand)!, "repoagent-assets")} --discussion NUMBER /absolute/path/to/file. Embed its returned Markdown in the Discussion response through the authenticated gh command. The helper writes the approved repository asset branch using current App credentials.";
     }
 
     Transport OpenTransport() => new(workspace, githubCommand, configurationDirectory, epoch, Observe, credentialLost, suppliedCredentials);

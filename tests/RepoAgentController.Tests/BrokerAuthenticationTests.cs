@@ -666,8 +666,9 @@ sys.exit(0 if status == 200 else 1)
 
         // The CLI's explicit --repository-settings selection; it defaults to whether the enrolled profile is a repository-settings profile.
         public bool RepositorySettings { get; set; }
+        public bool Images { get; set; }
 
-        public Fixture(bool webhooks = false, bool clone = false, string clonePolicy = "repository-agent-clone-approval-v2", bool settings = false)
+        public Fixture(bool webhooks = false, bool clone = false, string clonePolicy = "repository-agent-clone-approval-v2", bool settings = false, bool images = false)
         {
             this.webhooks = webhooks;
             this.clone = clone;
@@ -691,6 +692,18 @@ sys.exit(0 if status == 200 else 1)
                 Enrollment["profile"] = webhooks ? "webhook-clone" : "polling-clone";
                 Enrollment["policyVersion"] = clonePolicy;
                 Enrollment["permissions"]!["contents"] = "read";
+            }
+            Images = images;
+            if (images)
+            {
+                Enrollment["enrollmentId"] = Enrollment["deviceId"]!.DeepClone();
+                Enrollment["controllerSecret"] = Enrollment["deviceSecret"]!.DeepClone();
+                Enrollment.Remove("deviceId");
+                Enrollment.Remove("deviceSecret");
+                Enrollment["protocolVersion"] = 4;
+                Enrollment["profile"] = new RuntimeProfile(webhooks, clone, settings, Images: true).Name;
+                Enrollment["policyVersion"] = "repository-agent-images-approval-v5";
+                Enrollment["permissions"]!["contents"] = "write";
             }
             SaveEnrollment();
             Transport = new Transport(Clock, Enrollment);
@@ -720,7 +733,7 @@ sys.exit(0 if status == 200 else 1)
         public HttpClient Http => http;
 
         public GitHubAppCredentials Credentials() => GitHubAppCredentials.FromBroker(http, "https://credentials.example.org/", EnrollmentFile, "123", "OWNER/Repository", CredentialDirectory,
-            new RuntimeProfile(webhooks, clone, RepositorySettings), Clock);
+            new RuntimeProfile(webhooks, clone, RepositorySettings, Images), Clock);
 
         public Task<int> Start(string? option = null, string? value = null, bool keepFile = false)
         {
@@ -728,6 +741,7 @@ sys.exit(0 if status == 200 else 1)
             if (option == "--enrollment-environment" && !keepFile) args.RemoveRange(args.IndexOf("--enrollment-file"), 2);
             if (clone) args.Add("--clone");
             if (RepositorySettings) args.Add("--repository-settings");
+            if (Images) args.Add("--image-publishing");
             if (webhooks) args.AddRange(["--webhook-url", "https://controller.example.org"]);
             if (option is not null)
             {

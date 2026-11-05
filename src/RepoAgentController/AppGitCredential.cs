@@ -11,7 +11,8 @@ internal static class AppGitCredential
     // Only clone-capable credentials carry the approved repository binding Git may use.
     static GitHubToolToken Lease(GitHubToolToken credential)
     {
-        if (credential.Profile is not ("polling-clone" or "webhook-clone" or "polling-clone-settings" or "webhook-clone-settings") ||
+        if (credential.Profile is not ("polling-clone" or "webhook-clone" or "polling-clone-settings" or "webhook-clone-settings"
+            or "polling-clone-images" or "webhook-clone-images" or "polling-clone-settings-images" or "webhook-clone-settings-images") ||
             credential.Repository?.Split('/') is not [var owner, var name] || !Segment(owner) || !Segment(name))
             throw new IOException("Unavailable Git lease");
         return credential;

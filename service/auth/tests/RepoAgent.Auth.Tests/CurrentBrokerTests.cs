@@ -273,9 +273,10 @@ public sealed class CurrentBrokerTests
     }
 
     internal static RepositoryVariableEnrollmentRequest Request() => new(Guid.NewGuid().ToString("N"), 123456, "owner/project", "APPROVAL", "polling");
-    internal static async Task<(InMemoryBroker Broker, string Id, string Secret)> Active(int setup = 5, string profile = "polling")
+    internal static async Task<(InMemoryBroker Broker, string Id, string Secret)> Active(int setup = 5, string profile = "polling", Action<InMemoryBroker>? configure = null)
     {
         var f = new InMemoryBroker();
+        configure?.Invoke(f);
         var input = Request() with { Profile = profile };
         var start = setup == 1
             ? await f.Enrollment().StartAsync(new(input.IdempotencyId, input.RepositoryId, input.Repository, "approval/environment", input.Variable, profile), InMemoryBroker.SetupSecret, Token)
