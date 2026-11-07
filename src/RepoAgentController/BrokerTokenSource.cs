@@ -38,6 +38,7 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
     readonly string enrollmentId;
     readonly string secret;
     readonly bool canonicalNames;
+    readonly bool issuePrRead;
     public string AppSlug => enrollment.RootElement.GetProperty("appSlug").GetString()!;
 
     /// <param name="readEnrollment">Supplies the protected enrollment document, from <see cref="EnrollmentFile"/> or
@@ -67,6 +68,7 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
             if (version != profile.Version) throw Invalid("explicit runtime selection differs from enrollment version");
             canonicalNames = root.TryGetProperty("enrollmentId", out _);
             CheckFields(root, [.. Fields, "brokerOrigin", "githubHost", canonicalNames ? "enrollmentId" : "deviceId", canonicalNames ? "controllerSecret" : "deviceSecret"]);
+            issuePrRead = root.GetProperty("permissions").TryGetProperty("issues", out _) || root.GetProperty("permissions").TryGetProperty("pull_requests", out _);
             CheckBinding(root);
             if (Text(root, "githubHost") != "github.com") throw Invalid("only github.com is supported");
             if (ParseOrigin(Text(root, "brokerOrigin")) != origin) throw Invalid("broker origin differs from enrollment");
@@ -140,6 +142,7 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
     {
         ct.ThrowIfCancellationRequested();
         ValidateInstallation(expectedInstallation);
+        if (!issuePrRead) Log.Write("github-context", "state=legacy reason=reauthorize this installation to read issues and pull requests");
         return Task.CompletedTask;
     }
 
@@ -222,17 +225,18 @@ internal sealed class BrokerTokenSource : IGitHubTokenSource
         if (!Name(Text(value, "appSlug"))) throw Invalid("invalid App slug");
         var parts = Text(value, "repository").Split('/');
         if (parts.Length != 2 || !parts.All(Name)) throw Invalid("invalid repository name");
+        if (issuePrRead && !canonicalNames) throw Invalid("standard read access requires canonical setup-v5 enrollment; reauthorize this installation");
         if (profile.Images && (!canonicalNames || Text(value, "profile") != profile.Name ||
-            Text(value, "policyVersion") != "repository-agent-images-approval-v5"))
+            Text(value, "policyVersion") != (issuePrRead ? "repository-agent-images-read-approval-v5" : "repository-agent-images-approval-v5")))
             throw Invalid("image-publication policy differs");
         if (!profile.Images && settings && (Text(value, "profile") != profile.Name ||
-            Text(value, "policyVersion") != (canonicalNames ? "repository-agent-settings-approval-v5" : SettingsPolicy)))
+            Text(value, "policyVersion") != (issuePrRead ? "repository-agent-settings-read-approval-v5" : canonicalNames ? "repository-agent-settings-approval-v5" : SettingsPolicy)))
             throw Invalid("repository-settings policy differs");
         if (!profile.Images && clone && !settings && (Text(value, "profile") != profile.Name ||
-            (canonicalNames ? Text(value, "policyVersion") != "repository-agent-clone-approval-v5" : Text(value, "policyVersion") is not (ClonePolicy or LegacyClonePolicy))))
+            (issuePrRead ? Text(value, "policyVersion") != "repository-agent-clone-read-approval-v5" : canonicalNames ? Text(value, "policyVersion") != "repository-agent-clone-approval-v5" : Text(value, "policyVersion") is not (ClonePolicy or LegacyClonePolicy))))
             throw Invalid("clone policy differs");
         var permissions = value.GetProperty("permissions");
-        var required = profile.Permissions();
+        var required = profile.Permissions(issuePrRead);
         CheckFields(permissions, [.. required.Select(permission => permission.Key)], ["metadata"]);
         if (required.Any(permission => Text(permissions, permission.Key) != permission.Value!.GetValue<string>()) ||
             (permissions.TryGetProperty("metadata", out var metadata) && (metadata.ValueKind != JsonValueKind.String || metadata.GetString() != "read")))

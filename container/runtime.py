@@ -445,6 +445,8 @@ def main():
         # Operator status and retained logs come from the controller; neither takes its lease.
         os.execv(CONTROLLER[0], CONTROLLER + [args.command, '--state', STATE])
     elif args.command in ('check', 'start'):
+        if args.command == 'start' and Path('/data/enrollment/reauthorization.json').exists():
+            raise ValueError('Reauthorization is pending; resume Action Reauthorize before starting.')
         config = runtime_settings(injected)
         external = injected is not None
         # Only the controller receives the injected credential; it removes it before starting children.

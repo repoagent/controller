@@ -1,5 +1,7 @@
 # Supplied broker enrollment in PowerShell 7
 
+For managed installations with their original host approval and credential files, [Action Reauthorize](issue-pr-context.md) replaces authorization while retaining all seven volumes. Importing a replacement credential alone does not update recorded launch bindings.
+
 This path configures a Linux controller from an already-issued frozen-v1 enrollment and an existing Codex sign-in. It does not issue or recover enrollments. Use PowerShell 7 on Windows with Docker Desktop Linux containers, or on Linux. The controller image requires Ubuntu 26.04 linux/amd64.
 
 Keep the enrollment outside the checkout in a private local directory. Both the file and its immediate parent must belong to the current user and grant access only to that user. Windows requires protected DACLs owned by the current SID, with no Allow rules for other SIDs. Linux requires owner-only permission bits (normally directory 0700, file 0600) and a single file link. Links/reparse points in the path are rejected. The command refuses unsafe files instead of repairing permissions.

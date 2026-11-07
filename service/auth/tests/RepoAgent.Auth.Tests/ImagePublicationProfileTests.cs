@@ -23,7 +23,7 @@ public sealed class ImagePublicationProfileTests
         var body = JsonSerializer.SerializeToElement(result.Body, JsonSerializerOptions.Web);
         Assert.Equal("write", body.GetProperty("permissions").GetProperty("contents").GetString());
         Assert.Equal(profile, body.GetProperty("profile").GetString());
-        Assert.Equal("repository-agent-images-approval-v5", body.GetProperty("policyVersion").GetString());
+        Assert.Equal("repository-agent-images-read-approval-v5", body.GetProperty("policyVersion").GetString());
         Assert.Equal(profile.Contains("-settings", StringComparison.Ordinal), body.GetProperty("permissions").TryGetProperty("agent_variables", out _));
         Assert.Throws<IssuanceDenied>(() => ApprovalContract.ForSetup(4, profile));
         Assert.False(ApprovalContract.AgentSettingsV5.Allows(profile));

@@ -1,5 +1,7 @@
 # Credential broker
 
+New setup-v5 approvals include standard issue/PR reading through revised approval policies and existing runtime protocols. Deploy this support before enrolling or [reauthorizing controllers](../../docs/issue-pr-context.md). Existing stored approvals and pending requests retain their original authority.
+
 Optional [Discussion image publishing](../../docs/discussion-images.md) adds setup-v5 image profiles with runtime protocol v4 and policy `repository-agent-images-approval-v5`. They grant repository-wide Contents write only through fresh explicit enrollment; all earlier profiles retain their exact authority. Deploy this broker support before enrolling an image-capable controller.
 
 The broker authenticates controller enrollments, verifies repository approval at GitHub and returns fresh repository-scoped GitHub tokens. The App signing key stays in Key Vault. **GitHub tokens and their issuance outcomes are never persisted by the broker.** See [the state and cutover contract](retained-state.md) and [ADR 0017](../../docs/adr/0017-keep-broker-tokens-in-request-memory.md).

@@ -11,6 +11,7 @@ ENROLLMENT = Path('/data/enrollment')
 MARKER = ENROLLMENT / 'disabled.json'
 LAUNCH = ENROLLMENT / 'launch-state.json'
 REQUIRED = ENROLLMENT / 'launch-state.required'
+REAUTH = ENROLLMENT / 'reauthorization.json'
 TARGETS = (ENROLLMENT / 'enrollment.json', Path('/data/credentials/codex/auth.json'),
            Path('/data/state/bridge.json.github-app/installation-token.json'),
            Path('/data/state/bridge.json.github-app/installation-token.json.tmp'))
@@ -107,7 +108,7 @@ def marker(value):
     return value
 
 
-def verify_binding(expected, config=None):
+def verify_binding(expected, config=None, credential=None, check_credential=True):
     binding = expected['binding']
     config = read(Path('/data/config/settings.json')) if config is None else config
     # Accept the legacy toolUpdates field when inspecting old instances; it no longer selects tools.
@@ -137,8 +138,8 @@ def verify_binding(expected, config=None):
                + ('-settings' if settings else '') + ('-images' if images else ''))
     if profile != binding['profile']:
         raise ValueError('Selected profile differs')
-    if checked(TARGETS[0], missing=True):
-        credential = read(TARGETS[0])
+    if check_credential and (credential is not None or checked(TARGETS[0], missing=True)):
+        credential = read(TARGETS[0]) if credential is None else credential
         fields = {'protocolVersion', 'brokerOrigin', 'githubHost', 'enrollmentId', 'controllerSecret', 'appId', 'appSlug', 'installationId', 'repositoryId', 'repository', 'permissions'}
         # Clone (v2) and repository-settings (v3) enrollments name their profile and policy.
         if credential.get('protocolVersion') in (2, 3, 4):
@@ -153,6 +154,9 @@ def verify_binding(expected, config=None):
         if any(not isinstance(credential[key], str) or not credential[key] for key in ('enrollmentId', 'controllerSecret', 'brokerOrigin', 'repository', 'appSlug')):
             raise ValueError('Invalid enrollment text')
         permissions = {'discussions': 'write'}
+        standard_read = 'issues' in credential['permissions'] or 'pull_requests' in credential['permissions']
+        if standard_read:
+            permissions.update(issues='read', pull_requests='read')
         if profile.startswith('webhook'):
             permissions['repository_hooks'] = 'write'
         if config.get('clone') or images:
@@ -171,6 +175,8 @@ def verify_binding(expected, config=None):
              'repository-agent-variable': ('repository-agent-clone-approval-v2', 'repository-agent-clone-approval-v4', 'repository-agent-clone-approval-v5')}
         if images:
             policies = {'repository-agent-variable': ('repository-agent-images-approval-v5',)}
+        if standard_read:
+            policies = {'repository-agent-variable': tuple(policy.replace('-approval-v5', '-read-approval-v5') for policy in policies.get('repository-agent-variable', ()) if policy.endswith('-approval-v5'))}
         if credential['protocolVersion'] > 1 and credential['policyVersion'] not in policies.get(binding['approvalKind'], ()):
             raise ValueError('Enrollment policy differs')
         for key in ('repository', 'repositoryId', 'enrollmentId', 'appId', 'installationId', 'brokerOrigin'):
@@ -180,7 +186,7 @@ def verify_binding(expected, config=None):
             raise ValueError('Selected enrollment profile differs')
 
 
-def launch_state(value):
+def launch_state(value, check_credential=True):
     fields = {'schemaVersion', 'instance', 'volumes', 'storageOriginImage', 'currentImage', 'currentLaunch',
               'priorImage', 'priorLaunch', 'targetImage', 'targetLaunch', 'pending', 'operationId', 'revision'}
     if set(value) != fields or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1:
@@ -201,19 +207,123 @@ def launch_state(value):
         if not isinstance(launch, dict) or set(launch) != {'binding', 'settings'}:
             raise ValueError('Invalid saved launch')
         selected = marker(dict(schemaVersion=1, state='disabled', instance=value['instance'], image=image, binding=launch['binding']))
-        verify_binding(selected, launch['settings'])
+        verify_binding(selected, launch['settings'], check_credential=check_credential)
         if launch['settings'].get('keyPath'):
             raise ValueError('Host credential paths are not launch state')
     return value
 
 
+def durable_json(path, value):
+    checked(path, missing=True)
+    descriptor, name = tempfile.mkstemp(prefix='.reauthorize-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(json.dumps(value).encode())
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        sync_directory(path.parent)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def sync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def reauthorization(value):
+    if (not isinstance(value, dict) or set(value) != {'schemaVersion', 'operationId', 'old', 'launch', 'new'}
+            or value['schemaVersion'] != 1 or not isinstance(value['operationId'], str)
+            or not re.fullmatch(r'[a-f0-9]{32}', value['operationId'])):
+        raise ValueError('Invalid reauthorization journal')
+    old = marker(value['old'])
+    launch = launch_state(value['launch'], check_credential=False)
+    if launch['pending'] != 'none' or launch['instance'] != old['instance'] or launch['currentImage'] != old['image']:
+        raise ValueError('Invalid reauthorization launch')
+    if value['new'] is not None:
+        new = marker(value['new'])
+        if new['instance'] != old['instance'] or new['image'] != old['image']:
+            raise ValueError('Reauthorization identity differs')
+        for field in ('repository', 'repositoryId', 'appId', 'installationId', 'brokerOrigin', 'profile', 'approvalVariable'):
+            if old['binding'][field] != new['binding'][field]:
+                raise ValueError('Reauthorization changes installation')
+        if old['binding']['enrollmentId'] == new['binding']['enrollmentId']:
+            raise ValueError('Reauthorization requires a fresh enrollment')
+    return value
+
+
+def reauthorize(operation, request, saved, existing):
+    if existing is not None:
+        raise ValueError('Disabled instance cannot be reauthorized')
+    pending = reauthorization(read(REAUTH)) if checked(REAUTH, missing=True) else None
+    if operation == 'reauthorize-begin':
+        if set(request) != {'operationId', 'old', 'launch'}:
+            raise ValueError('Invalid reauthorization request')
+        intent = reauthorization(dict(schemaVersion=1, new=None, **request))
+        if pending is not None:
+            if any(pending[key] != intent[key] for key in ('operationId', 'old', 'launch')):
+                raise ValueError('Another reauthorization is pending')
+            return {'reauthorization': pending}
+        if saved is not None and saved != intent['launch']:
+            raise ValueError('Launch changed before reauthorization')
+        verify_binding(intent['old'], intent['launch']['currentLaunch']['settings'])
+        if intent['launch']['currentLaunch']['binding'] != intent['old']['binding']:
+            raise ValueError('Approval differs from launch')
+        durable_json(REAUTH, intent)
+        return {'reauthorization': intent}
+    if pending is None or request.get('operationId') != pending['operationId']:
+        raise ValueError('Matching reauthorization intent required')
+    if sys.argv[1] != pending['old']['image']:
+        raise ValueError('Reauthorization helper image differs')
+    if operation == 'reauthorize-commit':
+        if set(request) != {'operationId', 'new', 'enrollment'}:
+            raise ValueError('Invalid replacement request')
+        if pending['new'] is not None and pending['new'] != request['new']:
+            raise ValueError('Replacement enrollment changed')
+        pending['new'] = request['new']
+        reauthorization(pending)
+        credential = request['enrollment']
+        verify_binding(pending['new'], pending['launch']['currentLaunch']['settings'], credential=credential)
+        if credential['permissions'].get('issues') != 'read' or credential['permissions'].get('pull_requests') != 'read':
+            raise ValueError('Replacement lacks standard read access')
+        # Persist the new binding before either file changes. The intent blocks startup throughout.
+        durable_json(REAUTH, pending)
+        replacement = pending['launch']
+        replacement['currentLaunch']['binding'] = pending['new']['binding']
+        replacement.update(priorImage=None, priorLaunch=None, targetImage=None, targetLaunch=None,
+                           operationId=pending['operationId'], revision=replacement['revision'] + 1)
+        durable_json(TARGETS[0], credential)
+        durable_json(LAUNCH, replacement)
+        if not checked(REQUIRED, missing=True):
+            durable_json(REQUIRED, 1)
+        return {'launchState': replacement}
+    if operation != 'reauthorize-finish' or set(request) != {'operationId', 'launchState'} or pending['new'] is None:
+        raise ValueError('Invalid reauthorization completion')
+    actual = launch_state(read(LAUNCH))
+    if actual != request['launchState'] or actual['currentLaunch']['binding'] != pending['new']['binding']:
+        raise ValueError('Replacement launch differs')
+    REAUTH.unlink()
+    sync_directory(REAUTH.parent)
+    return {'state': 'reauthorized'}
+
+
 def main():
     operation = sys.argv[-1]
     existing = marker(read(MARKER)) if checked(MARKER, missing=True) else None
-    saved = launch_state(read(LAUNCH)) if checked(LAUNCH, missing=True) else None
+    pending = reauthorization(read(REAUTH)) if checked(REAUTH, missing=True) else None
+    saved = launch_state(read(LAUNCH), check_credential=pending is None) if checked(LAUNCH, missing=True) else None
     required = checked(REQUIRED, missing=True)
     if operation == 'inspect':
-        return {'marker': existing, 'launchState': saved, 'launchRequired': required}
+        return {'marker': existing, 'launchState': saved, 'launchRequired': required, 'reauthorization': pending}
+    if operation.startswith('reauthorize-'):
+        return reauthorize(operation, document(sys.stdin.buffer.read(65537)), saved, existing)
+    if pending is not None:
+        raise ValueError('Reauthorization is pending; resume it before launch or update')
     if required and saved is None:
         raise ValueError('Missing authoritative launch state')
     if saved is not None and sys.argv[1] not in (saved['currentImage'], saved['priorImage']):

@@ -191,6 +191,7 @@ function Assert-LocalRuntimeAction([string]$Action, [string[]]$Arguments, $Propo
     $volume = Get-Resource volume "$containerName-enrollment"
     if (-not $volume) { return }
     $state = Invoke-LocalHelper inspect
+    if ($state.reauthorization) { throw 'Reauthorization is pending; resume Action Reauthorize with the original host state directory.' }
     if ($state.marker) { throw 'Selected instance is disabled. Use safe stop, inspection or Uninstall retry; never automatically reenroll.' }
     if ($state.launchState -and ($state.launchState.pending -ne 'none' -or -not $mirror -or $mirror.instance -cne $instance -or
         $mirror.runtimeImageId -cne $state.launchState.currentImage -or $mirror.repository -cne $state.launchState.currentLaunch.binding.repository -or
@@ -398,6 +399,7 @@ function Read-LocalLaunchState([bool]$SafeStop = $false) {
         if ($LASTEXITCODE -ne 0) { continue }
         $script:helperImage = Confirm-LocalImage $candidate
         $state = Invoke-LocalHelper inspect
+        if ($state.reauthorization -and -not $SafeStop) { throw 'Reauthorization is pending; resume Action Reauthorize with the original host state directory.' }
         $script:record = $state.launchState
         if ($record -and $candidate -cnotin @($record.currentImage, $record.priorImage) -and -not $SafeStop) {
             foreach ($known in @($record.currentImage, $record.priorImage) | Where-Object { $_ }) { $queue.Enqueue($known) }
@@ -519,3 +521,145 @@ function Invoke-LocalUpdate([hashtable]$Options) {
 }
 
 Export-ModuleMember -Function Invoke-LocalUpdate, Initialize-LocalRuntime, Assert-CompatibleContainer, Get-OwnershipArguments, Assert-LocalRuntimeAction, Stop-LocalRuntime, Remove-LocalRuntime, Invoke-LocalUninstall
+
+# Reconcile durable host and volume intent before any recovery can contact GitHub or the broker.
+function Assert-ReauthorizationRecovery($Journal, $State) {
+    $pending = $State.reauthorization
+    if ($pending) {
+        if ($Journal.phase -eq 'complete' -or $pending.operationId -cne $Journal.operationId -or
+            -not (Test-LaunchEquality $pending.old $Journal.old) -or -not (Test-LaunchEquality $pending.launch $Journal.launch)) {
+            throw 'Host and volume reauthorization intent differ; retain both records and inspect before remote work.'
+        }
+        if (($pending.new -and (-not $Journal.new -or -not (Test-LaunchEquality $pending.new $Journal.new))) -or
+            ($Journal.phase -eq 'installed' -and -not $pending.new)) {
+            throw 'Host and volume replacement bindings differ; retain both records and inspect before remote work.'
+        }
+        return
+    }
+    # A prepared host journal may precede the volume fence. Later missing intent is safe only after
+    # the replacement launch and credential are independently verified by the volume inspector.
+    if ($Journal.phase -eq 'prepared') { return }
+    if ($Journal.phase -notin @('installed','complete') -or -not $Journal.new -or -not $Journal.newLaunch -or
+        -not (Test-LaunchEquality $State.launchState $Journal.newLaunch) -or
+        -not (Test-LaunchEquality $State.launchState.currentLaunch.binding $Journal.new.binding)) {
+        throw 'The matching volume reauthorization intent is missing; retain recovery state and inspect before remote work.'
+    }
+}
+
+# Replace authorization while preserving one proven installation and all its runtime data.
+function Invoke-LocalReauthorization([hashtable]$Options) {
+    foreach ($option in $Options.Keys) {
+        if ($option -notin @('Action','Instance','StateDirectory','Apply','NonInteractive')) { throw 'Reauthorize accepts only Instance, StateDirectory, Apply and NonInteractive. Update the controller image separately first.' }
+    }
+    $context = Initialize-LocalRuntime $Options.Instance 'repoagent:local' $false $false $Options.StateDirectory $true
+    if (-not $context.Managed -or -not $mirror -or $mirror.authentication -cne 'Broker') { throw 'Reauthorize requires the original managed broker installation and host state directory.' }
+    $journalPath = Join-Path $hostDirectory 'reauthorization.json'
+    $work = Join-Path $hostDirectory 'reauthorization'
+    $previous = Join-Path $work 'previous'
+    $replacement = Join-Path $work 'replacement'
+    $journal = if (Test-Path -LiteralPath $journalPath) { Read-LocalJson $journalPath } else { $null }
+    if ($journal -and ($journal.schemaVersion -ne 1 -or $journal.instance -cne $instance -or $journal.image -cne $context.Image -or
+        $journal.phase -cnotin @('prepared','closed','enrolled','installed','complete') -or $journal.operationId -cnotmatch '^[a-f0-9]{32}$')) { throw 'Reauthorization recovery coordinates differ; retain the original state and image.' }
+    $source = if ($journal) { $previous } else { $hostDirectory }
+    $approval = Read-LocalJson (Join-Path $source 'approval.json')
+    $null = Get-ApprovalStateKind $approval
+    $approved = Read-OperatorJson $approval.marker -ControllerDocument
+    $oldCredential = Read-LocalJson (Join-Path $source 'enrollment.json')
+    if ($oldCredential.enrollmentId -cne $approved.enrollmentId -or $oldCredential.repositoryId -ne $approved.repositoryId) { throw 'Original controller credential differs from approval.' }
+    $binding = [ordered]@{ repository=$approval.repository; repositoryId=$approval.repositoryId; enrollmentId=$approved.enrollmentId;
+        appId=$approved.appId; installationId=$approved.installationId; brokerOrigin=$approval.brokerOrigin; profile=$approval.profile;
+        approvalKind=$approval.approvalKind; approvalVariable=$approval.approvalVariable; expectedValueSha256=$approval.expectedValueSha256;
+        githubEnvironment=$(if ($approval.version -eq 1) { $approval.repoEnvironment } else { $null }); environmentId=$(if ($approval.version -eq 1) { $approval.environmentId } else { $null }) }
+    if ($approval.version -eq 1) { $binding.approvalKind = 'environment-variable' }
+    if ($binding.repository -cne $mirror.repository) { throw 'Selected repository differs from approval.' }
+    Assert-StandardApprovalVariable $binding.approvalVariable
+    Write-Host "Reauthorize instance $instance; repository $($binding.repository); profile $($binding.profile); image $($context.Image)."
+    Write-Host 'Add standard issues:read and pull_requests:read. Replace the controller enrollment; preserve all seven volumes, settings, Codex sign-in and conversations.'
+    Write-Host 'Accept the App installation permissions and update to a compatible image first. Apply stops this instance; after confirmed closure, recovery moves forward with the replacement.'
+    if (-not $Options.Apply) { Write-Host 'Read-only preview. Apply verifies authoritative volume bindings before stopping or withdrawing approval.'; return }
+    $script:helperImage = Confirm-LocalImage $context.Image
+    if ($context.Container) { Assert-CompatibleContainer '' $context.Image }
+    $helpText = Invoke-Docker run --pull never --rm --network none --entrypoint /opt/repoagent/controller/repoagent $context.Image --help
+    if ((($helpText -join " ") -replace "\s+", " ") -notlike '*standard issue/PR read access*') { throw 'Update this instance to a controller image supporting standard issue/PR reading before reauthorization.' }
+    $state = Invoke-LocalHelper inspect
+    if ($state.marker) { throw 'Disabled instances cannot be reauthorized.' }
+    if ($journal) { Assert-ReauthorizationRecovery $journal $state }
+    if (-not $journal) {
+        Assert-LocalRuntimeAction Reauthorize @()
+        $old = [ordered]@{ schemaVersion=1; state='disabled'; instance=$instance; image=$context.Image; binding=$binding }
+        $verified = Invoke-LocalHelper verify $old
+        $launch = $state.launchState
+        if (-not $launch) {
+            $launch = [ordered]@{ schemaVersion=1; instance=$instance; volumes=[ordered]@{}; storageOriginImage=$storageOrigin;
+                currentImage=$context.Image; currentLaunch=$verified.launch; priorImage=$null; priorLaunch=$null; targetImage=$null; targetLaunch=$null;
+                pending='none'; operationId=[Guid]::NewGuid().ToString('N'); revision=1 }
+            foreach ($storage in $storageNames + @('enrollment')) { $launch.volumes[$storage] = "$containerName-$storage" }
+        }
+        if ($launch.pending -cne 'none') { throw 'Resolve the pending image transition first.' }
+        $null = Initialize-PrivateDirectory $work
+        $null = Initialize-PrivateDirectory $previous
+        foreach ($name in @('approval.json','enrollment.json','recovery.json')) {
+            Write-PrivateJson (Join-Path $previous $name) (Read-LocalJson (Join-Path $hostDirectory $name))
+        }
+        $journal = [ordered]@{ schemaVersion=1; operationId=[Guid]::NewGuid().ToString('N'); instance=$instance; image=$context.Image;
+            phase='prepared'; old=$old; launch=$launch; new=$null; newLaunch=$null }
+        Write-PrivateJson $journalPath $journal
+    }
+    if ($journal.phase -eq 'prepared') {
+        $null = Invoke-LocalHelper reauthorize-begin @{ operationId=$journal.operationId; old=$journal.old; launch=$journal.launch }
+        if ($context.Container) { Stop-LocalRuntime $context.Container.Id }
+        $global:LASTEXITCODE = 0
+        $outcome = & "$PSScriptRoot/revoke-approval.ps1" -ApprovalStatePath (Join-Path $previous 'approval.json') `
+            -EnrollmentFile (Join-Path $previous 'enrollment.json') -Apply -NonInteractive | Select-Object -Last 1
+        if ($LASTEXITCODE -ne 0) { throw 'Approval withdrawal is unconfirmed; resume this reauthorization with the same state.' }
+        $revoked = Read-OperatorJson $outcome
+        if ($revoked.githubMarker -cnotin @('removed','absent') -or $revoked.brokerClosure -cne 'confirmed') { throw 'Broker closure is unconfirmed; replacement was not started.' }
+        $journal.phase = 'closed'; Write-PrivateJson $journalPath $journal
+    }
+    if ($journal.phase -eq 'closed') {
+        $global:LASTEXITCODE = 0
+        & "$PSScriptRoot/enroll-controller.ps1" -Repository $binding.repository -BrokerOrigin $binding.brokerOrigin `
+            -StateDirectory $replacement -ApprovalVariable $binding.approvalVariable -Profile $binding.profile `
+            -ControllerEnrollmentVersion 5 -Apply -NonInteractive | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'Replacement enrollment is incomplete; resume the same reauthorization. The old enrollment remains closed.' }
+        $fresh = Read-LocalJson (Join-Path $replacement 'approval.json')
+        $marker = Read-OperatorJson $fresh.marker -ControllerDocument
+        $newBinding = [ordered]@{}; foreach ($key in $binding.Keys) { $newBinding[$key] = $binding[$key] }
+        $newBinding.enrollmentId=$marker.enrollmentId; $newBinding.approvalKind=$fresh.approvalKind
+        $newBinding.expectedValueSha256=$fresh.expectedValueSha256; $newBinding.githubEnvironment=$null; $newBinding.environmentId=$null
+        $journal.new = [ordered]@{ schemaVersion=1; state='disabled'; instance=$instance; image=$context.Image; binding=$newBinding }
+        $journal.phase = 'enrolled'; Write-PrivateJson $journalPath $journal
+    }
+    if ($journal.phase -eq 'enrolled') {
+        $credential = Read-LocalJson (Join-Path $replacement 'enrollment.json')
+        $result = Invoke-LocalHelper reauthorize-commit @{ operationId=$journal.operationId; new=$journal.new; enrollment=$credential }
+        $journal.newLaunch = $result.launchState
+        $journal.phase = 'installed'; Write-PrivateJson $journalPath $journal
+    }
+    if ($journal.phase -eq 'installed') {
+        # Check current broker authority without enabling ordinary start during the transition.
+        $mounts = @()
+        foreach ($storage in $storageNames + @('enrollment')) {
+            $destination = if ($storage -eq 'workspace') { '/workspace' } else { "/data/$storage" }
+            $access = if ($storage -in @('config','enrollment')) { ',readonly' } else { '' }
+            $mounts += @('--mount', "type=volume,src=$containerName-$storage,dst=$destination$access")
+        }
+        Invoke-Docker run --pull never --rm --init @mounts $context.Image check | Out-Host
+        foreach ($name in @('approval.json','enrollment.json','recovery.json')) {
+            Write-PrivateJson (Join-Path $hostDirectory $name) (Read-LocalJson (Join-Path $replacement $name))
+        }
+        Write-LaunchMirror $journal.newLaunch
+        $state = Invoke-LocalHelper inspect
+        if ($state.reauthorization) { $null = Invoke-LocalHelper reauthorize-finish @{ operationId=$journal.operationId; launchState=$journal.newLaunch } }
+        elseif (-not (Test-LaunchEquality $state.launchState $journal.newLaunch)) { throw 'Completed replacement launch differs; inspect recovery state.' }
+        $journal.phase = 'complete'; Write-PrivateJson $journalPath $journal
+    }
+    $oldInstance = $env:REPOAGENT_INSTANCE; $oldState = $env:REPOAGENT_STATE_DIRECTORY
+    try {
+        $env:REPOAGENT_INSTANCE=$instance; $env:REPOAGENT_STATE_DIRECTORY=$hostDirectory
+        & "$PSScriptRoot/../repoagent.ps1" start
+        if ($LASTEXITCODE -ne 0) { throw 'Reauthorization completed but startup failed; retain all data and retry start.' }
+    } finally { $env:REPOAGENT_INSTANCE=$oldInstance; $env:REPOAGENT_STATE_DIRECTORY=$oldState }
+    Write-Host 'Reauthorization completed. The same installation and conversation data now use standard issue/PR read access.'
+}
+Export-ModuleMember -Function Invoke-LocalReauthorization

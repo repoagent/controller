@@ -23,20 +23,27 @@ public sealed record ApprovalContract(string Kind, long SetupVersion, string Pol
     public static readonly ApprovalContract AgentCloneV5 = new("repository-agent-variable", 5, "repository-agent-clone-approval-v5", "agent-variable-verification");
     public static readonly ApprovalContract AgentSettingsV5 = new("repository-agent-variable", 5, "repository-agent-settings-approval-v5", "agent-variable-verification");
     public static readonly ApprovalContract AgentImagesV5 = new("repository-agent-variable", 5, "repository-agent-images-approval-v5", "agent-variable-verification");
-    public bool IsImages => this == AgentImagesV5;
+    public bool IsImages => this == AgentImagesV5 || this == AgentImagesReadV5;
     public static bool IsImageProfile(string profile) => profile is "polling-images" or "webhook-images"
         or "polling-clone-images" or "webhook-clone-images" or "polling-settings-images" or "webhook-settings-images"
         or "polling-clone-settings-images" or "webhook-clone-settings-images";
 
+    // New setup-v5 approvals include standard issue/PR reading. Historical policies remain frozen.
+    public static readonly ApprovalContract AgentReadV5 = new("repository-agent-variable", 5, "repository-agent-read-approval-v5", "agent-variable-verification");
+    public static readonly ApprovalContract AgentCloneReadV5 = new("repository-agent-variable", 5, "repository-agent-clone-read-approval-v5", "agent-variable-verification");
+    public static readonly ApprovalContract AgentSettingsReadV5 = new("repository-agent-variable", 5, "repository-agent-settings-read-approval-v5", "agent-variable-verification");
+    public static readonly ApprovalContract AgentImagesReadV5 = new("repository-agent-variable", 5, "repository-agent-images-read-approval-v5", "agent-variable-verification");
+    public bool ReadsIssuesAndPullRequests => this == AgentReadV5 || this == AgentCloneReadV5 || this == AgentSettingsReadV5 || this == AgentImagesReadV5;
+
     private static readonly ApprovalContract[] All = [Legacy, Agent, AgentClone, Actions, ActionsClone, ActionsSettings, AgentV4, AgentCloneV4, AgentSettingsV4,
-        AgentV5, AgentCloneV5, AgentSettingsV5, AgentImagesV5];
+        AgentV5, AgentCloneV5, AgentSettingsV5, AgentImagesV5, AgentReadV5, AgentCloneReadV5, AgentSettingsReadV5, AgentImagesReadV5];
     public bool CanonicalNames => SetupVersion >= 5;
     public bool IsAgent => Kind == Agent.Kind;
     public bool IsActions => Kind == Actions.Kind;
     // Agent and Actions approvals are direct repository variables without Environment identity.
     public bool IsRepositoryVariable => IsAgent || IsActions;
-    public bool IsClone => this == AgentClone || this == ActionsClone || this == AgentCloneV4 || this == AgentCloneV5;
-    public bool IsSettings => this == ActionsSettings || this == AgentSettingsV4 || this == AgentSettingsV5;
+    public bool IsClone => this == AgentClone || this == ActionsClone || this == AgentCloneV4 || this == AgentCloneV5 || this == AgentCloneReadV5;
+    public bool IsSettings => this == ActionsSettings || this == AgentSettingsV4 || this == AgentSettingsV5 || this == AgentSettingsReadV5;
     public int RuntimeVersion => IsImages ? 4 : IsSettings ? 3 : IsClone ? 2 : 1;
     // Runtime v2 and v3 files and leases name their profile and approval policy explicitly.
     public bool NamesProfile => RuntimeVersion > 1;
@@ -61,7 +68,7 @@ public sealed record ApprovalContract(string Kind, long SetupVersion, string Pol
 
     public static ApprovalContract ForSetup(int setupVersion, string profile)
     {
-        if (IsImageProfile(profile)) return setupVersion == 5 ? AgentImagesV5 : throw new IssuanceDenied(400);
+        if (IsImageProfile(profile)) return setupVersion == 5 ? AgentImagesReadV5 : throw new IssuanceDenied(400);
         var settings = profile.EndsWith("-settings", StringComparison.Ordinal);
         var clone = profile.EndsWith("-clone", StringComparison.Ordinal);
         return setupVersion switch
@@ -69,7 +76,7 @@ public sealed record ApprovalContract(string Kind, long SetupVersion, string Pol
             2 when !settings => clone ? AgentClone : Agent,
             3 => settings ? ActionsSettings : clone ? ActionsClone : Actions,
             4 => settings ? AgentSettingsV4 : clone ? AgentCloneV4 : AgentV4,
-            5 => settings ? AgentSettingsV5 : clone ? AgentCloneV5 : AgentV5,
+            5 => settings ? AgentSettingsReadV5 : clone ? AgentCloneReadV5 : AgentReadV5,
             _ => throw new IssuanceDenied(400)
         };
     }
