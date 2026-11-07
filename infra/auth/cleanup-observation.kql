@@ -1,0 +1,4 @@
+AppMetrics
+| where TimeGenerated > ago(15m) and _ResourceId =~ '{0}' and AppRoleName == 'repoagent-auth-cleanup'
+| summarize completed=minif(Min, Name == 'repoagent.auth.cleanup.completed'), failures=maxif(Max, Name == 'repoagent.auth.cleanup.failures')
+| project Alert=iff(isnull(completed) or completed < 1 or isnull(failures) or failures > 0, 1, 0)

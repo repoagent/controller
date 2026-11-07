@@ -42,7 +42,7 @@ The independent Table-only Job runs `cleanup --once` every five minutes. It vali
 
 There are no durable cursors or separate payload/audit passes. A 60-second cooperative deadline and defensive transport ceiling bound an invocation; an incomplete invocation returns failure. Under ordinary healthy scheduling, expired state is removed on the next five-minute sweep; outages and repeated conflicts do not establish a maximum wall-clock deletion lag. Authentication rejects expired enrollments immediately.
 
-The summary/metrics report completion, failures, examined/changed records, conflicts and storage dispatches. Monitoring emails on reported cleanup failures, incomplete coverage or missing completion/failure metrics in the 15-minute observation window. Native Azure execution failures remain diagnostic alert incidents without separate emails, because the platform can time out a Job after its cleanup container exits successfully. Old cycle-age alerts and 30-day audit/24-hour secret-recovery retention no longer describe this schema.
+The summary/metrics report completion, failures, examined/changed records, conflicts and storage dispatches. Monitoring emails on reported cleanup failures, incomplete coverage or missing completion/failure metrics in the 15-minute observation window. A successful neighboring run does not mask an explicitly incomplete run in that window. Native Azure execution failures remain diagnostic alert incidents without separate emails, because the platform can time out a Job after its cleanup container exits successfully. Old cycle-age alerts and 30-day audit/24-hour secret-recovery retention no longer describe this schema.
 
 ## Renewal and rejection diagnostics
 
