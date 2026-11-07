@@ -71,15 +71,12 @@ resource metrics 'Microsoft.Insights/metricAlerts@2018-03-01' = [for rule in met
       'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
       allOf: [{ name: 'observed', criterionType: 'StaticThresholdCriterion', metricNamespace: 'Microsoft.App/${rule.kind}', metricName: rule.metric, timeAggregation: rule.aggregation, operator: rule.operator, threshold: rule.threshold, dimensions: rule.dimensions, skipMetricValidation: false }]
     }
-    actions: [{ actionGroupId: alerts.id }]
+    // Azure can report DeadlineExceeded after cleanup has exited successfully.
+    // Keep native incidents for diagnosis; cleanupQuery owns outcome notifications.
+    actions: rule.suffix == 'cleanup-execution-failed' ? [] : [{ actionGroupId: alerts.id }]
   }
 }]
-var cleanupQuery = format('''
-AppMetrics
-| where TimeGenerated > ago(15m) and _ResourceId =~ '{0}' and AppRoleName == 'repoagent-auth-cleanup'
-| summarize completed=maxif(Max, Name == 'repoagent.auth.cleanup.completed'), failures=maxif(Max, Name == 'repoagent.auth.cleanup.failures')
-| project Alert=iff(isnull(completed) or completed < 1 or isnull(failures) or failures > 0, 1, 0)
-''', insights.id)
+var cleanupQuery = format(loadTextContent('cleanup-observation.kql'), insights.id)
 var volumeQuery = format('''
 union AppMetrics, AppRequests, AppTraces, AppExceptions, AppDependencies
 | where TimeGenerated > ago(24h) and _ResourceId =~ '{0}' and _IsBillable == 'true'
