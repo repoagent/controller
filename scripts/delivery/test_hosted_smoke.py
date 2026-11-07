@@ -6,6 +6,7 @@ the real hosted journey owns their compatibility evidence.
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -41,7 +42,23 @@ elif name == 'gh':
 
 @unittest.skipIf(os.name == 'nt', 'External command doubles use Linux executable scripts')
 class HostedCleanupTests(unittest.TestCase):
-    def install(self, failure=False, unready=False, timed_out=False):
+    def test_sweep_recognizes_only_matching_historical_or_standard_approvals(self):
+        smoke = runpy.run_path(str(SCRIPT))
+        marker = dict(approvalKind='repository-agent-variable', appId=5387625,
+                      appSlug='repo-agent-connector', repositoryId=123, repository=smoke['REPOSITORY'],
+                      variable=smoke['APPROVAL'], profile='webhook-clone', githubHost='github.com')
+        for version, policy in ((4, 'repository-agent-clone-approval-v4'),
+                                (5, 'repository-agent-clone-approval-v5'),
+                                (5, 'repository-agent-clone-read-approval-v5')):
+            with self.subTest(version=version, policy=policy):
+                candidate = dict(marker, version=version, policyVersion=policy)
+                self.assertTrue(smoke['smoke_marker'](candidate, 123))
+                self.assertFalse(smoke['smoke_marker'](candidate, 456))
+                self.assertFalse(smoke['smoke_marker'](dict(candidate, variable='OTHER_APPROVAL'), 123))
+        self.assertFalse(smoke['smoke_marker'](dict(marker, version=4,
+                          policyVersion='repository-agent-clone-read-approval-v5'), 123))
+
+    def install(self, failure=False, unready=False, timed_out=False, legacy=False):
         directory = Path(self.enterContext(tempfile.TemporaryDirectory(prefix='hosted-install-')))
         directory.chmod(0o700)
         binaries = directory / 'bin'
@@ -65,8 +82,9 @@ elif name == 'pwsh':
   print('private token: '+('x'*48))
   sys.exit(9)
  state=Path(args[args.index('-StateDirectory')+1]); state.mkdir()
- (state/'approval.json').write_text(json.dumps(dict(setupVersion=4,profile='webhook-clone')))
- (state/'enrollment.json').write_text(json.dumps(dict(appSlug='repo-agent-connector')))
+ (state/'approval.json').write_text(json.dumps(dict(setupVersion=5,profile='webhook-clone',policyVersion='repository-agent-clone-read-approval-v5')))
+ permissions={} if os.environ.get('SMOKE_LEGACY_GRANT') else dict(issues='read',pull_requests='read')
+ (state/'enrollment.json').write_text(json.dumps(dict(appSlug='repo-agent-connector',permissions=permissions)))
 elif name == 'gh':
  if args == ['--version']: print('gh version '+inventory['githubCli']['version']+' (test)')
  elif args[-1] == 'user': print(json.dumps(dict(login='repoagent')))
@@ -99,6 +117,8 @@ else: print(json.dumps(inventory))
             environment['SMOKE_INSTALL_FAIL'] = '1'
         if unready:
             environment['SMOKE_READINESS_FAIL'] = '1'
+        if legacy:
+            environment['SMOKE_LEGACY_GRANT'] = '1'
         entry = [sys.executable, str(SCRIPT)]
         if timed_out:
             launcher = directory / 'timeout.py'
@@ -122,7 +142,14 @@ runpy.run_path(script,run_name='__main__')
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads((directory / 'evidence/installed.json').read_text())
         self.assertEqual(report['state'], 'ready')
+        self.assertEqual(report['setupVersion'], 5)
         self.assertNotIn('DO_NOT_PUBLISH', result.stdout + result.stderr + json.dumps(report))
+
+    def test_fresh_install_refuses_a_grant_without_standard_read_access(self):
+        result, directory = self.install(legacy=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('standard issue and PR read access', result.stderr)
+        self.assertFalse((directory / 'evidence/installed.json').exists())
 
     def test_failed_install_retains_bounded_redacted_diagnostic_evidence(self):
         result, directory = self.install(failure=True)

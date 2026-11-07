@@ -238,11 +238,13 @@ def revoke(arguments):
 
 
 def smoke_marker(marker, repository_id):
-    return isinstance(marker, dict) and all(marker.get(key) == value for key, value in {
-        'version': 4, 'approvalKind': 'repository-agent-variable', 'appId': 5387625,
+    return isinstance(marker, dict) and (marker.get('version'), marker.get('policyVersion')) in (
+        (4, 'repository-agent-clone-approval-v4'),
+        (5, 'repository-agent-clone-approval-v5'),
+        (5, 'repository-agent-clone-read-approval-v5')) and all(marker.get(key) == value for key, value in {
+        'approvalKind': 'repository-agent-variable', 'appId': 5387625,
         'appSlug': 'repo-agent-connector', 'repositoryId': repository_id, 'repository': REPOSITORY,
-        'variable': APPROVAL, 'profile': 'webhook-clone', 'githubHost': 'github.com',
-        'policyVersion': 'repository-agent-clone-approval-v4'}.items())
+        'variable': APPROVAL, 'profile': 'webhook-clone', 'githubHost': 'github.com'}.items())
 
 def sweep(path):
     repository = identity()
@@ -354,15 +356,17 @@ def install(path):
         time.sleep(delay)
     enrollment = json.loads((state / 'enrollment.json').read_text())
     approval = json.loads((state / 'approval.json').read_text())
-    if approval.get('setupVersion') != 4 or approval.get('profile') != 'webhook-clone':
-        raise Refused('The installed controller did not use the matching v4 tools')
+    if approval.get('setupVersion') != 5 or approval.get('profile') != 'webhook-clone' \
+            or approval.get('policyVersion') != 'repository-agent-clone-read-approval-v5' \
+            or any(enrollment.get('permissions', {}).get(name) != 'read' for name in ('issues', 'pull_requests')):
+        raise Refused('The installed controller did not use standard issue and PR read access')
     runtime = json.loads(command(['docker', 'inspect', 'repoagent-' + value['instance']]).stdout)[0]
     names = {item.split('=', 1)[0] for item in runtime['Config'].get('Env') or []}
     if runtime['HostConfig']['Privileged'] or runtime['Config']['User'] != '1000' or runtime['Image'] != value['imageId'] or names & {'GH_TOKEN', 'GITHUB_TOKEN', 'OPENAI_API_KEY'}:
         raise Refused('Installed runtime privilege, image or credential isolation differs from the operator contract')
     value['actor'] = enrollment['appSlug'] + '[bot]'
     private_write(path / 'run.json', value)
-    outcomes(path, 'installed', {'state': 'ready', 'setupVersion': 4, 'mode': 'quick-tunnel',
+    outcomes(path, 'installed', {'state': 'ready', 'setupVersion': 5, 'mode': 'quick-tunnel',
                                'tools': {name: inventory[name] for name in ('githubCli', 'agent', 'tools')}})
 
 
