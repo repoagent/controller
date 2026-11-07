@@ -71,7 +71,9 @@ resource metrics 'Microsoft.Insights/metricAlerts@2018-03-01' = [for rule in met
       'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
       allOf: [{ name: 'observed', criterionType: 'StaticThresholdCriterion', metricNamespace: 'Microsoft.App/${rule.kind}', metricName: rule.metric, timeAggregation: rule.aggregation, operator: rule.operator, threshold: rule.threshold, dimensions: rule.dimensions, skipMetricValidation: false }]
     }
-    actions: [{ actionGroupId: alerts.id }]
+    // Azure can report DeadlineExceeded after cleanup has exited successfully.
+    // Keep native incidents for diagnosis; cleanupQuery owns outcome notifications.
+    actions: rule.suffix == 'cleanup-execution-failed' ? [] : [{ actionGroupId: alerts.id }]
   }
 }]
 var cleanupQuery = format('''

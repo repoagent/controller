@@ -57,7 +57,7 @@ Responses are uncached. 401 means missing/invalid/closed/expired enrollment; 409
 
 ## Optional aggregate monitoring
 
-Application Insights retains server error/exception observations and approximately 1% of routine request traces and Information/Warning logs. Redaction and aggregate metrics remain in force. No token values, secrets or response bodies belong in telemetry. Cleanup emits `completed`, `failures`, `examined`, `changed`, `conflicts` and `dispatches`; its rule checks completion/failures over 15 minutes. Old cycle-age metrics/rules belong to schema 1 and must be replaced during cutover.
+Application Insights retains server error/exception observations and approximately 1% of routine request traces and Information/Warning logs. Redaction and aggregate metrics remain in force. No token values, secrets or response bodies belong in telemetry. Cleanup emits `completed`, `failures`, `examined`, `changed`, `conflicts` and `dispatches`; its rule emails on reported failures, incomplete coverage or missing completion/failure metrics over 15 minutes. Native Azure job failures remain enabled as diagnostic alert incidents without an email action: Azure can report `DeadlineExceeded` after the cleanup container exits successfully. Missing telemetry still alerts; a platform failure alone does not establish whether cleanup completed. Old cycle-age metrics/rules belong to schema 1 and must be replaced during cutover.
 
 ## Internal retained-authority observation
 
