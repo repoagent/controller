@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.2.0](https://github.com/repoagent/controller/compare/controller-v2.1.0...controller-v2.2.0) (2026-11-07)
+
+
+### Features
+
+* make issue and PR reading standard with in-place reauthorization ([#359](https://github.com/repoagent/controller/issues/359)) ([20a4fd3](https://github.com/repoagent/controller/commit/20a4fd34e5aa878aa13ec12d1d82bf034205c7fe))
+
+
+### Bug Fixes
+
+* **controller:** refresh bundled Codex from 0.166.0 to 0.167.0 ([8a79236](https://github.com/repoagent/controller/commit/8a79236eee5dda3ad1ce34f391a127eb6bc14ffb))
+
 ## [2.1.0](https://github.com/repoagent/controller/compare/controller-v2.0.0...controller-v2.1.0) (2026-11-05)
 
 
