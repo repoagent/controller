@@ -55,6 +55,9 @@ internal sealed class DirectAppTokenSource : IGitHubTokenSource
             throw new InvalidOperationException("Configured installation ID does not match the repository's App installation");
         if (installation["permissions"]?.Text("discussions") != "write")
             throw new InvalidOperationException("Install the GitHub App on this repository with Discussions read/write permission");
+        if (installation["permissions"]?.Text("issues") is not ("read" or "write") ||
+            installation["permissions"]?.Text("pull_requests") is not ("read" or "write"))
+            throw new InvalidOperationException("Approve Issues: read and Pull requests: read on this repository's GitHub App installation, then restart");
         if (profile.Images && installation["permissions"]?.Text("contents") != "write")
             throw new InvalidOperationException("Image publishing requires explicitly approved Contents write permission");
         if (clone && installation["permissions"]?.Text("contents") is not ("read" or "write"))

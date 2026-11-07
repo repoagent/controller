@@ -16,12 +16,13 @@ public readonly record struct RuntimeProfile(bool Webhooks = false, bool Managed
     public int Version => Images ? 4 : Settings ? 3 : ManagedClone ? 2 : 1;
 
     /// <summary>GitHub token permissions beyond metadata: read, in request order.</summary>
-    public JsonObject Permissions()
+    public JsonObject Permissions(bool issuePrRead = true)
     {
         var permissions = Json.Object(("discussions", "write"));
         if (Webhooks) permissions["repository_hooks"] = "write";
         if (ManagedClone || Images) permissions["contents"] = Images ? "write" : "read";
         if (Settings) permissions["agent_variables"] = "read";
+        if (issuePrRead) { permissions["issues"] = "read"; permissions["pull_requests"] = "read"; }
         return permissions;
     }
 }

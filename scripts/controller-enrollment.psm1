@@ -105,8 +105,11 @@ function Get-ApprovalLocation([string]$Location, [string]$Kind, [int]$SetupVersi
     if ($match.Count -eq 0) { throw 'Unsupported repository-variable approval contract.' }
     return $match[0]
 }
-function Get-ApprovalPolicy([int]$SetupVersion, [string]$Profile) {
+function Get-ApprovalPolicy([int]$SetupVersion, [string]$Profile, [switch]$Historical) {
     Assert-Text $Profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?(?:-images)?\z'
+    if ($SetupVersion -eq 5 -and -not $Historical) {
+        return $(if ($Profile.EndsWith('-images', [StringComparison]::Ordinal)) { 'repository-agent-images-read-approval-v5' } elseif ($Profile.EndsWith('-settings', [StringComparison]::Ordinal)) { 'repository-agent-settings-read-approval-v5' } elseif ($Profile.Contains('-clone', [StringComparison]::Ordinal)) { 'repository-agent-clone-read-approval-v5' } else { 'repository-agent-read-approval-v5' })
+    }
     if ($Profile.EndsWith('-images', [StringComparison]::Ordinal)) {
         if ($SetupVersion -ne 5) { throw 'Image publishing requires a fresh setup v5 enrollment.' }
         return 'repository-agent-images-approval-v5'
@@ -119,6 +122,16 @@ function Get-ApprovalPolicy([int]$SetupVersion, [string]$Profile) {
     if ($SetupVersion -eq 5) { return $(if ($settings) { 'repository-agent-settings-approval-v5' } elseif ($clone) { 'repository-agent-clone-approval-v5' } else { 'repository-agent-approval-v5' }) }
     throw 'Unsupported approval profile contract.'
 }
+function Get-ApprovalStatePolicy($State) {
+    $current = Get-ApprovalPolicy -SetupVersion $State.setupVersion -Profile $State.profile
+    $historical = Get-ApprovalPolicy -SetupVersion $State.setupVersion -Profile $State.profile -Historical
+    $pinned = $State.Contains('policyVersion')
+    if ($pinned -and ($State.policyVersion -isnot [string] -or $State.policyVersion -cnotin @($current, $historical))) { throw 'Unknown requested approval policy.' }
+    if (-not $State.marker) { return $(if ($pinned) { $State.policyVersion } else { $current }) }
+    $marker = Read-OperatorJson $State.marker -ControllerDocument
+    if ($marker.policyVersion -cnotin @($current, $historical) -or ($pinned -and $marker.policyVersion -cne $State.policyVersion)) { throw 'Saved marker differs from the requested approval policy.' }
+    return $marker.policyVersion
+}
 function Get-ApprovalStateKind($State) {
     Assert-Id $State.version
     if ($State.version -eq 1) {
@@ -129,7 +142,9 @@ function Get-ApprovalStateKind($State) {
         $kind = 'environment-variable'
     } elseif ($State.version -in @(2, 3, 4, 5)) {
         # Kind names the location; version distinguishes legacy Agent v2 from Agent v4.
-        Assert-Fields $State @('version','setupVersion','approvalKind','repository','repositoryId','brokerOrigin','approvalVariable','profile','pendingId','deadline','marker','expectedValueSha256','approvalWriteAttempted','approvalObserved')
+        $fields = @('version','setupVersion','approvalKind','repository','repositoryId','brokerOrigin','approvalVariable','profile','pendingId','deadline','marker','expectedValueSha256','approvalWriteAttempted','approvalObserved')
+        if ($State.Contains('policyVersion')) { $fields += 'policyVersion' }
+        Assert-Fields $State $fields
         Assert-Id $State.setupVersion
         $kind = if ($State.version -eq 3) { 'repository-actions-variable' } else { 'repository-agent-variable' }
         if ($State.setupVersion -ne $State.version -or $State.approvalKind -cne $kind) { throw 'Unsupported approval state binding.' }
@@ -137,7 +152,7 @@ function Get-ApprovalStateKind($State) {
     Assert-Id $State.repositoryId
     Assert-Text $State.repository '\A[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\z'
     Assert-Text $State.profile '\A(?:polling|webhook)(?:-clone)?(?:-settings)?(?:-images)?\z'
-    if ($State.version -ne 1) { $null = Get-ApprovalPolicy -SetupVersion $State.setupVersion -Profile $State.profile }
+    if ($State.version -ne 1) { $null = Get-ApprovalStatePolicy $State }
     Assert-Text $State.approvalVariable '\A[A-Z_][A-Z0-9_]{0,99}\z'
     $null = Get-BrokerOrigin $State.brokerOrigin
     if ($State.approvalWriteAttempted -isnot [bool] -or $State.approvalObserved -isnot [bool]) { throw 'Invalid approval progress flags.' }
@@ -159,6 +174,12 @@ function Test-RepositoryApprovalName([string]$Name) {
     if ($catalogue.reserved -isnot [array]) { throw 'Unsupported repository settings catalogue.' }
     return [bool]@($catalogue.reserved | Where-Object { $_ -is [string] -and $_ -ieq $Name }).Count
 }
+function Assert-StandardApprovalVariable([string]$Name) {
+    if ($Name -cnotmatch '\A[A-Za-z_][A-Za-z0-9_]{0,99}\z' -or $Name.StartsWith('GITHUB_', [StringComparison]::OrdinalIgnoreCase) -or -not (Test-RepositoryApprovalName $Name)) {
+        throw 'The approval variable cannot be used by current setup. Resolve an explicit approval-coordinate migration before reauthorization; the old grant has not been withdrawn.'
+    }
+}
+
 function Get-BrokerOrigin([string]$Value) {
     if ($Value -cnotmatch '\Ahttps://[A-Za-z0-9.-]+(?::[0-9]+)?/?\z') { throw 'Supply a canonical HTTPS broker origin.' }
     $uri = [Uri]$Value
@@ -297,9 +318,9 @@ function Invoke-EnrollmentBroker([string]$Origin, [string]$Method, [string]$Path
     $origin = Get-BrokerOrigin $Origin
     Assert-Text $Secret '\A[A-Za-z0-9_-]{43,128}\z'
     # Setup versions are separate from runtime revoke (v1/v2 frozen, v3 settings).
-    if ($Path -cnotmatch '\A(?:/v[2345]/enrollments(?:/[A-Za-z0-9_-]+(?:/completion)?)?|/v[234]/devices/[A-Za-z0-9_-]+/acknowledgment|/v5/controller-enrollments/[A-Za-z0-9_-]+/acknowledgment|/v[123]/(?:devices|controller-enrollments)/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker route.' }
+    if ($Path -cnotmatch '\A(?:/v[2345]/enrollments(?:/[A-Za-z0-9_-]+(?:/completion)?)?|/v[234]/devices/[A-Za-z0-9_-]+/acknowledgment|/v5/controller-enrollments/[A-Za-z0-9_-]+/acknowledgment|/v[1234]/(?:devices|controller-enrollments)/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker route.' }
     $operation = $Method + ' ' + $Path
-    if ($operation -cnotmatch '\A(?:POST /v[2345]/enrollments|GET /v[2345]/enrollments/[A-Za-z0-9_-]+|POST /v[2345]/enrollments/[A-Za-z0-9_-]+/completion|POST /v[234]/devices/[A-Za-z0-9_-]+/acknowledgment|POST /v5/controller-enrollments/[A-Za-z0-9_-]+/acknowledgment|DELETE /v[123]/(?:devices|controller-enrollments)/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker operation.' }
+    if ($operation -cnotmatch '\A(?:POST /v[2345]/enrollments|GET /v[2345]/enrollments/[A-Za-z0-9_-]+|POST /v[2345]/enrollments/[A-Za-z0-9_-]+/completion|POST /v[234]/devices/[A-Za-z0-9_-]+/acknowledgment|POST /v5/controller-enrollments/[A-Za-z0-9_-]+/acknowledgment|DELETE /v[1234]/(?:devices|controller-enrollments)/[A-Za-z0-9_-]+)\z') { throw 'Invalid broker operation.' }
     $handler = [Net.Http.HttpClientHandler]::new(); $handler.AllowAutoRedirect = $false; $handler.UseCookies = $false
     $client = [Net.Http.HttpClient]::new($handler)
     $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), $origin + $Path)

@@ -11,6 +11,8 @@ internal sealed class InMemoryGitHub(TimeProvider? clock = null) : IAppInstallat
     public static readonly AppInstallation Installed = new(789, IssuancePolicy.AppId, IssuancePolicy.AppSlug, false, new Dictionary<string, string?>
     {
         ["discussions"] = "write",
+        ["issues"] = "read",
+        ["pull_requests"] = "read",
         ["repository_hooks"] = "write",
         ["contents"] = "read",
         ["environments"] = "read",

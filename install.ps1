@@ -4,7 +4,7 @@
 .SYNOPSIS
 Preview or explicitly apply one local RepoAgent installation.
 .DESCRIPTION
-PowerShell 7.4+ composes setup-v4 repository Agent-variable enrollment and private Docker startup.
+PowerShell 7.4+ composes setup-v5 repository Agent-variable enrollment and private Docker startup.
 Saved enrollment state retains its original setup version and approval location.
 Inputs override saved launch choices; missing required inputs prompt unless
 -NonInteractive. Without -Apply there are no image builds, containers or writes.
@@ -22,7 +22,7 @@ Existing own-App options remain available with -Authentication OwnApp.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Install', 'Enroll', 'Revoke', 'Uninstall', 'Update', 'Settings')][string]$Action = 'Install',
+    [ValidateSet('Install', 'Enroll', 'Revoke', 'Uninstall', 'Update', 'Reauthorize', 'Settings')][string]$Action = 'Install',
     [ValidateSet('Broker', 'OwnApp')][string]$Authentication,
     [string]$BrokerOrigin,
     [string]$StateDirectory,
@@ -49,7 +49,7 @@ param(
     [string]$Repository,
     [string]$AppId,
     [Alias('DeviceId')][string]$EnrollmentId,
-    [ValidateSet(4, 5)][int]$ControllerEnrollmentVersion = 4,
+    [ValidateSet(4, 5)][int]$ControllerEnrollmentVersion = 5,
     [string]$KeyPath,
     [string]$CodexAuthPath,
     [string]$Instance = $(if ($env:REPOAGENT_INSTANCE) { $env:REPOAGENT_INSTANCE } else { 'default' }),
@@ -74,6 +74,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+if ($Action -eq 'Reauthorize') {
+    Import-Module "$PSScriptRoot/scripts/local-runtime.psm1" -DisableNameChecking
+    $options = @{}; foreach ($key in $PSBoundParameters.Keys) { $options[$key] = $PSBoundParameters[$key] }
+    $options.Instance = $Instance
+    Invoke-LocalReauthorization $options
+    exit 0
+}
 if ($Action -eq 'Update') {
     Import-Module "$PSScriptRoot/scripts/local-runtime.psm1" -DisableNameChecking
     $options = @{} + $PSBoundParameters
@@ -246,7 +253,7 @@ try {
     $Mode = Setting Mode 'polling'
     $resolvedProfile = ''
     $BrokerOrigin = Setting BrokerOrigin $BrokerOrigin
-    # Saved names are reused; fresh setup v4 uses REPOAGENT_APPROVAL in Agent variables.
+    # Saved names are reused; fresh setup v5 uses REPOAGENT_APPROVAL in Agent variables.
     $ApprovalVariable = Setting ApprovalVariable $(if ($ApprovalVariable) { $ApprovalVariable } else { (Get-ApprovalLocation -Location $ApprovalLocation).DefaultVariable })
     $AppId = Setting AppId
     $KeyPath = Setting KeyPath
@@ -370,7 +377,7 @@ try {
         Write-Host 'Persistent checkout: /workspace/repository. Trust this exact repository root for agent instructions, project configuration and local skills.'
     }
     if ($resolvedSettings) {
-        if ($Authentication -eq 'Broker') { Write-Host "Repository settings: $resolvedProfile uses the enrollment's exact variables-read policy (fresh setup v4: Agent variables, runtime v3). Fresh instance and approval required." }
+        if ($Authentication -eq 'Broker') { Write-Host "Repository settings: $resolvedProfile uses the enrollment's exact variables-read policy (fresh setup v5: Agent variables, runtime v3). Fresh instance and approval required." }
         else { Write-Host 'Repository settings: the runtime token adds Agent variables read for REPOAGENT_ settings; the App installation must grant Agent variables: read.' }
     }
     Write-Host "Host launch/recovery state: $StateDirectory"

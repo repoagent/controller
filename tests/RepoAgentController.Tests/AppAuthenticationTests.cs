@@ -12,6 +12,28 @@ using Xunit;
 public sealed class AppAuthenticationTests
 {
     [Theory]
+    [InlineData(null)]
+    [InlineData("write")]
+    public async Task Standard_reading_requires_installation_grants_and_never_requests_write(string? grant)
+    {
+        using var fixture = new AppFixture();
+        fixture.Provider.ContextPermission = grant;
+        using var credentials = fixture.Credentials();
+        if (grant is null)
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => credentials.Initialize(null, TestContext.Current.CancellationToken));
+            Assert.Empty(fixture.Provider.TokenRequests);
+        }
+        else
+        {
+            await credentials.Initialize(null, TestContext.Current.CancellationToken);
+            var permissions = Assert.Single(fixture.Provider.TokenRequests)["permissions"]!;
+            Assert.Equal("read", permissions["issues"]!.GetValue<string>());
+            Assert.Equal("read", permissions["pull_requests"]!.GetValue<string>());
+        }
+    }
+
+    [Theory]
     [InlineData("Bot", "discussion-agent-bridge", true)]
     [InlineData("Bot", "DISCUSSION-AGENT-BRIDGE", true)]
     [InlineData("Bot", "discussion-agent-bridge[bot]", true)]
@@ -45,7 +67,9 @@ public sealed class AppAuthenticationTests
         var request = Assert.Single(fixture.Provider.TokenRequests);
         Assert.Equal("gh-discussion-agent-bridge", Assert.Single(request["repositories"]!.AsArray())!.GetValue<string>());
         Assert.Equal("write", request["permissions"]!["discussions"]!.GetValue<string>());
-        Assert.Single(request["permissions"]!.AsObject());
+        Assert.Equal(3, request["permissions"]!.AsObject().Count);
+        Assert.Equal("read", request["permissions"]!["issues"]!.GetValue<string>());
+        Assert.Equal("read", request["permissions"]!["pull_requests"]!.GetValue<string>());
         Assert.Equal("installation-token-1", await credentials.GetToken(TestContext.Current.CancellationToken));
         fixture.AssertNothingPersisted();
     }
@@ -66,7 +90,7 @@ public sealed class AppAuthenticationTests
             Assert.Equal("gh-discussion-agent-bridge", Assert.Single(request["repositories"]!.AsArray())!.GetValue<string>());
             Assert.Equal("write", request["permissions"]!["discussions"]!.GetValue<string>());
             Assert.Equal("write", request["permissions"]!["repository_hooks"]!.GetValue<string>());
-            Assert.Equal(2, request["permissions"]!.AsObject().Count);
+            Assert.Equal(4, request["permissions"]!.AsObject().Count);
         });
     }
 
@@ -263,7 +287,7 @@ public sealed class AppAuthenticationTests
         foreach (var request in fixture.Provider.TokenRequests)
         {
             Assert.Equal("read", request["permissions"]!["contents"]!.GetValue<string>());
-            Assert.Equal(webhooks ? 3 : 2, request["permissions"]!.AsObject().Count);
+            Assert.Equal(webhooks ? 5 : 4, request["permissions"]!.AsObject().Count);
         }
     }
 
@@ -375,6 +399,7 @@ public sealed class AppAuthenticationTests
         public bool CloneScope { get; set; }
         public string? CloneScopeDefect { get; set; }
         public string DiscussionPermission { get; set; } = "write";
+        public string? ContextPermission { get; set; } = "read";
         public string? WebhookPermission { get; set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -392,7 +417,7 @@ public sealed class AppAuthenticationTests
             {
                 case "/app": result = new { id = 5387625, slug = "discussion-agent-bridge" }; break;
                 case "/repos/egil/gh-discussion-agent-bridge/installation":
-                    result = new { id = 42, app_id = 5387625, permissions = new { discussions = DiscussionPermission, repository_hooks = WebhookPermission, contents = "read" } }; break;
+                    result = new { id = 42, app_id = 5387625, permissions = new { discussions = DiscussionPermission, repository_hooks = WebhookPermission, contents = "read", issues = ContextPermission, pull_requests = ContextPermission } }; break;
                 case "/app/installations/42/access_tokens":
                     TokenRequests.Add(JsonNode.Parse(await request.Content!.ReadAsStringAsync(ct))!);
                     if (RejectRefresh) return new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("DO-NOT-LOG bearer-body") };

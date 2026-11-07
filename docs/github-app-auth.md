@@ -5,11 +5,11 @@ The bridge and its agent sessions publish as a GitHub App installation. GitHub u
 ## Configure the App
 
 1. Open the [App settings](https://github.com/settings/apps/repo-agent-connector). The **Repo Agent Connector** App has ID `5387625` and client ID `Iv23liKvyvzZ60qGguDm`; either identifier can be supplied to the bridge. Other Apps are supported through configuration.
-2. Grant repository **Discussions: read/write** permission. Install the App on the target repository and accept updated permissions if the installation already exists. Polling does not require active webhooks or an inbound endpoint.
+2. Grant repository **Discussions: read/write**, **Issues: read** and **Pull requests: read** permissions. Install the App on the target repository and accept updated permissions if the installation already exists. Polling does not require active webhooks or an inbound endpoint.
 3. Generate/download a PEM private key from the App settings. Keep its contents private and mount that one file read-only into the bridge container. Do not put it in an image, source checkout, log, issue or conversation. Mount the state directory as a separate persistent volume; keep the key outside the agent workspace.
 4. In a Linux container with the .NET 11 RC2 runtime and `gh`, invoke the bridge with `--repo OWNER/REPO --app-id APP_ID_OR_CLIENT_ID --private-key /run/secrets/github-app.pem --state /data/bridge-state.json`. The normal conversation runtime also needs `codex`, its sign-in, a workspace and the response skill.
 
-The bridge authenticates the App, discovers the installation for the selected repository, checks Discussions permission and mints a token narrowed to that repository. `--installation-id ID` optionally verifies the expected installation. A GraphQL viewer check confirms the actual bot login matches the authenticated App before any agent session is started.
+The bridge authenticates the App, discovers the installation for the selected repository, checks Discussions and issue/PR read permissions and mints a token narrowed to that repository. `--installation-id ID` optionally verifies the expected installation. A GraphQL viewer check confirms the actual bot login matches the authenticated App before any agent session is started.
 
 `--check-auth` performs this validation and creates the authenticated `gh` wrapper, then exits without launching Codex or enrolling/forwarding Discussions. It is useful before the first conversation run. Runtime sign-in, permission and networking failures must be fixed in the configured container; the bridge does not fall back to a personal GitHub login.
 

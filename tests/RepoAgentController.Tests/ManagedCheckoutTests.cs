@@ -310,7 +310,7 @@ public sealed class ManagedCheckoutTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Assert.Equal("api.github.com", request.RequestUri!.Host);
-            var permissions = new { discussions = "write", contents = "read" };
+            var permissions = new { discussions = "write", contents = "read", issues = "read", pull_requests = "read" };
             object body = request.RequestUri.AbsolutePath switch
             {
                 "/app" => new { id = 123, slug = "test-app" },

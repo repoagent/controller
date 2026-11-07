@@ -42,7 +42,7 @@ public sealed class RepositorySettingsTests
         Assert.Equal(0, await fixture.Check());
 
         var token = Assert.Single(fixture.Provider.TokenRequests);
-        Assert.Equal(["discussions"], token["permissions"]!.AsObject().Select(permission => permission.Key));
+        Assert.Equal(["discussions", "issues", "pull_requests"], token["permissions"]!.AsObject().Select(permission => permission.Key));
         Assert.DoesNotContain(fixture.GitHubRequests(), request => request.Endpoint.Contains("/variables"));
         Assert.Contains(fixture.Log, line => line.Contains(" repository-settings state=disabled "));
         Assert.DoesNotContain(fixture.Log, line => line.Contains(" repository-setting name="));
@@ -59,7 +59,7 @@ public sealed class RepositorySettingsTests
         Assert.Equal(0, await fixture.Check("--repository-settings"));
 
         var permissions = Assert.Single(fixture.Provider.TokenRequests)["permissions"]!.AsObject();
-        Assert.Equal(new Dictionary<string, string> { ["discussions"] = "write", ["agent_variables"] = "read" },
+        Assert.Equal(new Dictionary<string, string> { ["discussions"] = "write", ["agent_variables"] = "read", ["issues"] = "read", ["pull_requests"] = "read" },
             permissions.ToDictionary(permission => permission.Key, permission => permission.Value!.GetValue<string>()));
         Assert.All(fixture.GitHubRequests(), request => Assert.Contains(request.Method, AllowedMethods));
         Assert.DoesNotContain(fixture.GitHubRequests(), request => request.Method == "POST" && request.Endpoint != "graphql");
@@ -79,7 +79,7 @@ public sealed class RepositorySettingsTests
         Assert.Equal(0, await fixture.Check("--repository-settings"));
 
         // The token is not widened past the installation, and nothing reads variables it cannot read.
-        Assert.Equal(["discussions"], fixture.Provider.TokenRequests[1]["permissions"]!.AsObject().Select(permission => permission.Key));
+        Assert.Equal(["discussions", "issues", "pull_requests"], fixture.Provider.TokenRequests[1]["permissions"]!.AsObject().Select(permission => permission.Key));
         Assert.Single(fixture.GitHubRequests(), request => request.Endpoint.Contains("/variables/" + Setting));
         Assert.Contains(fixture.Log, line => line.EndsWith(
             $" repository-setting name={Setting} state=read-failed value=4 reason=\"the App installation does not grant Agent variables: read\"", StringComparison.Ordinal));
@@ -227,7 +227,7 @@ public sealed class RepositorySettingsTests
             {
                 case "/app": result = new { id = 123, slug = "test-app" }; break;
                 case "/repos/owner/repository/installation":
-                    var permissions = new Dictionary<string, string> { ["discussions"] = "write" };
+                    var permissions = new Dictionary<string, string> { ["discussions"] = "write", ["issues"] = "read", ["pull_requests"] = "read" };
                     if (VariablesPermission is not null) permissions["agent_variables"] = VariablesPermission;
                     if (ActionsVariablesPermission is not null) permissions["actions_variables"] = ActionsVariablesPermission;
                     if (HooksPermission is not null) permissions["repository_hooks"] = HooksPermission;

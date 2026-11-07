@@ -268,7 +268,7 @@ try {
             if ($clone -or $settings -or $images) { $fields += @('profile','policyVersion') }
             Assert-Fields $enrollment $fields
             $policy = if ($script:Legacy) { 'repository-approval-v1' }
-                else { Get-ApprovalPolicy -SetupVersion $location.SetupVersion -Profile $saved.profile }
+                else { Get-ApprovalStatePolicy $saved }
             $expectedRuntime = if ($saved.profile.EndsWith('-images', [StringComparison]::Ordinal)) { 4 }
                 elseif ($saved.profile.EndsWith('-settings', [StringComparison]::Ordinal)) { 3 }
                 elseif ($saved.profile.Contains('-clone', [StringComparison]::Ordinal)) { 2 } else { 1 }
