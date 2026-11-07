@@ -12,6 +12,14 @@
 
 * **controller:** refresh bundled Codex from 0.166.0 to 0.167.0 ([8a79236](https://github.com/repoagent/controller/commit/8a79236eee5dda3ad1ce34f391a127eb6bc14ffb))
 
+### Upgrade and rollback notes
+
+- New broker installations use setup v5 with standard Issues read and Pull requests read. Existing profile names and runtime protocols 1–4 remain unchanged. No issue or PR write permission is added.
+- Existing installations retain their old grants after an image update. First deploy broker 2.2.0 or newer and accept the App installation permissions, then update the controller image and run `install.ps1 -Action Reauthorize` with the original instance and private host state directory.
+- Reauthorization preserves all seven volumes, settings, Codex sign-in and conversation history. The old enrollment closes before replacement. After interruption, rerun the same command and state; recovery proceeds forward and ordinary startup stays fenced while replacement is incomplete. Normal broker rate limits still apply, and previously issued GitHub tokens retain their normal expiry.
+- After replacement, retain a compatible image; older images may reject the new grant, and restoring the withdrawn approval cannot revive the closed enrollment. Previous image-rollback bindings are cleared when replacement is installed. See [the upgrade procedure](https://github.com/repoagent/controller/blob/main/docs/issue-pr-context.md).
+- Linux Docker/local-broker acceptance passed for fresh installation, interrupted reauthorization, seven-volume and session preservation, and a real Codex 0.167.0 conversation reading private issue/PR context through its read-only App wrapper.
+
 ## [2.1.0](https://github.com/repoagent/controller/compare/controller-v2.0.0...controller-v2.1.0) (2026-11-05)
 
 
