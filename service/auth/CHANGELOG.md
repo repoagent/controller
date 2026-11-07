@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.2.0](https://github.com/repoagent/controller/compare/broker-v2.1.0...broker-v2.2.0) (2026-11-07)
+
+
+### Features
+
+* make issue and PR reading standard with in-place reauthorization ([#359](https://github.com/repoagent/controller/issues/359)) ([20a4fd3](https://github.com/repoagent/controller/commit/20a4fd34e5aa878aa13ec12d1d82bf034205c7fe))
+
+
+### Bug Fixes
+
+* **broker:** notify on cleanup outcomes ([#357](https://github.com/repoagent/controller/issues/357)) ([01be00c](https://github.com/repoagent/controller/commit/01be00c9c764c7a00a58381773c47e31611079d6))
+
 ## [2.1.0](https://github.com/repoagent/controller/compare/broker-v2.0.0...broker-v2.1.0) (2026-11-05)
 
 
