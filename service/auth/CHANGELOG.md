@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.2.0](https://github.com/repoagent/controller/compare/broker-v2.1.0...broker-v2.2.0) (2026-11-07)
+
+
+### Features
+
+* make issue and PR reading standard with in-place reauthorization ([#359](https://github.com/repoagent/controller/issues/359)) ([20a4fd3](https://github.com/repoagent/controller/commit/20a4fd34e5aa878aa13ec12d1d82bf034205c7fe))
+
+
+### Bug Fixes
+
+* **broker:** notify on cleanup outcomes ([#357](https://github.com/repoagent/controller/issues/357)) ([01be00c](https://github.com/repoagent/controller/commit/01be00c9c764c7a00a58381773c47e31611079d6))
+
+### Upgrade and rollback notes
+
+- New approvals include Issues read and Pull requests read through the existing setup-v5 profiles and runtime protocols 1–4. Existing approvals and pending requests retain their original grants; this release adds no issue or PR write permission.
+- Deploy this broker before distributing the matching controller update. Accept the App installation's Issues and Pull requests read permissions before enrolling or reauthorizing. Existing installations then update their image and run `install.ps1 -Action Reauthorize` with the original instance and private host state directory.
+- Reauthorization confirms old-enrollment closure before replacement and preserves all seven volumes and conversation data. Interrupted operations resume forward with the same command and state. Previously issued GitHub tokens remain subject to normal expiry; broker closure prevents new issuance.
+- Brokers below 2.2.0 do not recognize the revised approval policies. Keep a compatible broker after new grants are written; preserve retained state and recovery material. No Table migration, deployment-epoch change or automatic widening of existing grants is required.
+- Real GitHub/local-broker acceptance passed for fresh enrollment, historical-grant reauthorization interrupted after closure, same-session issue/PR context reading, denied issue writes and test-enrollment cleanup. See [reauthorization](https://github.com/repoagent/controller/blob/main/docs/issue-pr-context.md).
+
 ## [2.1.0](https://github.com/repoagent/controller/compare/broker-v2.0.0...broker-v2.1.0) (2026-11-05)
 
 
