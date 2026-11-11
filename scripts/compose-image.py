@@ -18,8 +18,8 @@ SNAPSHOT = '20261027T000000Z'
 # Exact artifacts. New versions require a reviewed catalog update or a verified tool refresh
 # (scripts/delivery/tool-refresh.py rewrites these lines; keep their one-line layout).
 ARTIFACTS = {
-    'codex': ('0.167.0', 'https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-x86_64-unknown-linux-musl.tar.gz', '9d64836106d5b374e90ee4454c7ebcde7ca7106558bd7e41a34b9f26ebda251a'),
-    'codex-code-mode-host': ('0.167.0', 'https://github.com/openai/codex/releases/download/rust-v0.167.0/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz', 'b5074d5dd64643b2c073927e494a588eff31c1f5a27f12c1e2c45f9a6cf07dd4'),
+    'codex': ('0.167.1', 'https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-x86_64-unknown-linux-musl.tar.gz', '64bcc99c32e434b4bcb0508a97df9b7aeecdb97e956d976fb13661096ec4e3e2'),
+    'codex-code-mode-host': ('0.167.1', 'https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz', 'dc8a10a95df3878dda60a62b72acf9c1d1ee18599c04934952f128d9dcc78320'),
     'gh': ('2.103.3', 'https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_linux_amd64.tar.gz', '4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d'),
     'cloudflared': ('2026.10.7', 'https://github.com/cloudflare/cloudflared/releases/download/2026.10.7/cloudflared-linux-amd64', '1f99fb518b83dec2ba8d870a7cc991d82a77e6196295a3d2754ba17ab9f91872'),
 }
