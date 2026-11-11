@@ -7,7 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="xunit.v3.mtp-v2" Version="4.0.2" />
-    <PackageReference Include="Aspire.Hosting.Testing" Version="13.6.2" />
+    <PackageReference Include="Aspire.Hosting.Testing" Version="13.6.5" />
     <ProjectReference Include="../../service/auth/dev/RepoAgent.Auth.AppHost/RepoAgent.Auth.AppHost.csproj" />
   </ItemGroup>
 </Project>

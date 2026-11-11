@@ -17,7 +17,7 @@ For an already-built Release host with the pinned .NET 11 RC3 SDK, launch direct
 ASPIRE_SUPPRESS_CLI_RUN_HOOK=true dotnet run --project dev/RepoAgent.Auth.AppHost --configuration Release --no-build --launch-profile http
 ```
 
-Aspire 13.6.2's [AppHost package targets](https://github.com/microsoft/aspire/blob/v13.6.2/src/Aspire.Hosting.AppHost/build/Aspire.Hosting.AppHost.targets) explicitly support `ASPIRE_SUPPRESS_CLI_RUN_HOOK`. This keeps the CLI bundle's DCP/dashboard assets but bypasses its launch wrapper. In the verified environment, the wrapper delegated a Release `--no-build` invocation to a missing Debug output and attempted certificate trust setup. The direct command uses the selected Release output and performs no CLI certificate-trust setup; it does not disable TLS verification or alter the project's analyzer configuration.
+Aspire 13.6.5's [AppHost package targets](https://github.com/microsoft/aspire/blob/v13.6.5/src/Aspire.Hosting.AppHost/build/Aspire.Hosting.AppHost.targets) explicitly support `ASPIRE_SUPPRESS_CLI_RUN_HOOK`. This keeps the CLI bundle's DCP/dashboard assets but bypasses its launch wrapper. The wrapper previously delegated a Release `--no-build` invocation to a missing Debug output and attempted certificate trust setup. The direct command uses the selected Release output and performs no CLI certificate-trust setup; it does not disable TLS verification or alter the project's analyzer configuration.
 
 On .NET 11.0.0-rc.3.26522.148, the direct command started the distributed application, served the dashboard with HTTP 200 and shut down with exit 0 on Ctrl+C. That observation establishes AppHost startup under the pinned SDK/runtime. It does not establish completed emulator initialization, broker readiness, real GitHub authentication or the broader local-adapter acceptance tracked in #204. Existing local certificate prerequisites below still apply; no trust-store changes were made for this direct-start check.
 
@@ -69,7 +69,7 @@ Production rejects local settings files, development storage/vault options and `
 
 ## Verification
 
-`bash verify.sh` compiles the AppHost and runs the service suite, which needs neither Docker nor Azurite. Start the AppHost to verify the real local composition and inspect its resources in the dashboard. Aspire 13.6.2 and the Key Vault emulator integration 3.1.5 are pinned from current stable releases; [Aspire's storage documentation](https://aspire.dev/integrations/cloud/azure/azure-storage-tables/azure-storage-tables-host/) describes the emulator integration.
+`bash verify.sh` compiles the AppHost and runs the service suite, which needs neither Docker nor Azurite. Start the AppHost to verify the real local composition and inspect its resources in the dashboard. Aspire 13.6.5 includes the [CVE-2026-120006 security fix](https://github.com/microsoft/aspire/security/advisories/GHSA-f7vh-h5g3-7jrh); restore, rebuild and restart a running local AppHost after updating. The Key Vault emulator integration remains pinned at 3.1.5; [Aspire's storage documentation](https://aspire.dev/integrations/cloud/azure/azure-storage-tables/azure-storage-tables-host/) describes the emulator integration.
 
 Azure infrastructure remains Bicep: compile locally, deploy against the actual resource group, and inspect Azure. This AppHost does not publish or emulate ARM resources.
 
