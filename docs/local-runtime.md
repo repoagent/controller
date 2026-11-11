@@ -1,5 +1,7 @@
 # Supplied broker enrollment in PowerShell 7
 
+Account-connected apps default to disabled, including legacy saved configurations. Configure `disabled`, `selected` with app IDs, or `all` explicitly; see [connected-app access and setup skill](connected-apps.md) for flags, private discovery, upgrade behavior and verification. Stop the instance before reconfiguration.
+
 For managed installations with their original host approval and credential files, [Action Reauthorize](issue-pr-context.md) replaces authorization while retaining all seven volumes. Importing a replacement credential alone does not update recorded launch bindings.
 
 This path configures a Linux controller from an already-issued frozen-v1 enrollment and an existing Codex sign-in. It does not issue or recover enrollments. Use PowerShell 7 on Windows with Docker Desktop Linux containers, or on Linux. The controller image requires Ubuntu 26.04 linux/amd64.
@@ -104,14 +106,16 @@ host/Docker metadata and defers authoritative volume verification until Apply.
 
 Image accepts an exact local SHA256 ID or an available repository@sha256 digest;
 a mutable tag is refused. The target must retain the UID1000 controller entrypoint.
-Rollback and Image are mutually exclusive. Keep the current and prior images
+Rollback and Image are mutually exclusive. Target images must advertise connected-app policy capability (`io.repoagent.connected-apps-policy=1`); older images are refused before startup. Keep the current and prior images
 available locally. An older storage-origin image is not required after both
 recorded launch images have advanced.
 
 Image transitions require the private enrollment file. Guided reruns keep the
 recorded runtime settings; differing overrides are refused before modifying the
 host mirror. Direct configure also refuses conflicting recorded choices and
-retains recorded values for omitted options.
+retains recorded values for omitted options. Connected-app policy is separate local
+operator configuration: stopped-instance reconfiguration may change it, and image
+update/rollback retains its latest value.
 
 Update retains all seven volume identities, enrollment, Codex sign-in, workspace,
 history, state, tools and pending publication journals. It replaces only the

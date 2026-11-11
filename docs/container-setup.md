@@ -1,5 +1,7 @@
 For versioned software choices, a repository-owned base image, and shared Bash/PowerShell image builds, see [image composition](image-composition.md).
 
+Account-connected apps default to disabled, including legacy saved configurations. Configure `disabled`, `selected` with app IDs, or `all` explicitly; see [connected-app access and setup skill](connected-apps.md) for flags, private discovery, upgrade behavior and verification. Stop the instance before reconfiguration.
+
 # Container setup
 
 Use Docker Engine/Desktop with Linux containers and either Bash or PowerShell 7. Run every command below from the checkout. The host runs a small launcher; the bridge, Codex, GitHub CLI and setup helpers execute inside containers. The direct-App installation below needs no host .NET, Node.js or GitHub CLI installation. The separate [PowerShell approval-revocation tool](repository-approval.md) uses authenticated host `gh` and needs no Docker. New broker installer work targets PowerShell first; Bash enrollment parity is deferred.

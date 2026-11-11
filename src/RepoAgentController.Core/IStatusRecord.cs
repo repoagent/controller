@@ -27,6 +27,7 @@ public sealed record LifetimeStatus(string? Repository, ControllerRun? Controlle
 
     /// <summary>The agent sessions running a turn in this lifetime, in ordinal order; none while no turn runs.</summary>
     public IReadOnlyList<string> RunningSessions { get; init; } = [];
+    public ConnectedAppsStatus? ConnectedApps { get; init; }
 }
 
 /// <summary>A lifetime's state (<c>starting</c>, <c>running</c>, <c>failed</c> or <c>stopped</c>), its mode and its times.</summary>

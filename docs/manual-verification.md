@@ -24,3 +24,7 @@ Build/run inside a Linux container, inspect `--help`, and start the long-running
 For every failure record whether GitHub observation, agent acceptance, checkpoint persistence, receipt, or agent publication failed. Avoid declaring full acceptance from a build or transport-only probe. Input acceptance and successful GitHub publication are separate observations.
 
 Protocol reference: [Codex app-server](https://learn.chatgpt.com/docs/app-server). The Codex `turn/start` protocol adds input to an active turn, so the bridge sends a batch only after `thread/status/changed` reports the session idle; history, execution and compaction remain owned by Codex. GitHub [Discussion mutations](https://docs.github.com/en/graphql/reference/mutations#adddiscussioncomment) do not promise idempotent publication through `clientMutationId`.
+
+## Connected-app policy
+
+For default-off and allowlist configuration, image capability gates, credential discovery and the bounded pinned-runtime check, follow [connected-app verification](connected-apps.md#manual-runtime-qualification). Live account/Gmail acceptance is separate and must never send real mail as a setup check.

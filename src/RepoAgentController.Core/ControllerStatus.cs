@@ -49,6 +49,17 @@ public sealed class ControllerStatus : IDisposable
         record.Write(lifetime);
     }
 
+    public void ConnectedApps(ConnectedAppsStatus policy)
+    {
+        lock (gate)
+        {
+            if (closed || lifetime.ConnectedApps == policy) return;
+            lifetime = lifetime with { ConnectedApps = policy };
+            record.Write(lifetime);
+        }
+        Changed?.Invoke();
+    }
+
     public void Record(LogEntry entry)
     {
         lock (gate)
@@ -211,7 +222,7 @@ public sealed class ControllerStatus : IDisposable
             recorded?.Authentication ?? new("unknown"), recorded?.CodexAuthentication ?? new("unknown"), settings,
             // Running agent turns against the effective active-session limit.
             new(started, pending, retrying, waiting, running, limit, journal?.AdmissionBlocked), sessions, recorded?.Failures ?? [], recorded?.LatestActivity)
-        { FailuresAsRead = recorded?.FailuresAsRead };
+        { FailuresAsRead = recorded?.FailuresAsRead, ConnectedApps = recorded?.ConnectedApps };
     }
 
     static string Time(DateTimeOffset value) => value.ToString("O", CultureInfo.InvariantCulture);

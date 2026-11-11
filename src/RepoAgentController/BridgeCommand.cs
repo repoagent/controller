@@ -38,9 +38,11 @@ public static class BridgeCommand
         var logFileBytes = new Option<long>("--log-file-bytes") { DefaultValueFactory = _ => RetainedLog.DefaultFileBytes, Description = $"Maximum bytes per retained log file beside --state ({RetainedLog.MinimumFileBytes}..{RetainedLog.MaximumFileBytes}); retained logs never exceed --log-files × this size" };
         var logFiles = new Option<int>("--log-files") { DefaultValueFactory = _ => RetainedLog.DefaultFiles, Description = $"Retained log files, including the active file (1..{RetainedLog.MaximumFiles}); the oldest file is deleted on rotation" };
         var dashboardCategory = new Option<string?>("--dashboard-category") { Description = "Existing Discussion category for the controller-owned status dashboard; omit to publish no dashboard" };
+        var connectedApps = new Option<string>("--connected-apps") { DefaultValueFactory = _ => "disabled", Description = "Account-connected apps: disabled (default), selected, or all (includes future apps)" };
+        var allowedApp = new Option<string[]>("--allowed-app") { Description = "Stable connected-app ID; repeat with selected mode", AllowMultipleArgumentsPerToken = true };
         var codexAuth = new Option<FileInfo>("--codex-auth") { Description = "Operator-supplied Codex account credentials (auth.json format), separate from GitHub App credentials. Installed into the private CODEX_HOME when it differs from the last supply; replacing the file while running restarts the owned Codex app-server at idle and resumes sessions" };
         var imageInventory = new Option<FileInfo?>("--image-inventory") { Description = "The running baseline image's inventory (/opt/repoagent/image-inventory.json); the dashboard compares its SHA-256 with published baseline releases" };
-        var root = new RootCommand("repoagent: GitHub Discussions → agent Codex sessions, authenticated as a GitHub App; standard issue/PR read access") { repository, appId, privateKey, brokerUrl, enrollmentFile, enrollmentEnvironment, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, statusPort, reconcileInterval, disableWebhook, once, checkAuth, clone, repositorySettings, images, logFileBytes, logFiles, dashboardCategory, codexAuth, imageInventory };
+        var root = new RootCommand("repoagent: GitHub Discussions → agent Codex sessions, authenticated as a GitHub App; standard issue/PR read access") { repository, appId, privateKey, brokerUrl, enrollmentFile, enrollmentEnvironment, installationId, repositoryId, mentionUser, workspace, state, enroll, interval, webhookUrl, listenPort, statusPort, reconcileInterval, disableWebhook, once, checkAuth, clone, repositorySettings, images, logFileBytes, logFiles, dashboardCategory, codexAuth, imageInventory, connectedApps, allowedApp };
         var ghCredentials = new Option<DirectoryInfo>("--credential-directory") { Required = true };
         var ghPath = new Option<FileInfo>("--gh-path") { Required = true };
         var forwardedArguments = new Argument<string[]>("arguments") { Arity = ArgumentArity.ZeroOrMore };
@@ -61,6 +63,26 @@ public static class BridgeCommand
             return 0;
         });
         root.Subcommands.Add(statusCommand);
+        var appsWorkspace = new Option<DirectoryInfo>("--workspace") { DefaultValueFactory = _ => new(Environment.CurrentDirectory) };
+        var appsAuth = new Option<FileInfo>("--codex-auth") { Description = "Apply supplied credentials to the private home before discovery (stopped instance only)" };
+        var appsCommand = new Command("apps", "List account app IDs/names privately, without agent turns. Requires a private CODEX_HOME; use while stopped.") { appsWorkspace, appsAuth };
+        appsCommand.SetAction(async (result, ct) =>
+        {
+            try
+            {
+                var home = Codex.PrivateHome("App discovery");
+                if (result.GetValue(appsAuth) is { } supply) CodexCredentials.Open(supply.FullName).Install();
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(60));
+                await using var agent = new Codex(result.GetValue(appsWorkspace)!.FullName, AppGitHubCommand.FindExecutable("gh"),
+                    Path.Combine(home, "app-discovery-gh"), suppliedCredentials: result.GetValue(appsAuth) is not null, connectedApps: new("all", []));
+                await agent.Initialize(timeout.Token);
+                Console.WriteLine((await agent.ListApps(timeout.Token)).ToJsonString());
+                return 0;
+            }
+            catch (Exception error) { Console.Error.WriteLine("App discovery failed: " + error.Message); return 1; }
+        });
+        root.Subcommands.Add(appsCommand);
         AssetCommand.Add(root);
         ActivityCommand.Add(root);
         RemoteCommand.Add(root);
@@ -95,6 +117,7 @@ public static class BridgeCommand
                 typeof(BridgeCommand).Assembly.GetName().Version?.ToString() ?? "unknown");
             try
             {
+                var appPolicy = new ConnectedAppsPolicy(result.GetValue(connectedApps)!, result.GetValue(allowedApp) ?? []);
                 var repo = result.GetValue(repository)!;
                 if (!System.Text.RegularExpressions.Regex.IsMatch(repo, @"^[\w.-]+/[\w.-]+$")) throw new ArgumentException("--repo must be owner/repository");
                 if (result.GetValue(interval) < 1) throw new ArgumentException("--interval must be positive");
@@ -207,7 +230,8 @@ public static class BridgeCommand
                             store.Discussions.Values.Any(record => record.HoldsSession) || Directory.Exists(statePath + ".checkout-evidence"),
                             store.Discussions.Values.Any(record => record.HoldsPending), time, new ControllerLog());
                         await using var codex = new Codex(agentRoot, wrapper, agentConfig, checkout is not null, credentials.BrokerCredentialLost,
-                            suppliedCredentials: agentCredentials is not null, imagePublishing: profile.Images);
+                            suppliedCredentials: agentCredentials is not null, imagePublishing: profile.Images, connectedApps: appPolicy);
+                        codex.AppPolicyChanged = status.ConnectedApps;
                         using var remoteAccess = new RemoteAccess(codex, new ControllerStateFiles(statePath), time);
                         var sessions = new AgentSessions(codex, new ControllerLog(), reconciliation, credentials.BrokerCredentialLost, agentCredentials is not null);
                         // Status counts a turn by its session too, so it stays running after its Discussion record is forgotten.

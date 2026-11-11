@@ -23,7 +23,9 @@ AGENT = """#!/usr/bin/python3
 import json,os,sys
 for line in sys.stdin:
  request=json.loads(line)
- if 'id' in request:print(json.dumps({'id':request['id'],'result':{'codexHome':os.getcwd()}}),flush=True)
+ if 'id' in request:
+  result={'config':{'features':{'apps':False},'apps':{'_default':{'enabled':False}}}} if request['method']=='config/read' else {'codexHome':os.getcwd()}
+  print(json.dumps({'id':request['id'],'result':result}),flush=True)
 """
 
 

@@ -17,6 +17,12 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
     readonly string workspace;
     readonly string instructions;
     readonly bool verifyRoot, suppliedCredentials;
+    readonly ConnectedAppsPolicy connectedApps;
+    readonly CodexAppConfiguration appConfiguration;
+    JsonObject appOverrides;
+    bool appPolicyPrepared, preparingApps;
+    string[] unavailableApps = [];
+    public Action<ConnectedAppsStatus>? AppPolicyChanged { get; set; }
     readonly CancellationToken credentialLost;
     string agentHome = "";
     public event Action<AgentRuntimeEvent>? Changed;
@@ -24,9 +30,13 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1068", Justification = "Preserve existing positional callers; this token is distinct from the optional configuration that follows it.")]
     public Codex(string workspace, string githubCommand, string configurationDirectory, bool verifyRoot = false,
-            CancellationToken credentialLost = default, bool suppliedCredentials = false, bool imagePublishing = false)
+            CancellationToken credentialLost = default, bool suppliedCredentials = false, bool imagePublishing = false, ConnectedAppsPolicy? connectedApps = null)
     {
         this.workspace = workspace;
+        this.connectedApps = connectedApps ?? ConnectedAppsPolicy.Disabled;
+        appConfiguration = new(this.connectedApps);
+        preparingApps = this.connectedApps.AppsEnabled;
+        appOverrides = appConfiguration.Overrides([], bootstrap: preparingApps);
         this.suppliedCredentials = suppliedCredentials;
         this.githubCommand = githubCommand; this.configurationDirectory = configurationDirectory;
         this.verifyRoot = verifyRoot;
@@ -35,11 +45,13 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
         if (imagePublishing) instructions += $" To publish images or editable diagram sources, use {Path.Combine(Path.GetDirectoryName(githubCommand)!, "repoagent-assets")} --discussion NUMBER /absolute/path/to/file. Embed its returned Markdown in the Discussion response through the authenticated gh command. The helper writes the approved repository asset branch using current App credentials.";
     }
 
-    Transport OpenTransport() => new(workspace, githubCommand, configurationDirectory, epoch, Observe, credentialLost, suppliedCredentials);
+    Transport OpenTransport() => new(workspace, githubCommand, configurationDirectory, epoch, Observe, credentialLost, suppliedCredentials, appOverrides);
 
     // The agent's lifecycle notifications as runtime events, read leniently; other notifications are not lifecycle.
     void Observe(int source, string method, JsonNode? parameters)
     {
+        // Configuration discovery runs no sessions and is not a runtime epoch visible to the scheduler.
+        if (preparingApps) return;
         ObserveActivity(source, method, parameters);
         ObserveRemote(source, method, parameters);
         // Usage updates are sparse; the bounded collector reads full snapshots instead.
@@ -130,7 +142,10 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
         whileStopped(++epoch);
         ResetActivity();
         Changed?.Invoke(new AgentUsageContextChanged(epoch));
-        transport = OpenTransport();
+        transport = null;
+        appPolicyPrepared = false;
+        preparingApps = connectedApps.Mode != "disabled";
+        appOverrides = appConfiguration.Overrides([], bootstrap: preparingApps);
         await Initialize(ct);
         var skills = await Request("skills/list", Json.Object(("cwds", new JsonArray(workspace)), ("forceReload", true)), ct);
         if (skills["data"] is not JsonArray entries || entries.Count != 1 || entries[0]?.Text("cwd") != workspace ||
@@ -141,13 +156,86 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
     /// <summary>Starts the app-server process, unless Restart has, and initializes it.</summary>
     public async Task Initialize(CancellationToken ct)
     {
+        AppPolicyChanged?.Invoke(new(connectedApps.Mode, connectedApps.AllowedApps, "verifying"));
+        try { await InitializeCore(ct); }
+        catch
+        {
+            AppPolicyChanged?.Invoke(new(connectedApps.Mode, connectedApps.AllowedApps, "failed"));
+            throw;
+        }
+    }
+
+    async Task InitializeCore(CancellationToken ct)
+    {
         transport ??= OpenTransport();
-        var initialized = await Request("initialize", Json.Object(("clientInfo", Json.Object(("name", "github_discussion_bridge"), ("version", "0.1.0"))), ("capabilities", Json.Object(("experimentalApi", true)))), ct);
-        agentHome = initialized.Text("codexHome");
-        await Write(Json.Object(("method", "initialized")), ct);
+        await Handshake(ct);
+        if (connectedApps.Mode != "disabled" && !appPolicyPrepared)
+        {
+            var initial = await AppConfiguration(ct);
+            new CodexAppConfiguration(ConnectedAppsPolicy.Disabled).Verify(initial);
+            appOverrides = appConfiguration.Overrides((initial["apps"] as JsonObject)?.Select(app => app.Key) ?? []);
+            await transport.DisposeAsync();
+            preparingApps = false;
+            transport = OpenTransport();
+            await Handshake(ct);
+        }
+        appPolicyPrepared = true;
+        await VerifyApps(ct);
+        if (connectedApps.Mode == "selected")
+        {
+            using var discovery = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            discovery.CancelAfter(TimeSpan.FromSeconds(30));
+            JsonArray apps;
+            try { apps = await ListApps(discovery.Token); }
+            catch (Exception error) when (!ct.IsCancellationRequested && error is IOException or OperationCanceledException)
+            { throw new IOException("Connected-app availability discovery failed; agent work is blocked. Use private app discovery to diagnose account access."); }
+            unavailableApps = connectedApps.AllowedApps.Where(id => !apps.Any(app => app?.Text("id") == id && app["isAccessible"]?.GetValue<bool>() == true)).ToArray();
+            AppPolicyChanged?.Invoke(new(connectedApps.Mode, connectedApps.AllowedApps, "verified") { UnavailableApps = unavailableApps });
+            if (unavailableApps.Length != 0) Log.Write("connected-apps", $"Selected apps unavailable={unavailableApps.Length}; inspect private status and account connections");
+        }
+        Log.Write("connected-apps", $"mode={connectedApps.Mode} policy=verified");
         // Agent honours skill inputs only for discovered skills; the packaged ones sit beside this executable.
         await Request("skills/extraRoots/set", Json.Object(("extraRoots", new JsonArray(Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory)))), ct);
         if (RemoteAccessReady is { } ready) await ready(ct);
+    }
+
+    async Task Handshake(CancellationToken ct)
+    {
+        var initialized = await Request("initialize", Json.Object(("clientInfo", Json.Object(("name", "github_discussion_bridge"), ("version", "0.1.0"))), ("capabilities", Json.Object(("experimentalApi", true)))), ct);
+        agentHome = initialized.Text("codexHome");
+        await Write(Json.Object(("method", "initialized")), ct);
+    }
+
+    async Task<JsonObject> AppConfiguration(CancellationToken ct) =>
+        (await Request("config/read", Json.Object(("cwd", workspace)), ct))["config"] as JsonObject
+            ?? throw new IOException("Connected-app policy configuration unavailable; agent work is blocked");
+
+    async Task VerifyApps(CancellationToken ct)
+    {
+        try
+        {
+            appConfiguration.Verify(await AppConfiguration(ct));
+            AppPolicyChanged?.Invoke(new(connectedApps.Mode, connectedApps.AllowedApps, "verified") { UnavailableApps = unavailableApps });
+        }
+        catch
+        {
+            AppPolicyChanged?.Invoke(new(connectedApps.Mode, connectedApps.AllowedApps, "failed"));
+            throw;
+        }
+    }
+
+    public async Task<JsonArray> ListApps(CancellationToken ct)
+    {
+        var apps = new JsonArray();
+        string? cursor = null;
+        do
+        {
+            var page = await Request("app/list", Json.Object(("cursor", cursor), ("forceRefetch", true)), ct);
+            if (page["data"] is not JsonArray data) throw new IOException("Agent app/list returned no catalogue");
+            foreach (var app in data) apps.Add(app?.DeepClone());
+            cursor = page["nextCursor"].OptionalText();
+        } while (cursor is not null);
+        return apps;
     }
 
     static JsonObject PackagedSkill(string name) =>
@@ -200,7 +288,8 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
 
     public async Task<(string SessionId, AgentSessionStatus Status)> StartSession(CancellationToken ct)
     {
-        var result = await Request("thread/start", Json.Object(("cwd", workspace), ("developerInstructions", instructions)), ct);
+        await VerifyApps(ct);
+        var result = await Request("thread/start", Json.Object(("cwd", workspace), ("developerInstructions", instructions), ("config", appOverrides.DeepClone())), ct);
         VerifyRoot(result);
         var id = result["thread"]!.Text("id");
         if (id.Length == 0) throw new IOException("Agent thread/start returned no session ID");
@@ -209,7 +298,8 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
 
     public async Task<AgentSessionStatus> ResumeSession(string sessionId, CancellationToken ct)
     {
-        var resumedThread = await Request("thread/resume", Json.Object(("threadId", sessionId), ("cwd", workspace), ("developerInstructions", instructions), ("excludeTurns", true)), ct);
+        await VerifyApps(ct);
+        var resumedThread = await Request("thread/resume", Json.Object(("threadId", sessionId), ("cwd", workspace), ("developerInstructions", instructions), ("excludeTurns", true), ("config", appOverrides.DeepClone())), ct);
         VerifyRoot(resumedThread);
         return Parse(resumedThread["thread"]?["status"]);
     }
@@ -241,6 +331,7 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
 
     public async Task<AgentTurnAccepted> StartTurn(AgentTurnRequest request, CancellationToken ct)
     {
+        await VerifyApps(ct);
         var input = new JsonArray(
             Json.Object(("type", "text"), ("text", "$github-discussion\n" + request.Input), ("text_elements", new JsonArray())),
             PackagedSkill("github-discussion"));
@@ -276,7 +367,7 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
 
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1068", Justification = "Preserve existing positional callers; this token is distinct from the optional configuration that follows it.")]
         public Transport(string workspace, string githubCommand, string configurationDirectory, int epoch,
-                    Action<int, string, JsonNode?> observe, CancellationToken credentialLost, bool fileCredentials)
+                    Action<int, string, JsonNode?> observe, CancellationToken credentialLost, bool fileCredentials, JsonObject appOverrides)
         {
             this.epoch = epoch; this.observe = observe;
             this.credentialLost = credentialLost;
@@ -289,6 +380,11 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
             foreach (var name in start.Environment.Keys.Where(name => name.StartsWith("BASH_FUNC_", StringComparison.Ordinal)).ToArray()) start.Environment.Remove(name);
             start.Environment["PATH"] = Path.GetDirectoryName(githubCommand) + Path.PathSeparator + start.Environment["PATH"];
             foreach (var argument in new[] { "-c", OwnedAgentProcesses.Launcher.ReplaceLineEndings("\n"), "repoagent-agent", executable, "app-server" }) start.ArgumentList.Add(argument);
+            foreach (var entry in appOverrides)
+            {
+                start.ArgumentList.Add("-c");
+                start.ArgumentList.Add(entry.Key + "=" + entry.Value!.ToJsonString());
+            }
             // Supplied credentials are the agent home's auth.json; a keyring store would silently ignore them.
             if (fileCredentials) { start.ArgumentList.Add("-c"); start.ArgumentList.Add("cli_auth_credentials_store=\"file\""); }
             // Pinned Codex otherwise restores remembered remote intent from a reused home. Controller intent is restored explicitly (ADR 0016).

@@ -40,7 +40,7 @@ static class OperatorStatusJson
             sessions.Add((JsonNode)item);
         }
         var work = status.Work;
-        return new JsonObject
+        var result = new JsonObject
         {
             ["version"] = 1,
             ["generatedAt"] = status.GeneratedAt.ToString("O"),
@@ -58,6 +58,8 @@ static class OperatorStatusJson
             ["failures"] = Failures(status.Failures, status.FailuresAsRead),
             ["latestActivity"] = Event(status.LatestActivity)
         };
+        if (status.ConnectedApps is not null) result["connectedApps"] = Apps(status.ConnectedApps);
+        return result;
     }
 
     /// <summary>The status record as its file holds it.</summary>
@@ -74,6 +76,7 @@ static class OperatorStatusJson
             ["latestActivity"] = Event(status.LatestActivity)
         };
         if (status.RunningSessions.Count != 0) record["runningSessions"] = new JsonArray([.. status.RunningSessions.Select(session => (JsonNode?)JsonValue.Create(session))]);
+        if (status.ConnectedApps is not null) record["connectedApps"] = Apps(status.ConnectedApps);
         return record;
     }
 
@@ -84,8 +87,27 @@ static class OperatorStatusJson
         Failures = record["failures"] is JsonArray failures ? [.. failures.Select(failure => Event(failure) ?? new("", "", "") { AsRead = "null" })] : [],
         FailuresAsRead = record["failures"] is { } kept and not JsonArray ? kept.ToJsonString() : null,
         LatestActivity = Event(record["latestActivity"]),
+        ConnectedApps = Apps(record["connectedApps"]),
         RunningSessions = record["runningSessions"] is JsonArray sessions ? [.. sessions.Select(session => session.OptionalText()).OfType<string>()] : []
     };
+
+    static JsonObject? Apps(ConnectedAppsStatus? apps) => apps is null ? null : Json.Object(
+        ("mode", apps.Mode), ("allowedApps", new JsonArray([.. apps.AllowedApps.Select(id => (JsonNode?)JsonValue.Create(id))])), ("verification", apps.Verification),
+        ("unavailableApps", new JsonArray([.. apps.UnavailableApps.Select(id => (JsonNode?)JsonValue.Create(id))])));
+
+    static ConnectedAppsStatus? Apps(JsonNode? apps)
+    {
+        if (apps is null) return null;
+        if (apps is not JsonObject item || item["allowedApps"] is not JsonArray ids ||
+            ids.Any(id => id.OptionalText() is null) || item["mode"].OptionalText() is not ("disabled" or "selected" or "all") ||
+            item["verification"].OptionalText() is not ("verifying" or "verified" or "failed"))
+            return new("unknown", [], "unknown");
+        if (item["unavailableApps"] is { } unavailable &&
+            (unavailable is not JsonArray entries || entries.Any(id => id.OptionalText() is null)))
+            return new("unknown", [], "unknown");
+        return new(item.Text("mode"), [.. ids.Select(id => id!.GetValue<string>())], item.Text("verification"))
+        { UnavailableApps = item["unavailableApps"] is JsonArray missing ? [.. missing.Select(id => id!.GetValue<string>())] : [] };
+    }
 
     // Each part reads what it holds as text; writing that back must give the JSON read, or the part is kept as read.
     static ControllerRun? Controller(JsonNode? node)

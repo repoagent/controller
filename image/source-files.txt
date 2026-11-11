@@ -12,6 +12,7 @@ src/RepoAgentController/CheckoutEvidence.cs
 src/RepoAgentController/CheckoutRecoveryCommand.cs
 src/RepoAgentController/BrokerTokenSource.cs
 src/RepoAgentController/Codex.cs
+src/RepoAgentController/CodexAppConfiguration.cs
 src/RepoAgentController/CodexActivity.cs
 src/RepoAgentController/CodexRemoteAccess.cs
 src/RepoAgentController/OwnedAgentProcesses.cs
@@ -82,6 +83,7 @@ src/RepoAgentController.Core/CheckoutRecovery.cs
 src/RepoAgentController.Core/CategoryEnrollment.cs
 src/RepoAgentController.Core/Bridge.cs
 src/RepoAgentController.Core/ControllerStatus.cs
+src/RepoAgentController.Core/ConnectedAppsPolicy.cs
 src/RepoAgentController.Core/IStatusRecord.cs
 src/RepoAgentController.Core/OperatorStatus.cs
 src/RepoAgentController.Core/ICheckoutWork.cs

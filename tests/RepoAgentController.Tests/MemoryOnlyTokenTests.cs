@@ -253,7 +253,7 @@ public sealed class MemoryOnlyTokenTests
              request=json.loads(line);method=request.get('method')
              if 'id' not in request:continue
              if method=='turn/start':subprocess.run(['gh','auth','token'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-             result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'turn':{'id':'agent-turn'}} if method=='turn/start' else {'thread':{'id':'agent-T1','status':{'type':'idle'}}}
+             result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{'features':{'apps':False},'apps':{'_default':{'enabled':False}}}} if method=='config/read' else {'turn':{'id':'agent-turn'}} if method=='turn/start' else {'thread':{'id':'agent-T1','status':{'type':'idle'}}}
              print(json.dumps({'id':request['id'],'result':result}),flush=True)
              if method=='turn/start':
               active=True

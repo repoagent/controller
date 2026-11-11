@@ -62,6 +62,8 @@ param(
     [string]$ListenPort,
     [string]$ReconcileInterval,
     [ValidateSet('live', 'cached', 'disabled')][string]$WebSearch,
+    [ValidateSet('disabled', 'selected', 'all')][string]$ConnectedApps,
+    [string[]]$AllowedApp,
     [switch]$DeviceLogin,
     [switch]$SkipBuild,
     [switch]$NoStart,
@@ -210,6 +212,8 @@ try {
         'mentionUser','model','mode','publicUrl','listenPort','reconcileInterval','webSearch','codexAuthPath')
     if ($saved) {
         # Old launch records remain loadable; their tool-update choice is ignored.
+        if ($saved.Contains('connectedApps')) { $fields += 'connectedApps' }
+        if ($saved.Contains('allowedApps')) { $fields += 'allowedApps' }
         if ($saved.Contains('toolUpdates')) { $fields += 'toolUpdates' }
         if ($saved.Contains('clone')) { $fields += 'clone' }
         if ($saved.Contains('imagePublishing')) { $fields += 'imagePublishing' }
@@ -217,8 +221,9 @@ try {
         if ($saved.Contains('dashboardCategory')) { $fields += 'dashboardCategory' }
         if ($saved.Contains('launchState')) { $fields += 'launchState' }
         Assert-Fields $saved $fields
+        if ($saved.Contains('allowedApps') -and ($saved.allowedApps -isnot [array] -or @($saved.allowedApps | Where-Object { $_ -isnot [string] -or $_ -match '[\p{Cc}]' }).Count)) { Stop-Install 'Invalid saved app allowlist; inspect the original state.' }
         if ($saved.schemaVersion -ne 1 -or $saved.instance -cne $Instance -or -not $(if ($IsWindows) { [StringComparer]::OrdinalIgnoreCase.Equals($saved.stateDirectory, $StateDirectory) } else { [StringComparer]::Ordinal.Equals($saved.stateDirectory, $StateDirectory) })) { Stop-Install 'Saved launch coordinates differ from the selected instance/state directory.' }
-        foreach ($field in $fields | Where-Object { $_ -notin @('schemaVersion','launchState') }) {
+        foreach ($field in $fields | Where-Object { $_ -notin @('schemaVersion','launchState','allowedApps') }) {
             if ($saved[$field] -isnot [string] -or $saved[$field] -match '[\p{Cc}]') { Stop-Install 'Invalid saved launch choice; inspect the original state without discarding recovery files.' }
         }
     }
@@ -263,6 +268,16 @@ try {
     if ($DashboardCategory -and ($DashboardCategory.Length -gt 100 -or -not $DashboardCategory.Trim())) { Stop-Install 'DashboardCategory must name an existing Discussion category of at most 100 printable characters.' }
     $Model = Setting Model 'gpt-6.1-sol'
     $WebSearch = Setting WebSearch 'live'
+    $ConnectedApps = Setting ConnectedApps 'disabled'
+    $AllowedApp = if ($provided.ContainsKey('AllowedApp')) { @($provided.AllowedApp) }
+        elseif ($ConnectedApps -eq 'selected' -and $saved -and $saved.Contains('allowedApps')) { @($saved.allowedApps) } else { @() }
+    if ($ConnectedApps -cnotin @('disabled','selected','all') -or (($ConnectedApps -eq 'selected') -ne ($AllowedApp.Count -gt 0))) { Stop-Install 'ConnectedApps must be disabled, selected with AllowedApp, or all without AllowedApp.' }
+    foreach ($app in $AllowedApp) {
+        if ($app -ceq '_default' -or $app -cnotmatch '\A[A-Za-z0-9][A-Za-z0-9_-]{0,199}\z') { Stop-Install 'AllowedApp must contain stable app IDs (letters, digits, underscores or hyphens; maximum 200 characters).' }
+    }
+    $AllowedApp = @($AllowedApp | Sort-Object -Unique -CaseSensitive)
+    $appPolicySource = if ($provided.ContainsKey('ConnectedApps') -or $provided.ContainsKey('AllowedApp')) { 'explicit' }
+        elseif ($saved -and $saved.Contains('connectedApps')) { 'retained' } else { 'defaulted' }
     $PublicUrl = Setting PublicUrl
     $ListenPort = Setting ListenPort '8080'
     $ReconcileInterval = Setting ReconcileInterval '300'
@@ -363,7 +378,7 @@ try {
         brokerOrigin=$BrokerOrigin; approvalVariable=$ApprovalVariable; enrollmentProfile=$resolvedProfile; imageManifest=$ImageManifest;
         imageManifestSha256=$manifestHash; derivedDockerfile=$DerivedDockerfile; derivedDockerfileSha256=$derivedHash; runtimeImageId=$runtimeImageId;
         appId=$AppId; keyPath=$KeyPath; installationId=$InstallationId; mentionUser=$MentionUser; model=$Model; mode=$Mode; publicUrl=$PublicUrl;
-        listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; webSearch=$WebSearch; codexAuthPath=$CodexAuthPath;
+        listenPort=$ListenPort; reconcileInterval=$ReconcileInterval; webSearch=$WebSearch; connectedApps=$ConnectedApps; allowedApps=@($AllowedApp); codexAuthPath=$CodexAuthPath;
         dashboardCategory=$DashboardCategory }
     if ($saved.launchState) {
         if ($Apply) { Assert-LocalRuntimeAction Install @() $plan }
@@ -384,6 +399,8 @@ try {
     Write-Host "Image: $(if ($runtimeImageId) { $runtimeImageId } else { 'pending build' }); base: $baseImage; platform: linux/amd64; maintained compatibility: Ubuntu 26.04."
     Write-Host "Manifest: $ImageManifest; SHA256: $manifestHash; controller source: $($software.controller.source)."
     if ($DerivedDockerfile) { Write-Host "Derived Dockerfile: $DerivedDockerfile; SHA256: $derivedHash." }
+    Write-Host "Connected apps: $ConnectedApps ($appPolicySource); allowed app IDs: $($AllowedApp -join ', '). Changes apply on restart."
+    if ($ConnectedApps -eq 'all') { Write-Host 'All current and future connected apps may act as the Codex account owner in response to repository participants.' }
     Write-Host "Software: Codex $($software.agent.version), gh $($software.githubCli.version); tools: $($software.tools | ConvertTo-Json -Compress); model: $Model; tools stay pinned to the image."
     Write-Host 'Download/build size and duration are unknown; depend on cache, selected base and tools. Full source/ABI build validation occurs on Apply.'
     Write-Host "Container: repoagent-$Instance. Retain config, credentials, workspace, history, state and tools volumes; broker enrollment volume is read-only at runtime."
@@ -435,7 +452,8 @@ try {
     $plan.runtimeImageId = $runtimeImageId
     Write-PrivateJson $launchPath $plan
     $stage = 'configure and privately import enrollment'
-    $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--web-search', $WebSearch)
+    $configuration = @('configure', '--repository', $Repository, '--app-id', $AppId, "--mention-user=$MentionUser", "--model=$Model", '--mode', $Mode, '--web-search', $WebSearch, '--connected-apps', $ConnectedApps)
+    foreach ($app in $AllowedApp) { $configuration += @('--allowed-app', $app) }
     if ($DashboardCategory) { $configuration += "--dashboard-category=$DashboardCategory" }
     if ($resolvedClone) { $configuration += '--clone' }
     if ($resolvedSettings) { $configuration += '--repository-settings' }

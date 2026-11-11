@@ -10,6 +10,7 @@ public sealed record OperatorStatus(DateTimeOffset GeneratedAt, string? Reposito
 {
     /// <summary>The recorded failures' JSON as read, when they are not a list; reported as read.</summary>
     public string? FailuresAsRead { get; init; }
+    public ConnectedAppsStatus? ConnectedApps { get; init; }
 }
 
 /// <summary>One Discussion's session, what it is doing, and how many inputs wait for it.</summary>
@@ -59,4 +60,10 @@ public sealed record StatusSnapshot(string State, WorkCounts Work)
             counts.Running + counts.Pending + counts.Retrying + counts.Waiting > 0;
         return new(busy ? "busy" : "idle", counts);
     }
+}
+
+/// <summary>Private operator observation of the connected-app policy; never an account inventory.</summary>
+public sealed record ConnectedAppsStatus(string Mode, IReadOnlyList<string> AllowedApps, string Verification)
+{
+    public IReadOnlyList<string> UnavailableApps { get; init; } = [];
 }

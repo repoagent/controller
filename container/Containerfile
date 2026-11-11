@@ -47,6 +47,7 @@ COPY container/runtime.py /opt/repoagent/runtime.py
 COPY container/quick_tunnel.py /opt/repoagent/quick_tunnel.py
 COPY container/control.py /opt/repoagent/control.py
 LABEL io.repoagent.role="controller"
+LABEL io.repoagent.connected-apps-policy="1"
 LABEL org.opencontainers.image.version="__CONTROLLER_VERSION__"
 ENV HOME=/home/agent CODEX_HOME=/data/credentials/codex BROWSER=echo
 ENV PATH="/opt/repoagent/controller:/opt/repoagent/tools/bin:${PATH}"

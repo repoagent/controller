@@ -31,7 +31,28 @@ key_mount() {
   [[ -f "$key" ]] || { echo 'Configured private-key file is missing.' >&2; exit 1; }
   key_args=(--mount "type=bind,src=$key,dst=/run/secrets/github-app.pem,readonly")
 }
+app_policy_image() {
+  [[ $(docker image inspect --format '{{index .Config.Labels "io.repoagent.connected-apps-policy"}}' "$image") == 1 ]] || {
+    echo 'Selected image cannot enforce connected-app policy. Build/select a policy-capable image before startup.' >&2; exit 1;
+  }
+}
+validate_app_configuration() {
+  app_policy_image
+  local -a app_args=() mounts=()
+  while (( $# )); do
+    case "$1" in
+      --connected-apps|--allowed-app)
+        (( $# >= 2 )) && [[ "$2" != --* ]] || { echo 'Connected-app option requires a value.' >&2; exit 1; }
+        app_args+=("$1" "$2"); shift 2 ;;
+      --connected-apps=*|--allowed-app=*) app_args+=("$1"); shift ;;
+      *) shift ;;
+    esac
+  done
+  if docker volume inspect "$name-config" >/dev/null 2>&1; then mounts=(--mount "type=volume,src=$name-config,dst=/data/config,readonly"); fi
+  docker run --pull never --rm --read-only --network none --user 1000 "${mounts[@]}" "$image" validate-connected-apps "${app_args[@]}" >/dev/null
+}
 start() {
+  app_policy_image
   key_mount
   [[ $(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null || true) != true ]] || {
     echo "$name is already running."; return;
@@ -88,7 +109,7 @@ case "${1:-help}" in
   build)
     shift; exec bash "$root/scripts/build-image.sh" "$@" ;;
   setup) stopped; shift; exec bash "$root/scripts/setup-wizard.sh" --skip-build --no-start "$@" ;;
-  configure) stopped; shift; config configure "$@" ;;
+  configure) stopped; shift; validate_app_configuration "$@"; config configure "$@" ;;
   get) shift; config get "$@" ;;
   login) stopped; shift; "${base[@]}" "${interactive[@]}" "$image" login "$@" ;;
   import-codex-auth)
@@ -127,6 +148,7 @@ case "${1:-help}" in
     selected_id=${BASH_REMATCH[1]}
     exec docker exec "$selected_id" /usr/bin/python3 -E /opt/repoagent/runtime.py "$command" "$@" ;;
   status) config status ;;
+  apps) stopped; config apps ;;
   versions) config versions ;;
   state) config state ;;
   enroll) stopped; shift; config enroll "$@" ;;
@@ -163,6 +185,7 @@ Usage: ./repoagent COMMAND
   login                           Container-owned Codex device sign-in (reuses valid login)
   import-codex-auth /path/auth.json Explicitly copy an existing Codex auth cache
   skills install /path/skills.json [/path/private-source-token]
+  apps                           List account app IDs/names privately (stopped instance)
   skills | versions | check       Inspect selection/tools or check real authentication
   start | stop | restart          Operate the agent; replacement retains its volumes
   status                          Show identity, lifetime, auth health, sessions, work and recent failures (JSON)

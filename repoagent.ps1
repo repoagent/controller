@@ -97,10 +97,19 @@ function Get-RecordedConfigureArguments([string[]]$Arguments) {
         $option = '--' + [regex]::Replace($field, '[A-Z]', '-$0').ToLowerInvariant()
         $values[$option] = $launchState.currentLaunch.settings[$field]
     }
+    $appArguments = @()
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     for ($index = 0; $index -lt $Arguments.Count; $index++) {
         $parts = $Arguments[$index] -split '=', 2
         $option = $parts[0]
+        if ($option -in @('--connected-apps','--allowed-app')) {
+            $appArguments += $Arguments[$index]
+            if ($parts.Count -eq 1) {
+                $index++; if ($index -ge $Arguments.Count) { throw $invalid }
+                $appArguments += $Arguments[$index]
+            }
+            continue
+        }
         if (-not $values.ContainsKey($option) -or -not $seen.Add($option)) { throw $invalid }
         $expected = $values[$option]
         if ($option -eq '--clone') {
@@ -123,7 +132,7 @@ function Get-RecordedConfigureArguments([string[]]$Arguments) {
         if ($values[$option] -is [bool]) { if ($values[$option]) { $canonical += $option } }
         elseif ($null -ne $values[$option]) { $canonical += "$option=$($values[$option])" }
     }
-    return $canonical
+    return @($canonical) + @($appArguments)
 }
 
 function Test-AgentRunning {
@@ -160,6 +169,7 @@ function Get-KeyMount {
 }
 
 function Start-Agent {
+    Assert-AppPolicyImage $image
     Test-CompatibleRuntime
     if (Test-AgentRunning) { Write-Host "$containerName is already running."; return }
     $keyMount = Get-CredentialMount
@@ -238,6 +248,7 @@ if ($Command -eq 'configure') {
     Import-Module "$PSScriptRoot/scripts/private-file.psm1"
     $privateBytes = Read-PrivateFileBytes $CommandArguments[0]
 }
+if ($Command -eq 'configure') { Assert-ConnectedAppConfiguration $configArguments }
 if ($Command -notin @('help', 'build', 'setup')) { Initialize-Identity $configureBroker ($Command -eq 'configure') }
 if ($Command -eq 'configure' -and $brokerMode -and -not $configureBroker) { throw 'Broker instances require broker configuration; use a fresh instance for direct App mode.' }
 
@@ -264,6 +275,7 @@ switch ($Command) {
         Assert-Stopped
         $recordedArguments = Get-RecordedConfigureArguments $configArguments
         Invoke-Config configure @recordedArguments
+        Save-ConnectedAppChoices $configArguments
         if ($configureBroker) { Import-Enrollment $privateBytes }
     }
     'import-enrollment' { Import-Enrollment $privateBytes }
@@ -289,6 +301,7 @@ switch ($Command) {
     'activity' { Invoke-RunningCommand }
     'remote' { Invoke-RunningCommand }
     'status' { Invoke-Config status }
+    'apps' { Assert-Stopped; Invoke-Config apps }
     'versions' { Invoke-Config versions }
     'state' { Invoke-Config state }
     'enroll' { Assert-Stopped; Invoke-Config enroll @CommandArguments }
@@ -309,6 +322,7 @@ switch ($Command) {
         Write-Host @'
 Usage: .\repoagent.ps1 COMMAND [arguments]
   build | setup | configure | get | login | import-codex-auth | import-enrollment
+  apps (private account app ID/name discovery; stopped instance)
   check | start | stop | restart | logs [--follow] | logs --retained | status | versions | state
   activity [--discussion NUMBER_OR_URL] [--follow] [--limit 1..100] [--cursor CURSOR] [--format text|json]
   remote enable|pair|status|clients|disable [--format text|json] | remote revoke --client ID

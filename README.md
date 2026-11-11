@@ -7,6 +7,7 @@ The controller currently supports **GitHub Discussions with Codex**, with one co
 ## Supported features
 
 - **Shared conversations.** Everyone in a Discussion works with the same agent session across its comment threads. Follow-up messages retain the conversation's context, including after controller restarts when its storage is preserved.
+- **Explicit connected-app access.** Codex account apps are disabled by default. Opt into selected apps or all apps for each instance, including dedicated accounts. [App policy and agent-assisted setup](docs/connected-apps.md) explains authority, upgrades and the setup skill.
 - **Discussion activity.** The agent receives new and edited messages, reactions and who added them, answer and state changes, and confirmed comment or reply deletions.
 - **Optional pictures.** An explicitly approved image-publishing profile lets the agent store images and editable diagram sources on a separate `repoagent-assets` branch and embed them in Discussions. This requires repository-wide Contents write; see [setup and verification limits](docs/discussion-images.md).
 - **Flexible conversation starts.** Mention the App bot or a configured mention account such as `@repoagent`, select a Discussion by URL, or automatically start sessions for new Discussions in chosen categories.

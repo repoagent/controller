@@ -511,7 +511,7 @@ public sealed class BrokerLifetimeTests
           start_child()
           if s['stage'] not in ('teardown','accepted'):continue
          if 'id' not in request:continue
-         result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{}} if method=='config/read' else {'turn':{'id':'agent-turn'}} if method=='turn/start' else {'thread':{'id':'agent-T1','status':{'type':'idle'}}}
+         result={'codexHome':os.getcwd()} if method=='initialize' else {'data':[{'model':'gpt-6.1-sol','isDefault':True,'defaultReasoningEffort':'low','supportedReasoningEfforts':[{'reasoningEffort':'low'}]}]} if method=='model/list' else {'config':{'features':{'apps':False},'apps':{'_default':{'enabled':False}}}} if method=='config/read' else {'turn':{'id':'agent-turn'}} if method=='turn/start' else {'thread':{'id':'agent-T1','status':{'type':'idle'}}}
          print(json.dumps({'id':request['id'],'result':result}),flush=True)
          if method=='turn/start' and s['stage']=='accepted':
           print(json.dumps({'method':'thread/status/changed','params':{'threadId':'agent-T1','status':{'type':'active'}}}),flush=True)

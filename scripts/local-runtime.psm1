@@ -377,6 +377,27 @@ function Test-LaunchEquality($Left, $Right) {
     $b = [Text.Json.Nodes.JsonNode]::Parse(($Right | ConvertTo-Json -Depth 8 -Compress))
     return [Text.Json.Nodes.JsonNode]::DeepEquals($a, $b)
 }
+function Assert-AppPolicyImage([string]$Reference) {
+    $capability = Invoke-Docker image inspect --format '{{index .Config.Labels `io.repoagent.connected-apps-policy`}}' $Reference
+    if ($capability -cne '1') { throw 'Selected image cannot enforce connected-app policy. Build/select a policy-capable image; agent startup and rollback to older images are refused.' }
+}
+function Assert-ConnectedAppConfiguration([string[]]$Arguments) {
+    $appArguments = @()
+    for ($index = 0; $index -lt $Arguments.Count; $index++) {
+        $parts = $Arguments[$index] -split '=', 2
+        if ($parts[0] -notin @('--connected-apps','--allowed-app')) { continue }
+        $appArguments += $Arguments[$index]
+        if ($parts.Count -eq 1) {
+            $index++; if ($index -ge $Arguments.Count -or $Arguments[$index].StartsWith('--')) { throw 'Connected-app option requires a value.' }
+            $appArguments += $Arguments[$index]
+        }
+    }
+    Assert-AppPolicyImage $image
+    $mounts = @()
+    if (Get-Resource volume "$containerName-config") { $mounts = @('--mount', "type=volume,src=$containerName-config,dst=/data/config,readonly") }
+    # No named volumes are created or written. This uses the runtime's one policy validator before Create=true.
+    Invoke-Docker run --pull never --rm --read-only --network none --user 1000 @mounts --entrypoint /usr/bin/python3 $image -E /opt/repoagent/runtime.py validate-connected-apps @appArguments | Out-Null
+}
 function Confirm-LocalImage([string]$Reference) {
     $id = Invoke-Docker image inspect --format '{{.Id}}' $Reference
     $role = Invoke-Docker image inspect --format '{{index .Config.Labels `io.repoagent.role`}}:{{.Config.User}}' $id
@@ -435,6 +456,24 @@ function Write-LaunchMirror($Record) {
     $null = Initialize-PrivateDirectory $hostDirectory
     Write-PrivateJson $launchPath $mirror
 }
+# Account-app intent is mutable operator configuration, separate from recorded image/broker launch choices.
+function Save-ConnectedAppChoices([string[]]$Arguments) {
+    if (-not $mirror) { return }
+    $mode = $null
+    $apps = @()
+    $hasApps = $false
+    for ($index = 0; $index -lt $Arguments.Count; $index++) {
+        $parts = $Arguments[$index] -split '=', 2
+        if ($parts[0] -notin @('--connected-apps','--allowed-app')) { continue }
+        $value = if ($parts.Count -eq 2) { $parts[1] } else { $index++; $Arguments[$index] }
+        if ($parts[0] -eq '--connected-apps') { $mode = $value } else { $hasApps = $true; $apps += $value }
+    }
+    if ($null -eq $mode -and -not $hasApps) { return }
+    if ($null -ne $mode) { $script:mirror['connectedApps'] = $mode }
+    if ($hasApps) { $script:mirror['allowedApps'] = @($apps | Sort-Object -Unique -CaseSensitive) }
+    elseif ($mode -ne 'selected') { $script:mirror['allowedApps'] = @() }
+    Write-PrivateJson $launchPath $mirror
+}
 function Invoke-LocalUpdate([hashtable]$Options) {
     foreach ($option in $Options.Keys) {
         if ($option -notin @('Action','Image','Rollback','Instance','StateDirectory','Apply','NonInteractive')) { throw 'Update accepts only instance/state, Image or Rollback, Apply and NonInteractive.' }
@@ -446,6 +485,7 @@ function Invoke-LocalUpdate([hashtable]$Options) {
     if (-not $mirror) { $script:mirror = [ordered]@{ instance=$instance; repository=$record.currentLaunch.binding.repository; runtimeImageId=$record.currentImage; launchState=$record } }
     if ($Options.Image -and $Options.Image -cnotmatch '^(sha256:[a-f0-9]{64}|[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64})$') { throw 'Select an immutable local image ID or repository digest; no pull is performed.' }
     $target = if ($Options.Rollback) { $mirror.launchState.priorImage } else { Confirm-LocalImage $Options.Image }
+    Assert-AppPolicyImage $target
     if ($Options.Rollback -and $Options.Apply) { $binding = $record.currentLaunch.binding } else {
         $approval = Read-LocalJson (Join-Path $hostDirectory 'approval.json')
         $kind = Get-ApprovalStateKind $approval
@@ -464,6 +504,7 @@ function Invoke-LocalUpdate([hashtable]$Options) {
     if ($Options.Rollback) { $target = $record.priorImage; if (-not $target) { throw 'No authoritative prior image is recorded.' } }
     else { Assert-LocalRuntimeAction Update @() }
     $target = Confirm-LocalImage $target
+    Assert-AppPolicyImage $target
     $marker = [ordered]@{ schemaVersion=1; state='disabled'; instance=$instance; image=$image; binding=$binding }
     if ((Invoke-LocalHelper inspect).marker) { throw 'Selected instance is disabled.' }
     $verified = Invoke-LocalHelper verify $marker
@@ -520,7 +561,7 @@ function Invoke-LocalUpdate([hashtable]$Options) {
     } catch { throw 'Update is unconfirmed. Preserve all data and use explicit Update -Rollback -Apply with the original state directory.' }
 }
 
-Export-ModuleMember -Function Invoke-LocalUpdate, Initialize-LocalRuntime, Assert-CompatibleContainer, Get-OwnershipArguments, Assert-LocalRuntimeAction, Stop-LocalRuntime, Remove-LocalRuntime, Invoke-LocalUninstall
+Export-ModuleMember -Function Assert-AppPolicyImage, Assert-ConnectedAppConfiguration, Save-ConnectedAppChoices, Invoke-LocalUpdate, Initialize-LocalRuntime, Assert-CompatibleContainer, Get-OwnershipArguments, Assert-LocalRuntimeAction, Stop-LocalRuntime, Remove-LocalRuntime, Invoke-LocalUninstall
 
 # Reconcile durable host and volume intent before any recovery can contact GitHub or the broker.
 function Assert-ReauthorizationRecovery($Journal, $State) {

@@ -31,7 +31,7 @@ INVENTORY = '/opt/repoagent/image-inventory.json'
 ENROLLMENT_VARIABLE = 'REPOAGENT_ENROLLMENT'
 # Nonsecret configuration supplied with it, one REPOAGENT_<OPTION> per configure option.
 EXTERNAL_OPTIONS = ('repository', 'app-id', 'broker-url', 'clone', 'repository-settings', 'image-publishing', 'installation-id', 'repository-id',
-                    'mention-user', 'model', 'web-search', 'mode', 'public-url', 'listen-port',
+                    'mention-user', 'model', 'web-search', 'connected-apps', 'allowed-app', 'mode', 'public-url', 'listen-port',
                     'reconcile-interval', 'dashboard-category')
 FLAG_OPTIONS = ('clone', 'repository-settings', 'image-publishing')
 
@@ -47,15 +47,33 @@ def run(args, **kwargs):
 def settings():
     if not CONFIG.is_file():
         raise ValueError('Run ./repoagent setup first (or configure for noninteractive setup).')
-    return json.loads(CONFIG.read_text())
+    config = json.loads(CONFIG.read_text())
+    policy_file = CONFIG.with_name('connected-apps.json')
+    if policy_file.exists():
+        policy = json.loads(policy_file.read_text())
+        if not isinstance(policy, dict) or set(policy) != {'connectedApps', 'allowedApps'}:
+            raise ValueError('Invalid connected-app policy file.')
+        connected_apps(policy['connectedApps'], policy['allowedApps'])
+        config.update(policy)
+    return config
 
 
 def save(value):
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
     temporary = CONFIG.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value, indent=2) + '\n')
+    policy = {key: value[key] for key in ('connectedApps', 'allowedApps') if key in value}
+    runtime = {key: item for key, item in value.items() if key not in policy}
+    temporary.write_text(json.dumps(runtime, indent=2) + '\n')
     temporary.chmod(0o600)
     temporary.replace(CONFIG)
+    # Local account authority is independent of the immutable image/broker launch snapshot.
+    if policy:
+        mode, allowed = connected_apps(policy.get('connectedApps', 'disabled'), policy.get('allowedApps', []))
+        policy_file = CONFIG.with_name('connected-apps.json')
+        policy_temporary = policy_file.with_suffix('.tmp')
+        policy_temporary.write_text(json.dumps({'connectedApps': mode, 'allowedApps': allowed}, indent=2) + '\n')
+        policy_temporary.chmod(0o600)
+        policy_temporary.replace(policy_file)
 
 
 def status_port(config):
@@ -63,9 +81,29 @@ def status_port(config):
     return 8082 if config.get('listenPort', 8080) == 8081 else 8081
 
 
+def connected_apps(mode, allowed):
+    if mode not in ('disabled', 'selected', 'all'):
+        raise ValueError('Connected apps must be disabled, selected or all.')
+    if not isinstance(allowed, list) or any(not isinstance(app, str) or app == '_default' or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,199}', app) for app in allowed):
+        raise ValueError('Allowed apps must be stable app IDs (letters, digits, underscores or hyphens; maximum 200 characters).')
+    if (mode == 'selected') != bool(allowed):
+        raise ValueError('Only selected connected-apps mode requires --allowed-app; other modes reject it.')
+    return mode, sorted(set(allowed))
+
+
+def selected_app_policy(args, config):
+    mode = args.connected_apps if args.connected_apps is not None else config.get('connectedApps', 'disabled')
+    allowed = args.allowed_app if args.allowed_app is not None else (config.get('allowedApps', []) if mode == 'selected' else [])
+    return connected_apps(mode, allowed)
+
+
 def bridge_args(config, *, check_auth=False, injected=False):
+    mode, allowed = connected_apps(config.get('connectedApps', 'disabled'), config.get('allowedApps', []))
     args = ['--repo', config['repository'], '--app-id', config['appId'],
             '--workspace', '/workspace', '--state', STATE]
+    args += ['--connected-apps', mode]
+    for app in allowed:
+        args += ['--allowed-app', app]
     if config.get('brokerUrl'):
         args += ['--broker-url', config['brokerUrl']]
         args += ['--enrollment-environment', ENROLLMENT_VARIABLE] if injected else ['--enrollment-file', '/data/enrollment/enrollment.json']
@@ -142,6 +180,7 @@ def prepare_codex_home():
 
 def configure(args, *, persist=True):
     config = settings() if CONFIG.exists() else {}
+    mode, allowed = selected_app_policy(args, config)
     # Legacy saved choices no longer affect startup; rewritten settings omit the obsolete field.
     config.pop('toolUpdates', None)
     if not re.fullmatch(r'[\w.-]+/[\w.-]+', args.repository):
@@ -213,6 +252,7 @@ def configure(args, *, persist=True):
         config.pop('repositorySettings', None)
     if image_publishing:
         config['imagePublishing'] = True
+    config.update(connectedApps=mode, allowedApps=allowed)
     config.update(clone=clone, repository=args.repository, appId=args.app_id, keyPath=args.key_path,
                   brokerUrl=broker_url,
                   installationId=args.installation_id, mentionUser=args.mention_user, model=args.model, webSearch=args.web_search,
@@ -223,6 +263,7 @@ def configure(args, *, persist=True):
         save(config)
     # The container is the operator-selected execution boundary. The bridge has no approval UI.
     (CODEX / 'config.toml').write_text('model = ' + json.dumps(args.model) + '\nweb_search = ' + json.dumps(args.web_search) + '\napproval_policy = "never"\nsandbox_mode = "danger-full-access"\ncli_auth_credentials_store = "file"\n')
+    print(f'Connected apps: {mode}; allowed app IDs: {allowed}. Changes apply on restart.', flush=True)
     print(f"{'Configured' if persist else 'External configuration (not saved):'} {args.repository}; App {args.app_id}; model {args.model}.", flush=True)
     return config
 
@@ -247,6 +288,8 @@ def runtime_settings(injected):
             if value not in ('true', 'false'):
                 raise ValueError(external_name(option) + ' must be true or false.')
             arguments += ['--' + option] if value == 'true' else []
+        elif option == 'allowed-app':
+            arguments.extend('--allowed-app=' + app for app in value.split(','))
         elif value or option in ('mention-user', 'public-url'):
             arguments.append(f'--{option}={value}')
     try:
@@ -376,6 +419,8 @@ def configure_arguments(configure_parser):
     configure_parser.add_argument('--repository-id', type=int)
     configure_parser.add_argument('--mention-user', default='repoagent')
     configure_parser.add_argument('--model', default='gpt-6.1-sol')
+    configure_parser.add_argument('--connected-apps', choices=['disabled', 'selected', 'all'])
+    configure_parser.add_argument('--allowed-app', action='append')
     configure_parser.add_argument('--web-search', choices=['live', 'cached', 'disabled'], default='live')
     configure_parser.add_argument('--mode', choices=['polling', 'fixed-url', 'quick-tunnel'], default='polling')
     configure_parser.add_argument('--public-url', default='')
@@ -400,10 +445,13 @@ def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='command', required=True)
     configure_arguments(sub.add_parser('configure', allow_abbrev=False))
+    validation = sub.add_parser('validate-connected-apps', allow_abbrev=False)
+    validation.add_argument('--connected-apps', choices=['disabled', 'selected', 'all'])
+    validation.add_argument('--allowed-app', action='append')
     get = sub.add_parser('get'); get.add_argument('key')
     login = sub.add_parser('login')
     login.add_argument('--non-interactive', action='store_true')
-    for name in ['import-enrollment', 'versions', 'check', 'start', 'participant-login', 'participant-identity', 'state', 'skills', 'status', 'logs', 'supply-codex-auth']:
+    for name in ['import-enrollment', 'apps', 'versions', 'check', 'start', 'participant-login', 'participant-identity', 'state', 'skills', 'status', 'logs', 'supply-codex-auth']:
         sub.add_parser(name)
     skills = sub.add_parser('install-skills'); skills.add_argument('selection'); skills.add_argument('--token-file')
     enroll = sub.add_parser('enroll'); enroll.add_argument('urls', nargs='+')
@@ -411,7 +459,16 @@ def main():
     select_tools()
     if args.command == 'import-enrollment': import_enrollment()
     elif args.command == 'configure': configure(args)
-    elif args.command == 'get': print(settings().get(args.key) or '')
+    elif args.command == 'validate-connected-apps':
+        mode, allowed = selected_app_policy(args, settings() if CONFIG.exists() else {})
+        print(json.dumps({'connectedApps': mode, 'allowedApps': allowed}))
+    elif args.command == 'get':
+        value = settings().get(args.key)
+        print('\n'.join(value) if isinstance(value, list) else value or '')
+    elif args.command == 'apps':
+        prepare_codex_home()
+        supply = ['--codex-auth', str(CODEX_SUPPLY)] if CODEX_SUPPLY.is_file() else []
+        run(CONTROLLER + ['apps', '--workspace', '/workspace'] + supply)
     elif args.command == 'versions':
         print('RepoAgent container; uid=' + str(os.getuid()), flush=True)
         version = subprocess.check_output(CONTROLLER + ['--version'], text=True).strip()

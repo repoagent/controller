@@ -194,7 +194,8 @@ finish() {
 # ──────────────────────────────────────────────────────────────────────────
 # STAGES: repeatable installation and setup. Keep the wizard library unchanged.
 run_wizard() {
-  local -a build_options=()
+  local -a build_options=() allowed_apps=()
+  local allowed_explicit=false app_policy_source=defaulted
   local root cli skip_build=false no_start=false non_interactive=false option variable
   root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
   cli="$root/repoagent"
@@ -219,6 +220,8 @@ when available (otherwise offers device sign-in), verifies access and starts Doc
   --listen-port PORT            Default: 8080
   --reconcile-interval SECONDS  Default: 300
   --web-search live|cached|disabled  Default: live
+  --connected-apps disabled|selected|all  Default: disabled; all includes future apps
+  --allowed-app ID              Repeat with selected mode; account app ID
   --image-manifest PATH         Versioned nonsecret image manifest
   --derived-dockerfile PATH     Optional user-owned image extension
   --build-arg NAME=VALUE        Nonsecret derived build argument (repeatable)
@@ -233,6 +236,10 @@ USAGE
         (( $# >= 2 )) || { echo "$1 requires a value" >&2; return 1; }
         option=$1; [[ "$option" != --image-manifest ]] || option=--manifest
         build_options+=("$option" "$2"); shift 2; continue ;;
+      --allowed-app)
+        (( $# >= 2 )) || { echo '--allowed-app requires an ID' >&2; return 1; }
+        allowed_explicit=true; allowed_apps+=("$2"); shift 2; continue ;;
+      --connected-apps) variable=CONNECTED_APPS ;;
       --skip-build) skip_build=true; shift; continue ;;
       --no-start) no_start=true; shift; continue ;;
       --non-interactive) non_interactive=true; shift; continue ;;
@@ -254,6 +261,16 @@ USAGE
   export REPOAGENT_INSTANCE=${REPOAGENT_INSTANCE:-default}
   [[ "$REPOAGENT_INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || { echo 'Invalid REPOAGENT_INSTANCE' >&2; return 1; }
 
+  # Reading defaults must not create fresh Docker volumes or pull an image before policy validation.
+  _saved_app_policy() {
+    command -v docker >/dev/null || return 0
+    docker volume inspect "repoagent-$REPOAGENT_INSTANCE-config" >/dev/null 2>&1 || return 0
+    docker image inspect "${REPOAGENT_IMAGE:-repoagent:local}" >/dev/null 2>&1 || {
+      echo 'Saved app policy needs a local RepoAgent image for inspection. Build it first, then rerun setup.' >&2; return 1;
+    }
+    "$cli" get "$1"
+  }
+
   # Values passed explicitly skip prompts. Saved container settings remain defaults.
   _existing() {
     local field default=''
@@ -264,13 +281,16 @@ USAGE
       PUBLIC_URL) field=publicUrl ;; LISTEN_PORT) field=listenPort; default=8080 ;;
       RECONCILE_INTERVAL) field=reconcileInterval; default=300 ;;
       WEB_SEARCH) field=webSearch; default=live ;;
+      CONNECTED_APPS) field=connectedApps; default=disabled ;;
+      chosen_apps) return 0 ;;
       CODEX_AUTH_PATH)
         local auth=${CODEX_HOME:-$HOME/.codex}/auth.json
         [[ ! -f "$auth" ]] || printf '%s' "$auth"
         return 0 ;;
     esac
     local saved
-    saved=$("$cli" get "$field" 2>/dev/null || true)
+    if [[ "$1" == CONNECTED_APPS ]]; then saved=$(_saved_app_policy "$field") || return 1
+    else saved=$("$cli" get "$field" 2>/dev/null || true); fi
     printf '%s' "${saved:-$default}"
   }
   collect() {
@@ -282,6 +302,31 @@ USAGE
       ask "$key" "$prompt${default:+ [$default]}:" || { echo 'Input ended; rerun with arguments or use --non-interactive.' >&2; return 1; }
     fi
   }
+
+  # Resolve app authority before image builds or configuration writes.
+  if [[ ${CONNECTED_APPS+x} ]] || $allowed_explicit; then app_policy_source=explicit
+  elif [[ -n $(_saved_app_policy connectedApps) ]]; then app_policy_source=retained; fi
+  say 'Connected apps can read private data or send messages as the Codex account owner when repository participants request work.'
+  collect CONNECTED_APPS 'Connected apps: disabled (recommended), selected, or all (includes future apps)'
+  case "$CONNECTED_APPS" in disabled|selected|all) ;; *) echo 'Invalid connected-apps mode' >&2; return 1 ;; esac
+  if [[ "$CONNECTED_APPS" == selected ]] && ! $allowed_explicit; then
+    local saved_app
+    while IFS= read -r saved_app; do [[ -z "$saved_app" ]] || allowed_apps+=("$saved_app"); done < <(_saved_app_policy allowedApps)
+    if (( ${#allowed_apps[@]} == 0 )) && ! $non_interactive; then
+      local chosen_apps
+      ask chosen_apps 'Stable app IDs, comma separated (use repoagent apps on a stopped signed-in instance):' || return 1
+      IFS=',' read -r -a allowed_apps <<< "$chosen_apps"
+    fi
+  fi
+  if { [[ "$CONNECTED_APPS" == selected ]] && (( ${#allowed_apps[@]} == 0 )); } ||
+     { [[ "$CONNECTED_APPS" != selected ]] && (( ${#allowed_apps[@]} != 0 )); }; then
+    echo 'Only selected connected-apps mode requires --allowed-app; other modes reject it.' >&2; return 1
+  fi
+  local allowed_id
+  for allowed_id in "${allowed_apps[@]}"; do
+    [[ "$allowed_id" != _default && "$allowed_id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$ ]] || { echo 'Invalid allowed-app ID' >&2; return 1; }
+  done
+  say "Connected apps: $CONNECTED_APPS ($app_policy_source); allowed IDs: ${allowed_apps[*]:-none}. Applies on restart."
 
   TOTAL_STAGES=5
   if $non_interactive; then say 'RepoAgent installation: 5 stages; noninteractive mode.'
@@ -330,7 +375,8 @@ USAGE
   }
   local args=(configure --repository "$REPOSITORY" --app-id "$APP_ID" --key-path "$KEY_PATH"
     "--mention-user=$MENTION_USER" --model "$MODEL" --mode "$MODE"
-    --web-search "$WEB_SEARCH")
+    --web-search "$WEB_SEARCH" --connected-apps "$CONNECTED_APPS")
+  for allowed_id in "${allowed_apps[@]}"; do args+=(--allowed-app "$allowed_id"); done
   if [[ "$MODE" != polling ]]; then
     say 'Webhook modes also require repository Webhooks: read and write; approve the installation permissions.'
     collect LISTEN_PORT 'Listener port'

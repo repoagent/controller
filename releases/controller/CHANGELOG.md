@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Account-connected apps default to disabled, including existing installations without an explicit policy. Operators can allow selected app IDs or all current and future apps. Reconfigure and restart to opt in. Private app discovery/status and the `setup-repoagent` skill explain and verify account authority.
+
 ## [2.2.0](https://github.com/repoagent/controller/compare/controller-v2.1.0...controller-v2.2.0) (2026-11-07)
 
 

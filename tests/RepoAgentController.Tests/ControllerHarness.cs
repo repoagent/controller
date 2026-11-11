@@ -613,7 +613,7 @@ static class ControllerHarness
                             "turn/start" => new JsonObject { ["turn"] = new JsonObject { ["id"] = "T" + (accepted.Count + 1), ["status"] = "inProgress" } },
                             // One selectable model with agent defaults, as the pinned bundled catalogue reports it.
                             "model/list" => new JsonObject { ["data"] = new JsonArray(new JsonObject { ["model"] = "gpt-6.1-sol", ["isDefault"] = true, ["defaultReasoningEffort"] = "low", ["supportedReasoningEfforts"] = new JsonArray(new JsonObject { ["reasoningEffort"] = "low" }) }) },
-                            "config/read" => new JsonObject { ["config"] = new JsonObject() },
+                            "config/read" => new JsonObject { ["config"] = JsonNode.Parse("""{"features":{"apps":false},"apps":{"_default":{"enabled":false}}}""") },
                             _ => new JsonObject()
                         };
                         Send(new JsonObject { ["id"] = id.DeepClone(), ["result"] = result });

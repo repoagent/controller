@@ -1,5 +1,7 @@
 # Guided PowerShell local installation
 
+Account-connected apps default to disabled, including legacy saved configurations. Configure `disabled`, `selected` with app IDs, or `all` explicitly; see [connected-app access and setup skill](connected-apps.md) for flags, private discovery, upgrade behavior and verification. Stop the instance before reconfiguration.
+
 Standard issue and pull request reading is included in new setup-v5 approvals, using the existing profiles and runtime protocols. Older approvals keep their original grants. Use [in-place reauthorization](issue-pr-context.md) to add reading while preserving the installation and its conversations.
 
 Use PowerShell 7.4 or later and Docker Desktop with Linux containers (or Docker on Linux). The supported controller image uses Ubuntu 26.04, linux/amd64. Host `gh` must already be authenticated for direct repository Agent-variable writes. Supply a trusted broker HTTPS origin and an existing Codex `auth.json`, or explicitly request container device sign-in. This workflow does not install or approve the shared GitHub App on your behalf; the selected repository must already have a compatible App installation.
