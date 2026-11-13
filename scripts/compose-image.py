@@ -21,7 +21,7 @@ ARTIFACTS = {
     'codex': ('0.168.0', 'https://github.com/openai/codex/releases/download/rust-v0.168.0/codex-x86_64-unknown-linux-musl.tar.gz', 'b983beb86dcc606cead6ee226ae2ab08e7e6eee07df4cb8d16f441f107b9e2ef'),
     'codex-code-mode-host': ('0.168.0', 'https://github.com/openai/codex/releases/download/rust-v0.168.0/codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz', '4e00a7d5eec14b50be2f21f11feb13dcbaa6dd500b95fc1f9ba4871ec44af18e'),
     'gh': ('2.104.0', 'https://github.com/cli/cli/releases/download/v2.104.0/gh_2.104.0_linux_amd64.tar.gz', '98cb101ad87dbbd3f6b2f2bfcbd43197ccd07643140121d8a9cfaa91eadbc24e'),
-    'cloudflared': ('2026.10.7', 'https://github.com/cloudflare/cloudflared/releases/download/2026.10.7/cloudflared-linux-amd64', '1f99fb518b83dec2ba8d870a7cc991d82a77e6196295a3d2754ba17ab9f91872'),
+    'cloudflared': ('2026.11.0', 'https://github.com/cloudflare/cloudflared/releases/download/2026.11.0/cloudflared-linux-amd64', '51f7c68b57ed7269164075d7e789efce5b59355982f06392deeb037d982a51fd'),
 }
 # The same plain inventory drives exact-file host mounts and context construction.
 def source_files(root):
