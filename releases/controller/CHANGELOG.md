@@ -4,6 +4,23 @@
 
 - Account-connected apps default to disabled, including existing installations without an explicit policy. Operators can allow selected app IDs or all current and future apps. Reconfigure and restart to opt in. Private app discovery/status and the `setup-repoagent` skill explain and verify account authority.
 
+## [2.3.0](https://github.com/repoagent/controller/compare/controller-v2.2.0...controller-v2.3.0) (2026-11-14)
+
+
+### Features
+
+* **controller:** require explicit opt-in for connected apps ([2e23602](https://github.com/repoagent/controller/commit/2e23602cb7ce774f61c5330200e499a8f3766e71)), refs [#361](https://github.com/repoagent/controller/issues/361)
+
+
+### Bug Fixes
+
+* **controller:** refresh bundled cloudflared from 2026.10.7 to 2026.11.0 ([1dc20c4](https://github.com/repoagent/controller/commit/1dc20c4ea394a43ec68f0645082c339e059d386e))
+* **controller:** refresh bundled Codex from 0.167.0 to 0.167.1 ([92635be](https://github.com/repoagent/controller/commit/92635bea25c608acd1527069842eb5e78dd8ae5f))
+* **controller:** refresh bundled Codex from 0.167.1 to 0.167.2 ([90be89c](https://github.com/repoagent/controller/commit/90be89c29bca12f8d879cef2f2e839655fee7f57))
+* **controller:** refresh bundled Codex from 0.167.2 to 0.168.0 ([50bb45e](https://github.com/repoagent/controller/commit/50bb45e4ed357ef83b5dec6dea932f768e3ca0c7))
+* **controller:** refresh bundled Codex from 0.168.0 to 0.169.0 ([4fb088b](https://github.com/repoagent/controller/commit/4fb088b0580cfd17d23007e832fe7f33a6d50e13))
+* **controller:** refresh bundled gh from 2.103.3 to 2.104.0 ([5166ef4](https://github.com/repoagent/controller/commit/5166ef424b274ccfd06b855479b14f779b533e71))
+
 ## [2.2.0](https://github.com/repoagent/controller/compare/controller-v2.1.0...controller-v2.2.0) (2026-11-07)
 
 
