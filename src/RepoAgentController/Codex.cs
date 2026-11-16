@@ -184,7 +184,8 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
         if (connectedApps.Mode == "selected")
         {
             using var discovery = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            discovery.CancelAfter(TimeSpan.FromSeconds(30));
+            // Codex allows 90 seconds to refresh accessible apps and the directory.
+            discovery.CancelAfter(TimeSpan.FromSeconds(100));
             JsonArray apps;
             try { apps = await ListApps(discovery.Token); }
             catch (Exception error) when (!ct.IsCancellationRequested && error is IOException or OperationCanceledException)
@@ -230,7 +231,7 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
         string? cursor = null;
         do
         {
-            var page = await Request("app/list", Json.Object(("cursor", cursor), ("forceRefetch", true)), ct);
+            var page = await Request("app/list", Json.Object(("cursor", cursor), ("forceRefetch", cursor is null)), ct);
             if (page["data"] is not JsonArray data) throw new IOException("Agent app/list returned no catalogue");
             foreach (var app in data) apps.Add(app?.DeepClone());
             cursor = page["nextCursor"].OptionalText();
@@ -433,7 +434,7 @@ sealed partial class Codex : IAgentRuntime, IAgentActivity, IAsyncDisposable
                 await Write(Json.Object(("id", id), ("method", method), ("params", parameters)), ct, preserveFrame: inspection || remote, cancelWaiting: remote);
                 // Viewer deadlines stop awaiting in the core. Retain an issued read until its reply/disconnect so
                 // a slow provider cannot accumulate work beyond the two inspection slots after repeated timeouts.
-                return inspection ? await completion.Task : await completion.Task.WaitAsync(TimeSpan.FromSeconds(60), ct);
+                return inspection ? await completion.Task : await completion.Task.WaitAsync(TimeSpan.FromSeconds(method == "app/list" ? 95 : 60), ct);
             }
             finally { pending.TryRemove(id, out _); }
         }

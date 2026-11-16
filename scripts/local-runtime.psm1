@@ -561,7 +561,7 @@ function Invoke-LocalUpdate([hashtable]$Options) {
     } catch { throw 'Update is unconfirmed. Preserve all data and use explicit Update -Rollback -Apply with the original state directory.' }
 }
 
-Export-ModuleMember -Function Assert-AppPolicyImage, Assert-ConnectedAppConfiguration, Save-ConnectedAppChoices, Invoke-LocalUpdate, Initialize-LocalRuntime, Assert-CompatibleContainer, Get-OwnershipArguments, Assert-LocalRuntimeAction, Stop-LocalRuntime, Remove-LocalRuntime, Invoke-LocalUninstall
+Export-ModuleMember -Function Get-Resource, Assert-AppPolicyImage, Assert-ConnectedAppConfiguration, Save-ConnectedAppChoices, Invoke-LocalUpdate, Initialize-LocalRuntime, Assert-CompatibleContainer, Get-OwnershipArguments, Assert-LocalRuntimeAction, Stop-LocalRuntime, Remove-LocalRuntime, Invoke-LocalUninstall
 
 # Reconcile durable host and volume intent before any recovery can contact GitHub or the broker.
 function Assert-ReauthorizationRecovery($Journal, $State) {

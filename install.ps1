@@ -187,7 +187,7 @@ function Invoke-Runtime([string[]]$Arguments) {
 function Show-Binding($Binding) {
     # Only bounded public identity fields are suitable for a transcript. The native
     # consumer remains responsible for validating the frozen credential itself.
-    Assert-Text $Binding.enrollmentId '\A[0-9a-f]{32}\z'
+    Assert-Text $Binding.enrollmentId '\A[A-Za-z0-9_-]{1,128}\z'
     Assert-Id $Binding.appId; Assert-Id $Binding.installationId
     Write-Host "Saved controller enrollment: $($Binding.enrollmentId); App: $($Binding.appId); installation: $($Binding.installationId); authorization is checked on Apply."
 }

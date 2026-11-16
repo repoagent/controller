@@ -73,7 +73,7 @@ public static class BridgeCommand
                 var home = Codex.PrivateHome("App discovery");
                 if (result.GetValue(appsAuth) is { } supply) CodexCredentials.Open(supply.FullName).Install();
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeout.CancelAfter(TimeSpan.FromSeconds(60));
+                timeout.CancelAfter(TimeSpan.FromSeconds(120));
                 await using var agent = new Codex(result.GetValue(appsWorkspace)!.FullName, AppGitHubCommand.FindExecutable("gh"),
                     Path.Combine(home, "app-discovery-gh"), suppliedCredentials: result.GetValue(appsAuth) is not null, connectedApps: new("all", []));
                 await agent.Initialize(timeout.Token);
