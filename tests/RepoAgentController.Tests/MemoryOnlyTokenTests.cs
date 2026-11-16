@@ -97,8 +97,19 @@ public sealed class MemoryOnlyTokenTests
         var canary = Encoding.UTF8.GetBytes(Canary);
         foreach (var file in Directory.EnumerateFiles(fixture.Directory, "*", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = 0 }))
         {
-            if (new FileInfo(file).Length == 0) continue; // Held lease files are empty and exclusively locked.
-            Assert.False(File.ReadAllBytes(file).AsSpan().IndexOf(canary) >= 0, "Token persisted in " + Path.GetRelativePath(fixture.Directory, file));
+            byte[] contents;
+            try
+            {
+                if (new FileInfo(file).Length == 0) continue; // Held lease files are empty and exclusively locked.
+                contents = File.ReadAllBytes(file);
+            }
+            catch (FileNotFoundException) when (file == fixture.State + ".tmp")
+            {
+                // The running controller atomically committed the enumerated temporary file.
+                // Inspect its durable destination rather than missing the new state or failing the audit.
+                contents = File.ReadAllBytes(fixture.State);
+            }
+            Assert.False(contents.AsSpan().IndexOf(canary) >= 0, "Token persisted in " + Path.GetRelativePath(fixture.Directory, file));
         }
         Assert.All(peers.Calls(), call => Assert.DoesNotContain(call.Arguments, argument => argument.Contains(Canary)));
     }
