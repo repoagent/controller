@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:11.0.100-rc.3-resolute@sha256:3a9175b6c54b2f076817af1360f691c9994447b192faa48a1a1f112a516844c7
+FROM mcr.microsoft.com/dotnet/sdk:11.0.100-resolute@sha256:7913685c883a29dd8ba79da96172f5c6b29ed9be706ebe95935e3ef45f19c9c1
 WORKDIR /workspace
 COPY global.json Directory.Build.props .editorconfig ./
 COPY src/ ./src/

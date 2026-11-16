@@ -53,7 +53,7 @@ class BootstrapArchiveTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('committed bytes\n')
         for name in ('global.json', 'service/auth/global.json'):
-            (self.root / name).write_text(json.dumps(dict(sdk=dict(version=SDK, rollForward='disable', allowPrerelease=True))))
+            (self.root / name).write_text(json.dumps(dict(sdk=dict(version=SDK, rollForward='disable', allowPrerelease=False))))
         (self.root / 'service/auth/verify.sh').write_text('test "$(cat service/auth/Dockerfile)" = "committed bytes"\n')
         self.git('init', '-qb', 'main')
         self.git('add', '.')

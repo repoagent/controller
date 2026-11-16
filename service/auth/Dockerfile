@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM mcr.microsoft.com/dotnet/sdk:11.0.100-rc.3-resolute@sha256:3a9175b6c54b2f076817af1360f691c9994447b192faa48a1a1f112a516844c7 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0.100-resolute@sha256:7913685c883a29dd8ba79da96172f5c6b29ed9be706ebe95935e3ef45f19c9c1 AS build
 WORKDIR /source
 COPY global.json Directory.Build.props .editorconfig ./
 COPY service/auth/global.json service/auth/
@@ -16,7 +16,7 @@ ARG BROKER_VERSION
 RUN dotnet publish src/RepoAgent.Auth/RepoAgent.Auth.csproj --configuration Release \
     --no-restore --output /publish /p:UseAppHost=false /p:SourceRevisionId="$SOURCE_REVISION"
 
-FROM mcr.microsoft.com/dotnet/aspnet:11.0.0-rc.3@sha256:bae0269049d5061ab7f49995cc1acebf54b75471c096c4a1f874e27661d44045
+FROM mcr.microsoft.com/dotnet/aspnet:11.0.0-resolute@sha256:4b8a4aa9ede33b3a99dfe48c6155ccdad29fe3e840adc15b8b8ad7866a5d7153
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl jq \
     && rm -rf /var/lib/apt/lists/*

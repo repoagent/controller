@@ -82,7 +82,7 @@ class BrokerReleaseCliTests(unittest.TestCase):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('# Source contract fixture only\n')
-            policy = json.dumps(dict(sdk=dict(version=SDK, rollForward='disable', allowPrerelease=True)))
+            policy = json.dumps(dict(sdk=dict(version=SDK, rollForward='disable', allowPrerelease=False)))
             (root / 'global.json').write_text(policy)
             (root / 'service/auth/global.json').write_text(policy)
             binaries = root / 'bin'

@@ -20,7 +20,7 @@ SHA = 'b' * 40
 TAG = REPOSITORY + ':sha-' + SHA
 IMAGE = REPOSITORY + '@sha256:' + 'a' * 64
 CANARY = 'fake-token-$(touch token-was-executed);keep-private'
-SDK = '11.0.100-rc.3.26522.148'
+SDK = '11.0.100'
 SOURCE_FILES = ('service/auth/global.json', 'RepoAgent.slnx', 'scripts/delivery/verify-dotnet.sh', 'global.json', 'Directory.Build.props', '.editorconfig',
                 'service/auth/Dockerfile.dockerignore', 'service/auth/verify.sh', 'service/auth/Dockerfile',
                 'infra/auth/deploy.sh', 'infra/auth/main.bicep')
@@ -91,7 +91,7 @@ class AuthPipelineCliTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('# Contract fixture only; not a service implementation.\n')
             for name, version in [('service/auth/global.json', sdk), ('global.json', root_sdk if root_sdk is not None else sdk)]:
-                (root / name).write_text(json.dumps(dict(sdk=dict(version=version, rollForward='disable', allowPrerelease=True))))
+                (root / name).write_text(json.dumps(dict(sdk=dict(version=version, rollForward='disable', allowPrerelease=False))))
             if broker_version is not None:
                 (root / 'service/auth/version.txt').write_text(broker_version + '\n')
             provider = root / 'infra-double.py'
@@ -135,7 +135,7 @@ class AuthPipelineCliTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertIn('Missing ' + missing, result.stderr)
                 self.assertEqual((calls, output), ([], 'existing=value\n'))
-        for sdk in ['10.0.100', '12.0.100-preview.1', '']:
+        for sdk in ['10.0.100', '11.0.100-rc.3.26522.148', '12.0.100-preview.1', '']:
             with self.subTest(sdk=sdk):
                 result, calls, output, _ = self.invoke('source', sdk=sdk)
 
@@ -150,7 +150,7 @@ class AuthPipelineCliTests(unittest.TestCase):
         self.assertEqual((calls, output), ([], 'existing=value\n'))
 
     def test_broker_sdk_drift_fails_before_provider_calls(self):
-        result, calls, output, _ = self.invoke('publish', root_sdk='11.0.100-rc.2.26504.105')
+        result, calls, output, _ = self.invoke('publish', root_sdk='11.0.101')
         self.assertEqual(result.returncode, 1)
         self.assertIn('SDK policies must match exactly', result.stderr)
         self.assertEqual((calls, output), ([], 'existing=value\n'))

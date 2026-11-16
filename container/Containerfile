@@ -1,8 +1,6 @@
 FROM __SDK_IMAGE__ AS build
 WORKDIR /source
-COPY container/apt-retry.conf /etc/apt/apt.conf.d/80repoagent-retries
-RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
+# The digest-pinned AOT SDK already contains the native compiler and zlib headers.
 COPY global.json Directory.Build.props .editorconfig ./
 COPY src/ ./src/
 COPY releases/controller/ ./releases/controller/

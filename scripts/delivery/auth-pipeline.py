@@ -26,8 +26,8 @@ def source(root=ROOT):
             raise ValueError(f'Missing {name}; deliver service #30/#31 and infrastructure #47 before auth CI can deploy')
     policy = json.loads((root / 'global.json').read_text()).get('sdk', {})
     broker_policy = json.loads((root / 'service/auth/global.json').read_text()).get('sdk', {})
-    if (not re.fullmatch(r'11\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', policy.get('version', ''))
-            or policy.get('rollForward') != 'disable' or policy.get('allowPrerelease') is not True):
+    if (not re.fullmatch(r'11\.\d+\.\d+', policy.get('version', ''))
+            or policy.get('rollForward') != 'disable' or policy.get('allowPrerelease') is not False):
         raise ValueError('global.json must pin the reviewed .NET 11 SDK without roll-forward')
     if broker_policy != policy:
         raise ValueError('Root and broker SDK policies must match exactly')

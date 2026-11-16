@@ -12,8 +12,8 @@ import runpy
 from pathlib import Path
 import sys
 
-SDK = 'mcr.microsoft.com/dotnet/sdk@sha256:3a9175b6c54b2f076817af1360f691c9994447b192faa48a1a1f112a516844c7'
-RUNTIME = 'mcr.microsoft.com/dotnet/runtime-deps@sha256:7d1d198d20d8f0a6bedb791ca7d56cc54c7d2d03e7efd84e0c038bde8407cbf5'
+SDK = 'mcr.microsoft.com/dotnet/sdk@sha256:6b64c22519c3e796d7390695eb02e4f64419d30d43244d0666a7071736e6b09c'
+RUNTIME = 'mcr.microsoft.com/dotnet/runtime-deps@sha256:cf54343bc41fbd4e0d4d9857b820ca5740761a122f1980403205691f13cbadbe'
 SNAPSHOT = '20261027T000000Z'
 # Exact artifacts. New versions require a reviewed catalog update or a verified tool refresh
 # (scripts/delivery/tool-refresh.py rewrites these lines; keep their one-line layout).
@@ -118,7 +118,6 @@ def compose(root, manifest, output, derived=None):
     dockerfile = (output / 'container/Containerfile').read_text()
     dockerfile = dockerfile.replace('__CONTROLLER_VERSION__', release['version'])
     dockerfile = dockerfile.replace('__SDK_IMAGE__', SDK).replace('__RUNTIME_IMAGE__', from_reference)
-    dockerfile = dockerfile.replace('RUN apt-get update', f'RUN sed -i -E "s|https?://[^ /]+/ubuntu/?|https://snapshot.ubuntu.com/ubuntu/{SNAPSHOT}/|g" /etc/apt/sources.list.d/ubuntu.sources && apt-get update')
     dockerfile = dockerfile.replace('RUN bash /tmp/prepare-runtime.sh', 'RUN bash /tmp/prepare-runtime.sh ' + ('true' if value['tools'].get('developerUtilities', False) else 'false') + ' ' + SNAPSHOT)
     if 'cloudflared' not in value['tools']:
         dockerfile = '\n'.join(line for line in dockerfile.splitlines() if 'install-cloudflared.sh' not in line) + '\n'
