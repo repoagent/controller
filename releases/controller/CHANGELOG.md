@@ -1,11 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- Fix guided setup with current opaque broker enrollment IDs and private activity commands. Allow connected-app discovery to complete within the pinned Codex runtime’s refresh deadline.
-
-- Account-connected apps default to disabled, including existing installations without an explicit policy. Operators can allow selected app IDs or all current and future apps. Reconfigure and restart to opt in. Private app discovery/status and the `setup-repoagent` skill explain and verify account authority.
-
 ## [2.3.0](https://github.com/repoagent/controller/compare/controller-v2.2.0...controller-v2.3.0) (2026-11-16)
 
 
@@ -25,6 +19,18 @@
 * **controller:** refresh bundled Codex from 0.168.0 to 0.169.0 ([4fb088b](https://github.com/repoagent/controller/commit/4fb088b0580cfd17d23007e832fe7f33a6d50e13))
 * **controller:** refresh bundled gh from 2.103.3 to 2.104.0 ([5166ef4](https://github.com/repoagent/controller/commit/5166ef424b274ccfd06b855479b14f779b533e71))
 * **controller:** retry transient snapshot package downloads ([984a993](https://github.com/repoagent/controller/commit/984a993fe0f415c157a1e3a26c26e61d38cb224c))
+
+### Upgrade and rollback notes
+
+- Account-connected apps are disabled by default, including upgrades with no saved policy. Importing a Codex sign-in does not opt in. Operators who need apps must explicitly select app IDs or all current and future connected apps; enabled apps can act as the Codex account owner in response to repository participants.
+- Stop the instance before changing policy and restart afterwards. Existing explicit choices persist across restarts, credential replacement and image updates. Check private status for the requested mode and `connectedApps.verification=verified`; a failed or unverifiable policy blocks agent work.
+- Use the matching host wrappers and retain a policy-capable image for rollback. Updated wrappers refuse images without `io.repoagent.connected-apps-policy=1`, including older releases. Rollback retains the current local app policy. Preserve enrollment, all seven volumes and Codex/session history; no re-enrollment is required for this image upgrade.
+- The distributable `setup-repoagent` skill explains GitHub administrator, repository App and Codex account authority, previews operator choices and verifies the result. See [connected-app setup](https://github.com/repoagent/controller/blob/main/docs/connected-apps.md).
+- Six disposable-instance live turns on Codex 0.167.1 passed default-disabled, selected, all, enabled-to-disabled resume, image adoption and same-account credential resupply checks without Gmail data calls or email sends. Credential-free policy qualification also passed on bundled Codex 0.169.0; live model-turn acceptance was not repeated on that newer version. See the [acceptance record and limits](https://github.com/repoagent/controller/blob/main/docs/connected-apps-acceptance.md).
+- Rootless Docker's build-helper UID mapping remains a known limitation on the tested host; the acceptance image used native context composition followed by ordinary Docker build. This policy covers account-connected apps, not independently authenticated tools or arbitrary agent-launched processes.
+- Runtime package downloads now retry transient snapshot failures five times with 30-second HTTP/HTTPS connection timeouts. Incomplete snapshot indexes fail the build; package pins, signatures and hashes remain enforced.
+- Builds now use stable .NET SDK 11.0.100/runtime 11.0.0. The controller uses Microsoft’s digest-pinned Native AOT SDK image with its native compiler and headers already installed, eliminating build-stage snapshot downloads. Matching stable broker build/runtime pins are source changes only; this controller release does not deploy the broker.
+
 
 ## [2.2.0](https://github.com/repoagent/controller/compare/controller-v2.1.0...controller-v2.2.0) (2026-11-07)
 
