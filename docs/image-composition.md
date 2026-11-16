@@ -90,3 +90,7 @@ Use the emitted immutable image ID with the separate [PowerShell 7 image publish
 ## Verification limits
 
 The `build-image` scripts have no automated tests ([ADR 0010](adr/0010-structure-the-controller-and-broker-as-ports-and-adapters.md)). Real local Docker builds, inventory/layer inspection, compiled-controller execution and a credential-free Codex app-server handshake provide assembled-image evidence. Native Windows Docker Desktop, private registries, registry publication, live enrollment, Azure, authenticated Codex turns and unsupported base families require separate acceptance. See the PR verification evidence for the exact candidate tested.
+
+## Package download failures
+
+Both the Native AOT build stage and runtime stage use the reviewed immutable Ubuntu snapshot. A shared APT policy retries failed downloads five times, sets HTTP/HTTPS connection timeouts to 30 seconds, and makes any failed index fetch fail `apt-get update`. Index signatures and package hashes remain required; retries never switch to a newer snapshot or live archive. A persistent snapshot outage still fails the build rather than producing an image from incomplete indexes.

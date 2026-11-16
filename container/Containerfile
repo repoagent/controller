@@ -1,5 +1,6 @@
 FROM __SDK_IMAGE__ AS build
 WORKDIR /source
+COPY container/apt-retry.conf /etc/apt/apt.conf.d/80repoagent-retries
 RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY global.json Directory.Build.props .editorconfig ./
@@ -17,6 +18,7 @@ FROM __RUNTIME_IMAGE__ AS runtime
 USER root
 SHELL ["/bin/sh", "-c"]
 ARG TARGETARCH
+COPY container/apt-retry.conf /etc/apt/apt.conf.d/80repoagent-retries
 RUN . /etc/os-release; test "$ID:$VERSION_ID:$(uname -m)" = "ubuntu:26.04:x86_64" \
     || { echo 'Unsupported base: initial controller images require Ubuntu 26.04 linux/amd64 (Native AOT ABI and signed package snapshot). Supply a compatible digest-pinned base.' >&2; exit 1; }
 COPY container/prepare-runtime.sh /tmp/prepare-runtime.sh
