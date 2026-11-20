@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/repoagent/controller/compare/broker-v2.2.0...broker-v2.2.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **build:** adopt stable .NET 11 and prebuilt AOT toolchain ([ec248aa](https://github.com/repoagent/controller/commit/ec248aaf4f2fa33a3023ece7ed9cbc95ee42486d))
+
 ## [2.2.0](https://github.com/repoagent/controller/compare/broker-v2.1.0...broker-v2.2.0) (2026-11-07)
 
 
