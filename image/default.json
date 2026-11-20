@@ -6,7 +6,7 @@
   },
   "agent": {
     "profile": "codex",
-    "version": "0.170.0"
+    "version": "0.171.0"
   },
   "githubCli": {
     "version": "2.105.0"
