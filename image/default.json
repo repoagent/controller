@@ -12,7 +12,7 @@
     "version": "2.105.0"
   },
   "tools": {
-    "cloudflared": "2026.11.1",
+    "cloudflared": "2026.11.2",
     "developerUtilities": true
   }
 }
