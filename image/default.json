@@ -9,7 +9,7 @@
     "version": "0.172.0"
   },
   "githubCli": {
-    "version": "2.105.0"
+    "version": "2.106.0"
   },
   "tools": {
     "cloudflared": "2026.11.2",
